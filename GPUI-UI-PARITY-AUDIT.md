@@ -110,6 +110,10 @@ found the unique fixture and state-file items, but the helper waited for an enab
 Open button before selecting the fixture and stopped. The captured evidence did not
 establish whether the button was absent or disabled. GitHub cancelled the macOS job
 before starting because a hosted runner was unavailable.
+[Windows CI at `0a748514`](https://github.com/Porabuild/Poratake/actions/runs/43488090394)
+selected the unique fixture item and verified the selection, but the dialog exposed
+no Open Button or SplitButton to UI Automation. File acceptance still needs a hosted
+retry using the selected item's invoke action. The macOS CI build and test job passed.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.

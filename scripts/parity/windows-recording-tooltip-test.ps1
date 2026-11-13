@@ -106,6 +106,7 @@ public static class PoratakeVideoExportDpi {
                             isEnabled = $false
                             isSelected = $false
                             supportsSelectionItemPattern = $false
+                            supportsInvokePattern = $false
                             parent = $null
                             readError = $_.Exception.Message
                         })
@@ -139,6 +140,14 @@ public static class PoratakeVideoExportDpi {
                     } catch {
                         $supportsSelectionItemPattern = $false
                     }
+                    $invokePattern = $null
+                    $supportsInvokePattern = $false
+                    try {
+                        $invokePattern = $listItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                        $supportsInvokePattern = $null -ne $invokePattern
+                    } catch {
+                        $supportsInvokePattern = $false
+                    }
                     $isSelected = $false
                     if ($supportsSelectionItemPattern) {
                         try { $isSelected = [bool]$selectionPattern.Current.IsSelected } catch { $isSelected = $false }
@@ -153,11 +162,12 @@ public static class PoratakeVideoExportDpi {
                         isEnabled = $current.IsEnabled
                         isSelected = $isSelected
                         supportsSelectionItemPattern = $supportsSelectionItemPattern
+                        supportsInvokePattern = $supportsInvokePattern
                         parent = $parentMetadata
                     }
                     [void]$inventory.Add($metadata)
                     if (-not $isVisible -or -not $current.IsEnabled) { continue }
-                    $candidate = @{ element = $listItem; selectionPattern = $selectionPattern; metadata = $metadata }
+                    $candidate = @{ element = $listItem; selectionPattern = $selectionPattern; invokePattern = $invokePattern; metadata = $metadata }
                     if ($fixtureNames.Contains([string]$current.Name) -and $supportsSelectionItemPattern) { [void]$fixtureCandidates.Add($candidate) }
                     if ($stateNames.Contains([string]$current.Name)) { [void]$stateCandidates.Add($candidate) }
                 }
@@ -208,10 +218,20 @@ public static class PoratakeVideoExportDpi {
                 foreach ($listItem in $listItems) {
                     try { $current = $listItem.Current } catch { continue }
                     if (-not $fixtureNames.Contains([string]$current.Name)) { continue }
+                    $selectionPattern = $null
+                    $isSelected = $false
                     try {
-                        $pattern = $listItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-                        if ($pattern.Current.IsSelected) { [void]$selectedFixtures.Add($current.Name) }
+                        $selectionPattern = $listItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                        $isSelected = [bool]$selectionPattern.Current.IsSelected
                     } catch { }
+                    if ($null -eq $selectionPattern -or -not $isSelected) { continue }
+                    $invokePattern = $null
+                    try { $invokePattern = $listItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern) } catch { }
+                    [void]$selectedFixtures.Add(@{
+                        name = $current.Name
+                        element = $listItem
+                        invokePattern = $invokePattern
+                    })
                 }
                 if ($selectedFixtures.Count -eq 1) { $selectionReadBack = $true; break }
                 [System.Threading.Thread]::Sleep(50)
@@ -228,106 +248,31 @@ public static class PoratakeVideoExportDpi {
                 [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
                 throw 'The native dialog did not report the selected fixture ListItem as selected.'
             }
-            $selectedName = $null
-            foreach ($name in $selectedFixtures) { $selectedName = $name; break }
+            $selectedFixture = $null
+            foreach ($fixture in $selectedFixtures) { $selectedFixture = $fixture; break }
+            $selectedName = $selectedFixture.name
             $stateName = $stateCandidate.metadata.name
             foreach ($metadata in $listItemInventory) {
-                if ($metadata.name -ceq $selectedName) { $metadata.isSelected = $true }
+                if ($metadata.name -ceq $selectedName) {
+                    $metadata.isSelected = $true
+                    $metadata.supportsInvokePattern = $null -ne $selectedFixture.invokePattern
+                }
             }
-            $buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::Button
-            )
-            $splitButtonCondition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::SplitButton
-            )
-            $openTimer = [System.Diagnostics.Stopwatch]::StartNew()
-            $openButton = $null
-            $buttonInventory = @()
-            $openNamedCount = 0
-            do {
-                $openCandidates = [System.Collections.Generic.List[object]]::new()
-                $buttonInventoryList = [System.Collections.Generic.List[object]]::new()
-                $openNamedCount = 0
-                $buttonElements = @($rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)) + @($rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $splitButtonCondition))
-                foreach ($button in $buttonElements) {
-                    try {
-                        $current = $button.Current
-                    } catch {
-                        continue
-                    }
-                    $bounds = $current.BoundingRectangle
-                    $isVisible = -not $current.IsOffscreen -and -not $bounds.IsEmpty -and $bounds.Width -gt 0 -and $bounds.Height -gt 0
-                    if (-not $isVisible) { continue }
-                    $invokePattern = $null
-                    $supportsInvokePattern = $false
-                    try {
-                        $invokePattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                        $supportsInvokePattern = $null -ne $invokePattern
-                    } catch {
-                        $supportsInvokePattern = $false
-                    }
-                    $parentMetadata = $null
-                    try {
-                        $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($button)
-                        if ($null -ne $parent) {
-                            $parentCurrent = $parent.Current
-                            $parentMetadata = @{
-                                name = $parentCurrent.Name
-                                automationId = $parentCurrent.AutomationId
-                                className = $parentCurrent.ClassName
-                                controlType = $parentCurrent.ControlType.ProgrammaticName
-                            }
-                        }
-                    } catch {
-                        $parentMetadata = @{ readError = $_.Exception.Message }
-                    }
-                    $metadata = @{
-                        name = $current.Name
-                        automationId = $current.AutomationId
-                        className = $current.ClassName
-                        controlType = $current.ControlType.ProgrammaticName
-                        bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
-                        isVisible = $isVisible
-                        isEnabled = $current.IsEnabled
-                        supportsInvokePattern = $supportsInvokePattern
-                        parent = $parentMetadata
-                    }
-                    [void]$buttonInventoryList.Add($metadata)
-                    if ($current.Name -ceq 'Open') {
-                        $openNamedCount++
-                        if ($current.IsEnabled -and $supportsInvokePattern) {
-                            [void]$openCandidates.Add(@{ element = $button; invokePattern = $invokePattern; metadata = $metadata })
-                        }
-                    }
-                }
-                $buttonInventory = @($buttonInventoryList.ToArray())
-                $openButton = $null
-                if ($openNamedCount -eq 1 -and $openCandidates.Count -eq 1) {
-                    foreach ($candidate in $openCandidates) { $openButton = $candidate; break }
-                }
-                if ($null -ne $openButton) { break }
-                [System.Threading.Thread]::Sleep(100)
-            } while ($openTimer.ElapsedMilliseconds -lt 5000)
-            if ($null -eq $openButton) {
+            if ($null -eq $selectedFixture.invokePattern) {
                 $result = @{
                     selected = $false
                     selectionReadBack = $true
                     itemName = $selectedName
                     positiveControlName = $stateName
-                    openNamedCount = $openNamedCount
-                    openCandidateCount = $openCandidates.Count
-                    buttonInventory = $buttonInventory
                     listItemInventory = $listItemInventory
                     dpiContext = $helperContext.ToInt64()
                     dpiAware = $dpiAware
                 }
                 [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
-                throw "The native dialog did not expose exactly one visible, enabled, invokable Button or SplitButton named Open. Matching name count=$openNamedCount."
+                throw 'The selected fixture ListItem did not support InvokePattern.'
             }
             try {
-                $openButton.invokePattern.Invoke()
+                $selectedFixture.invokePattern.Invoke()
             } catch {
                 $result = @{
                     selected = $false
@@ -335,7 +280,6 @@ public static class PoratakeVideoExportDpi {
                     itemName = $selectedName
                     positiveControlName = $stateName
                     failure = $_.Exception.Message
-                    buttonInventory = $buttonInventory
                     listItemInventory = $listItemInventory
                     dpiContext = $helperContext.ToInt64()
                     dpiAware = $dpiAware
@@ -348,8 +292,8 @@ public static class PoratakeVideoExportDpi {
                 selectionReadBack = $true
                 itemName = $selectedName
                 positiveControlName = $stateName
-                selectedBy = 'SelectionItemPattern'
-                openButton = $openButton.metadata
+                selectionPattern = 'SelectionItemPattern'
+                invokePattern = 'InvokePattern'
                 dpiContext = $helperContext.ToInt64()
                 dpiAware = $dpiAware
             }
@@ -944,8 +888,8 @@ function Select-OpenDialogItem([IntPtr]$dialog, [string]$fixtureBaseName, [strin
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
         $fixtureNames = @($fixtureBaseName, "$fixtureBaseName.json")
         $stateNames = @($stateBaseName, "$stateBaseName.json")
-        if (-not $result.dpiAware -or -not $result.selected -or -not $result.selectionReadBack -or $result.itemName -cnotin $fixtureNames -or $result.positiveControlName -cnotin $stateNames -or $result.openButton.name -cne 'Open' -or $result.openButton.controlType -notin @('ControlType.Button', 'ControlType.SplitButton') -or -not $result.openButton.isEnabled -or -not $result.openButton.supportsInvokePattern) {
-            throw 'The native file dialog did not confirm the unique selected fixture and state-file directory control.'
+        if (-not $result.dpiAware -or -not $result.selected -or -not $result.selectionReadBack -or $result.itemName -cnotin $fixtureNames -or $result.positiveControlName -cnotin $stateNames -or $result.selectionPattern -cne 'SelectionItemPattern' -or $result.invokePattern -cne 'InvokePattern') {
+            throw 'The native file dialog did not confirm SelectionItemPattern readback and InvokePattern for the unique selected fixture.'
         }
     } finally {
         if (-not $helper.HasExited) {
