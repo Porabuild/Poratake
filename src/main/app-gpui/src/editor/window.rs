@@ -391,6 +391,8 @@ pub struct EditorWindow {
     native_scale: f64,
     wallpaper_preset_id: String,
     background_editor: Option<BackgroundDraft>,
+    background_editor_generation: u64,
+    background_picker_open: bool,
     background_previews: crate::editor::background::BackgroundPreviews,
     preset_draft: Option<PresetDraft>,
     sheet_closing: bool,
@@ -556,6 +558,8 @@ impl EditorWindow {
             ),
             wallpaper_preset_id: String::new(),
             background_editor: None,
+            background_editor_generation: 0,
+            background_picker_open: false,
             background_previews: crate::editor::background::BackgroundPreviews::default(),
             preset_draft: None,
             sheet_closing: false,
@@ -3004,10 +3008,20 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
     let action_entity = weak.clone();
 
     EditorHandlers {
-        on_option: Rc::new(move |option, _window, cx: &mut App| {
+        on_option: Rc::new(move |option, window, cx: &mut App| {
             let Some(entity) = option_entity.upgrade() else {
                 return;
             };
+            if option == EditorOption::WallpaperEditorPickImage {
+                entity.update(cx, |editor, cx| {
+                    editor.pick_background_image(window, cx);
+                    editor.refresh_balance_crop();
+                    editor.refresh_backdrop(cx);
+                    editor.sync_snapshot(cx);
+                    cx.notify();
+                });
+                return;
+            }
             entity.update(cx, |editor, cx| {
                 editor.apply_option(option, cx);
                 editor.refresh_balance_crop();
@@ -3399,6 +3413,8 @@ impl EditorWindow {
                 self.open_background_editor(id.map(|id| id.to_string()), cx);
             }
             EditorOption::WallpaperEditorClose => {
+                self.background_editor_generation =
+                    self.background_editor_generation.wrapping_add(1);
                 self.background_editor = None;
             }
             EditorOption::WallpaperEditorColor(index, value) => {
@@ -3471,15 +3487,7 @@ impl EditorWindow {
                     };
                 }
             }
-            EditorOption::WallpaperEditorPickImage => {
-                if let Some(draft) = self.background_editor.as_mut() {
-                    if let Some(path) = crate::editor::background::pick_image() {
-                        draft.preview =
-                            draft_preview_image(&path).map(|image| render_image_from_base(&image));
-                        draft.image_url = Some(path);
-                    }
-                }
-            }
+            EditorOption::WallpaperEditorPickImage => {}
             EditorOption::WallpaperEditorSave => {
                 self.save_background_editor(cx);
             }
@@ -3497,6 +3505,7 @@ impl EditorWindow {
     }
 
     fn open_background_editor(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        self.background_editor_generation = self.background_editor_generation.wrapping_add(1);
         if let Some(id) = id {
             let config = crate::state::state(cx).config.get();
             let existing = config
@@ -3546,10 +3555,62 @@ impl EditorWindow {
         ));
     }
 
+    fn pick_background_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.background_picker_open || self.background_editor.is_none() {
+            return;
+        }
+        self.background_picker_open = true;
+        let generation = self.background_editor_generation;
+        let dialog = crate::editor::background::image_picker(window);
+        cx.spawn(async move |editor, cx| {
+            let path = dialog
+                .pick_file()
+                .await
+                .map(|file| file.path().to_string_lossy().to_string());
+            let preview = if let Some(path) = path.as_ref() {
+                let path = path.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        draft_preview_image(&path).map(|image| render_image_from_base(&image))
+                    })
+                    .await
+            } else {
+                None
+            };
+            let _ = editor.update(cx, |this, cx| {
+                this.finish_background_image_picker(generation, path, preview, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_background_image_picker(
+        &mut self,
+        generation: u64,
+        path: Option<String>,
+        preview: Option<Arc<gpui::RenderImage>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.background_picker_open = false;
+        if generation != self.background_editor_generation {
+            return;
+        }
+        let (Some(path), Some(draft)) = (path, self.background_editor.as_mut()) else {
+            return;
+        };
+        draft.preview = preview;
+        draft.image_url = Some(path);
+        self.refresh_balance_crop();
+        self.refresh_backdrop(cx);
+        self.sync_snapshot(cx);
+        cx.notify();
+    }
+
     fn save_background_editor(&mut self, cx: &mut Context<Self>) {
         let Some(draft) = self.background_editor.take() else {
             return;
         };
+        self.background_editor_generation = self.background_editor_generation.wrapping_add(1);
         let id = draft.id.clone().unwrap_or_else(|| {
             format!(
                 "custom-{}",
@@ -4146,6 +4207,70 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[herogpui::test]
+    fn background_image_picker_ignores_cancel_and_superseded_drafts(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            EditorWindow::from_file(&source_path, window, cx)
+        });
+        editor.update(cx, |editor, cx| editor.open_background_editor(None, cx));
+
+        let generation = cx.update(|_, app| editor.read(app).background_editor_generation);
+        let preview = render_image_from_base(&image::DynamicImage::ImageRgba8(
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255])),
+        ));
+        editor.update(cx, |editor, cx| {
+            editor.background_picker_open = true;
+            editor.finish_background_image_picker(generation, None, None, cx);
+            assert!(!editor.background_picker_open);
+            assert!(editor
+                .background_editor
+                .as_ref()
+                .unwrap()
+                .image_url
+                .is_none());
+
+            editor.background_picker_open = true;
+            editor.open_background_editor(None, cx);
+            editor.finish_background_image_picker(
+                generation,
+                Some(source_path.clone()),
+                Some(preview.clone()),
+                cx,
+            );
+            assert!(!editor.background_picker_open);
+            assert!(editor
+                .background_editor
+                .as_ref()
+                .unwrap()
+                .image_url
+                .is_none());
+
+            let generation = editor.background_editor_generation;
+            editor.background_picker_open = true;
+            editor.finish_background_image_picker(
+                generation,
+                Some(source_path.clone()),
+                Some(preview.clone()),
+                cx,
+            );
+            let draft = editor.background_editor.as_ref().unwrap();
+            assert_eq!(draft.image_url.as_deref(), Some(source_path.as_str()));
+            assert!(draft.preview.is_some());
+            assert!(!editor.background_picker_open);
+        });
+    }
 
     #[herogpui::test]
     fn wallpaper_export_matches_polish_at_two_x(cx: &mut gpui::TestAppContext) {

@@ -137,7 +137,7 @@ pub struct VideoEditorWindow {
     is_scrubbing: bool,
     is_cut_tool_active: bool,
     is_exporting: bool,
-    is_export_dialog_open: bool,
+    is_file_dialog_open: bool,
     export_progress: f32,
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
@@ -324,7 +324,7 @@ impl VideoEditorWindow {
             is_scrubbing: false,
             is_cut_tool_active: false,
             is_exporting: false,
-            is_export_dialog_open: false,
+            is_file_dialog_open: false,
             export_progress: 0.0,
             selected_clip: None,
             menu: MenuHandle::new(),
@@ -397,7 +397,7 @@ impl VideoEditorWindow {
     /// Asks for a destination and renders the timeline to it. Every frame goes
     /// through the composition engine the preview uses.
     pub fn start_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_exporting || self.is_export_dialog_open {
+        if self.is_exporting || self.is_file_dialog_open {
             return;
         }
         let Some(project) = self.path.clone() else {
@@ -434,7 +434,7 @@ impl VideoEditorWindow {
             .set_directory(&directory)
             .set_parent(window);
         let config = crate::state::state(cx).config.clone();
-        self.is_export_dialog_open = true;
+        self.is_file_dialog_open = true;
 
         cx.spawn(async move |entity, cx| {
             let Some(file) = dialog.save_file().await else {
@@ -463,7 +463,7 @@ impl VideoEditorWindow {
         is_gif: bool,
         cx: &mut Context<Self>,
     ) {
-        self.is_export_dialog_open = false;
+        self.is_file_dialog_open = false;
         let Some(output) = output else {
             cx.notify();
             return;
@@ -477,6 +477,33 @@ impl VideoEditorWindow {
             false => output,
         };
         self.start_export_to_path(project, output, state, cx);
+    }
+
+    fn choose_file(
+        &mut self,
+        dialog: rfd::AsyncFileDialog,
+        cx: &mut Context<Self>,
+        on_selected: impl FnOnce(&mut Self, PathBuf, &mut Context<Self>) + Send + 'static,
+    ) {
+        if self.is_file_dialog_open {
+            return;
+        }
+        self.is_file_dialog_open = true;
+        cx.spawn(async move |entity, cx| {
+            let path = dialog
+                .pick_file()
+                .await
+                .map(|file| file.path().to_path_buf());
+            let _ = entity.update(cx, move |this, cx| {
+                this.is_file_dialog_open = false;
+                if let Some(path) = path {
+                    on_selected(this, path, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn start_export_to_path(
@@ -1788,32 +1815,31 @@ impl VideoEditorWindow {
     }
 
     /// Imports a `.json` or `.srt` transcript.
-    pub fn import_subtitles(&mut self, cx: &mut Context<Self>) {
+    pub fn import_subtitles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Import Subtitle Data")
             .add_filter("Transcripts", &["json", "srt"])
-            .pick_file()
-        else {
-            return;
-        };
-        match crate::video::transcription::import_from(&project, &source) {
-            Ok(data) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Subtitles imported",
-                    format!("{} segments loaded.", data.segments.len()),
-                );
-                self.refresh_subtitle_count();
-                self.reload_preview(cx);
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            match crate::video::transcription::import_from(&project, &source) {
+                Ok(data) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Subtitles imported",
+                        format!("{} segments loaded.", data.segments.len()),
+                    );
+                    this.refresh_subtitle_count();
+                    this.reload_preview(cx);
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Import failed", &error);
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Import failed", &error);
-            }
-        }
-        cx.notify();
+            cx.notify();
+        });
     }
 
     pub fn delete_subtitles(&mut self, cx: &mut Context<Self>) {
@@ -1835,22 +1861,27 @@ impl VideoEditorWindow {
 
     /// Copies a picked audio file into the project and lays it on the music
     /// track at the playhead.
-    pub fn add_music_track(&mut self, cx: &mut Context<Self>) {
+    pub fn add_music_track(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = crate::video::music::pick_file() else {
-            return;
-        };
-        match crate::video::music::add(&project, &source, self.playhead) {
-            Ok(track) => {
-                self.selected_clip = Some(SharedString::from(track.id.clone()));
-                self.commit(cx, move |state| state.music_tracks.push(track));
+        let timeline_start = self.playhead;
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Add Music")
+            .add_filter("Audio Files", &crate::video::music::SUPPORTED_EXTENSIONS)
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            match crate::video::music::add(&project, &source, timeline_start) {
+                Ok(track) => {
+                    this.selected_clip = Some(SharedString::from(track.id.clone()));
+                    this.commit(cx, move |state| state.music_tracks.push(track));
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Could not add music", &error);
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Could not add music", &error);
-            }
-        }
+            cx.notify();
+        });
     }
 
     /// Removes a music track, deleting its file once nothing else uses it.
@@ -1921,23 +1952,28 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn pick_custom_cursor(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = crate::editor::background::pick_image() {
-            self.update_cursor(cx, move |style| style.custom_cursor_image = Some(path));
-        }
+    pub fn pick_custom_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = crate::editor::background::image_picker(window);
+        self.choose_file(dialog, cx, |this, path, cx| {
+            this.update_cursor(cx, move |style| {
+                style.custom_cursor_image = Some(path.to_string_lossy().to_string())
+            });
+        });
     }
 
     pub fn clear_custom_cursor(&mut self, cx: &mut Context<Self>) {
         self.update_cursor(cx, |style| style.custom_cursor_image = None);
     }
 
-    pub fn pick_first_frame(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = crate::editor::background::pick_image() {
-            self.update_first_frame(cx, move |settings| {
+    pub fn pick_first_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = crate::editor::background::image_picker(window);
+        self.choose_file(dialog, cx, |this, path, cx| {
+            let path = path.to_string_lossy().to_string();
+            this.update_first_frame(cx, move |settings| {
                 settings.image_data = Some(path);
                 settings.enabled = true;
             });
-        }
+        });
     }
 
     pub fn clear_first_frame(&mut self, cx: &mut Context<Self>) {
@@ -1947,32 +1983,31 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn import_cursor_data(&mut self, cx: &mut Context<Self>) {
+    pub fn import_cursor_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Import Cursor Data")
             .add_filter("Cursor data", &["json"])
-            .pick_file()
-        else {
-            return;
-        };
-        let dest = crate::video::project::cursor_path(&project);
-        match std::fs::copy(&source, &dest) {
-            Ok(_) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Cursor data imported",
-                    "The cursor track was replaced.",
-                );
-                self.reload_preview(cx);
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            let dest = crate::video::project::cursor_path(&project);
+            match std::fs::copy(&source, &dest) {
+                Ok(_) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Cursor data imported",
+                        "The cursor track was replaced.",
+                    );
+                    this.reload_preview(cx);
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Import failed", error.to_string());
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Import failed", error.to_string());
-            }
-        }
-        cx.notify();
+            cx.notify();
+        });
     }
 
     #[allow(dead_code)]
@@ -3848,10 +3883,10 @@ mod keyboard_demo_tests {
             cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
         window
             .update(cx, |editor, _, cx| {
-                editor.is_export_dialog_open = true;
+                editor.is_file_dialog_open = true;
                 let state = editor.state.clone();
                 editor.finish_export_dialog(None, project, state, false, cx);
-                assert!(!editor.is_export_dialog_open);
+                assert!(!editor.is_file_dialog_open);
                 assert!(!editor.is_exporting);
             })
             .unwrap();

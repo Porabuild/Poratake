@@ -76,14 +76,14 @@ fn cursor_panel(
                 "You can add cursor data manually by importing a JSON file or creating it in the editor.",
                 theme,
             ),
-            kit::tertiary_button(
+            kit::tertiary_window_button(
                 "cursor-import-data",
                 "Import from File",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_cursor_data(cx),
+                |this, window, cx| this.import_cursor_data(window, cx),
             ),
             kit::tertiary_button(
                 "cursor-edit-data",
@@ -165,14 +165,14 @@ fn cursor_panel(
     } else {
         children.push(kit::field(
             "Custom Cursor",
-            kit::tertiary_button(
+            kit::tertiary_window_button(
                 "cursor-upload-custom",
                 "Upload Custom Cursor",
                 "upload",
                 false,
                 theme,
                 cx,
-                |this, cx| this.pick_custom_cursor(cx),
+                |this, window, cx| this.pick_custom_cursor(window, cx),
             ),
             theme,
         ));
@@ -311,14 +311,14 @@ fn cursor_panel(
                 cx,
                 |this, cx| this.open_data_editor(data_editor::DataKind::Cursor, cx),
             ))
-            .child(kit::tertiary_button(
+            .child(kit::tertiary_window_button(
                 "cursor-import-data-panel",
                 "Import",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_cursor_data(cx),
+                |this, window, cx| this.import_cursor_data(window, cx),
             ))
             .into_any_element(),
         Some(cursor_data_summary),
@@ -1321,7 +1321,7 @@ fn audio_panel(
                 icon_button::compact_sm("audio-add-music", "plus", add_music_name),
                 add_music_name,
                 cx,
-                |this, _window, cx| this.add_music_track(cx),
+                |this, window, cx| this.add_music_track(window, cx),
             )
         })
         .into_any_element()];
@@ -1927,21 +1927,24 @@ fn video_backgrounds(
                 .child(icon_button::with_tooltip(
                     add_name,
                     icon_button::compact_sm_muted("video-wallpaper-add", "plus", add_name)
-                        .on_press(move |_event, _window, cx| {
-                            if let Some(entity) = add.upgrade() {
-                                entity.update(cx, |this, cx| {
-                                    if let Some(path) = crate::editor::background::pick_image() {
-                                        this.update_wallpaper(cx, |wallpaper| {
-                                            wallpaper.enabled = true;
-                                            wallpaper.background_image = Some(path);
-                                            wallpaper.gradient = None;
-                                            if wallpaper.padding == 0.0 {
-                                                wallpaper.padding = 50.0;
-                                            }
-                                        });
-                                    }
+                        .on_press(move |_event, window, cx| {
+                            let Some(entity) = add.upgrade() else {
+                                return;
+                            };
+                            let dialog = crate::editor::background::image_picker(window);
+                            entity.update(cx, move |this, cx| {
+                                this.choose_file(dialog, cx, |this, path, cx| {
+                                    let path = path.to_string_lossy().to_string();
+                                    this.update_wallpaper(cx, move |wallpaper| {
+                                        wallpaper.enabled = true;
+                                        wallpaper.background_image = Some(path);
+                                        wallpaper.gradient = None;
+                                        if wallpaper.padding == 0.0 {
+                                            wallpaper.padding = 50.0;
+                                        }
+                                    });
                                 });
-                            }
+                            });
                         }),
                 )),
         )
@@ -2105,14 +2108,14 @@ fn subtitle_panel(
             },
             theme,
         ));
-        children.push(kit::tertiary_button(
+        children.push(kit::tertiary_window_button(
             "subtitle-import",
             "Import from File",
             "file-up",
             false,
             theme,
             cx,
-            |this, cx| this.import_subtitles(cx),
+            |this, window, cx| this.import_subtitles(window, cx),
         ));
         children.push(kit::tertiary_button(
             "subtitle-create",
@@ -2198,14 +2201,14 @@ fn subtitle_panel(
                 cx,
                 |this, cx| this.open_data_editor(data_editor::DataKind::Subtitle, cx),
             ))
-            .child(kit::tertiary_button(
+            .child(kit::tertiary_window_button(
                 "subtitle-import-data",
                 "Import",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_subtitles(cx),
+                |this, window, cx| this.import_subtitles(window, cx),
             ))
             .into_any_element(),
         Some(
@@ -2289,14 +2292,14 @@ fn first_frame_panel(
 
     match settings.image_data.as_deref() {
         None => {
-            children.push(kit::tertiary_button(
+            children.push(kit::tertiary_window_button(
                 "first-frame-upload",
                 "Upload Image",
                 "frame",
                 false,
                 theme,
                 cx,
-                |this, cx| this.pick_first_frame(cx),
+                |this, window, cx| this.pick_first_frame(window, cx),
             ));
         }
         Some(path) => {
@@ -2321,14 +2324,14 @@ fn first_frame_panel(
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
-                    .child(kit::tertiary_button(
+                    .child(kit::tertiary_window_button(
                         "first-frame-replace",
                         "Replace",
                         "frame",
                         false,
                         theme,
                         cx,
-                        |this, cx| this.pick_first_frame(cx),
+                        |this, window, cx| this.pick_first_frame(window, cx),
                     ))
                     .child(
                         icon_button::compact_sm(
