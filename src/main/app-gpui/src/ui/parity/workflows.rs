@@ -813,13 +813,30 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                 );
             }
             cx.run_until_parked();
-            verify_saved_capture(
-                cx,
-                output,
-                &captures,
-                (rect, color),
-                &format!("workflow-{kind}-{name}"),
-            );
+            if kind == "area" && name == "live" {
+                let editor = open_verified_capture_editor(
+                    cx,
+                    output,
+                    &captures,
+                    (rect, color),
+                    "workflow-area-live",
+                );
+                let source = std::fs::read_dir(&captures)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                annotate_capture_roundtrip(cx, editor, &source, scratch);
+            } else {
+                verify_saved_capture(
+                    cx,
+                    output,
+                    &captures,
+                    (rect, color),
+                    &format!("workflow-{kind}-{name}"),
+                );
+            }
             if kind == "area" {
                 let path = std::fs::read_dir(&captures)
                     .unwrap()
@@ -1806,6 +1823,19 @@ pub(super) fn verify_saved_capture(
     expected: (CaptureRect, [u8; 4]),
     name: &str,
 ) {
+    let editor = open_verified_capture_editor(cx, output, captures, expected, name);
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn open_verified_capture_editor(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    captures: &Path,
+    expected: (CaptureRect, [u8; 4]),
+    name: &str,
+) -> gpui::WindowHandle<EditorWindow> {
     let files: Vec<_> = std::fs::read_dir(captures)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -1892,9 +1922,7 @@ pub(super) fn verify_saved_capture(
     settle(cx, window);
     hover(cx, window, 20., 700.);
     capture(cx, window, output, name);
-    cx.update_window(window, |_, window, _| window.remove_window())
-        .unwrap();
-    cx.run_until_parked();
+    editor
 }
 
 pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
@@ -4962,27 +4990,14 @@ pub(super) fn restored_pixelation(
     cx.run_until_parked();
 }
 
-pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
-    let source = scratch.join("workflow-capture.png");
-    std::fs::copy(scratch.join("capture.png"), &source).unwrap();
-    crate::history_store::add_item(
-        HistoryItem {
-            id: "visual-workflow".into(),
-            timestamp: 0,
-            original_path: source.to_string_lossy().into_owned(),
-            r#type: HistoryItemType::Screenshot,
-            editor_state: None,
-            duration: None,
-        },
-        10,
-        true,
-    );
-    let editor = cx
-        .open_window(size(px(1280.), px(738.)), |window, cx| {
-            window.set_scale_factor(1.);
-            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
-        })
-        .unwrap();
+fn draw_workflow_annotations(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+) -> (
+    Vec<crate::editor::annotations::Annotation>,
+    Vec<u8>,
+    gpui::Bounds<gpui::Pixels>,
+) {
     let window = editor.into();
     settle(cx, window);
     click_measured(cx, window, "editor-tools", 0);
@@ -5048,9 +5063,156 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
             editor.export_png().unwrap(),
         )
     });
+    (annotations, png, bounds)
+}
+
+fn annotate_capture_roundtrip(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    source: &Path,
+    scratch: &Path,
+) {
+    let original = image::open(source).unwrap().to_rgba8();
+    let (annotations, png, bounds) = draw_workflow_annotations(cx, editor);
+    let exported = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(exported.dimensions(), original.dimensions());
+    assert_ne!(
+        exported, original,
+        "annotations must change the captured pixels"
+    );
+    let rectangle = annotations
+        .iter()
+        .find_map(|annotation| match annotation {
+            crate::editor::annotations::Annotation::Rectangle {
+                x,
+                y,
+                width,
+                height,
+                fill,
+                ..
+            } => Some((*x, *y, *width, *height, fill.is_none())),
+            _ => None,
+        })
+        .expect("the workflow must include its rectangle annotation");
+    assert_eq!(rectangle, (60., 200., 160., 100., true));
+    let background = original.get_pixel(140, 250).0;
+    let changed_rectangle_edge = (130..150)
+        .flat_map(|x| (197..204).map(move |y| (x, y)))
+        .filter(|(x, y)| {
+            exported
+                .get_pixel(*x, *y)
+                .0
+                .iter()
+                .zip(background)
+                .any(|(actual, expected)| actual.abs_diff(expected) > 8)
+        })
+        .count();
+    assert!(
+        changed_rectangle_edge >= 10,
+        "the rectangle's top edge must render over the captured source"
+    );
+    assert_eq!(exported.get_pixel(140, 250).0, background);
+    let saved = scratch.join("capture-annotated.png");
+    std::fs::write(&saved, &png).unwrap();
+    assert_eq!(image::open(source).unwrap().to_rgba8(), original);
+
+    let preview = cx.capture_screenshot(editor.into()).unwrap();
+    let preview = image::imageops::crop_imm(
+        &preview,
+        f32::from(bounds.left()).round() as u32,
+        f32::from(bounds.top()).round() as u32,
+        exported.width(),
+        exported.height(),
+    )
+    .to_image();
+    assert!(
+        preview
+            .pixels()
+            .zip(exported.pixels())
+            .all(|(actual, expected)| {
+                actual
+                    .0
+                    .iter()
+                    .zip(expected.0)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2)
+            }),
+        "captured editor preview must match the annotated PNG"
+    );
+
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let reopened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, reopened.into());
+    cx.update(|cx| {
+        let reopened = reopened.read(cx).unwrap();
+        assert_eq!(reopened.history.current(), annotations);
+        assert_eq!(
+            image::load_from_memory(&reopened.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+            exported
+        );
+    });
+    cx.update_window(reopened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
+    let flattened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(saved.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, flattened.into());
+    cx.update(|cx| {
+        let flattened = flattened.read(cx).unwrap();
+        assert!(flattened.history.current().is_empty());
+        assert_eq!(
+            image::load_from_memory(&flattened.export_png().unwrap())
+                .unwrap()
+                .to_rgba8(),
+            exported
+        );
+    });
+    assert_eq!(image::open(saved).unwrap().to_rgba8(), exported);
+    cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    println!("captured screenshot annotations, preview/export, history reopen, and flattened PNG reopen passed");
+}
+
+pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
+    let source = scratch.join("workflow-capture.png");
+    std::fs::copy(scratch.join("capture.png"), &source).unwrap();
+    crate::history_store::add_item(
+        HistoryItem {
+            id: "visual-workflow".into(),
+            timestamp: 0,
+            original_path: source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: None,
+            duration: None,
+        },
+        10,
+        true,
+    );
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    let (annotations, png, bounds) = draw_workflow_annotations(cx, editor);
+    let window = editor.into();
     let saved = scratch.join("workflow-saved.png");
     std::fs::write(&saved, &png).unwrap();
-    capture(cx, window, output, "workflow-annotated");
+    capture(cx, editor.into(), output, "workflow-annotated");
     let preview = cx.capture_screenshot(window).unwrap();
     let preview = image::imageops::crop_imm(
         &preview,

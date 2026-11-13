@@ -19,20 +19,20 @@ Each gate counts once only when its stated evidence exists. As of 2026-11-13,
 six of twelve gates are complete: 50% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
-| Gate                                 | Status | Completion evidence                                                                                                                             |
-| ------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                               |
-| Reviewed visual coverage             | Done   | A previous hosted run passed 16 Windows profiles and 2,912 reviewed baselines.                                                                  |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                         |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                     |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                   |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                   |
-| Final-head CI                        | Open   | The final pushed commit passes all required hosted jobs and the Windows visual matrix.                                                          |
-| Windows capture and save             | Open   | In an isolated app instance, capture, annotate, save and reopen the image; confirm pixels, selection reset and editor sizing.                   |
-| Windows recording and export         | Open   | Record, edit and export a real short take; compare visible preview and exported video and verify available audio.                               |
-| Windows major visual and DPI checks  | Open   | Check tray, submenu, preview and toolbar states at 100%, 125% and 150% OS scaling, including a narrow window and available monitor transitions. |
-| macOS critical capture and recording | Open   | Verify real capture/scroll overlays and recording controls are absent from saved output, including restart; fix confirmed failures.             |
-| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                          |
+| Gate                                 | Status | Completion evidence                                                                                                                                                |
+| ------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                  |
+| Reviewed visual coverage             | Done   | A previous hosted run passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                     |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                            |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                        |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                      |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                      |
+| Final-head CI                        | Open   | The final pushed commit passes all required hosted jobs and the Windows visual matrix.                                                                             |
+| Windows capture and save             | Open   | In an isolated app instance, capture an area, add a rectangle, save PNG and reopen it; check pixels, fresh selection and editor sizing.                            |
+| Windows recording and export         | Open   | Record a real short take, trim and annotate it, then compare duration and three preview/export frames; check system audio if available without prompting.          |
+| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.         |
+| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures. |
+| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                             |
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
 environment: roughly 2–5 working days, assuming no new major defects. Windows
