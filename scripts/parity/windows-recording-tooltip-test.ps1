@@ -1312,6 +1312,11 @@ try {
         throw 'Tooltip moved between hidden and shown captures.'
     }
     Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
+    $videoPaintProofPath = Join-Path $evidenceRoot 'native-tooltip-video-paint.png'
+    $videoPaintProofMetadataPath = [System.IO.Path]::ChangeExtension($videoPaintProofPath, '.json')
+    Copy-Item -LiteralPath $tooltipProofPath -Destination $videoPaintProofPath -Force -ErrorAction Stop
+    Copy-Item -LiteralPath $tooltipProofMetadataPath -Destination $videoPaintProofMetadataPath -Force -ErrorAction Stop
+    Assert-NativeTooltipPaintProof $videoPaintProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle)) { throw 'Native tooltip became hidden before the production screenshot.' }
     Capture-TooltipArea 'tooltip-shown-capture' $shownBounds $shownCapture
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -ne $visibleTooltip.Text) {
@@ -1471,13 +1476,13 @@ try {
         throw 'The native tooltip was not visible with its verified text through video finalization.'
     }
     $videoProofPath = Join-Path $evidenceRoot 'tooltip-video-proof.json'
-    $paintProofMetadata = Get-Content -LiteralPath $tooltipProofMetadataPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $paintProofMetadata = Get-Content -LiteralPath $videoPaintProofMetadataPath -Raw | ConvertFrom-Json -ErrorAction Stop
     $videoProof = @{
         videoPath = $recordingPath
         referencePath = $fixtureCapture
         markerReferencePath = $markerReferencePath
         markerMoveSeconds = $markerMovedAtSeconds
-        paintProofPath = $tooltipProofPath
+        paintProofPath = $videoPaintProofPath
         tooltipHwnd = $shownTooltip.Handle.ToInt64()
         ownerHwnd = $owner.ToInt64()
         tooltipText = $visibleTooltip.Text
