@@ -255,10 +255,11 @@ impl WindowsTooltip {
         .is_err()
         {
             self.hide();
-            return;
         }
         #[cfg(feature = "parity")]
-        self.write_parity_paint_proof();
+        if self.active {
+            self.write_parity_paint_proof();
+        }
     }
 
     #[cfg(feature = "parity")]
