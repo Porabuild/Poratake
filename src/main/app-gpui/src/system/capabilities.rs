@@ -92,16 +92,14 @@ mod tests {
         assert!(wayland_supported(Feature::ScreenshotArea, true));
         assert!(!wayland_supported(Feature::ScreenshotArea, false));
         assert!(wayland_supported(Feature::Print, false));
-        assert!(wayland_supported(Feature::Recording, true));
+        assert!(!wayland_supported(Feature::Recording, true));
         assert!(!wayland_supported(Feature::Recording, false));
         assert!(wayland_supported(Feature::VideoEditor, false));
         assert!(LINUX_WAYLAND_FEATURES.contains(&Feature::VideoEditor));
+        assert!(!LINUX_WAYLAND_FEATURES.contains(&Feature::Recording));
         assert!(LINUX_X11_FEATURES.contains(&Feature::VideoEditor));
         assert!(x11_supported(Feature::Recording, || true));
         assert!(!x11_supported(Feature::Recording, || false));
         assert!(x11_supported(Feature::Print, || false));
-        // Wayland recording is in the matrix; the runtime ScreenCast probe
-        // above is what keeps it honest per session.
-        assert!(LINUX_WAYLAND_FEATURES.contains(&Feature::Recording));
     }
 }

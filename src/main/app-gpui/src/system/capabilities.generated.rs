@@ -88,7 +88,6 @@ pub const LINUX_WAYLAND_FEATURES: &[Feature] = &[
     Feature::ScreenshotArea,
     Feature::QrCode,
     Feature::AllInOne,
-    Feature::Recording,
     Feature::VideoEditor,
     Feature::Print,
 ];
