@@ -21,6 +21,7 @@ $stderrPath = Join-Path $profileRoot 'stderr.log'
 $application = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
+$previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
 $overlapWindow = [IntPtr]::Zero
@@ -117,7 +118,6 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll", EntryPoint="CreateWindowExW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-    [DllImport("user32.dll", SetLastError=true)] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
     [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
@@ -290,69 +290,6 @@ public static class PoratakeTooltipFixture {
     }
 
     [DllImport("user32.dll", SetLastError=true)] static extern bool DestroyWindow(IntPtr hwnd);
-    [DllImport("user32.dll", SetLastError=true)] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
-    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
-    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr hdc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
-    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
-    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
-    [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr hdc, int x, int y);
-    [DllImport("gdi32.dll")] static extern bool PatBlt(IntPtr hdc, int x, int y, int width, int height, uint rop);
-
-    sealed class PaintResult {
-        public bool Printed;
-        public int Colors;
-        public int NonWhite;
-        public int OutsideOwnerNonWhite;
-    }
-
-    public static bool PrintHasContent(IntPtr target, int width, int height, int screenLeft, int screenTop, int ownerLeft, int ownerTop, int ownerRight, int ownerBottom, int timeoutMs, out int colors, out int nonWhite, out int outsideOwnerNonWhite) {
-        var done = new System.Threading.ManualResetEvent(false);
-        var result = new PaintResult();
-        var worker = new System.Threading.Thread(() => {
-            IntPtr screen = IntPtr.Zero, memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero;
-            try {
-                screen = GetDC(IntPtr.Zero);
-                memory = CreateCompatibleDC(screen);
-                bitmap = CreateCompatibleBitmap(screen, width, height);
-                previous = SelectObject(memory, bitmap);
-                if (!PatBlt(memory, 0, 0, width, height, 0x00ff0062)) throw new InvalidOperationException("Could not initialize PrintWindow bitmap.");
-                result.Printed = PrintWindow(target, memory, 2) || PrintWindow(target, memory, 0);
-                if (result.Printed) {
-                    var distinct = new System.Collections.Generic.HashSet<uint>();
-                    for (int y = 0; y < height; y++) {
-                        for (int x = 0; x < width; x++) {
-                            uint pixel = GetPixel(memory, x, y) & 0x00ffffff;
-                            distinct.Add(pixel);
-                            if (pixel != 0x00ffffff) {
-                                result.NonWhite++;
-                                int screenX = screenLeft + x, screenY = screenTop + y;
-                                if (screenX < ownerLeft || screenX >= ownerRight || screenY < ownerTop || screenY >= ownerBottom) result.OutsideOwnerNonWhite++;
-                            }
-                        }
-                    }
-                    result.Colors = distinct.Count;
-                }
-            } catch { result.Printed = false; }
-            finally {
-                if (previous != IntPtr.Zero) SelectObject(memory, previous);
-                if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
-                if (memory != IntPtr.Zero) DeleteDC(memory);
-                if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
-                done.Set();
-            }
-        });
-        worker.IsBackground = true;
-        worker.Start();
-        if (!done.WaitOne(timeoutMs)) { colors = 0; nonWhite = 0; outsideOwnerNonWhite = 0; return false; }
-        colors = result.Colors;
-        nonWhite = result.NonWhite;
-        outsideOwnerNonWhite = result.OutsideOwnerNonWhite;
-        done.Dispose();
-        return result.Printed && result.Colors > 2 && result.NonWhite >= 20 && result.OutsideOwnerNonWhite >= 20;
-    }
 }
 '@
 
@@ -463,6 +400,138 @@ function Assert-TooltipCaptureMatchesFixture([string]$fixturePath, [string]$show
     } finally { $fixture.Dispose(); $shown.Dispose() }
 }
 
+function Test-TooltipInteriorForeground([System.Drawing.Bitmap]$image, [int]$screenLeft, [int]$screenTop, [PoratakeTooltipProbe+Rect]$ownerBounds) {
+    if ($image.Width -le 8 -or $image.Height -le 8) { return [pscustomobject]@{ Passed = $false; Pixels = 0; Rows = 0; DistinctRows = 0 } }
+    $histogram = @{}
+    for ($y = 2; $y -lt $image.Height - 2; $y++) {
+        for ($x = 2; $x -lt $image.Width - 2; $x++) {
+            $xScreen = $screenLeft + $x
+            $yScreen = $screenTop + $y
+            if ($xScreen -ge $ownerBounds.Left -and $xScreen -lt $ownerBounds.Right -and $yScreen -ge $ownerBounds.Top -and $yScreen -lt $ownerBounds.Bottom) { continue }
+            $pixel = $image.GetPixel($x, $y)
+            $color = [uint32]([int]$pixel.R -bor ([int]$pixel.G -shl 8) -bor ([int]$pixel.B -shl 16))
+            if (-not $histogram.ContainsKey($color)) { $histogram[$color] = 0 }
+            $histogram[$color]++
+        }
+    }
+    if ($histogram.Count -eq 0) { return [pscustomobject]@{ Passed = $false; Pixels = 0; Rows = 0; DistinctRows = 0 } }
+    [uint32]$background = 0
+    $backgroundCount = -1
+    foreach ($entry in $histogram.GetEnumerator()) {
+        [uint32]$candidate = $entry.Key
+        if ($entry.Value -gt $backgroundCount -or ($entry.Value -eq $backgroundCount -and $candidate -lt $background)) {
+            $background = $candidate
+            $backgroundCount = $entry.Value
+        }
+    }
+    $backgroundChannels = [int[]]@(
+        [int]($background -band 255),
+        [int](($background -shr 8) -band 255),
+        [int](($background -shr 16) -band 255)
+    )
+    $foregroundPixels = 0
+    $foregroundRows = 0
+    $foregroundRowCounts = [System.Collections.Generic.HashSet[int]]::new()
+    for ($y = 2; $y -lt $image.Height - 2; $y++) {
+        $rowForeground = 0
+        for ($x = 2; $x -lt $image.Width - 2; $x++) {
+            $xScreen = $screenLeft + $x
+            $yScreen = $screenTop + $y
+            if ($xScreen -ge $ownerBounds.Left -and $xScreen -lt $ownerBounds.Right -and $yScreen -ge $ownerBounds.Top -and $yScreen -lt $ownerBounds.Bottom) { continue }
+            $pixel = $image.GetPixel($x, $y)
+            $contrast = [Math]::Max([Math]::Abs([int]$pixel.R - $backgroundChannels[0]), [Math]::Max([Math]::Abs([int]$pixel.G - $backgroundChannels[1]), [Math]::Abs([int]$pixel.B - $backgroundChannels[2])))
+            if ($contrast -ge 48) { $rowForeground++ }
+        }
+        if ($rowForeground -gt 0) {
+            $foregroundPixels += $rowForeground
+            if ($rowForeground -ge 2 -and $rowForeground -le [Math]::Floor(($image.Width - 4) * 0.7)) {
+                $foregroundRows++
+                $null = $foregroundRowCounts.Add($rowForeground)
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Passed = $foregroundPixels -ge 20 -and $foregroundRows -ge 4 -and $foregroundRowCounts.Count -ge 3
+        Pixels = $foregroundPixels
+        Rows = $foregroundRows
+        DistinctRows = $foregroundRowCounts.Count
+    }
+}
+
+function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr]$owner, [string]$text, [uint32]$affinity, [PoratakeTooltipProbe+Rect]$tip, [PoratakeTooltipProbe+Rect]$ownerBounds) {
+    $metadataPath = [System.IO.Path]::ChangeExtension($path, '.json')
+    Wait-Until { [System.IO.File]::Exists($path) -and [System.IO.File]::Exists($metadataPath) } 5000 'The in-process native tooltip paint proof was not written.' | Out-Null
+    $proof = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    if ([int64]$proof.tooltipHwnd -ne $tooltip.ToInt64() -or [int64]$proof.ownerHwnd -ne $owner.ToInt64() -or [string]$proof.text -cne $text) {
+        throw 'The in-process paint proof does not identify the visible tooltip HWND, owner HWND, and text.'
+    }
+    $geometryChecks = @(
+        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.left; Expected = $tip.Left },
+        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.top; Expected = $tip.Top },
+        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.right; Expected = $tip.Right },
+        [pscustomobject]@{ Actual = [int]$proof.tooltipBounds.bottom; Expected = $tip.Bottom },
+        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.left; Expected = $ownerBounds.Left },
+        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.top; Expected = $ownerBounds.Top },
+        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.right; Expected = $ownerBounds.Right },
+        [pscustomobject]@{ Actual = [int]$proof.ownerBounds.bottom; Expected = $ownerBounds.Bottom }
+    )
+    foreach ($check in $geometryChecks) {
+        if ($check.Actual -ne $check.Expected) { throw 'The in-process paint proof geometry does not match the live tooltip and owner windows.' }
+    }
+    if ([uint32]$proof.affinity -ne $affinity -or [uint32]$proof.affinity -eq 0) { throw 'The in-process paint proof affinity does not match the live protected tooltip.' }
+    Add-Type -AssemblyName System.Drawing
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $client = $proof.clientBounds
+        if ($image.Width -ne [int]$client.width -or $image.Height -ne [int]$client.height -or $image.Width -le 0 -or $image.Height -le 0) {
+            throw 'The in-process paint proof image dimensions do not match its client geometry.'
+        }
+        $colors = [System.Collections.Generic.HashSet[string]]::new()
+        $outsideColors = [System.Collections.Generic.HashSet[string]]::new()
+        $outsideNonBackground = 0
+        for ($y = 0; $y -lt $image.Height; $y++) {
+            for ($x = 0; $x -lt $image.Width; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                $color = '{0},{1},{2}' -f $pixel.R, $pixel.G, $pixel.B
+                $null = $colors.Add($color)
+                $screenX = [int]$client.screenLeft + $x
+                $screenY = [int]$client.screenTop + $y
+                if ($screenX -lt $ownerBounds.Left -or $screenX -ge $ownerBounds.Right -or $screenY -lt $ownerBounds.Top -or $screenY -ge $ownerBounds.Bottom) {
+                    $null = $outsideColors.Add($color)
+                    if ($pixel.R -ne 0 -or $pixel.G -ne 0 -or $pixel.B -ne 0) { $outsideNonBackground++ }
+                }
+            }
+        }
+        if ($colors.Count -le 2 -or $outsideColors.Count -le 1 -or $outsideNonBackground -lt 20) {
+            throw "The in-process paint proof lacks multicolor pixels outside its owner: colors=$($colors.Count), outside-colors=$($outsideColors.Count), outside-non-background=$outsideNonBackground."
+        }
+        $foreground = Test-TooltipInteriorForeground $image ([int]$client.screenLeft) ([int]$client.screenTop) $ownerBounds
+        if (-not $foreground.Passed) {
+            throw "The in-process paint proof lacks contrasting interior foreground across several rows: pixels=$($foreground.Pixels), rows=$($foreground.Rows), distinct-row-counts=$($foreground.DistinctRows)."
+        }
+        $negative = [System.Drawing.Bitmap]::new($image.Width, $image.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($negative)
+        $black = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::Black)
+        $flat = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(240, 240, 240))
+        try {
+            $graphics.FillRectangle($black, 0, 0, $negative.Width, $negative.Height)
+            $graphics.FillRectangle($flat, 2, 2, [Math]::Max(10, [int]($negative.Width * 0.4)), [Math]::Max(6, [int]($negative.Height * 0.4)))
+            $negativeOwner = New-Object PoratakeTooltipProbe+Rect
+            $negativeOwner.Left = $negative.Width + 1
+            $negativeOwner.Right = $negative.Width + 2
+            $negativeOwner.Bottom = $negative.Height
+            $negativeResult = Test-TooltipInteriorForeground $negative 0 0 $negativeOwner
+            if ($negativeResult.Passed) { throw 'Flat colored paint over untouched black passed the interior foreground negative control.' }
+        } finally {
+            $flat.Dispose()
+            $black.Dispose()
+            $graphics.Dispose()
+            $negative.Dispose()
+        }
+    } finally { $image.Dispose() }
+    Write-Host "In-process WM_PRINTCLIENT tooltip foreground proof verified for '$text' at $($tip.Left),$($tip.Top)-$($tip.Right),$($tip.Bottom), affinity=$($proof.affinity)."
+}
+
 function Stop-CaptureDaemon {
     if (-not $script:captureDaemon) { return }
     if (-not $script:captureDaemon.HasExited) {
@@ -486,21 +555,15 @@ function Stop-CaptureDaemon {
     $script:captureDaemon = $null
 }
 
-function Save-TooltipPaintPositiveControl([IntPtr]$tip, [PoratakeTooltipProbe+Rect]$rect) {
-    $colors = 0
-    $nonWhite = 0
-    $outsideOwnerNonWhite = 0
-    $painted = [PoratakeTooltipFixture]::PrintHasContent($tip, $rect.Right - $rect.Left, $rect.Bottom - $rect.Top, $rect.Left, $rect.Top, $bounds.Left, $bounds.Top, $bounds.Right, $bounds.Bottom, 3000, [ref]$colors, [ref]$nonWhite, [ref]$outsideOwnerNonWhite)
-    if (-not $painted) { throw "PrintWindow did not prove painted tooltip pixels outside its owner or timed out; colors=$colors non-white=$nonWhite outside-owner=$outsideOwnerNonWhite." }
-    Write-Host "Native tooltip PrintWindow positive control painted $colors colors; $outsideOwnerNonWhite non-white pixels fall outside the owner."
-}
-
 try {
     New-Item -ItemType Directory -Path $profileRoot | Out-Null
+    New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+    $tooltipProofPath = Join-Path $evidenceRoot 'native-tooltip-paint.png'
+    $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $tooltipProofPath
     [System.IO.File]::WriteAllText((Join-Path $profileRoot 'config.json'), '{"onboarding":{"completed":true},"recording":{"micEnabled":false,"camera":{"enabled":false}}}', [System.Text.UTF8Encoding]::new($false))
     Push-Location (Join-Path $root 'src/main')
     try {
-        & cargo build --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --package poratake-daemon
+        & cargo build --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --package poratake-daemon --features poratake-gpui/parity
         if ($LASTEXITCODE -ne 0) { throw "GPUI and daemon build failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
@@ -593,6 +656,11 @@ try {
     }
     Write-Host 'Daemon screenshot positively captured the ordinary white fixture window.'
 
+    $tooltipProofMetadataPath = [System.IO.Path]::ChangeExtension($tooltipProofPath, '.json')
+    foreach ($proofFile in @($tooltipProofPath, $tooltipProofMetadataPath)) {
+        if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
+        if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale test-owned tooltip proof: $proofFile" }
+    }
     if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not re-enter the tooltip trigger.' }
     $shownTooltip = Wait-Until {
         $handle = Get-VisibleTooltipWindow $application.Id $owner
@@ -606,7 +674,7 @@ try {
     if ($shownBounds.Left -ne $tooltipBounds.Left -or $shownBounds.Top -ne $tooltipBounds.Top -or $shownBounds.Right -ne $tooltipBounds.Right -or $shownBounds.Bottom -ne $tooltipBounds.Bottom) {
         throw 'Tooltip moved between hidden and shown captures.'
     }
-    Save-TooltipPaintPositiveControl $shownTooltip.Handle $shownBounds
+    Assert-NativeTooltipPaintProof $tooltipProofPath $shownTooltip.Handle $owner $visibleTooltip.Text $affinity $shownBounds $bounds
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle)) { throw 'Native tooltip became hidden before the production screenshot.' }
     Capture-TooltipArea 'tooltip-shown-capture' $shownBounds $shownCapture
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -ne $visibleTooltip.Text) {
@@ -739,6 +807,7 @@ try {
     }
     if ($null -eq $previousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $previousProfile }
     if ($null -eq $previousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $previousDaemonPath }
+    if ($null -eq $previousTooltipProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $previousTooltipProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     if ($application -and -not $application.HasExited) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {

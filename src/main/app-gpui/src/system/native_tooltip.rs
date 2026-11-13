@@ -255,6 +255,174 @@ impl WindowsTooltip {
         .is_err()
         {
             self.hide();
+            return;
+        }
+        #[cfg(feature = "parity")]
+        self.write_parity_paint_proof();
+    }
+
+    #[cfg(feature = "parity")]
+    fn write_parity_paint_proof(&self) {
+        use std::path::PathBuf;
+        use windows::Win32::Graphics::Gdi::{
+            BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
+            DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, UpdateWindow, BLACKNESS,
+            HGDIOBJ,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowDisplayAffinity, PRF_CLIENT, WM_PRINTCLIENT,
+        };
+
+        let Some(path) = std::env::var_os("PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let result = (|| -> Result<(image::RgbaImage, serde_json::Value), String> {
+            let mut tooltip_bounds = RECT::default();
+            unsafe { GetWindowRect(self.window, &mut tooltip_bounds) }
+                .map_err(|error| error.to_string())?;
+            let mut owner_bounds = RECT::default();
+            unsafe { GetWindowRect(self.owner, &mut owner_bounds) }
+                .map_err(|error| error.to_string())?;
+            let mut client = RECT::default();
+            unsafe { GetClientRect(self.window, &mut client) }
+                .map_err(|error| error.to_string())?;
+            let width = client.right - client.left;
+            let height = client.bottom - client.top;
+            if width <= 0 || height <= 0 {
+                return Err("Tooltip has no client pixels to inspect".into());
+            }
+            let mut client_origin = POINT { x: 0, y: 0 };
+            if !unsafe { ClientToScreen(self.window, &mut client_origin) }.as_bool() {
+                return Err("Could not locate the tooltip client origin".into());
+            }
+            let mut affinity = 0;
+            unsafe { GetWindowDisplayAffinity(self.window, &mut affinity) }
+                .map_err(|error| error.to_string())?;
+
+            let screen = unsafe { GetDC(None) };
+            if screen.0.is_null() {
+                return Err("Could not get the screen device context".into());
+            }
+            let memory = unsafe { CreateCompatibleDC(Some(screen)) };
+            if memory.0.is_null() {
+                unsafe { ReleaseDC(None, screen) };
+                return Err("Could not create the tooltip proof device context".into());
+            }
+            let bitmap = unsafe { CreateCompatibleBitmap(screen, width, height) };
+            if bitmap.0.is_null() {
+                unsafe {
+                    let _ = DeleteDC(memory);
+                    ReleaseDC(None, screen);
+                }
+                return Err("Could not create the tooltip proof bitmap".into());
+            }
+            let bitmap_object = HGDIOBJ(bitmap.0);
+            let previous = unsafe { SelectObject(memory, bitmap_object) };
+            if previous.0.is_null() {
+                unsafe {
+                    let _ = DeleteObject(bitmap_object);
+                    let _ = DeleteDC(memory);
+                    ReleaseDC(None, screen);
+                }
+                return Err("Could not select the tooltip proof bitmap".into());
+            }
+
+            let mut proof_image = image::RgbaImage::new(width as u32, height as u32);
+            let mut paint_error = None;
+            unsafe {
+                if let Err(error) = BitBlt(memory, 0, 0, width, height, None, 0, 0, BLACKNESS) {
+                    paint_error = Some(error.to_string());
+                }
+                let _ = UpdateWindow(self.window);
+                if paint_error.is_none() {
+                    SendMessageW(
+                        self.window,
+                        WM_PRINTCLIENT,
+                        Some(WPARAM(memory.0 as usize)),
+                        Some(LPARAM(PRF_CLIENT as isize)),
+                    );
+                }
+            }
+            if paint_error.is_none() {
+                'pixels: for y in 0..height {
+                    for x in 0..width {
+                        let color = unsafe { GetPixel(memory, x, y) }.0;
+                        if color == u32::MAX {
+                            paint_error = Some(format!("Tooltip pixel {x},{y} could not be read"));
+                            break 'pixels;
+                        }
+                        proof_image.put_pixel(
+                            x as u32,
+                            y as u32,
+                            image::Rgba([
+                                color as u8,
+                                (color >> 8) as u8,
+                                (color >> 16) as u8,
+                                255,
+                            ]),
+                        );
+                    }
+                }
+            }
+            unsafe {
+                let _ = SelectObject(memory, previous);
+                let _ = DeleteObject(bitmap_object);
+                let _ = DeleteDC(memory);
+                ReleaseDC(None, screen);
+            }
+            if let Some(error) = paint_error {
+                return Err(error);
+            }
+            let text = String::from_utf16_lossy(&self.text[..self.text.len().saturating_sub(1)]);
+            let proof = serde_json::json!({
+                "tooltipHwnd": self.window.0 as isize,
+                "ownerHwnd": self.owner.0 as isize,
+                "text": text,
+                "affinity": affinity,
+                "tooltipBounds": {
+                    "left": tooltip_bounds.left,
+                    "top": tooltip_bounds.top,
+                    "right": tooltip_bounds.right,
+                    "bottom": tooltip_bounds.bottom
+                },
+                "ownerBounds": {
+                    "left": owner_bounds.left,
+                    "top": owner_bounds.top,
+                    "right": owner_bounds.right,
+                    "bottom": owner_bounds.bottom
+                },
+                "clientBounds": {
+                    "screenLeft": client_origin.x,
+                    "screenTop": client_origin.y,
+                    "width": width,
+                    "height": height
+                }
+            });
+            Ok((proof_image, proof))
+        })();
+
+        match result {
+            Ok((proof_image, proof)) => {
+                if let Err(error) = proof_image.save(&path) {
+                    eprintln!("[native-tooltip] failed to save parity paint proof: {error}");
+                    return;
+                }
+                let proof_path = path.with_extension("json");
+                match serde_json::to_vec(&proof) {
+                    Ok(bytes) => {
+                        if let Err(error) = std::fs::write(proof_path, bytes) {
+                            eprintln!(
+                                "[native-tooltip] failed to write parity paint metadata: {error}"
+                            );
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "[native-tooltip] failed to encode parity paint metadata: {error}"
+                    ),
+                }
+            }
+            Err(error) => eprintln!("[native-tooltip] parity paint proof failed: {error}"),
         }
     }
 
