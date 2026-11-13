@@ -266,6 +266,7 @@ jobs:
           path: |
             ${{ runner.temp }}/poratake-visual-*/**/*.png
             ${{ runner.temp }}/poratake-visual-*/**/renderer.json
+            ${{ runner.temp }}/poratake-visual-*/*.log
           if-no-files-found: ignore
 
       - name: Test native Windows clipboard roundtrip
