@@ -384,9 +384,24 @@ impl RecordingControl {
         id: &'static str,
         tooltip: impl Into<SharedString>,
         child: impl IntoElement,
+        max_body_width: Option<f32>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip = tooltip.into();
+        let component = match max_body_width {
+            Some(width) => {
+                let body = tooltip.clone();
+                herogpui::components::Tooltip::new(tooltip.clone()).body(move |_, _| {
+                    div()
+                        .max_w(px(width))
+                        .line_clamp(2)
+                        .child(body.clone())
+                        .into_any_element()
+                })
+            }
+            None => herogpui::components::Tooltip::new(tooltip.clone()),
+        }
+        .id((gpui::ElementId::from("recording-focus-tooltip"), id));
         let placement = match id {
             "recording-target-tip"
             | "recording-start"
@@ -409,8 +424,7 @@ impl RecordingControl {
                     this.clear_native_tooltip(window);
                 }))
                 .child(child);
-            herogpui::components::Tooltip::new(tooltip)
-                .id((gpui::ElementId::from("recording-focus-tooltip"), id))
+            component
                 .trigger(herogpui::components::TooltipTrigger::Focus)
                 .placement(placement)
                 .child(trigger)
@@ -419,7 +433,7 @@ impl RecordingControl {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = cx;
-            herogpui::components::Tooltip::new(tooltip)
+            component
                 .placement(placement)
                 .child(child)
                 .into_any_element()
@@ -922,7 +936,7 @@ impl RecordingControl {
         div()
             .relative()
             .flex()
-            .child(Self::tooltip(id, tooltip, trigger, cx))
+            .child(Self::tooltip(id, tooltip, trigger, None, cx))
             .child(self.menu.render_dropdown(&format!("recording-{id}"), cx))
             .into_any_element()
     }
@@ -1737,6 +1751,7 @@ fn overlay_icon(
             .on_press(cx.listener(move |this, _, window, cx| {
                 on_click(this, window, cx);
             })),
+        None,
         cx,
     )
 }
@@ -1777,17 +1792,44 @@ impl Render for RecordingControl {
         let mut bar = toolbar::surface(&theme).h(px(chrome::recording_inner_bar_height()));
 
         if let Some(name) = &self.target_name {
+            use herogpui::a11y::{A11y as _, Name, Role};
+
+            let bar_width = self
+                .measured_width
+                .unwrap_or_else(|| recording_control_width(self.mode == Mode::Recording, true));
+            let window_width = f32::from(window.bounds().size.width);
+            let (_, bar_offset, _) = control_window_metrics(bar_width, false, false);
+            let tooltip_body_width = (window_width
+                - bar_offset
+                - chrome::OVERLAY_BORDER_WIDTH
+                - chrome::OVERLAY_SURFACE_PADDING
+                - chrome::RECORDING_TARGET_CHIP_MAX_W
+                - 8.0
+                - 3.0
+                - 22.0)
+                .max(1.0);
+            let target_label = div()
+                .id("recording-target-label")
+                .tab_index(0)
+                .a11y_named(Role::Label, &Name::labelled(name.clone()))
+                .debug_selector(|| "recording-target-label".into())
+                .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
+                .truncate()
+                .px(px(4.0))
+                .text_size(px(12.0))
+                .child(name.clone())
+                .focus(|style| {
+                    style.shadow(crate::ui::primitives::focus_ring(
+                        &theme,
+                        crate::ui::primitives::FOCUS_RING_OFFSET,
+                    ))
+                });
             bar = bar
                 .child(Self::tooltip(
                     "recording-target-tip",
                     name.clone(),
-                    div()
-                        .debug_selector(|| "recording-target-label".into())
-                        .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
-                        .truncate()
-                        .px(px(4.0))
-                        .text_size(px(12.0))
-                        .child(name.clone()),
+                    target_label,
+                    Some(tooltip_body_width),
                     cx,
                 ))
                 .child(toolbar::hairline(&theme));
@@ -1810,6 +1852,7 @@ impl Render for RecordingControl {
                         .is_disabled(self.countdown_active)
                         .child(toolbar::filled_glyph(theme.accent, true))
                         .on_press(cx.listener(|this, _, window, cx| this.start(window, cx))),
+                    None,
                     cx,
                 ))
                 .child(toolbar::hairline(&theme))
@@ -1853,6 +1896,7 @@ impl Render for RecordingControl {
                     .on_press(cx.listener(|this, _, window, cx| {
                         this.finish(false, window, cx);
                     })),
+                None,
                 cx,
             ))
             .child(
@@ -2073,6 +2117,7 @@ mod tests {
     fn recording_target_title_tooltip_uses_measured_chip_bounds(cx: &mut gpui::TestAppContext) {
         use herogpui::test::TestWindowExt;
 
+        let target_name = "Browser — an exceptionally long recording target name that must remain accessible when its visible label is truncated";
         let dir = tempfile::tempdir().unwrap();
         let config = Arc::new(
             crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
@@ -2092,7 +2137,7 @@ mod tests {
                 },
                 None,
                 Some(1),
-                Some("Browser".into()),
+                Some(target_name.into()),
                 PreferenceScope::Global,
             );
         });
@@ -2106,6 +2151,35 @@ mod tests {
         let window_size = visual.update(|window, _| window.bounds().size);
         let target_chip = visual.expect("recording-target-label");
         let target_center = target_chip.center();
+        let tooltip_geometry = |visual: &mut gpui::VisualTestContext| {
+            visual.update(|window, cx| {
+                let scale = window.scale_factor();
+                let background =
+                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let tooltips = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == background
+                            && (31.0..=50.0)
+                                .contains(&(quad.bounds.size.height.as_f32() / scale))
+                            && quad.bounds.size.width.as_f32() / scale > 35.0
+                    })
+                    .collect::<Vec<_>>();
+                let tooltip = tooltips.first().unwrap_or_else(|| {
+                    panic!(
+                        "target-title tooltip must be painted after hovering {target_chip:?} at {target_center:?}"
+                    )
+                });
+                (
+                    tooltip.bounds,
+                    tooltip.content_mask.bounds,
+                    window.viewport_size(),
+                    scale,
+                    tooltips.len(),
+                )
+            })
+        };
         visual.simulate_mouse_move(target_center, None, gpui::Modifiers::none());
         #[cfg(target_os = "linux")]
         visual.executor().advance_clock(Duration::from_millis(300));
@@ -2122,40 +2196,16 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 tooltip.as_deref(),
-                Some("Browser"),
+                Some(target_name),
                 "pointer at {target_center:?} missed target chip {target_chip:?}"
             );
         }
         visual.settle();
         #[cfg(target_os = "linux")]
         {
-            let scale = visual.update(|window, _| window.scale_factor());
-            let (tooltip, mask, viewport, tooltip_count) = visual.update(|window, cx| {
-                let background =
-                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
-                let tooltips = window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|quad| {
-                        quad.background == background
-                            && (31.0..=35.0)
-                                .contains(&(quad.bounds.size.height.as_f32() / scale))
-                            && quad.bounds.size.width.as_f32() / scale > 35.0
-                    })
-                    .collect::<Vec<_>>();
-                let tooltip = tooltips.first().unwrap_or_else(|| {
-                    panic!(
-                        "the target-title tooltip must be painted after hovering {target_chip:?} at {target_center:?}"
-                    )
-                });
-                (
-                    tooltip.bounds,
-                    tooltip.content_mask.bounds,
-                    window.viewport_size(),
-                    tooltips.len(),
-                )
-            });
+            let (tooltip, mask, viewport, scale, tooltip_count) = tooltip_geometry(&mut visual);
             assert_eq!(tooltip_count, 1, "only the target-title tooltip is open");
+            assert_eq!(tooltip.size.height.as_f32() / scale, 48.0);
             assert!(
                 tooltip.left().as_f32() >= f32::from(target_chip.right()) * scale
                     && tooltip.top().as_f32() >= 0.0
@@ -2165,10 +2215,169 @@ mod tests {
                     && mask.top().as_f32() <= tooltip.top().as_f32()
                     && mask.right().as_f32() >= tooltip.right().as_f32()
                     && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
-                "short target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
+                "long target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
             );
         }
+        visual.simulate_mouse_move(
+            gpui::point(px(-100.0), px(-100.0)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let close_delay = visual.update(|_, cx| cx.layout().tooltip_close_delay_ms);
+            visual
+                .executor()
+                .advance_clock(Duration::from_millis(close_delay + 1));
+        }
+        visual.settle();
+        visual.press("tab tab");
+        assert!(visual.update(|window, cx| {
+            window.focused(cx).is_some() && herogpui::extend::focus_visible(cx)
+        }));
+        let (tooltip, mask, viewport, scale, tooltip_count) = tooltip_geometry(&mut visual);
+        assert_eq!(
+            tooltip_count, 1,
+            "keyboard focus opens the target-title tooltip"
+        );
+        assert_eq!(tooltip.size.height.as_f32() / scale, 48.0);
+        assert!(tooltip.size.width.as_f32() / scale > f32::from(target_chip.size.width));
+        assert!(
+            tooltip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                && tooltip.top().as_f32() >= 0.0
+                && tooltip.right().as_f32() <= f32::from(viewport.width) * scale
+                && tooltip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                && mask.left().as_f32() <= tooltip.left().as_f32()
+                && mask.top().as_f32() <= tooltip.top().as_f32()
+                && mask.right().as_f32() >= tooltip.right().as_f32()
+                && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
+            "keyboard target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
+        );
         assert_eq!(visual.update(|window, _| window.bounds().size), window_size);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[herogpui::test]
+    fn recording_target_tooltip_preserves_unbroken_and_unicode_titles_at_each_scale(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                Some(1),
+                Some("Initial title".into()),
+                PreferenceScope::Global,
+            );
+        });
+        let window_handle = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap();
+        let control = window_handle.downcast::<RecordingControl>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window_handle, cx);
+        visual.settle();
+        let unbroken = "A".repeat(160);
+        let unicode = "Cafe\u{0301} 👩‍💻 — recording window title 👨‍👩‍👧‍👦".to_owned();
+        for (title, scale) in [
+            (unbroken.clone(), 1.0),
+            (unbroken, 2.0),
+            (unicode.clone(), 1.0),
+            (unicode, 2.0),
+        ] {
+            cx.update(|cx| {
+                RecordingControl::open(
+                    cx,
+                    RecordingTarget::Window,
+                    ScreenRect {
+                        x: 0,
+                        y: 0,
+                        width: 640,
+                        height: 360,
+                    },
+                    None,
+                    Some(1),
+                    Some(title.clone()),
+                    PreferenceScope::Global,
+                );
+            });
+            visual.simulate_scale_factor_change(scale);
+            visual.settle();
+            control
+                .update(cx, |this, window, cx| window.focus(&this.focus_handle, cx))
+                .unwrap();
+            visual.settle();
+            visual.simulate_mouse_move(
+                gpui::point(px(-100.0), px(-100.0)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            visual.settle();
+            visual.press("tab tab");
+
+            let target_chip = visual.expect("recording-target-label");
+            let (tip, mask, viewport, actual_scale, count) = visual.update(|window, cx| {
+                let background =
+                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let tips = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == background
+                            && (31.0..=50.0).contains(&(quad.bounds.size.height.as_f32() / scale))
+                            && quad.bounds.size.width.as_f32() / scale > 35.0
+                    })
+                    .collect::<Vec<_>>();
+                let tip = tips.first().expect("target tooltip must be painted");
+                (
+                    tip.bounds,
+                    tip.content_mask.bounds,
+                    window.viewport_size(),
+                    window.scale_factor(),
+                    tips.len(),
+                )
+            });
+            assert_eq!(actual_scale, scale);
+            assert_eq!(count, 1, "only the target title tooltip is open");
+            assert_eq!(tip.size.height.as_f32() / scale, 48.0);
+            assert!(
+                tip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                    && tip.top().as_f32() >= 0.0
+                    && tip.right().as_f32() <= f32::from(viewport.width) * scale
+                    && tip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                    && mask.left().as_f32() <= tip.left().as_f32()
+                    && mask.top().as_f32() <= tip.top().as_f32()
+                    && mask.right().as_f32() >= tip.right().as_f32()
+                    && mask.bottom().as_f32() >= tip.bottom().as_f32(),
+                "target tooltip is clipped at {scale}x for title {title:?}: {tip:?}, mask {mask:?}"
+            );
+            assert_eq!(
+                control
+                    .update(cx, |this, _, _| this
+                        .target_name
+                        .as_ref()
+                        .unwrap()
+                        .to_string())
+                    .unwrap(),
+                title,
+                "the input title must remain unchanged"
+            );
+        }
     }
 
     #[herogpui::test]
