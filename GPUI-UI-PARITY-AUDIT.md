@@ -22,7 +22,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
-| Reviewed visual coverage             | Done   | Hosted CI at `258af434` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
+| Reviewed visual coverage             | Done   | Hosted CI at `aef5a9f3` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
 | Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
@@ -126,8 +126,14 @@ in its isolated directory, captured the fiducial and trimmed the recorded clip,
 but stopped before the preview comparison and visual matrix: 591 of 6,912 exported
 fiducial pixels exceeded the original 48-level tolerance. Of those, 589 were
 within one pixel of a tile edge. The revised check retains a whole-region mean
-limit and compares tile interiors, with shifted and rotated negative controls;
-it still needs a hosted rerun. System-audio capture remains unverified.
+limit and compares tile interiors, with shifted and rotated negative controls.
+System-audio capture remains unverified.
+[Windows CI at `aef5a9f3`](https://github.com/Porabuild/Poratake/actions/runs/43508581901)
+passed the native workflow, including the sampled initial-frame comparison
+between the editor preview and decoded export, and all 16 visual profiles with
+2,912 exact baseline comparisons. All active jobs passed; Windows packaging was
+skipped. The sampled region is static and does not prove preview updates after
+seeking; a later check for that behavior still needs hosted verification.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -1845,14 +1851,14 @@ These are not evidence that unrelated features match.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                                        |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                                     |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                               |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                                   |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                            |
-| Blocked or unverified                 | The last full CI pass was at [`258af434`](https://github.com/Porabuild/Poratake/actions/runs/43449868862); Windows packaging was skipped. The newer Windows visual matrix failed on the button changes described above and needs a rerun. Physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
+| Review category                       | Result                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                        |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                     |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                               |
+| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                   |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                            |
+| Blocked or unverified                 | The last full CI pass was at [`aef5a9f3`](https://github.com/Porabuild/Poratake/actions/runs/43508581901); Windows packaging was skipped. Later seek and export-label changes need hosted verification. NVIDIA baselines, physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
 
 An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
