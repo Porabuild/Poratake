@@ -132,7 +132,8 @@ jobs:
       - name: Compile macOS scroll preview fixture
         timeout-minutes: 5
         run: |
-          swiftc -O -target "$(uname -m)-apple-macosx13.0" -D SCROLL_CAPTURE_TEST -o "$RUNNER_TEMP/scroll-capture-preview-test" \
+          swiftc -O -target "$(uname -m)-apple-macosx13.0" -D SCROLL_CAPTURE_TEST \
+            -framework ScreenCaptureKit -o "$RUNNER_TEMP/scroll-capture-preview-test" \
             src/main/daemon/Core/Protocol.swift \
             src/main/daemon/Core/ModuleProtocol.swift \
             src/main/daemon/Core/DaemonContract.generated.swift \

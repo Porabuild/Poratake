@@ -1,6 +1,100 @@
 import Cocoa
+import CoreGraphics
+import CoreMedia
+import CoreVideo
 import Foundation
 import ImageIO
+import ScreenCaptureKit
+
+private struct CapturedScreenFrame: Sendable {
+    let width: Int
+    let height: Int
+    let bytesPerRow: Int
+    let pixels: Data
+
+    func color(x: Double, topY: Double) -> (UInt8, UInt8, UInt8)? {
+        guard width > 0, height > 0, x >= 0, x < 1, topY >= 0, topY < 1 else {
+            return nil
+        }
+        let pixelX = min(Int(x * Double(width)), width - 1)
+        let pixelY = min(Int(topY * Double(height)), height - 1)
+        let offset = pixelY * bytesPerRow + pixelX * 4
+        guard offset + 2 < pixels.count else { return nil }
+        return (pixels[offset + 2], pixels[offset + 1], pixels[offset])
+    }
+}
+
+private final class CaptureFrameOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    let frames: AsyncStream<CapturedScreenFrame>
+    private let continuation: AsyncStream<CapturedScreenFrame>.Continuation
+
+    override init() {
+        let stream = AsyncStream<CapturedScreenFrame>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        frames = stream.stream
+        continuation = stream.continuation
+    }
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        guard type == .screen,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess
+        else {
+            return
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        continuation.yield(CapturedScreenFrame(
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            pixels: Data(bytes: baseAddress, count: bytesPerRow * height)
+        ))
+    }
+
+    func finish() {
+        continuation.finish()
+    }
+
+    func frame(
+        timeoutNanoseconds: UInt64 = 5_000_000_000,
+        matching predicate: @escaping @Sendable (CapturedScreenFrame) -> Bool
+    ) async throws -> CapturedScreenFrame {
+        try await withThrowingTaskGroup(of: CapturedScreenFrame.self) { group in
+            group.addTask {
+                for await frame in self.frames where predicate(frame) {
+                    return frame
+                }
+                throw CaptureFrameError.streamEnded
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw CaptureFrameError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let frame = try await group.next() else {
+                throw CaptureFrameError.streamEnded
+            }
+            return frame
+        }
+    }
+}
+
+private enum CaptureFrameError: Error {
+    case missingFixtureDisplay
+    case missingFixtureWindow
+    case fixtureControlWasNotHidden
+    case hiddenFixtureWindowUnavailable
+    case fixtureControlDidNotBecomeVisible
+    case streamEnded
+    case timedOut
+}
 
 @main
 struct ScrollCapturePreviewTest {
@@ -237,6 +331,7 @@ struct ScrollCapturePreviewTest {
 
     @MainActor
     static func runRecordingCoordinationChecks() async throws {
+        try await runScreenCaptureExclusionCheck()
         let screenExclusions = recordingExclusionWindowIDs(
             requested: [31, 41, 31, -1, Int64.max],
             registered: [CGWindowID(41), CGWindowID(52)],
@@ -542,6 +637,235 @@ struct ScrollCapturePreviewTest {
         }
         precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
         FileHandle.standardError.write(Data("capture filter failure: complete\n".utf8))
+    }
+
+    @MainActor
+    static func runScreenCaptureExclusionCheck() async throws {
+        guard CGPreflightScreenCaptureAccess() else {
+            FileHandle.standardError.write(Data("SKIP ScreenCaptureKit exclusion check: Screen Recording permission was not already granted\n".utf8))
+            return
+        }
+
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: start\n".utf8))
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
+        guard let screen = NSScreen.main ?? NSScreen.screens.first,
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        else {
+            throw CaptureFrameError.missingFixtureDisplay
+        }
+        let screenFrame = screen.frame
+        let sourceFrame = NSRect(
+            x: screenFrame.midX - 160,
+            y: screenFrame.midY - 120,
+            width: 320,
+            height: 240
+        )
+        let controlFrame = NSRect(
+            x: sourceFrame.midX - 48,
+            y: sourceFrame.midY - 32,
+            width: 96,
+            height: 64
+        )
+        let sourceWindow = fixtureWindow(
+            frame: sourceFrame,
+            color: NSColor(calibratedRed: 0.04, green: 0.84, blue: 0.12, alpha: 1),
+            level: .normal
+        )
+        let controlWindow = fixtureWindow(
+            frame: controlFrame,
+            color: NSColor(calibratedRed: 0.9, green: 0.04, blue: 0.04, alpha: 1),
+            level: .floating
+        )
+        defer {
+            controlWindow.orderOut(nil)
+            sourceWindow.orderOut(nil)
+            controlWindow.close()
+            sourceWindow.close()
+        }
+
+        sourceWindow.orderFrontRegardless()
+        controlWindow.orderFrontRegardless()
+        application.updateWindows()
+        guard let controlWindowID = CGWindowID(exactly: controlWindow.windowNumber) else {
+            throw CaptureFrameError.missingFixtureWindow
+        }
+
+        let sourceSample = normalizedScreenPoint(
+            x: Double(sourceFrame.minX + 24),
+            y: Double(sourceFrame.minY + 24),
+            screenFrame: screenFrame
+        )
+        let controlSample = normalizedScreenPoint(
+            x: Double(controlFrame.midX),
+            y: Double(controlFrame.midY),
+            screenFrame: screenFrame
+        )
+        controlWindow.orderOut(nil)
+        application.updateWindows()
+        guard !controlWindow.isVisible else {
+            throw CaptureFrameError.fixtureControlWasNotHidden
+        }
+        let hiddenContent = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        guard let hiddenApplication = hiddenContent.applications.first(where: {
+            $0.processID == ProcessInfo.processInfo.processIdentifier
+        }),
+              let hiddenDisplay = hiddenContent.displays.first(where: { $0.displayID == displayID }),
+              let hiddenControl = hiddenContent.windows.first(where: {
+                  $0.windowID == controlWindowID
+              })
+        else {
+            throw CaptureFrameError.hiddenFixtureWindowUnavailable
+        }
+        guard !hiddenControl.isOnScreen else {
+            throw CaptureFrameError.fixtureControlWasNotHidden
+        }
+        let configuration = SCStreamConfiguration()
+        configuration.width = hiddenDisplay.width
+        configuration.height = hiddenDisplay.height
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.queueDepth = 3
+        configuration.showsCursor = false
+        let exclusionFilter = SCContentFilter(
+            display: hiddenDisplay,
+            includingApplications: [hiddenApplication],
+            exceptingWindows: [hiddenControl]
+        )
+        let exclusionOutput = CaptureFrameOutput()
+        let exclusionStream = SCStream(
+            filter: exclusionFilter,
+            configuration: configuration,
+            delegate: nil
+        )
+        try exclusionStream.addStreamOutput(
+            exclusionOutput,
+            type: .screen,
+            sampleHandlerQueue: DispatchQueue(label: "poratake.capture-exclusion-filtered")
+        )
+        do {
+            try await exclusionStream.startCapture()
+            controlWindow.orderFrontRegardless()
+            application.updateWindows()
+            let shownContent = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            guard controlWindow.isVisible,
+                  shownContent.windows.contains(where: { $0.windowID == controlWindowID })
+            else {
+                throw CaptureFrameError.fixtureControlDidNotBecomeVisible
+            }
+            setFixtureWindowColor(
+                sourceWindow,
+                NSColor(calibratedRed: 0.04, green: 0.12, blue: 0.9, alpha: 1)
+            )
+            let filtered = try await exclusionOutput.frame { frame in
+                isFixtureBlue(frame.color(x: sourceSample.0, topY: sourceSample.1))
+                    && isFixtureBlue(frame.color(x: controlSample.0, topY: controlSample.1))
+            }
+            precondition(
+                isFixtureBlue(filtered.color(x: sourceSample.0, topY: sourceSample.1)),
+                "The fixture source must remain visible through the app-only filter"
+            )
+            precondition(
+                isFixtureBlue(filtered.color(x: controlSample.0, topY: controlSample.1)),
+                "The control hidden at filter creation must remain excluded after showing"
+            )
+            exclusionOutput.finish()
+            try await exclusionStream.stopCapture()
+        } catch {
+            exclusionOutput.finish()
+            try? await exclusionStream.stopCapture()
+            throw error
+        }
+
+        let visibleControlFilter = SCContentFilter(
+            display: hiddenDisplay,
+            includingApplications: [hiddenApplication],
+            exceptingWindows: []
+        )
+        let visibleControlOutput = CaptureFrameOutput()
+        let visibleControlStream = SCStream(
+            filter: visibleControlFilter,
+            configuration: configuration,
+            delegate: nil
+        )
+        try visibleControlStream.addStreamOutput(
+            visibleControlOutput,
+            type: .screen,
+            sampleHandlerQueue: DispatchQueue(label: "poratake.capture-control-positive")
+        )
+        do {
+            try await visibleControlStream.startCapture()
+            let visibleControl = try await visibleControlOutput.frame { frame in
+                isFixtureBlue(frame.color(x: sourceSample.0, topY: sourceSample.1))
+                    && isFixtureRed(frame.color(x: controlSample.0, topY: controlSample.1))
+            }
+            precondition(
+                isFixtureBlue(visibleControl.color(x: sourceSample.0, topY: sourceSample.1)),
+                "The fixture source must remain visible through its app-only filter"
+            )
+            precondition(
+                isFixtureRed(visibleControl.color(x: controlSample.0, topY: controlSample.1)),
+                "The shown control must appear when the app-only filter has no exception"
+            )
+            visibleControlOutput.finish()
+            try await visibleControlStream.stopCapture()
+        } catch {
+            visibleControlOutput.finish()
+            try? await visibleControlStream.stopCapture()
+            throw error
+        }
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: complete\n".utf8))
+    }
+
+    @MainActor
+    static func fixtureWindow(frame: NSRect, color: NSColor, level: NSWindow.Level) -> NSWindow {
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = true
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.level = level
+        setFixtureWindowColor(window, color)
+        return window
+    }
+
+    @MainActor
+    static func setFixtureWindowColor(_ window: NSWindow, _ color: NSColor) {
+        window.backgroundColor = color
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = color.cgColor
+        window.contentView?.needsDisplay = true
+        window.displayIfNeeded()
+    }
+
+    static func normalizedScreenPoint(
+        x: Double,
+        y: Double,
+        screenFrame: NSRect
+    ) -> (Double, Double) {
+        (
+            (x - Double(screenFrame.minX)) / Double(screenFrame.width),
+            (Double(screenFrame.maxY) - y) / Double(screenFrame.height)
+        )
+    }
+
+    static func isFixtureRed(_ color: (UInt8, UInt8, UInt8)?) -> Bool {
+        guard let (red, green, blue) = color else { return false }
+        return red > 150 && Int(red) > Int(green) * 2 && Int(red) > Int(blue) * 2
+    }
+
+    static func isFixtureBlue(_ color: (UInt8, UInt8, UInt8)?) -> Bool {
+        guard let (red, green, blue) = color else { return false }
+        return blue > 150 && Int(blue) > Int(red) * 2 && Int(blue) > Int(green) * 2
     }
 
     static func runExistingScrollChecks() {
