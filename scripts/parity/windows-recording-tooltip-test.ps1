@@ -130,6 +130,7 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref Point point);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", EntryPoint="WindowFromPoint")] public static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -564,6 +565,18 @@ function Test-RectIntersects([PoratakeTooltipProbe+Rect]$first, [PoratakeTooltip
     return $first.Left -lt $second.Right -and $first.Right -gt $second.Left -and $first.Top -lt $second.Bottom -and $first.Bottom -gt $second.Top
 }
 
+function Set-PreviewNeutralPointer([PoratakeTooltipProbe+Point]$point, [IntPtr]$owner) {
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not move the runner pointer to the blank preview area.' }
+    $actual = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetCursorPos([ref]$actual) -or $actual.X -ne $point.X -or $actual.Y -ne $point.Y) {
+        throw 'The runner pointer did not reach the blank preview point.'
+    }
+    $hit = [PoratakeTooltipProbe]::WindowFromPoint($point)
+    if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $owner) {
+        throw 'Native hit-testing at the blank preview point did not reach the preview owner.'
+    }
+}
+
 function ConvertTo-FixtureRect([PoratakeTooltipProbe+Rect]$rect) {
     $fixtureRect = New-Object PoratakeTooltipFixture+Rect
     $fixtureRect.Left = $rect.Left
@@ -638,6 +651,24 @@ function Test-PreviewPixelsStable([string]$firstPath, [string]$secondPath, [Pora
         }
         return $stable -ge [Math]::Ceiling($checked * 0.995)
     } finally { $first.Dispose(); $second.Dispose() }
+}
+
+function Capture-StableTooltipArea([string]$id, [PoratakeTooltipProbe+Rect]$rect, [string]$path, [scriptblock]$stateCheck, [int]$timeoutMilliseconds = 5000) {
+    $script:previewTooltipCaptureAttempt = 0
+    $directory = [System.IO.Path]::GetDirectoryName($path)
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($path)
+    Wait-Until {
+        if (-not (& $stateCheck)) { return $null }
+        $script:previewTooltipCaptureAttempt++
+        $first = Join-Path $directory ("{0}-{1:D2}-a.png" -f $name, $script:previewTooltipCaptureAttempt)
+        $second = Join-Path $directory ("{0}-{1:D2}-b.png" -f $name, $script:previewTooltipCaptureAttempt)
+        Capture-TooltipArea "$id-$script:previewTooltipCaptureAttempt-a" $rect $first 5
+        if (-not (& $stateCheck)) { return $null }
+        Capture-TooltipArea "$id-$script:previewTooltipCaptureAttempt-b" $rect $second 5
+        if (-not (& $stateCheck) -or -not (Test-PreviewPixelsStable $first $second $rect)) { return $null }
+        Copy-Item -LiteralPath $second -Destination $path -Force -ErrorAction Stop
+        return $true
+    } $timeoutMilliseconds "The $id capture did not reach stable pixels while its native tooltip state held."
 }
 
 function Test-TooltipInteriorForeground([System.Drawing.Bitmap]$image, [int]$screenLeft, [int]$screenTop, [PoratakeTooltipProbe+Rect]$ownerBounds) {
@@ -1361,8 +1392,23 @@ try {
         throw 'The capture-preview tooltip ROI overlaps its hovered control and would make the hidden/shown comparison ambiguous.'
     }
     $previewNeutralPoint = New-Object PoratakeTooltipProbe+Point
-    $previewNeutralPoint.X = [int](($previewCard.Left + $previewCard.Right) / 2)
-    $previewNeutralPoint.Y = [int](($previewCard.Top + $previewCard.Bottom) / 2)
+    $previewNeutralPoint.X = $previewCard.Left + [int][Math]::Round(50 * $previewScale)
+    $previewNeutralPoint.Y = $previewCard.Top + [int][Math]::Round(70 * $previewScale)
+    if ($previewNeutralPoint.X -lt $previewCard.Left -or $previewNeutralPoint.X -ge $previewCard.Right -or $previewNeutralPoint.Y -lt $previewCard.Top -or $previewNeutralPoint.Y -ge $previewCard.Bottom) {
+        throw 'The neutral preview hover point falls outside the preview card.'
+    }
+    if ($previewNeutralPoint.X -lt $previewClientBounds.Left -or $previewNeutralPoint.X -ge $previewClientBounds.Right -or $previewNeutralPoint.Y -lt $previewClientBounds.Top -or $previewNeutralPoint.Y -ge $previewClientBounds.Bottom) {
+        throw 'The neutral preview hover point falls outside the preview client area.'
+    }
+    $neutralCardX = ($previewNeutralPoint.X - $previewCard.Left) / $previewScale
+    $neutralCardY = ($previewNeutralPoint.Y - $previewCard.Top) / $previewScale
+    if (($neutralCardX -ge 8 -and $neutralCardX -lt 32 -and $neutralCardY -ge 8 -and $neutralCardY -lt 32) -or
+        ($neutralCardX -ge 168 -and $neutralCardX -lt 192 -and $neutralCardY -ge 8 -and $neutralCardY -lt 32) -or
+        ($neutralCardX -ge 64 -and $neutralCardX -lt 136 -and $neutralCardY -ge 0 -and $neutralCardY -lt 104) -or
+        ($neutralCardX -ge 8 -and $neutralCardX -lt 32 -and $neutralCardY -ge 108 -and $neutralCardY -lt 132) -or
+        ($neutralCardX -ge 168 -and $neutralCardX -lt 192 -and $neutralCardY -ge 108 -and $neutralCardY -lt 132)) {
+        throw 'The neutral preview hover point overlaps a preview control.'
+    }
     if ($previewNeutralPoint.X -ge $previewTooltipBounds.Left -and $previewNeutralPoint.X -lt $previewTooltipBounds.Right -and $previewNeutralPoint.Y -ge $previewTooltipBounds.Top -and $previewNeutralPoint.Y -lt $previewTooltipBounds.Bottom) {
         throw 'The neutral preview hover point overlaps the tooltip comparison ROI.'
     }
@@ -1377,7 +1423,7 @@ try {
     if (-not [PoratakeTooltipProbe]::GetWindowDisplayAffinity($previewTooltip.Handle, [ref]$previewAffinity) -or $previewAffinity -eq 0) { throw 'The capture-preview tooltip has no capture-affinity protection.' }
     Write-Host "Visible capture-preview tooltip '$($previewTooltip.Text)' at $($previewTooltipBounds.Left),$($previewTooltipBounds.Top)-$($previewTooltipBounds.Right),$($previewTooltipBounds.Bottom), affinity=$previewAffinity."
 
-    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewNeutralPoint.X, $previewNeutralPoint.Y)) { throw 'Could not hide capture-preview tooltip before the fresh paint proof.' }
+    Set-PreviewNeutralPointer $previewNeutralPoint $previewOwnerHandle
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($previewTooltip.Handle) } 2000 'Capture-preview tooltip stayed visible before its fresh paint proof.' | Out-Null
     $previewProofMetadataPath = [System.IO.Path]::ChangeExtension($previewTooltipProofPath, '.json')
     foreach ($proofFile in @($previewTooltipProofPath, $previewProofMetadataPath)) {
@@ -1399,11 +1445,12 @@ try {
     }
     Assert-NativeTooltipPaintProof $previewTooltipProofPath $shownPreviewTooltip.Handle $previewOwnerHandle $shownPreviewTooltip.Text $previewAffinity $shownPreviewBounds $previewOwnerBounds -IncludeOwnerPixels
 
-    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewNeutralPoint.X, $previewNeutralPoint.Y)) { throw 'Could not move off the capture-preview tooltip trigger.' }
+    Set-PreviewNeutralPointer $previewNeutralPoint $previewOwnerHandle
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) } 2000 'Capture-preview tooltip stayed visible at the hidden baseline.' | Out-Null
     $previewHiddenCapture = Join-Path $captureRoot 'capture-preview-tooltip-hidden.png'
     $previewShownCapture = Join-Path $captureRoot 'capture-preview-tooltip-shown.png'
-    Capture-TooltipArea 'capture-preview-tooltip-hidden' $previewTooltipBounds $previewHiddenCapture
+    $hiddenTooltipStateCheck = { -not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) }
+    $null = Capture-StableTooltipArea 'capture-preview-tooltip-hidden' $previewTooltipBounds $previewHiddenCapture $hiddenTooltipStateCheck
     Assert-PreviewPixelsCaptured $previewHiddenCapture $previewTooltipBounds
     if (-not [PoratakeTooltipProbe]::SetCursorPos($previewTrigger.X, $previewTrigger.Y)) { throw 'Could not move back onto the capture-preview tooltip trigger.' }
     $shownPreviewTooltip = Wait-Until {
@@ -1421,7 +1468,8 @@ try {
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -cne 'Close preview') {
         throw 'Capture-preview tooltip was not visible with its verified text during shown screenshot capture.'
     }
-    Capture-TooltipArea 'capture-preview-tooltip-shown' $shownPreviewBounds $previewShownCapture
+    $shownTooltipStateCheck = { [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -and [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -ceq 'Close preview' }
+    $null = Capture-StableTooltipArea 'capture-preview-tooltip-shown' $shownPreviewBounds $previewShownCapture $shownTooltipStateCheck
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -cne 'Close preview') {
         throw 'Capture-preview tooltip stopped showing its verified text during the shown screenshot capture.'
     }
