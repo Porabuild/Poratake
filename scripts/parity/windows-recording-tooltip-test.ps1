@@ -2068,6 +2068,30 @@ try {
     $previewClientOrigin = New-Object PoratakeTooltipProbe+Point
     if (-not [PoratakeTooltipProbe]::GetClientRect($capturePreviewHandle, [ref]$previewClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($capturePreviewHandle, [ref]$previewClientOrigin)) { throw 'Could not measure the real capture-preview client area.' }
     $previewScale = [double][PoratakeTooltipProbe]::GetDpiForWindow($capturePreviewHandle) / 96.0
+    $extraCloseX = $previewClientOrigin.X + [int][Math]::Round(24 * $previewScale)
+    $extraCloseY = $previewClientOrigin.Y + [int][Math]::Round(328 * $previewScale)
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($capturePreviewHandle, $extraCloseX, $extraCloseY)) { throw 'The second preview Close target falls outside its client area.' }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $capturePreviewHandle } 3000 'The capture preview did not become the foreground input target.' | Out-Null
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($extraCloseX, $extraCloseY)) { throw 'Could not move to the second preview Close control.' }
+    $extraTooltip = Wait-Until {
+        $handle = Get-VisibleTooltipWindow $workflowApplication.Id $capturePreviewHandle
+        if (-not $handle) { return $null }
+        if ([PoratakeTooltipProbe]::TooltipText($handle, $capturePreviewHandle, [uint32]$workflowApplication.Id) -cne 'Close preview') { return $null }
+        return $handle
+    } 5000 'The second preview Close control did not become ready.'
+    $extraClosePoint = New-Object PoratakeTooltipProbe+Point
+    $extraClosePoint.X = $extraCloseX
+    $extraClosePoint.Y = $extraCloseY
+    $extraCloseHit = [PoratakeTooltipProbe]::WindowFromPoint($extraClosePoint)
+    if ($extraCloseHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($extraCloseHit, 2) -ne $capturePreviewHandle) { throw 'Native hit testing at Close did not reach the second preview.' }
+    [PoratakeTooltipProbe]::Click($extraCloseX, $extraCloseY)
+    Wait-Until {
+        if ([PoratakeTooltipProbe]::IsWindowVisible($extraTooltip)) { return $false }
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($extraClosePoint)
+        return $hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $capturePreviewHandle
+    } 5000 'The second preview did not close.' | Out-Null
+    if (-not [System.IO.File]::Exists($sourceCapturePath) -or -not [System.IO.File]::Exists($resetCapturePath)) { throw 'Closing the second preview removed a captured file.' }
     $editX = $previewClientOrigin.X + [int][Math]::Round(104 * $previewScale)
     $editY = $previewClientOrigin.Y + [int][Math]::Round(530 * $previewScale)
     if (-not [PoratakeTooltipProbe]::IsPointInsideClient($capturePreviewHandle, $editX, $editY)) { throw 'The real preview Edit target falls outside its client area.' }
@@ -2216,8 +2240,8 @@ try {
             try {
                 if ($image.Width -ne $sourceCaptureWidth -or $image.Height -ne $sourceCaptureHeight) { throw "Saved PNG dimensions are $($image.Width)x$($image.Height), expected ${sourceCaptureWidth}x${sourceCaptureHeight}." }
                 for ($index = 0; $index -lt $fixtureColors.Count; $index++) {
-                    $x = if (($index % 2) -eq 0) { [int]($image.Width / 4) } else { [int](3 * $image.Width / 4) }
-                    $y = if ($index -lt 2) { [int]($image.Height / 4) } else { [int](3 * $image.Height / 4) }
+                    $x = if (($index % 2) -eq 0) { [int]($image.Width / 16) } else { [int](15 * $image.Width / 16) }
+                    $y = if ($index -lt 2) { [int]($image.Height / 16) } else { [int](15 * $image.Height / 16) }
                     $actual = $image.GetPixel($x, $y)
                     $expected = $fixtureColors[$index]
                     if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 12 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 12 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 12) {

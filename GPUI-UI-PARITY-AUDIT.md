@@ -16,23 +16,23 @@ enhancements are deferred unless they expose a critical shared defect or have a
 small verified fix. Exhaustive states for every control remain deferred.
 
 Each gate counts once only when its stated evidence exists. As of 2026-11-13,
-six of twelve gates are complete: 50% of the gates, not an estimate of elapsed or
+seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
-| Gate                                 | Status | Completion evidence                                                                                                                                                                          |
-| ------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                                            |
-| Reviewed visual coverage             | Done   | Hosted CI at `19e8db81` passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                                             |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                      |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                  |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                |
-| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                                                 |
-| Windows capture and save             | Open   | Hosted Windows captured an area, added a rectangle, saved and reopened a PNG, and checked sampled pixels and editor size. Verify that a reopened selector starts with no previous selection. |
-| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                                                    |
-| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                   |
-| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.                           |
-| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                                                       |
+| Gate                                 | Status | Completion evidence                                                                                                                                                         |
+| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
+| Reviewed visual coverage             | Done   | Hosted CI at `19e8db81` passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                            |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
+| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                                |
+| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
+| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                                   |
+| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
+| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.          |
+| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                                      |
 
 [Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
 passed native recording with programmatic cuts and annotation, and compared three
@@ -40,8 +40,8 @@ preview/export frames. It did not exercise editing in the UI or capture audio.
 
 [Hosted Windows CI at `1d6a4d0a`](https://github.com/Porabuild/Poratake/actions/runs/43419762563)
 captured a real area, reopened the selector, and drew a rectangle in the screenshot
-editor. Saving then crashed while opening the native dialog, so the saved-image
-and reopen checks remain open.
+editor. Saving then crashed while opening the native dialog, so that run did not
+verify the saved image or reopen.
 [The next Windows run](https://github.com/Porabuild/Poratake/actions/runs/43425397059)
 passed real capture and reopened the selector but did not reach the editor: its Edit
 click did not wait for the hover controls to render. The harness now checks their
@@ -52,9 +52,12 @@ sampled output pixels and matching editor dimensions. The selector reopened and
 cancelled without producing another capture, but capture protection prevented
 checking its selection pixels. All active CI jobs passed; Windows packaging was
 skipped.
-The next hosted workflow also drags inside the previous region to check that a
-fresh selector creates a smaller capture, and exercises the video editor's Save
-dialog and decoded output. Those additions have not yet run on a hosted runner.
+[The Windows workflow at `cd9c5d0e`](https://github.com/Porabuild/Poratake/actions/runs/43435257885)
+created a smaller capture inside the previous selection, confirming the selector
+was fresh. It later failed a screenshot color check because the second preview
+overlapped the editor and the resulting annotation crossed a sample point. The
+revised harness closes that preview and samples away from the annotation; this
+change and the video editor's Save dialog check still need a hosted run.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. Their
 native selection and cancellation flows still need verification.
