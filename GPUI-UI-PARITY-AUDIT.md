@@ -105,6 +105,11 @@ passed the tab, trim and decoded export checks. Picker acceptance again stopped;
 the captured UI Automation inventory showed file-list properties and a search box,
 but no filename Edit. The dialog did expose the isolated recording directory's
 file items, so acceptance must use a verified item rather than an arbitrary edit.
+[Windows CI at `02d33a22`](https://github.com/Porabuild/Poratake/actions/runs/43483480175)
+found the unique fixture and state-file items, but the helper waited for an enabled
+Open button before selecting the fixture and stopped. The captured evidence did not
+establish whether the button was absent or disabled. GitHub cancelled the macOS job
+before starting because a hosted runner was unavailable.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
