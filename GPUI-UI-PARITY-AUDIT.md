@@ -1506,8 +1506,13 @@ that ambiguity with a later frame would require changes to the capture lifecycle
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                                                                                                                                                              |
 
+A zero-padding framed attachment also matches CPU preview and export over a
+rectangle and blackout crossing the primary-image seam. A positive control checks
+the attachment pixel before the blackout is drawn.
+
 macOS scroll-overlay capture exclusion remains unverified. The preview can overlap
-the selected area when there is no room beside it, and the daemon captures
+the selected area when there is no room beside it, and the retained Electron
+selection overlay also draws a border and tint inside that area. The daemon captures
 on-screen windows. The daemon's native boundary and control windows use
 `NSWindowSharingNone`, a legacy value that [Apple does not recommend relying on to omit captured content](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
 Verify saved pixels against a real selected area, including a full-width area,

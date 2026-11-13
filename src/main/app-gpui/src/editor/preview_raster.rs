@@ -1177,6 +1177,186 @@ mod tests {
     }
 
     #[test]
+    fn zero_padding_framed_attachment_redaction_patches_match_export() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment_path = directory.path().join("right.png");
+        image::RgbaImage::from_pixel(30, 60, image::Rgba([72, 192, 112, 255]))
+            .save(&attachment_path)
+            .unwrap();
+        let layers = [ImageLayer {
+            id: "right".into(),
+            image_url: attachment_path.to_string_lossy().into_owned(),
+            natural_width: 30.0,
+            natural_height: 60.0,
+            edge: Edge::Right,
+        }];
+        let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            160,
+            120,
+            image::Rgba([64, 112, 192, 255]),
+        ));
+        let annotations = [
+            Annotation::Rectangle {
+                id: "shape".into(),
+                x: 138.0,
+                y: 36.0,
+                width: 40.0,
+                height: 20.0,
+                stroke: "#f43f5e".into(),
+                stroke_width: 3.0,
+                fill: Some("#f0c040".into()),
+            },
+            Annotation::Redact {
+                id: "blackout".into(),
+                x: 152.0,
+                y: 42.0,
+                width: 20.0,
+                height: 12.0,
+                style: "blackout".into(),
+                intensity: 5.0,
+            },
+        ];
+        let mut wallpaper = crate::editor::wallpaper::WallpaperSettings::default();
+        wallpaper.window_frame.style = "windows-dark".into();
+        let export = crate::editor::export::compose_with_layers(
+            Some(&base),
+            160,
+            120,
+            &annotations,
+            &wallpaper,
+            &layers,
+            1.0,
+        );
+        let (backdrop, _, composite) = crate::editor::export::render_backdrop(
+            &wallpaper,
+            export.width(),
+            export.height(),
+            160.0,
+            120.0,
+            None,
+            &layers,
+            Some(&base),
+            1.0,
+            [18, 18, 20],
+        )
+        .unwrap();
+        assert!(composite);
+        let title_bar = crate::render::window_frame::title_bar_height("windows-dark", 1.0);
+        let group = crate::editor::layers::compute_with_title_bar(
+            160.0,
+            120.0,
+            &layers,
+            wallpaper.spacing.max(0.0),
+            wallpaper.layer_inset(true),
+            title_bar,
+        );
+        let (_, (x, y, _, _)) =
+            crate::editor::wallpaper::layout(&wallpaper, group.width, group.height, 1.0, true);
+        let primary_origin = (
+            x.round() + group.primary.x + wallpaper.layer_inset(true),
+            y.round() + group.primary.y + title_bar + wallpaper.layer_inset(true),
+        );
+        let mut backdrop_rgba = backdrop.as_bytes(0).unwrap().to_vec();
+        for pixel in backdrop_rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let mut backdrop_bgra = backdrop_rgba.clone();
+        for pixel in backdrop_bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let surface = Surface {
+            image_id: None,
+            width: export.width(),
+            height: export.height(),
+            offset_x: primary_origin.0,
+            offset_y: primary_origin.1,
+            native_scale: 1.0,
+            pixels: Some(&backdrop_bgra),
+            matte: Some([18, 18, 20]),
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let operations = renderer::screenshot_paints(annotations.iter());
+        let seam_sample = (
+            (primary_origin.0 + 162.0) as u32,
+            (primary_origin.1 + 48.0) as u32,
+        );
+        let seam_offset = ((seam_sample.1 * export.width() + seam_sample.0) * 4) as usize;
+        assert_eq!(
+            &backdrop_rgba[seam_offset..seam_offset + 4],
+            &[72, 192, 112, 255]
+        );
+        let backdrop_rgba =
+            image::RgbaImage::from_raw(export.width(), export.height(), backdrop_rgba).unwrap();
+        let mut preview = crate::editor::export::from_rgba(&backdrop_rgba).unwrap();
+        let paint = PixmapPaint {
+            opacity: 1.0,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        let mut touched = vec![false; export.as_raw().len() / 4];
+        for (index, operation) in operations.iter().enumerate() {
+            let patch = super::patch(*operation, &operations[..index], &surface, 1.0).unwrap();
+            let patch_x = (primary_origin.0 + patch.x).round() as i32;
+            let patch_y = (primary_origin.1 + patch.y).round() as i32;
+            for y in 0..patch.pixmap.height() {
+                for x in 0..patch.pixmap.width() {
+                    let output_x = patch_x + x as i32;
+                    let output_y = patch_y + y as i32;
+                    if output_x >= 0
+                        && output_y >= 0
+                        && output_x < export.width() as i32
+                        && output_y < export.height() as i32
+                    {
+                        touched[(output_y as u32 * export.width() + output_x as u32) as usize] =
+                            true;
+                    }
+                }
+            }
+            preview.draw_pixmap(
+                patch_x,
+                patch_y,
+                patch.pixmap.as_ref(),
+                &paint,
+                Transform::identity(),
+                None,
+            );
+        }
+        let preview_rgba = crate::editor::export::to_rgba(&preview);
+        for (pixel_index, (&is_touched, (actual, expected))) in touched
+            .iter()
+            .zip(
+                preview_rgba
+                    .as_raw()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(export.as_raw().as_chunks::<4>().0),
+            )
+            .enumerate()
+        {
+            if is_touched {
+                for (channel, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                    assert!(
+                        actual.abs_diff(*expected) <= 2,
+                        "zero-padding framed attachment pixel {pixel_index}, channel {channel}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            export.get_pixel(seam_sample.0, seam_sample.1).0,
+            [0, 0, 0, 255]
+        );
+        assert_eq!(
+            preview_rgba.get_pixel(seam_sample.0, seam_sample.1).0,
+            [0, 0, 0, 255]
+        );
+    }
+
+    #[test]
     fn anchored_preview_stroke_matches_composition_with_scale_and_clip() {
         use tiny_skia::{Color, Rect};
 
