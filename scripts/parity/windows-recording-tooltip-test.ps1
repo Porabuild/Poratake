@@ -2409,12 +2409,20 @@ try {
     $videoEditorScreenBounds.Top = $videoEditorClientOrigin.Y + $videoEditorClient.Top
     $videoEditorScreenBounds.Right = $videoEditorClientOrigin.X + $videoEditorClient.Right
     $videoEditorScreenBounds.Bottom = $videoEditorClientOrigin.Y + $videoEditorClient.Bottom
+    $videoMonitor = New-Object PoratakeTooltipProbe+MonitorInfo
+    $videoMonitor.Size = [PoratakeTooltipProbe]::MonitorInfoSize()
+    $videoMonitorHandle = [PoratakeTooltipProbe]::MonitorFromWindow($videoEditorHandle, 2)
+    if ($videoMonitorHandle -eq [IntPtr]::Zero -or -not [PoratakeTooltipProbe]::GetMonitorInfo($videoMonitorHandle, [ref]$videoMonitor)) { throw 'Could not read the video editor monitor work area.' }
+    if ($videoEditorScreenBounds.Left -lt $videoMonitor.Work.Left -or $videoEditorScreenBounds.Top -lt $videoMonitor.Work.Top -or $videoEditorScreenBounds.Right -gt $videoMonitor.Work.Right -or $videoEditorScreenBounds.Bottom -gt $videoMonitor.Work.Bottom) {
+        throw "The video editor client exceeds its work area: client=$($videoEditorScreenBounds.Left),$($videoEditorScreenBounds.Top)-$($videoEditorScreenBounds.Right),$($videoEditorScreenBounds.Bottom); work=$($videoMonitor.Work.Left),$($videoMonitor.Work.Top)-$($videoMonitor.Work.Right),$($videoMonitor.Work.Bottom)."
+    }
     $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     [PoratakeTooltipProbe]::PressControlS()
     $videoExportButtonProofPath = Join-Path $evidenceRoot 'video-export-button.json'
     $videoExportButton = Get-VideoExportButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath
-    Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
     $videoExportButtonBounds = $videoExportButton.button.bounds
+    if ($videoExportButtonBounds.left -lt $videoMonitor.Work.Left -or $videoExportButtonBounds.top -lt $videoMonitor.Work.Top -or $videoExportButtonBounds.right -gt $videoMonitor.Work.Right -or $videoExportButtonBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export Video control exceeds the monitor work area.' }
+    Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
     $videoExportClickX = [int][Math]::Round(($videoExportButtonBounds.left + $videoExportButtonBounds.right) / 2.0)
     $videoExportClickY = [int][Math]::Round(($videoExportButtonBounds.top + $videoExportButtonBounds.bottom) / 2.0)
     if (-not [PoratakeTooltipProbe]::SetCursorPos($videoExportClickX, $videoExportClickY)) { throw 'Could not move to the measured Export Video control.' }

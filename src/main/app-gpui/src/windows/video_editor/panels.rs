@@ -2663,12 +2663,19 @@ fn export_panel(
         ));
     } else {
         footer.push(
-            Button::new("export-start")
-                .variant(Variant::Tertiary)
-                .recipe("compact")
-                .label(if is_gif { "Export GIF" } else { "Export Video" })
-                .full_width(true)
-                .on_press(cx.listener(|this, _event, window, cx| this.start_export(window, cx)))
+            div()
+                .w_full()
+                .debug_selector(|| "video-export-start".to_string())
+                .child(
+                    Button::new("export-start")
+                        .variant(Variant::Tertiary)
+                        .recipe("compact")
+                        .label(if is_gif { "Export GIF" } else { "Export Video" })
+                        .full_width(true)
+                        .on_press(
+                            cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
+                        ),
+                )
                 .into_any_element(),
         );
     }

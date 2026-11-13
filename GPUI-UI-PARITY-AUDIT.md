@@ -56,8 +56,12 @@ skipped.
 created a smaller capture inside the previous selection, confirming the selector
 was fresh. It later failed a screenshot color check because the second preview
 overlapped the editor and the resulting annotation crossed a sample point. The
-revised harness closes that preview and samples away from the annotation; this
-change and the video editor's Save dialog check still need a hosted run.
+revised harness closes that preview and samples away from the annotation.
+[The Windows workflow at `16f9df47`](https://github.com/Porabuild/Poratake/actions/runs/43438907936)
+passed the corrected capture, selector reset, annotation, save and reopen checks.
+It then exposed a video editor sizing defect: the 1200×750 minimum clipped the
+Export control on the 1024×768 runner before the export click. A work-area sizing
+fix and an explicit control-bounds check are awaiting hosted verification.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. Their
 native selection and cancellation flows still need verification.

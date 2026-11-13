@@ -30,6 +30,11 @@ const ACTIVE_PREVIEW_SIZES: [(u32, u32); 7] = [
 const INITIAL_PREVIEW_QUALITY: usize = 3;
 const PREVIEW_QUALITY_RAISE_FRAMES: u16 = 120;
 const SIDEBAR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
+const VIDEO_EDITOR_DEFAULT_WIDTH: f32 = 1280.0;
+const VIDEO_EDITOR_DEFAULT_HEIGHT: f32 = 800.0;
+const VIDEO_EDITOR_MIN_WIDTH: f32 = 1200.0;
+const VIDEO_EDITOR_MIN_HEIGHT: f32 = 750.0;
+const VIDEO_EDITOR_WORK_AREA_GAP: f32 = 20.0;
 /// Playback pulls one composed frame per tick; the composition is software
 /// rasterized, so this is a preview rate rather than the export frame rate.
 use std::cell::RefCell;
@@ -208,6 +213,7 @@ pub struct VideoEditorWindow {
     sidebar_resize: Option<(f32, f32)>,
     sidebar_animation_generation: u64,
     sidebar_closing: bool,
+    bounds_sub: Option<gpui::Subscription>,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
@@ -218,34 +224,62 @@ pub struct VideoEditorWindow {
 impl VideoEditorWindow {
     pub fn open(cx: &mut App, path: Option<String>) {
         registry::open_or_activate(RegistryKind::VideoEditor, cx, move |cx| {
-            let available = cx
-                .displays()
-                .first()
-                .map(|display| display.bounds().size)
-                .unwrap_or_else(|| size(px(1280.0), px(800.0)));
-            let bounds = Bounds::centered(
-                None,
-                size(
-                    px(1280.0).min(available.width - px(100.0)),
-                    px(800.0).min(available.height - px(100.0)),
-                ),
-                cx,
+            let display = cx
+                .primary_display()
+                .or_else(|| cx.displays().into_iter().next());
+            let work_area = display
+                .as_ref()
+                .map(|display| crate::system::work_area::work_area(display.as_ref()))
+                .unwrap_or(Bounds {
+                    origin: gpui::point(px(0.0), px(0.0)),
+                    size: size(
+                        px(VIDEO_EDITOR_DEFAULT_WIDTH),
+                        px(VIDEO_EDITOR_DEFAULT_HEIGHT),
+                    ),
+                });
+            let (bounds, min_size) = video_editor_window_geometry(
+                work_area,
+                crate::config::window_state::get(crate::config::window_state::VIDEO_EDITOR),
             );
-            cx.open_window(
-                crate::windows::app_window_options(bounds, Some(size(px(1200.0), px(750.0)))),
-                |window, cx| {
-                    let view = cx.new(|cx| {
-                        let mut editor = Self::new(path.map(PathBuf::from), cx);
-                        editor.load_preview(cx);
-                        editor.load_desktop_wallpaper(cx);
-                        editor.request_audio_sync(cx);
-                        editor
-                    });
-                    let focus = view.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    view
-                },
-            )
+            let bounds = display
+                .as_ref()
+                .map(|display| {
+                    crate::system::work_area::local_window_bounds(bounds, display.as_ref())
+                })
+                .unwrap_or(bounds);
+            let mut options = crate::windows::app_window_options(bounds, Some(min_size));
+            options.display_id = display.map(|display| display.id());
+            cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut editor = Self::new(path.map(PathBuf::from), cx);
+                    editor.load_preview(cx);
+                    editor.load_desktop_wallpaper(cx);
+                    editor.request_audio_sync(cx);
+                    editor
+                });
+                view.update(cx, |editor, cx| {
+                    let mut last_size = window.bounds().size;
+                    editor.bounds_sub =
+                        Some(cx.observe_window_bounds(window, move |_, window, _| {
+                            if !should_persist_video_editor_size(
+                                &mut last_size,
+                                window.bounds().size,
+                                window.is_maximized(),
+                            ) {
+                                return;
+                            }
+                            let size = window.bounds().size;
+                            crate::config::window_state::set(
+                                crate::config::window_state::VIDEO_EDITOR,
+                                f32::from(size.width),
+                                f32::from(size.height),
+                            );
+                        }));
+                });
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                view
+            })
             .ok()
             .map(Into::into)
         });
@@ -388,6 +422,7 @@ impl VideoEditorWindow {
             sidebar_resize: None,
             sidebar_animation_generation: 0,
             sidebar_closing: false,
+            bounds_sub: None,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
@@ -3823,6 +3858,47 @@ fn materialize_builtin_audio_tracks(
     added
 }
 
+fn video_editor_window_geometry(
+    work_area: Bounds<gpui::Pixels>,
+    saved_size: Option<(f32, f32)>,
+) -> (Bounds<gpui::Pixels>, gpui::Size<gpui::Pixels>) {
+    let area_width = f32::from(work_area.size.width);
+    let area_height = f32::from(work_area.size.height);
+    let max_width = (area_width - VIDEO_EDITOR_WORK_AREA_GAP * 2.0).max(1.0);
+    let max_height = (area_height - VIDEO_EDITOR_WORK_AREA_GAP * 2.0).max(1.0);
+    let (preferred_width, preferred_height) = saved_size
+        .filter(|(width, height)| {
+            width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
+        })
+        .unwrap_or((VIDEO_EDITOR_DEFAULT_WIDTH, VIDEO_EDITOR_DEFAULT_HEIGHT));
+    let width = preferred_width.min(max_width);
+    let height = preferred_height.min(max_height);
+    let bounds = Bounds {
+        origin: gpui::point(
+            work_area.origin.x + px(((area_width - width) / 2.0).max(0.0)),
+            work_area.origin.y + px(((area_height - height) / 2.0).max(0.0)),
+        ),
+        size: size(px(width), px(height)),
+    };
+    let min_size = size(
+        px(VIDEO_EDITOR_MIN_WIDTH.min(width)),
+        px(VIDEO_EDITOR_MIN_HEIGHT.min(height)),
+    );
+    (bounds, min_size)
+}
+
+fn should_persist_video_editor_size(
+    last_size: &mut gpui::Size<gpui::Pixels>,
+    current_size: gpui::Size<gpui::Pixels>,
+    is_maximized: bool,
+) -> bool {
+    if is_maximized || *last_size == current_size {
+        return false;
+    }
+    *last_size = current_size;
+    true
+}
+
 fn sidebar_animation_visibility(open: bool, delta: f32) -> f32 {
     if open {
         return delta;
@@ -3855,6 +3931,73 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
         }
         index = if index >= 4 { 1 } else { index + 1 };
         std::thread::sleep(Duration::from_millis(160));
+    }
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::*;
+
+    fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<gpui::Pixels> {
+        Bounds {
+            origin: gpui::point(px(x), px(y)),
+            size: size(px(width), px(height)),
+        }
+    }
+
+    #[test]
+    fn fits_the_editor_and_minimum_size_inside_a_small_work_area() {
+        let work_area = bounds(0.0, 0.0, 1024.0, 728.0);
+        let (editor, minimum) = video_editor_window_geometry(work_area, None);
+
+        assert_eq!(editor.size, size(px(984.0), px(688.0)));
+        assert_eq!(minimum, editor.size);
+        assert!(editor.left() >= work_area.left());
+        assert!(editor.top() >= work_area.top());
+        assert!(editor.right() <= work_area.right());
+        assert!(editor.bottom() <= work_area.bottom());
+    }
+
+    #[test]
+    fn preserves_a_saved_size_that_fits_a_normal_work_area() {
+        let work_area = bounds(-1920.0, 24.0, 1920.0, 1056.0);
+        let (editor, minimum) = video_editor_window_geometry(work_area, Some((1600.0, 900.0)));
+
+        assert_eq!(editor.size, size(px(1600.0), px(900.0)));
+        assert_eq!(
+            minimum,
+            size(px(VIDEO_EDITOR_MIN_WIDTH), px(VIDEO_EDITOR_MIN_HEIGHT))
+        );
+        assert!(editor.left() >= work_area.left());
+        assert!(editor.top() >= work_area.top());
+        assert!(editor.right() <= work_area.right());
+        assert!(editor.bottom() <= work_area.bottom());
+    }
+
+    #[test]
+    fn persists_changed_bounds_but_ignores_initial_and_maximized_bounds() {
+        let opening_size = size(px(984.0), px(688.0));
+        let mut last_size = opening_size;
+        assert!(!should_persist_video_editor_size(
+            &mut last_size,
+            opening_size,
+            false
+        ));
+        assert!(should_persist_video_editor_size(
+            &mut last_size,
+            size(px(800.0), px(600.0)),
+            false
+        ));
+        assert!(!should_persist_video_editor_size(
+            &mut last_size,
+            size(px(1800.0), px(1000.0)),
+            true
+        ));
+        assert!(should_persist_video_editor_size(
+            &mut last_size,
+            opening_size,
+            false
+        ));
     }
 }
 
@@ -4184,6 +4327,41 @@ mod keyboard_demo_tests {
         assert!(status.origin.x >= panel.origin.x && status.origin.y >= panel.origin.y);
         assert!(status.origin.x + status.size.width <= panel.origin.x + panel.size.width);
         assert!(status.origin.y + status.size.height <= panel.origin.y + panel.size.height);
+    }
+
+    #[herogpui::test]
+    fn export_video_button_fits_the_small_work_area_window(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let mut window_handle = None;
+        let (_editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.ui.sidebar_open = true;
+            editor.state.ui.sidebar_tab = "export".into();
+            let (bounds, _) = video_editor_window_geometry(
+                Bounds {
+                    origin: gpui::point(px(0.0), px(0.0)),
+                    size: size(px(1024.0), px(728.0)),
+                },
+                None,
+            );
+            window.resize(bounds.size);
+            window_handle = Some(window.window_handle());
+            editor
+        });
+
+        cx.refresh().unwrap();
+        let button = cx.debug_bounds("video-export-start").unwrap();
+        let viewport = cx
+            .update_window(window_handle.unwrap(), |_, window, _| {
+                window.viewport_size()
+            })
+            .unwrap();
+        assert!(button.size.width > px(0.0) && button.size.height > px(0.0));
+        assert!(button.left() >= px(0.0));
+        assert!(button.top() >= px(0.0));
+        assert!(button.right() <= viewport.width);
+        assert!(button.bottom() <= viewport.height);
     }
 
     #[cfg(windows)]
