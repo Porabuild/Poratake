@@ -997,6 +997,53 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn fiducial_roi_matches(
+        reference: &image::RgbaImage,
+        actual: &image::RgbaImage,
+    ) -> (bool, f64, f64, u8) {
+        let (width, height) = reference.dimensions();
+        let cell_width = width / 8;
+        let cell_height = height / 6;
+        let total_error: u64 = reference
+            .pixels()
+            .zip(actual.pixels())
+            .flat_map(|(expected, actual)| {
+                (0..3).map(move |channel| u64::from(expected[channel].abs_diff(actual[channel])))
+            })
+            .sum();
+        let mut interior_error = 0u64;
+        let mut max_pixel_error = 0u8;
+        let mut interior_pixels = 0u64;
+        for row in 0..6 {
+            for column in 0..8 {
+                for y in row * cell_height + 3..(row + 1) * cell_height - 3 {
+                    for x in column * cell_width + 3..(column + 1) * cell_width - 3 {
+                        let expected = reference.get_pixel(x, y);
+                        let actual = actual.get_pixel(x, y);
+                        let difference = [
+                            expected[0].abs_diff(actual[0]),
+                            expected[1].abs_diff(actual[1]),
+                            expected[2].abs_diff(actual[2]),
+                        ];
+                        max_pixel_error =
+                            max_pixel_error.max(difference.into_iter().max().unwrap_or_default());
+                        interior_error += difference.into_iter().map(u64::from).sum::<u64>();
+                        interior_pixels += 1;
+                    }
+                }
+            }
+        }
+        let mean_error = total_error as f64 / f64::from(width * height * 3);
+        let interior_mean_error = interior_error as f64 / (interior_pixels * 3) as f64;
+        (
+            mean_error <= 18.0 && interior_mean_error <= 10.0 && max_pixel_error <= 48,
+            mean_error,
+            interior_mean_error,
+            max_pixel_error,
+        )
+    }
+
+    #[cfg(windows)]
     fn preview_fiducial_match(
         screenshot: &image::RgbaImage,
         template: &image::RgbaImage,
@@ -1197,6 +1244,19 @@ mod tests {
     #[test]
     fn numeric_scratch_fiducial_match_is_scaled_unique_and_rejects_rotation() {
         let reference = numeric_fiducial();
+        let mut edge_bleed = reference.clone();
+        for (x, y, pixel) in edge_bleed.enumerate_pixels_mut() {
+            if x % 12 < 2 || x % 12 >= 10 || y % 12 < 2 || y % 12 >= 10 {
+                pixel[0] = pixel[0].saturating_add(60);
+            }
+        }
+        assert!(fiducial_roi_matches(&reference, &edge_bleed).0);
+        assert!(!fiducial_roi_matches(&reference, &image::imageops::rotate180(&reference)).0);
+        let mut shifted_reference = reference.clone();
+        for (x, y, pixel) in shifted_reference.enumerate_pixels_mut() {
+            *pixel = *reference.get_pixel(x.saturating_sub(3), y);
+        }
+        assert!(!fiducial_roi_matches(&reference, &shifted_reference).0);
         let mut screenshot = image::RgbaImage::new(984, 680);
         let mut noise = 0x1234_5678u32;
         for pixel in screenshot.pixels_mut() {
@@ -1705,25 +1765,11 @@ mod tests {
                 fiducial_export
                     .save(&export_roi_path)
                     .expect("save decoded fiducial export ROI");
-                let mut total_error = 0u64;
-                let mut high_error_pixels = 0usize;
-                for (expected, actual) in fiducial_reference.pixels().zip(fiducial_export.pixels())
-                {
-                    let difference = [
-                        expected[0].abs_diff(actual[0]),
-                        expected[1].abs_diff(actual[1]),
-                        expected[2].abs_diff(actual[2]),
-                    ];
-                    if difference.into_iter().max().unwrap_or_default() > 48 {
-                        high_error_pixels += 1;
-                    }
-                    total_error += difference.into_iter().map(u64::from).sum::<u64>();
-                }
-                let pixel_count = (fiducial_width * fiducial_height) as usize;
-                let mean_error = total_error as f64 / (pixel_count * 3) as f64;
+                let (matches, mean_error, interior_mean_error, max_pixel_error) =
+                    fiducial_roi_matches(&fiducial_reference, &fiducial_export);
                 assert!(
-                    mean_error <= 18.0 && high_error_pixels <= (pixel_count * 8 / 100),
-                    "decoded recording did not preserve the multicolor fiducial ROI: mean channel error {mean_error:.2}, high-error pixels {high_error_pixels}/{pixel_count}"
+                    matches,
+                    "decoded recording did not preserve the multicolor fiducial ROI: mean channel error {mean_error:.2}, interior mean {interior_mean_error:.2}, max interior channel error {max_pixel_error}"
                 );
                 for row in 0..6 {
                     for column in 0..8 {
@@ -1751,7 +1797,7 @@ mod tests {
                             .sum::<u64>()
                     })
                     .sum::<u64>() as f64
-                    / (pixel_count * 3) as f64;
+                    / (fiducial_width as usize * fiducial_height as usize * 3) as f64;
                 assert!(
                     negative_mean_error >= 45.0,
                     "fiducial rotated-pattern negative control is not distinct enough: mean error {negative_mean_error:.2}"

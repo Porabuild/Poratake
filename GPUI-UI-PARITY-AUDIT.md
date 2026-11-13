@@ -120,10 +120,14 @@ of the selected fixture with an exact sidecar hash. Its visual matrix failed all
 Those Microsoft Basic captures were reviewed and copied to the matching baselines;
 all 2,912 images match those references offline. A hosted rerun is still needed,
 and the affected NVIDIA references have not been regenerated or verified.
-The next Windows run also checks a sampled recorded image region against the
-native editor preview and decoded export, and reports whether healthy audio
-render endpoints are present. Those new checks have not yet run in hosted CI;
-endpoint presence alone does not verify audio capture.
+[Windows CI at `d3e7ad25`](https://github.com/Porabuild/Poratake/actions/runs/43504165738)
+found no healthy audio render endpoints. It created the area recording project
+in its isolated directory, captured the fiducial and trimmed the recorded clip,
+but stopped before the preview comparison and visual matrix: 591 of 6,912 exported
+fiducial pixels exceeded the original 48-level tolerance. Of those, 589 were
+within one pixel of a tile edge. The revised check retains a whole-region mean
+limit and compares tile interiors, with shifted and rotated negative controls;
+it still needs a hosted rerun. System-audio capture remains unverified.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
