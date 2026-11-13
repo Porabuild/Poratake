@@ -1005,6 +1005,71 @@ function Capture-TooltipArea([string]$id, [PoratakeTooltipProbe+Rect]$rect, [str
     }
 }
 
+function Get-VideoTimelineClipBounds([string]$path) {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::new($path)
+    try {
+        $maxX = [int][Math]::Floor($bitmap.Width * 0.55)
+        $minY = [int][Math]::Floor($bitmap.Height * 0.72)
+        $maxY = [int][Math]::Floor($bitmap.Height * 0.92)
+        $rows = [System.Collections.Generic.List[object]]::new()
+        $maximumRun = 0
+        for ($y = $minY; $y -lt $maxY; $y++) {
+            $runStart = -1
+            $rowBest = $null
+            for ($x = 0; $x -lt $maxX; $x++) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                $matchesVideo = $pixel.R -ge 150 -and $pixel.G -ge 45 -and $pixel.G -le 165 -and $pixel.R - $pixel.G -ge 55 -and $pixel.B -le 55
+                if ($matchesVideo -and $runStart -lt 0) { $runStart = $x }
+                if ($runStart -ge 0 -and ((-not $matchesVideo) -or $x -eq $maxX - 1)) {
+                    $runEnd = if ($matchesVideo -and $x -eq $maxX - 1) { $x } else { $x - 1 }
+                    $length = $runEnd - $runStart + 1
+                    if ($null -eq $rowBest -or $length -gt $rowBest.Length) {
+                        $rowBest = [pscustomobject]@{ Left = $runStart; Right = $runEnd; Length = $length; Y = $y }
+                    }
+                    $runStart = -1
+                }
+            }
+            if ($null -ne $rowBest -and $rowBest.Length -ge 100) {
+                $rows.Add($rowBest)
+                $maximumRun = [Math]::Max($maximumRun, $rowBest.Length)
+            }
+        }
+        if ($maximumRun -lt 150) { throw "Could not find a long orange video clip in the captured timeline: max run=$maximumRun pixels." }
+        $clipRows = @($rows | Where-Object { $_.Length -ge ($maximumRun * 0.92) })
+        if ($clipRows.Count -lt 3) { throw "The orange video clip was not stable across enough timeline rows: $($clipRows.Count) rows." }
+        $clipRows = @($clipRows | Sort-Object Y)
+        $middleRow = $clipRows[[int][Math]::Floor($clipRows.Count / 2)]
+        $centerX = [int][Math]::Floor(($middleRow.Left + $middleRow.Right) / 2)
+        return [pscustomobject]@{
+            Left = [int]($clipRows | Measure-Object Left -Minimum).Minimum
+            Right = [int]($clipRows | Measure-Object Right -Maximum).Maximum
+            Top = [int]$clipRows[0].Y
+            Bottom = [int]$clipRows[-1].Y
+            CenterY = [int]$middleRow.Y
+            CenterX = $centerX
+            Width = $maximumRun
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function Set-VideoEditorNeutralPointer([IntPtr]$windowHandle, [PoratakeTooltipProbe+Rect]$client, [PoratakeTooltipProbe+Point]$clientOrigin) {
+    $point = New-Object PoratakeTooltipProbe+Point
+    $point.X = $clientOrigin.X + [int][Math]::Floor(($client.Right - $client.Left) / 2.0)
+    $point.Y = $clientOrigin.Y + 20
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($windowHandle, $point.X, $point.Y)) { throw 'The neutral title-bar point falls outside the video editor client.' }
+    $hit = [PoratakeTooltipProbe]::WindowFromPoint($point)
+    if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $windowHandle) { throw 'Native hit testing at the neutral title-bar point did not reach the video editor.' }
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not move the pointer to the measured neutral title-bar point.' }
+}
+
+function Get-VideoSourceDurationTarget([double]$markerTime) {
+    if (-not [double]::IsFinite($markerTime) -or $markerTime -lt 0.0) { throw "Invalid marker time: $markerTime" }
+    return [Math]::Max(2.0, [Math]::Ceiling(($markerTime + 0.95 + 0.3) * 10.0) / 10.0)
+}
+
 function Assert-QuadrantFixtureCapture([string]$path, [int]$expectedWidth, [int]$expectedHeight, [int]$dimensionTolerance, [System.Drawing.Color[]]$expectedColors, [int]$colorTolerance, [string]$label) {
     Add-Type -AssemblyName System.Drawing
     $bitmap = [System.Drawing.Bitmap]::new($path)
@@ -1636,9 +1701,9 @@ try {
         $recordingDuration = [double]$status.duration
         if (-not [double]::IsNaN($markerMovedWallSeconds) -and [double]::IsNaN($markerMovedAtSeconds)) {
             $markerMovedAtSeconds = [Math]::Max($markerMovedWallSeconds, $recordingDuration)
-            $videoExportDuration = [Math]::Max(2.0, [Math]::Ceiling(($markerMovedAtSeconds + 1.0) * 10.0) / 10.0)
+            $videoExportDuration = Get-VideoSourceDurationTarget $markerMovedAtSeconds
             Write-Host "Video marker moved to its second validated position by $([Math]::Round($markerMovedAtSeconds, 3))s of recording."
-            Write-Host "The 10-FPS export target is $videoExportDuration s to retain the late marker and tooltip samples."
+            Write-Host "The source recording target is $videoExportDuration s to retain the late marker and tooltip samples."
         }
         $markerSettled = -not [double]::IsNaN($markerMovedWallSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedWallSeconds -ge 1.2
         $videoExportSourceReady = -not [double]::IsNaN($videoExportDuration) -and $recordingDuration -ge ($videoExportDuration + 0.1)
@@ -2492,13 +2557,39 @@ try {
     $reopenedScreenBounds.Right = $reopenedClientOrigin.X + $reopenedClient.Right
     $reopenedScreenBounds.Bottom = $reopenedClientOrigin.Y + $reopenedClient.Bottom
     $reopenedEditorCapturePath = Join-Path $captureRoot 'real-editor-reopened.png'
-    Capture-TooltipArea 'real-editor-reopened' $reopenedScreenBounds $reopenedEditorCapturePath
-    $reopenedQuadrantBounds = @()
-    foreach ($color in $fixtureColors) {
-        $colorBounds = Get-WorkflowColorBounds $reopenedEditorCapturePath $color
-        if ($colorBounds.PixelCount -lt 1000) { throw 'Reopened editor did not render the saved screenshot fixture pixels.' }
-        $reopenedQuadrantBounds += $colorBounds
-    }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)) { throw 'Could not foreground the reopened screenshot editor.' }
+    $reopenForegroundReady = Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $reopenedEditor.Handle -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $reopenedEditor.Handle
+    } 5000 'The reopened screenshot editor did not become the foreground window.'
+    if (-not $reopenForegroundReady) { throw 'The reopened screenshot editor was not foreground-ready for pixel verification.' }
+    $reopenHitPoint = New-Object PoratakeTooltipProbe+Point
+    $reopenHitPoint.X = [int][Math]::Round(($reopenedScreenBounds.Left + $reopenedScreenBounds.Right) / 2.0)
+    $reopenHitPoint.Y = [int][Math]::Round(($reopenedScreenBounds.Top + $reopenedScreenBounds.Bottom) / 2.0)
+    $script:reopenReadinessAttempt = 0
+    $reopenedPaintReady = Wait-Until {
+        try {
+            $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+            if ($foreground -ne $reopenedEditor.Handle -and [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -ne $reopenedEditor.Handle) { return $null }
+            $hit = [PoratakeTooltipProbe]::WindowFromPoint($reopenHitPoint)
+            if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $reopenedEditor.Handle) { return $null }
+            $script:reopenReadinessAttempt++
+            $candidate = Join-Path $captureRoot ("real-editor-reopened-readiness-{0:D2}.png" -f $script:reopenReadinessAttempt)
+            Capture-TooltipArea "real-editor-reopened-$($script:reopenReadinessAttempt)" $reopenedScreenBounds $candidate 5
+            $quadrants = @()
+            foreach ($color in $fixtureColors) {
+                $colorBounds = Get-WorkflowColorBounds $candidate $color
+                if ($colorBounds.PixelCount -lt 1000) { return $null }
+                $quadrants += $colorBounds
+            }
+            Copy-Item -LiteralPath $candidate -Destination $reopenedEditorCapturePath -Force -ErrorAction Stop
+            return $quadrants
+        } catch {
+            return $null
+        }
+    } 15000 'The reopened editor did not foreground, receive native hit testing, and render all saved screenshot colors.'
+    if (-not $reopenedPaintReady) { throw 'The reopened editor pixels were not ready for comparison.' }
+    $reopenedQuadrantBounds = @($reopenedPaintReady)
     $savedBitmap = [System.Drawing.Bitmap]::new($savedExportPath)
     $reopenedBitmap = [System.Drawing.Bitmap]::new($reopenedEditorCapturePath)
     try {
@@ -2718,10 +2809,11 @@ try {
     } | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText((Join-Path $videoProfileRoot 'config.json'), $videoConfig, [System.Text.UTF8Encoding]::new($false))
     $videoEditorStatePath = [System.IO.Path]::ChangeExtension($recordingPath, 'state.json')
+    $videoSourceDuration = [double]$videoExportDuration
     $videoEditorState = @{
         version = 2
-        sourceDuration = $videoExportDuration
-        segments = @(@{ id = 'hosted-export'; originalStart = 0.0; originalEnd = $videoExportDuration; trimMinStart = 0.0; trimMaxEnd = $videoExportDuration })
+        sourceDuration = $videoSourceDuration
+        segments = @(@{ id = 'hosted-export'; originalStart = 0.0; originalEnd = $videoSourceDuration; trimMinStart = 0.0; trimMaxEnd = $videoSourceDuration })
         exportSettings = @{ format = 'mp4'; resolution = 'original'; qualityPreset = 'studio'; frameRate = '10'; openInFinder = $false }
     } | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText($videoEditorStatePath, $videoEditorState, [System.Text.UTF8Encoding]::new($false))
@@ -2770,6 +2862,71 @@ try {
     }
     $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     [PoratakeTooltipProbe]::PressControlS()
+    $preTrimButtonProof = Join-Path $evidenceRoot 'video-export-before-trim-button.json'
+    [void](Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $preTrimButtonProof 'Export Video')
+    $videoBeforeTrimCapture = Join-Path $captureRoot 'real-video-editor-before-trim.png'
+    Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+    Capture-TooltipArea 'real-video-editor-before-trim' $videoEditorScreenBounds $videoBeforeTrimCapture
+    $videoClipBefore = Get-VideoTimelineClipBounds $videoBeforeTrimCapture
+    if ([Math]::Abs(($videoClipBefore.Width / $videoSourceDuration) - 100.0) -gt 12.0) {
+        throw "The measured timeline clip does not match the expected 100px/s scale: $($videoClipBefore.Width)px for ${videoSourceDuration}s."
+    }
+    $trimSeconds = [Math]::Min(0.3, $videoSourceDuration - ($markerMovedAtSeconds + 0.95))
+    if ($trimSeconds -lt 0.2) { throw "Not enough duration remains after the marker move for a meaningful trim: source=${videoSourceDuration}s, marker=${markerMovedAtSeconds}s." }
+    $trimPixels = [int][Math]::Round($videoClipBefore.Width * $trimSeconds / $videoSourceDuration)
+    if ($trimPixels -lt 20 -or $trimPixels -gt 40) { throw "The measured right-edge trim would move by an unexpected distance: $trimPixels pixels." }
+    $trimStartX = $videoEditorClientOrigin.X + $videoClipBefore.Right - 3
+    $trimStartY = $videoEditorClientOrigin.Y + $videoClipBefore.CenterY
+    $trimEndX = $trimStartX - $trimPixels
+    $trimHitPoint = New-Object PoratakeTooltipProbe+Point
+    $trimHitPoint.X = $trimStartX
+    $trimHitPoint.Y = $trimStartY
+    $trimHit = [PoratakeTooltipProbe]::WindowFromPoint($trimHitPoint)
+    if ($trimHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($trimHit, 2) -ne $videoEditorHandle) {
+        throw 'The measured right resize handle does not hit the video editor window.'
+    }
+    [PoratakeTooltipProbe]::Drag($trimStartX, $trimStartY, $trimEndX, $trimStartY)
+    $trimmedEditorState = Wait-Until {
+        try {
+            if (-not [System.IO.File]::Exists($videoEditorStatePath)) { return $null }
+            $state = Get-Content -LiteralPath $videoEditorStatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+            $segment = @($state.segments | Where-Object { $_.id -ceq 'hosted-export' })
+            if (@($state.segments).Count -ne 1 -or $segment.Count -ne 1 -or [double]$segment[0].originalStart -ne 0.0) { return $null }
+            $duration = [double]$segment[0].originalEnd - [double]$segment[0].originalStart
+            if ($null -ne $segment[0].speed -and [double]$segment[0].speed -gt 0.0) {
+                $duration /= [double]$segment[0].speed
+            }
+            if ($duration -gt ($videoSourceDuration - 0.2) -or $duration -lt ($markerMovedAtSeconds + 0.85)) { return $null }
+            return @{ State = $state; Duration = $duration; Segment = $segment[0] }
+        } catch {
+            return $null
+        }
+    } 10000 'The video timeline did not persist the measured right-edge trim.'
+    if (-not $trimmedEditorState) { throw 'The saved video state did not preserve a meaningful trim with enough marker tail.' }
+    if (@($trimmedEditorState.State.segments).Count -ne 1 -or $trimmedEditorState.State.segments[0].id -cne 'hosted-export') { throw 'The saved timeline no longer contains exactly the single hosted clip being trimmed.' }
+    $videoExportDuration = [double]$trimmedEditorState.Duration
+    $savedEnd = [double]$trimmedEditorState.Segment.originalEnd
+    if (($videoSourceDuration - $savedEnd) -lt 0.2) { throw "The saved video trim was too small: source-end=${videoSourceDuration}s, trimmed-end=${savedEnd}s." }
+    $videoAfterTrimCapture = Join-Path $captureRoot 'real-video-editor-after-trim.png'
+    $script:trimReadinessAttempt = 0
+    $videoClipAfter = Wait-Until {
+        try {
+            Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+            $script:trimReadinessAttempt++
+            $candidate = Join-Path $captureRoot ("real-video-editor-trim-readiness-{0:D2}.png" -f $script:trimReadinessAttempt)
+            Capture-TooltipArea "real-video-editor-after-trim-$($script:trimReadinessAttempt)" $videoEditorScreenBounds $candidate 5
+            $clip = Get-VideoTimelineClipBounds $candidate
+            $measuredPixelTrim = $videoClipBefore.Width - $clip.Width
+            if ($measuredPixelTrim -lt 15 -or [Math]::Abs($measuredPixelTrim - $trimPixels) -gt 8) { return $null }
+            Copy-Item -LiteralPath $candidate -Destination $videoAfterTrimCapture -Force -ErrorAction Stop
+            return $clip
+        } catch {
+            return $null
+        }
+    } 10000 "The captured timeline did not reflect the persisted $trimPixels px trim."
+    if (-not $videoClipAfter) { throw "The timeline screenshot did not show the persisted trim: before=$($videoClipBefore.Width)px, expected reduction=$trimPixels px." }
+    $measuredPixelTrim = $videoClipBefore.Width - $videoClipAfter.Width
+    Write-Host "The GPUI timeline trimmed its video clip by $([Math]::Round($videoSourceDuration - $videoExportDuration, 3))s: screenshot width $($videoClipBefore.Width)px to $($videoClipAfter.Width)px, persisted end ${savedEnd}s."
     $videoExportButtonProofPath = Join-Path $evidenceRoot 'video-export-button.json'
     $videoExportButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath 'Export Video'
     $videoExportButtonBounds = $videoExportButton.button.bounds

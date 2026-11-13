@@ -76,6 +76,12 @@ reopens the saved project and compares its preview with a decoded export, includ
 the changed annotation pixels. It is not a native UI recording workflow.
 The same full-width tooltip pattern also prevented screenshot-editor Reset Zoom
 clicks. A local pointer test at `a19b9120` verifies both edges of its 56px control.
+[Windows CI at `baa80bc0`](https://github.com/Porabuild/Poratake/actions/runs/43458601974)
+passed the native Rust suite but stopped before the picker and visual matrix: the
+runner terminal covered the reopened screenshot editor during its pixel capture.
+The harness now waits for the editor to be foregrounded, hit-tested and painted.
+A native record-area region-reuse check and a UI timeline-trim/export check are
+prepared locally; neither has passed hosted Windows yet.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. A hosted
 cursor-picker cancel/retry/accept test is prepared but has not run yet; the other
