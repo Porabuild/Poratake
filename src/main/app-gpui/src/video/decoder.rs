@@ -898,6 +898,10 @@ mod tests {
         video_path: std::path::PathBuf,
         reference_path: std::path::PathBuf,
         marker_reference_path: std::path::PathBuf,
+        fiducial_reference_path: std::path::PathBuf,
+        fiducial_bounds: RecordedTooltipBounds,
+        #[serde(default)]
+        editor_preview_path: Option<std::path::PathBuf>,
         marker_move_seconds: f64,
         #[serde(default)]
         expected_duration: Option<f64>,
@@ -934,6 +938,393 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[derive(Clone, Copy)]
+    struct FiducialPreviewMatch {
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+        scale: f64,
+        mean_error: f64,
+    }
+
+    #[cfg(windows)]
+    fn numeric_fiducial() -> image::RgbaImage {
+        let cell_size = 12u32;
+        let mut image = image::RgbaImage::new(8 * cell_size, 6 * cell_size);
+        for index in 0..48u32 {
+            let color = match index {
+                0 => [236, 36, 36, 255],
+                7 => [32, 220, 48, 255],
+                40 => [40, 56, 236, 255],
+                47 => [236, 220, 32, 255],
+                _ => [
+                    24 + ((index * 47) % 208) as u8,
+                    24 + ((index * 83) % 208) as u8,
+                    24 + ((index * 131) % 208) as u8,
+                    255,
+                ],
+            };
+            let x = (index % 8) * cell_size;
+            let y = (index / 8) * cell_size;
+            for row in y..y + cell_size {
+                for column in x..x + cell_size {
+                    image.put_pixel(column, row, image::Rgba(color));
+                }
+            }
+        }
+        image
+    }
+
+    #[cfg(windows)]
+    fn average_rgb(image: &image::RgbaImage, x: f64, y: f64) -> [f64; 3] {
+        let center_x = x.round() as i32;
+        let center_y = y.round() as i32;
+        let mut channels = [0.0; 3];
+        let mut count = 0.0;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let sample_x = (center_x + dx).clamp(0, image.width() as i32 - 1) as u32;
+                let sample_y = (center_y + dy).clamp(0, image.height() as i32 - 1) as u32;
+                let pixel = image.get_pixel(sample_x, sample_y);
+                for channel in 0..3 {
+                    channels[channel] += f64::from(pixel[channel]);
+                }
+                count += 1.0;
+            }
+        }
+        channels.map(|channel| channel / count)
+    }
+
+    #[cfg(windows)]
+    fn preview_fiducial_match(
+        screenshot: &image::RgbaImage,
+        template: &image::RgbaImage,
+        search: &RecordedTooltipBounds,
+    ) -> Option<FiducialPreviewMatch> {
+        const COLUMNS: u32 = 8;
+        const ROWS: u32 = 6;
+        if !template.width().is_multiple_of(COLUMNS) || !template.height().is_multiple_of(ROWS) {
+            return None;
+        }
+        let cell_width = template.width() / COLUMNS;
+        let cell_height = template.height() / ROWS;
+        if cell_width < 4 || cell_height < 4 {
+            return None;
+        }
+        let search_left = search.left.max(0) as u32;
+        let search_top = search.top.max(0) as u32;
+        let search_right = search.right.min(screenshot.width() as i32).max(0) as u32;
+        let search_bottom = search.bottom.min(screenshot.height() as i32).max(0) as u32;
+        if search_right <= search_left || search_bottom <= search_top {
+            return None;
+        }
+
+        let anchors = [(0, 0), (7, 0), (0, 5), (7, 5)];
+        let template_point = |column: u32, row: u32| {
+            (
+                f64::from(column * cell_width) + f64::from(cell_width) / 2.0,
+                f64::from(row * cell_height) + f64::from(cell_height) / 2.0,
+            )
+        };
+        let anchor_template: Vec<_> = anchors
+            .iter()
+            .map(|(column, row)| {
+                let (x, y) = template_point(*column, *row);
+                average_rgb(template, x, y)
+            })
+            .collect();
+        let mut sample_points = Vec::with_capacity(212);
+        for row in 0..ROWS {
+            for column in 0..COLUMNS {
+                let (center_x, center_y) = template_point(column, row);
+                sample_points.push((center_x, center_y));
+                if column + 1 < COLUMNS {
+                    let boundary_x = f64::from((column + 1) * cell_width);
+                    sample_points.push((boundary_x - 2.0, center_y));
+                    sample_points.push((boundary_x + 2.0, center_y));
+                }
+                if row + 1 < ROWS {
+                    let boundary_y = f64::from((row + 1) * cell_height);
+                    sample_points.push((center_x, boundary_y - 2.0));
+                    sample_points.push((center_x, boundary_y + 2.0));
+                }
+            }
+        }
+        let tolerance = 58.0;
+        const MAX_ANCHOR_CANDIDATES: usize = 50_000;
+        const MAX_VERIFIED_TRANSFORMS: usize = 10_000;
+        const MAX_MATCH_CANDIDATES: usize = 1_024;
+        let mut anchor_candidates: [Vec<(u32, u32)>; 4] = std::array::from_fn(|_| Vec::new());
+        let mut anchor_overflow = [false; 4];
+        for screen_y in search_top..search_bottom {
+            for screen_x in search_left..search_right {
+                let pixel = screenshot.get_pixel(screen_x, screen_y);
+                for (index, expected) in anchor_template.iter().enumerate() {
+                    if anchor_overflow[index] {
+                        continue;
+                    }
+                    let error = (0..3)
+                        .map(|channel| (f64::from(pixel[channel]) - expected[channel]).abs())
+                        .fold(0.0, f64::max);
+                    if error > tolerance {
+                        continue;
+                    }
+                    if anchor_candidates[index].len() == MAX_ANCHOR_CANDIDATES {
+                        anchor_overflow[index] = true;
+                        anchor_candidates[index].clear();
+                        continue;
+                    }
+                    anchor_candidates[index].push((screen_x, screen_y));
+                }
+            }
+        }
+        let (anchor_index, candidate_points) = anchor_candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, points)| !points.is_empty())
+            .min_by_key(|(_, points)| points.len())?;
+        let (anchor_column, anchor_row) = anchors[anchor_index];
+        let (anchor_point_x, anchor_point_y) = template_point(anchor_column, anchor_row);
+        let mut candidates = Vec::<FiducialPreviewMatch>::new();
+        let mut candidate_buckets = std::collections::HashMap::<(u32, u32), usize>::new();
+        let mut verified_transforms = 0usize;
+        for (screen_x, screen_y) in candidate_points {
+            for step in 0..=45 {
+                let scale = 0.30 + f64::from(step) * 0.01;
+                let left = (f64::from(*screen_x) - anchor_point_x * scale).round();
+                let top = (f64::from(*screen_y) - anchor_point_y * scale).round();
+                let width = (f64::from(template.width()) * scale).round() as u32;
+                let height = (f64::from(template.height()) * scale).round() as u32;
+                if left < f64::from(search_left)
+                    || top < f64::from(search_top)
+                    || left + f64::from(width) > f64::from(search_right)
+                    || top + f64::from(height) > f64::from(search_bottom)
+                {
+                    continue;
+                }
+                let left = left as u32;
+                let top = top as u32;
+                let mut anchors_match = true;
+                for (index, (column, row)) in anchors.iter().enumerate() {
+                    let (template_x, template_y) = template_point(*column, *row);
+                    let actual = average_rgb(
+                        screenshot,
+                        f64::from(left) + template_x * scale,
+                        f64::from(top) + template_y * scale,
+                    );
+                    let error = (0..3)
+                        .map(|channel| (actual[channel] - anchor_template[index][channel]).abs())
+                        .fold(0.0, f64::max);
+                    if error > tolerance {
+                        anchors_match = false;
+                        break;
+                    }
+                }
+                if !anchors_match {
+                    continue;
+                }
+                verified_transforms += 1;
+                if verified_transforms > MAX_VERIFIED_TRANSFORMS {
+                    return None;
+                }
+                let mut error = 0.0;
+                let mut high_error_samples = 0;
+                for (template_x, template_y) in &sample_points {
+                    let expected = average_rgb(template, *template_x, *template_y);
+                    let actual = average_rgb(
+                        screenshot,
+                        f64::from(left) + template_x * scale,
+                        f64::from(top) + template_y * scale,
+                    );
+                    let cell_error = (0..3)
+                        .map(|channel| (actual[channel] - expected[channel]).abs())
+                        .sum::<f64>()
+                        / 3.0;
+                    if (0..3)
+                        .map(|channel| (actual[channel] - expected[channel]).abs())
+                        .fold(0.0, f64::max)
+                        > 48.0
+                    {
+                        high_error_samples += 1;
+                    }
+                    error += cell_error;
+                }
+                let mean_error = error / sample_points.len() as f64;
+                if mean_error > 22.0 || high_error_samples > sample_points.len() / 8 {
+                    continue;
+                }
+                let candidate = FiducialPreviewMatch {
+                    left,
+                    top,
+                    width,
+                    height,
+                    scale,
+                    mean_error,
+                };
+                let bucket = (candidate.left / 8, candidate.top / 8);
+                if let Some(index) = candidate_buckets.get(&bucket).copied() {
+                    if candidate.mean_error < candidates[index].mean_error {
+                        candidates[index] = candidate;
+                    }
+                } else {
+                    if candidates.len() >= MAX_MATCH_CANDIDATES {
+                        return None;
+                    }
+                    candidate_buckets.insert(bucket, candidates.len());
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.sort_by(|left, right| left.mean_error.total_cmp(&right.mean_error));
+        let best = *candidates.first()?;
+        let has_second = candidates.iter().copied().any(|candidate| {
+            let left = candidate.left.max(best.left);
+            let top = candidate.top.max(best.top);
+            let right = (candidate.left + candidate.width).min(best.left + best.width);
+            let bottom = (candidate.top + candidate.height).min(best.top + best.height);
+            let overlap = right.saturating_sub(left) * bottom.saturating_sub(top);
+            let smaller = (candidate.width * candidate.height).min(best.width * best.height);
+            f64::from(overlap) / f64::from(smaller) <= 0.75
+        });
+        if has_second {
+            return None;
+        }
+        Some(best)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn numeric_scratch_fiducial_match_is_scaled_unique_and_rejects_rotation() {
+        let reference = numeric_fiducial();
+        let mut screenshot = image::RgbaImage::new(984, 680);
+        let mut noise = 0x1234_5678u32;
+        for pixel in screenshot.pixels_mut() {
+            noise ^= noise << 13;
+            noise ^= noise >> 17;
+            noise ^= noise << 5;
+            *pixel = image::Rgba([
+                144 + (noise as u8 % 112),
+                (noise.rotate_left(7) as u8) % 112,
+                (noise.rotate_left(15) as u8) % 88,
+                255,
+            ]);
+        }
+        let mut outside_screenshot = screenshot.clone();
+        let scaled =
+            image::imageops::resize(&reference, 50, 37, image::imageops::FilterType::Triangle);
+        image::imageops::overlay(&mut screenshot, &scaled, 510, 160);
+        for y in 160..197 {
+            for x in 510..560 {
+                let noise = ((x * 7 + y * 13) % 9) as i16 - 4;
+                let pixel = screenshot.get_pixel_mut(x, y);
+                for channel in 0..3 {
+                    pixel[channel] = (i16::from(pixel[channel]) + noise).clamp(0, 255) as u8;
+                }
+            }
+        }
+        let mut duplicate_screenshot = screenshot.clone();
+        image::imageops::overlay(&mut duplicate_screenshot, &scaled, 250, 160);
+        let mut shifted_duplicate_screenshot =
+            image::RgbaImage::from_pixel(984, 680, image::Rgba([0, 0, 0, 255]));
+        image::imageops::overlay(&mut shifted_duplicate_screenshot, &scaled, 100, 60);
+        let mut shifted = scaled.clone();
+        for pixel in shifted.pixels_mut() {
+            for channel in 0..3 {
+                pixel[channel] = pixel[channel].saturating_add(10);
+            }
+        }
+        image::imageops::overlay(&mut shifted_duplicate_screenshot, &shifted, 300, 160);
+        image::imageops::overlay(&mut outside_screenshot, &scaled, 760, 160);
+        let mut negative = reference.clone();
+        image::imageops::rotate180_in_place(&mut negative);
+        let search = RecordedTooltipBounds {
+            left: 0,
+            top: (screenshot.height() as f32 * 0.04) as i32,
+            right: (screenshot.width() as f32 * 0.68) as i32,
+            bottom: (screenshot.height() as f32 * 0.70) as i32,
+        };
+        let matched = preview_fiducial_match(&screenshot, &reference, &search)
+            .expect("positive numeric fiducial match");
+        assert!(
+            matched.left.abs_diff(510) <= 3,
+            "numeric matcher x {}, scale {}, score {}",
+            matched.left,
+            matched.scale,
+            matched.mean_error
+        );
+        assert!(
+            matched.top.abs_diff(160) <= 3,
+            "numeric matcher y {}, scale {}, score {}",
+            matched.top,
+            matched.scale,
+            matched.mean_error
+        );
+        assert!(
+            (matched.scale - (50.0 / 96.0)).abs() <= 0.015,
+            "numeric matcher scale {}, score {}",
+            matched.scale,
+            matched.mean_error
+        );
+        assert!(
+            matched.mean_error <= 16.0,
+            "numeric matcher mean error {}",
+            matched.mean_error
+        );
+        assert!(
+            preview_fiducial_match(&screenshot, &negative, &search).is_none(),
+            "rotated numeric negative control matched the screenshot"
+        );
+        assert!(
+            preview_fiducial_match(&outside_screenshot, &reference, &search).is_none(),
+            "outside-pane numeric negative control matched the cropped preview search"
+        );
+        assert!(
+            preview_fiducial_match(&duplicate_screenshot, &reference, &search).is_none(),
+            "two disjoint numeric fiducials were accepted as a unique preview match"
+        );
+        assert!(
+            preview_fiducial_match(&shifted_duplicate_screenshot, &reference, &search).is_none(),
+            "a color-shifted duplicate was accepted as a unique preview match"
+        );
+        let mut uniform_background =
+            image::RgbaImage::from_pixel(984, 680, image::Rgba([236, 36, 36, 255]));
+        image::imageops::overlay(&mut uniform_background, &scaled, 510, 160);
+        let uniform_match = preview_fiducial_match(&uniform_background, &reference, &search)
+            .expect("fiducial remains detectable over a uniform first-anchor background");
+        assert!(uniform_match.left.abs_diff(510) <= 3);
+        assert!(uniform_match.top.abs_diff(160) <= 3);
+
+        let mut mixed_background = image::RgbaImage::new(984, 680);
+        let anchor_colors = [
+            image::Rgba([236, 36, 36, 255]),
+            image::Rgba([32, 220, 48, 255]),
+            image::Rgba([40, 56, 236, 255]),
+            image::Rgba([236, 220, 32, 255]),
+        ];
+        for y in 0..mixed_background.height() {
+            for x in 0..mixed_background.width() {
+                let index = (if x >= mixed_background.width() / 2 {
+                    1
+                } else {
+                    0
+                }) + 2
+                    * (if y >= mixed_background.height() / 2 {
+                        1
+                    } else {
+                        0
+                    });
+                mixed_background.put_pixel(x, y, anchor_colors[index]);
+            }
+        }
+        image::imageops::overlay(&mut mixed_background, &scaled, 510, 160);
+        assert!(
+            preview_fiducial_match(&mixed_background, &reference, &search).is_none(),
+            "ambiguous mixed-anchor background was accepted as a unique fiducial"
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     #[ignore = "requires the hosted native tooltip video fixture"]
     fn recorded_tooltip_is_excluded_from_video_frames() {
@@ -950,6 +1341,9 @@ mod tests {
             .to_rgba8();
         let marker_reference = image::open(&manifest.marker_reference_path)
             .expect("open white marker underlay capture")
+            .to_rgba8();
+        let fiducial_reference = image::open(&manifest.fiducial_reference_path)
+            .expect("open captured multicolor fiducial reference")
             .to_rgba8();
         let paint_proof = image::open(&manifest.paint_proof_path)
             .expect("open actual WM_PRINTCLIENT tooltip paint proof")
@@ -984,6 +1378,10 @@ mod tests {
             info.duration
         );
         if let Some(expected_duration) = manifest.expected_duration {
+            assert!(
+                manifest.editor_preview_path.is_some(),
+                "UI-export proof must include the actual editor screenshot for fiducial parity"
+            );
             assert!(
                 (info.duration - expected_duration).abs() <= 0.100_001,
                 "decoded video duration {}s differs by more than one 10-FPS frame from the expected segment {}s",
@@ -1061,6 +1459,66 @@ mod tests {
                 || manifest.marker_initial_bounds.bottom <= manifest.marker_moved_bounds.top
                 || manifest.marker_moved_bounds.bottom <= manifest.marker_initial_bounds.top
         );
+        let fiducial_width =
+            u32::try_from(manifest.fiducial_bounds.right - manifest.fiducial_bounds.left)
+                .expect("positive fiducial width");
+        let fiducial_height =
+            u32::try_from(manifest.fiducial_bounds.bottom - manifest.fiducial_bounds.top)
+                .expect("positive fiducial height");
+        assert_eq!(
+            fiducial_reference.dimensions(),
+            (fiducial_width, fiducial_height)
+        );
+        assert_eq!(fiducial_width % 8, 0);
+        assert_eq!(fiducial_height % 6, 0);
+        assert!(fiducial_width >= 64 && fiducial_height >= 48);
+        assert!(manifest.fiducial_bounds.left >= manifest.capture_bounds.left);
+        assert!(manifest.fiducial_bounds.top >= manifest.capture_bounds.top);
+        assert!(manifest.fiducial_bounds.right <= manifest.capture_bounds.right);
+        assert!(manifest.fiducial_bounds.bottom <= manifest.capture_bounds.bottom);
+        let intersects = |first: &RecordedTooltipBounds, second: &RecordedTooltipBounds| {
+            first.left < second.right
+                && first.right > second.left
+                && first.top < second.bottom
+                && first.bottom > second.top
+        };
+        assert!(!intersects(
+            &manifest.fiducial_bounds,
+            &manifest.tooltip_bounds
+        ));
+        assert!(!intersects(
+            &manifest.fiducial_bounds,
+            &manifest.owner_bounds
+        ));
+        assert!(!intersects(
+            &manifest.fiducial_bounds,
+            &manifest.marker_panel_bounds
+        ));
+        assert!(!intersects(
+            &manifest.fiducial_bounds,
+            &manifest.marker_initial_bounds
+        ));
+        assert!(!intersects(
+            &manifest.fiducial_bounds,
+            &manifest.marker_moved_bounds
+        ));
+        let cell_width = fiducial_width / 8;
+        let cell_height = fiducial_height / 6;
+        let mut reference_cell_colors = std::collections::HashSet::new();
+        for row in 0..6 {
+            for column in 0..8 {
+                let pixel = fiducial_reference.get_pixel(
+                    column * cell_width + cell_width / 2,
+                    row * cell_height + cell_height / 2,
+                );
+                reference_cell_colors.insert((pixel[0], pixel[1], pixel[2]));
+            }
+        }
+        assert_eq!(
+            reference_cell_colors.len(),
+            48,
+            "captured fiducial must have a unique color at every cell center"
+        );
         let paint_client = &manifest.paint_client_bounds;
         let paint_client_right = paint_client.screen_left + paint_client.width;
         let paint_client_bottom = paint_client.screen_top + paint_client.height;
@@ -1132,6 +1590,21 @@ mod tests {
                         + x;
                     let frame_y =
                         (manifest.marker_panel_bounds.top - manifest.capture_bounds.top) as u32 + y;
+                    let offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                    let pixel = &bgra[offset..offset + 4];
+                    crop.put_pixel(x, y, image::Rgba([pixel[2], pixel[1], pixel[0], 255]));
+                }
+            }
+            crop
+        };
+        let fiducial_crop = |bgra: &[u8]| {
+            let mut crop = image::RgbaImage::new(fiducial_width, fiducial_height);
+            for y in 0..fiducial_height {
+                for x in 0..fiducial_width {
+                    let frame_x =
+                        (manifest.fiducial_bounds.left - manifest.capture_bounds.left) as u32 + x;
+                    let frame_y =
+                        (manifest.fiducial_bounds.top - manifest.capture_bounds.top) as u32 + y;
                     let offset = ((frame_y * info.width + frame_x) * 4) as usize;
                     let pixel = &bgra[offset..offset + 4];
                     crop.put_pixel(x, y, image::Rgba([pixel[2], pixel[1], pixel[0], 255]));
@@ -1220,6 +1693,129 @@ mod tests {
                             .with_file_name(format!("tooltip-video-marker-{sample_index:02}.png")),
                     )
                     .expect("save decoded marker-state evidence");
+            }
+            if sample_index == 0 {
+                let fiducial_export = fiducial_crop(&frame.bgra);
+                let export_roi_path =
+                    manifest_path.with_file_name(if manifest.editor_preview_path.is_some() {
+                        "tooltip-video-fiducial-export.png"
+                    } else {
+                        "tooltip-video-fiducial-recording.png"
+                    });
+                fiducial_export
+                    .save(&export_roi_path)
+                    .expect("save decoded fiducial export ROI");
+                let mut total_error = 0u64;
+                let mut high_error_pixels = 0usize;
+                for (expected, actual) in fiducial_reference.pixels().zip(fiducial_export.pixels())
+                {
+                    let difference = [
+                        expected[0].abs_diff(actual[0]),
+                        expected[1].abs_diff(actual[1]),
+                        expected[2].abs_diff(actual[2]),
+                    ];
+                    if difference.into_iter().max().unwrap_or_default() > 48 {
+                        high_error_pixels += 1;
+                    }
+                    total_error += difference.into_iter().map(u64::from).sum::<u64>();
+                }
+                let pixel_count = (fiducial_width * fiducial_height) as usize;
+                let mean_error = total_error as f64 / (pixel_count * 3) as f64;
+                assert!(
+                    mean_error <= 18.0 && high_error_pixels <= (pixel_count * 8 / 100),
+                    "decoded recording did not preserve the multicolor fiducial ROI: mean channel error {mean_error:.2}, high-error pixels {high_error_pixels}/{pixel_count}"
+                );
+                for row in 0..6 {
+                    for column in 0..8 {
+                        let x = column * cell_width + cell_width / 2;
+                        let y = row * cell_height + cell_height / 2;
+                        let expected = fiducial_reference.get_pixel(x, y);
+                        let actual = fiducial_export.get_pixel(x, y);
+                        let error = (0..3)
+                            .map(|channel| expected[channel].abs_diff(actual[channel]))
+                            .max()
+                            .unwrap_or_default();
+                        assert!(
+                            error <= 40,
+                            "fiducial cell center {column},{row} differs by {error} channel levels"
+                        );
+                    }
+                }
+                let rotated_negative = image::imageops::rotate180(&fiducial_reference);
+                let negative_mean_error = fiducial_reference
+                    .pixels()
+                    .zip(rotated_negative.pixels())
+                    .map(|(expected, actual)| {
+                        (0..3)
+                            .map(|channel| u64::from(expected[channel].abs_diff(actual[channel])))
+                            .sum::<u64>()
+                    })
+                    .sum::<u64>() as f64
+                    / (pixel_count * 3) as f64;
+                assert!(
+                    negative_mean_error >= 45.0,
+                    "fiducial rotated-pattern negative control is not distinct enough: mean error {negative_mean_error:.2}"
+                );
+                if let Some(editor_preview_path) = &manifest.editor_preview_path {
+                    let editor_preview = image::open(editor_preview_path)
+                        .expect("open actual GPUI editor preview screenshot")
+                        .to_rgba8();
+                    let search = RecordedTooltipBounds {
+                        left: 0,
+                        top: (editor_preview.height() as f32 * 0.04) as i32,
+                        right: (editor_preview.width() as f32 * 0.68) as i32,
+                        bottom: (editor_preview.height() as f32 * 0.70) as i32,
+                    };
+                    let preview_match =
+                        preview_fiducial_match(&editor_preview, &fiducial_export, &search).expect(
+                            "unique multicolor fiducial match in the actual GPUI video preview",
+                        );
+                    let preview_roi = image::imageops::crop_imm(
+                        &editor_preview,
+                        preview_match.left,
+                        preview_match.top,
+                        preview_match.width,
+                        preview_match.height,
+                    )
+                    .to_image();
+                    preview_roi
+                        .save(manifest_path.with_file_name("tooltip-video-fiducial-preview.png"))
+                        .expect("save matched GPUI preview fiducial ROI");
+                    let negative_match = preview_fiducial_match(
+                        &editor_preview,
+                        &image::imageops::rotate180(&fiducial_export),
+                        &search,
+                    );
+                    assert!(
+                        negative_match.is_none(),
+                        "rotated numeric fiducial negative control also matched the GPUI preview"
+                    );
+                    let source_offset_x =
+                        (manifest.fiducial_bounds.left - manifest.capture_bounds.left) as f64;
+                    let source_offset_y =
+                        (manifest.fiducial_bounds.top - manifest.capture_bounds.top) as f64;
+                    let full_left =
+                        f64::from(preview_match.left) - source_offset_x * preview_match.scale;
+                    let full_top =
+                        f64::from(preview_match.top) - source_offset_y * preview_match.scale;
+                    let full_right = full_left + f64::from(info.width) * preview_match.scale;
+                    let full_bottom = full_top + f64::from(info.height) * preview_match.scale;
+                    assert!(full_left >= f64::from(search.left));
+                    assert!(full_top >= f64::from(search.top));
+                    assert!(full_right <= f64::from(search.right));
+                    assert!(full_bottom <= f64::from(search.bottom));
+                    eprintln!(
+                        "GPUI preview matched trimmed export fiducial ROI at {},{} scale {:.3}, mean cell error {:.2}; approximate frame {:.1},{:.1}-{:.1},{:.1}",
+                        preview_match.left,
+                        preview_match.top,
+                        preview_match.scale,
+                        preview_match.mean_error,
+                        full_left,
+                        full_top,
+                        full_right,
+                        full_bottom
+                    );
+                }
             }
             let (compared_pixels, high_error_pixels, mean_error, allowed_high_error_pixels, proof) =
                 analyze_frame(&frame.bgra);

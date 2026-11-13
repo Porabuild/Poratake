@@ -365,6 +365,10 @@ $markerWindow = [IntPtr]::Zero
 $markerBitmapHandle = [IntPtr]::Zero
 $markerPreviousBitmapHandle = [IntPtr]::Zero
 $markerAttachedBitmapHandle = [IntPtr]::Zero
+$fiducialWindow = [IntPtr]::Zero
+$fiducialBitmapHandle = [IntPtr]::Zero
+$fiducialPreviousBitmapHandle = [IntPtr]::Zero
+$fiducialAttachedBitmapHandle = [IntPtr]::Zero
 $workflowFixtureWindow = [IntPtr]::Zero
 $workflowFixtureBitmapHandle = [IntPtr]::Zero
 $workflowFixturePreviousBitmapHandle = [IntPtr]::Zero
@@ -1055,6 +1059,30 @@ function Release-BlackMarker {
     }
 }
 
+function Release-Fiducial {
+    if ($script:fiducialWindow -ne [IntPtr]::Zero) {
+        try {
+            $detachedBitmap = [PoratakeTooltipFixture]::DetachScreenshotBitmap($script:fiducialWindow, [uint32]$PID)
+            if ($detachedBitmap -ne [IntPtr]::Zero) { $script:fiducialAttachedBitmapHandle = $detachedBitmap }
+        } catch { $script:safeToDeleteProfile = $false }
+        try {
+            [PoratakeTooltipProbe]::DestroyOwnedWindow($script:fiducialWindow, [uint32]$PID)
+            $script:fiducialWindow = [IntPtr]::Zero
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+    if ($script:fiducialWindow -ne [IntPtr]::Zero) { return }
+    $releasedHandles = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($bitmap in @($script:fiducialBitmapHandle, $script:fiducialPreviousBitmapHandle, $script:fiducialAttachedBitmapHandle)) {
+        if ($bitmap -eq [IntPtr]::Zero -or -not $releasedHandles.Add($bitmap.ToInt64())) { continue }
+        try {
+            [PoratakeTooltipFixture]::DeleteBlackMarkerBitmap($bitmap)
+            if ($script:fiducialBitmapHandle -eq $bitmap) { $script:fiducialBitmapHandle = [IntPtr]::Zero }
+            if ($script:fiducialPreviousBitmapHandle -eq $bitmap) { $script:fiducialPreviousBitmapHandle = [IntPtr]::Zero }
+            if ($script:fiducialAttachedBitmapHandle -eq $bitmap) { $script:fiducialAttachedBitmapHandle = [IntPtr]::Zero }
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+}
+
 function Release-ScreenshotFixture {
     if ($script:workflowFixtureWindow -ne [IntPtr]::Zero) {
         try {
@@ -1430,6 +1458,46 @@ function ConvertTo-FixtureRect([PoratakeTooltipProbe+Rect]$rect) {
     $fixtureRect.Right = $rect.Right
     $fixtureRect.Bottom = $rect.Bottom
     return $fixtureRect
+}
+
+function Get-NumericFiducialColors {
+    $colors = [System.Collections.Generic.List[System.Drawing.Color]]::new()
+    for ($index = 0; $index -lt 48; $index++) {
+        $color = switch ($index) {
+            0 { [System.Drawing.Color]::FromArgb(236, 36, 36); break }
+            7 { [System.Drawing.Color]::FromArgb(32, 220, 48); break }
+            40 { [System.Drawing.Color]::FromArgb(40, 56, 236); break }
+            47 { [System.Drawing.Color]::FromArgb(236, 220, 32); break }
+            default { [System.Drawing.Color]::FromArgb(24 + (($index * 47) % 208), 24 + (($index * 83) % 208), 24 + (($index * 131) % 208)) }
+        }
+        $colors.Add($color)
+    }
+    return ,$colors.ToArray()
+}
+
+function Assert-NumericFiducialCapture([string]$path, [System.Drawing.Color[]]$colors, [int]$width, [int]$height, [int]$cellSize) {
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        if ($image.Width -ne $width -or $image.Height -ne $height -or $colors.Count -ne 48) { throw 'The fiducial reference dimensions or cell-color count are invalid.' }
+        $unique = [System.Collections.Generic.HashSet[string]]::new()
+        for ($row = 0; $row -lt 6; $row++) {
+            for ($column = 0; $column -lt 8; $column++) {
+                $index = $row * 8 + $column
+                $expected = $colors[$index]
+                $unique.Add(('{0},{1},{2}' -f $expected.R, $expected.G, $expected.B)) | Out-Null
+                $x = $column * $cellSize + [int]($cellSize / 2)
+                $y = $row * $cellSize + [int]($cellSize / 2)
+                $actual = $image.GetPixel($x, $y)
+                if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 8 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 8 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 8) {
+                    throw "WGC fiducial cell $column,$row at $x,$y differed from its numeric color reference."
+                }
+            }
+        }
+        if ($unique.Count -ne 48) { throw "The generated fiducial contains only $($unique.Count) unique cell colors." }
+        Write-Host "WGC fiducial reference captured and matched all $($unique.Count) unique numeric cell centers."
+    } finally {
+        $image.Dispose()
+    }
 }
 
 function Assert-WhiteMarkerPanel([string]$path, [PoratakeTooltipProbe+Rect]$rect) {
@@ -1895,6 +1963,55 @@ try {
     Capture-TooltipArea 'tooltip-video-marker-initial' $markerPanelBounds $markerInitialCapture
     Assert-MarkerPanel $markerInitialCapture $markerPanelBounds $markerInitialBounds $markerMovedBounds
     Write-Host "Video marker positive control passed at $($markerInitialBounds.Left),$($markerInitialBounds.Top) and $($markerMovedBounds.Left),$($markerMovedBounds.Top), outside tooltip and owner bounds."
+    $fiducialWidth = 96
+    $fiducialHeight = 72
+    $fiducialCellSize = 12
+    $fiducialBounds = New-Object PoratakeTooltipProbe+Rect
+    $fiducialBounds.Left = $monitor.Work.Left + [int][Math]::Floor(($monitor.Work.Right - $monitor.Work.Left) * 0.62)
+    $fiducialBounds.Top = $monitor.Work.Top + 180
+    $fiducialBounds.Right = $fiducialBounds.Left + $fiducialWidth
+    $fiducialBounds.Bottom = $fiducialBounds.Top + $fiducialHeight
+    if ($fiducialBounds.Left -lt $monitor.Work.Left -or $fiducialBounds.Top -lt $monitor.Work.Top -or $fiducialBounds.Right -gt $monitor.Work.Right -or $fiducialBounds.Bottom -gt $monitor.Work.Bottom) { throw 'The monitor work area cannot contain the video fiducial.' }
+    if ($fiducialBounds.Left -lt $captureBounds.Left -or $fiducialBounds.Top -lt $captureBounds.Top -or $fiducialBounds.Right -gt $captureBounds.Right -or $fiducialBounds.Bottom -gt $captureBounds.Bottom) { throw 'The video fiducial falls outside the recorded monitor bounds.' }
+    foreach ($protectedBounds in @($bounds, $tooltipBounds, $markerPanelBounds, $markerInitialBounds, $markerMovedBounds)) {
+        if (Test-RectIntersects $fiducialBounds $protectedBounds) { throw 'The video fiducial overlaps the recording control, tooltip, or marker fixture.' }
+    }
+    $fiducialColors = Get-NumericFiducialColors
+    Add-Type -AssemblyName System.Drawing
+    $fiducialBitmap = [System.Drawing.Bitmap]::new($fiducialWidth, $fiducialHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $fiducialGraphics = [System.Drawing.Graphics]::FromImage($fiducialBitmap)
+    try {
+        $fiducialGraphics.Clear([System.Drawing.Color]::Black)
+        for ($row = 0; $row -lt 6; $row++) {
+            for ($column = 0; $column -lt 8; $column++) {
+                $brush = [System.Drawing.SolidBrush]::new($fiducialColors[$row * 8 + $column])
+                try {
+                    $fiducialGraphics.FillRectangle($brush, $column * $fiducialCellSize, $row * $fiducialCellSize, $fiducialCellSize, $fiducialCellSize)
+                } finally {
+                    $brush.Dispose()
+                }
+            }
+        }
+        $fiducialBitmapHandle = $fiducialBitmap.GetHbitmap()
+        if ($fiducialBitmapHandle -eq [IntPtr]::Zero) { throw 'Could not create the test-owned video fiducial bitmap handle.' }
+    } finally {
+        $fiducialGraphics.Dispose()
+        $fiducialBitmap.Dispose()
+    }
+    $fiducialWindow = [PoratakeTooltipFixture]::CreateScreenshotWindow((ConvertTo-FixtureRect $fiducialBounds))
+    $fiducialPreviousBitmapHandle = [PoratakeTooltipFixture]::SetScreenshotBitmap($fiducialWindow, $fiducialBitmapHandle, [uint32]$PID)
+    if ($fiducialPreviousBitmapHandle -ne [IntPtr]::Zero) { throw 'The new fiducial window already had an attached bitmap.' }
+    [PoratakeTooltipFixture]::ShowScreenshotWindow($fiducialWindow, (ConvertTo-FixtureRect $fiducialBounds), [uint32]$PID)
+    $fiducialCenter = New-Object PoratakeTooltipProbe+Point
+    $fiducialCenter.X = $fiducialBounds.Left + [int]($fiducialWidth / 2)
+    $fiducialCenter.Y = $fiducialBounds.Top + [int]($fiducialHeight / 2)
+    $fiducialHit = [PoratakeTooltipProbe]::WindowFromPoint($fiducialCenter)
+    $fiducialProcess = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($fiducialWindow, [ref]$fiducialProcess)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($fiducialWindow) -or $fiducialProcess -ne [uint32]$PID -or $fiducialHit -ne $fiducialWindow) { throw 'The test-owned fiducial window is not the visible hit-test target at its center.' }
+    $fiducialReferencePath = Join-Path $captureRoot 'tooltip-video-fiducial-reference.png'
+    Capture-TooltipArea 'tooltip-video-fiducial-reference' $fiducialBounds $fiducialReferencePath
+    Assert-NumericFiducialCapture $fiducialReferencePath $fiducialColors $fiducialWidth $fiducialHeight $fiducialCellSize
     $recordingDirectory = Join-Path $evidenceRoot 'recording'
     New-Item -ItemType Directory -Path $recordingDirectory -Force | Out-Null
     $recordingPath = Join-Path $recordingDirectory 'tooltip-recording.mp4'
@@ -2016,9 +2133,20 @@ try {
             right = $markerMovedBounds.Right
             bottom = $markerMovedBounds.Bottom
         }
+        fiducialReferencePath = $fiducialReferencePath
+        fiducialBounds = @{
+            left = $fiducialBounds.Left
+            top = $fiducialBounds.Top
+            right = $fiducialBounds.Right
+            bottom = $fiducialBounds.Bottom
+        }
     }
     [System.IO.File]::WriteAllText($videoProofPath, ($videoProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoProofPath
+    Release-Fiducial
+    if ($fiducialWindow -ne [IntPtr]::Zero -or $fiducialBitmapHandle -ne [IntPtr]::Zero -or $fiducialPreviousBitmapHandle -ne [IntPtr]::Zero -or $fiducialAttachedBitmapHandle -ne [IntPtr]::Zero) {
+        throw 'Could not detach and release the test-owned video fiducial before opening the editor.'
+    }
     Release-BlackMarker
     if ($markerWindow -ne [IntPtr]::Zero -or $markerBitmapHandle -ne [IntPtr]::Zero -or $markerPreviousBitmapHandle -ne [IntPtr]::Zero -or $markerAttachedBitmapHandle -ne [IntPtr]::Zero) {
         throw 'Could not detach and release the test-owned marker bitmap.'
@@ -2891,7 +3019,7 @@ try {
             camera = @{ enabled = $false }
         }
         shortcuts = @{ recording = @{ area = 'Alt+Shift+R' } }
-        saveLocations = @{ video = $handoffRecordingRoot }
+        storage = @{ recordingsPath = $handoffRecordingRoot }
     } | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText((Join-Path $handoffProfileRoot 'config.json'), $handoffConfig, [System.Text.UTF8Encoding]::new($false))
     $handoffPreviousProfile = $env:PORATAKE_CONFIG_DIR
@@ -2968,6 +3096,16 @@ try {
     } 15000 'Starting the real area recording did not cut a hole in its selector window region.'
     if (-not $regionHoleReady) { throw 'The recording selector window region does not exclude its selected area.' }
     Write-Host "Recording handoff region excluded the selected point $($handoffInsidePoint.X),$($handoffInsidePoint.Y) and retained outside point $($handoffOutsidePoint.X),$($handoffOutsidePoint.Y) on HWND $($handoffOverlay.ToInt64())."
+    $handoffProject = Wait-Until {
+        $projects = @(Get-ChildItem -LiteralPath $handoffRecordingRoot -Directory -Filter '*.poratake' -ErrorAction SilentlyContinue)
+        if ($projects.Count -ne 1) { return $null }
+        $projectPath = [System.IO.Path]::GetFullPath($projects[0].FullName)
+        $recordingRoot = [System.IO.Path]::GetFullPath($handoffRecordingRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $projectPath.StartsWith($recordingRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "The recording handoff project escaped its test-owned output directory: $projectPath" }
+        return $projectPath
+    } 10000 'Starting the area recording did not create exactly one project under the test-owned recordings path.'
+    if (-not $handoffProject) { throw 'The test-owned recordings directory did not contain exactly one new project.' }
+    Write-Host "Area recording created its unique GPUI project under the isolated recordings path: $handoffProject."
     if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffControl, [ref]$handoffControlBounds)) { throw 'Could not measure the active area-recording control window.' }
     $handoffStopButtonProof = Join-Path $evidenceRoot 'recording-handoff-stop-button.json'
     $handoffStopButton = Get-VideoEditorButtonReadiness $handoffControl $handoffControlBounds $handoffStopButtonProof 'Stop recording'
@@ -3237,6 +3375,7 @@ try {
     $videoExportProof = $videoProof.Clone()
     $videoExportProof.videoPath = $videoExportPath
     $videoExportProof.expectedDuration = $videoExportDuration
+    $videoExportProof.editorPreviewPath = $videoEditorReadyCapture
     $videoExportProofPath = Join-Path $evidenceRoot 'tooltip-video-export-proof.json'
     [System.IO.File]::WriteAllText($videoExportProofPath, ($videoExportProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoExportProofPath
@@ -3332,6 +3471,8 @@ try {
     if ($overlapWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
+    Release-Fiducial
+    if ($fiducialWindow -ne [IntPtr]::Zero -or $fiducialBitmapHandle -ne [IntPtr]::Zero -or $fiducialPreviousBitmapHandle -ne [IntPtr]::Zero -or $fiducialAttachedBitmapHandle -ne [IntPtr]::Zero) { $safeToDeleteProfile = $false }
     Release-BlackMarker
     if ($markerBackdropWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
