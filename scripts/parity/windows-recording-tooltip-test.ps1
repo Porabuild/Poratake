@@ -36,6 +36,9 @@ $overlapWindow = [IntPtr]::Zero
 $backdropWindow = [IntPtr]::Zero
 $markerBackdropWindow = [IntPtr]::Zero
 $markerWindow = [IntPtr]::Zero
+$markerBitmapHandle = [IntPtr]::Zero
+$markerPreviousBitmapHandle = [IntPtr]::Zero
+$markerAttachedBitmapHandle = [IntPtr]::Zero
 $captureDaemon = $null
 $captureDaemonIdentity = $null
 $captureDaemonReady = $false
@@ -326,6 +329,8 @@ public static class PoratakeTooltipFixture {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+    [DllImport("user32.dll", EntryPoint="SendMessageW")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("gdi32.dll", SetLastError=true)] static extern bool DeleteObject(IntPtr obj);
 
     public static IntPtr CreateBackdrop(Rect rect, IntPtr owner) {
         uint style = 0x98000006u;
@@ -342,16 +347,43 @@ public static class PoratakeTooltipFixture {
     }
 
     public static IntPtr CreateBlackMarker(Rect rect) {
-        var hwnd = CreateWindowEx(0x08000080, "STATIC", "", 0x90000004, rect.Left, rect.Top,
+        var hwnd = CreateWindowEx(0x08000080, "STATIC", "", 0x9000010E, rect.Left, rect.Top,
             rect.Right - rect.Left, rect.Bottom - rect.Top, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
         if (hwnd == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create the video marker.");
+        return hwnd;
+    }
+
+    public static IntPtr SetBlackMarkerBitmap(IntPtr hwnd, IntPtr bitmap, uint processId) {
+        if (hwnd == IntPtr.Zero || bitmap == IntPtr.Zero) throw new InvalidOperationException("The video marker window or bitmap is empty.");
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to set a bitmap on a marker outside the test process.");
+        return SendMessage(hwnd, 0x0172, IntPtr.Zero, bitmap);
+    }
+
+    public static IntPtr DetachBlackMarkerBitmap(IntPtr hwnd, uint processId) {
+        if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to detach a bitmap from a marker outside the test process.");
+        return SendMessage(hwnd, 0x0172, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    public static void ShowBlackMarker(IntPtr hwnd, Rect rect, uint processId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to show a marker outside the test process.");
         if (!SetWindowPos(hwnd, new IntPtr(-1), rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
             !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
             int error = Marshal.GetLastWin32Error();
-            DestroyWindow(hwnd);
             throw new System.ComponentModel.Win32Exception(error, "Could not paint the video marker.");
         }
-        return hwnd;
+    }
+
+    public static void DeleteBlackMarkerBitmap(IntPtr bitmap) {
+        if (bitmap != IntPtr.Zero && !DeleteObject(bitmap)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not release the test-owned marker bitmap.");
+        }
     }
 
     public static void MoveBlackMarker(IntPtr hwnd, Rect rect, uint processId) {
@@ -371,6 +403,30 @@ public static class PoratakeTooltipFixture {
     [DllImport("user32.dll", SetLastError=true)] static extern bool DestroyWindow(IntPtr hwnd);
 }
 '@
+
+function Release-BlackMarker {
+    if ($script:markerWindow -ne [IntPtr]::Zero) {
+        try {
+            $detachedBitmap = [PoratakeTooltipFixture]::DetachBlackMarkerBitmap($script:markerWindow, [uint32]$PID)
+            if ($detachedBitmap -ne [IntPtr]::Zero) { $script:markerAttachedBitmapHandle = $detachedBitmap }
+        } catch { $script:safeToDeleteProfile = $false }
+        try {
+            [PoratakeTooltipProbe]::DestroyOwnedWindow($script:markerWindow, [uint32]$PID)
+            $script:markerWindow = [IntPtr]::Zero
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+    if ($script:markerWindow -ne [IntPtr]::Zero) { return }
+    $releasedHandles = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($bitmap in @($script:markerBitmapHandle, $script:markerPreviousBitmapHandle, $script:markerAttachedBitmapHandle)) {
+        if ($bitmap -eq [IntPtr]::Zero -or -not $releasedHandles.Add($bitmap.ToInt64())) { continue }
+        try {
+            [PoratakeTooltipFixture]::DeleteBlackMarkerBitmap($bitmap)
+            if ($script:markerBitmapHandle -eq $bitmap) { $script:markerBitmapHandle = [IntPtr]::Zero }
+            if ($script:markerPreviousBitmapHandle -eq $bitmap) { $script:markerPreviousBitmapHandle = [IntPtr]::Zero }
+            if ($script:markerAttachedBitmapHandle -eq $bitmap) { $script:markerAttachedBitmapHandle = [IntPtr]::Zero }
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+}
 
 function Invoke-CaptureDaemonRequest([hashtable]$request, [double]$timeoutSeconds = 35.0, [DateTime]$deadline = [DateTime]::MinValue) {
     if (-not $script:captureDaemon -or $script:captureDaemon.HasExited -or $script:captureRpcTimedOut) { throw 'Screenshot daemon is unavailable.' }
@@ -922,11 +978,36 @@ try {
     $markerReferencePath = Join-Path $captureRoot 'tooltip-video-marker-underlay.png'
     Capture-TooltipArea 'tooltip-video-marker-underlay' $markerPanelBounds $markerReferencePath
     Assert-WhiteMarkerPanel $markerReferencePath $markerPanelBounds
+    Add-Type -AssemblyName System.Drawing
+    $markerBitmap = [System.Drawing.Bitmap]::new($markerSize, $markerSize)
+    $markerGraphics = [System.Drawing.Graphics]::FromImage($markerBitmap)
+    try {
+        $markerGraphics.Clear([System.Drawing.Color]::Black)
+        $markerSourcePixel = $markerBitmap.GetPixel($markerSize / 2, $markerSize / 2)
+        if ($markerSourcePixel.R -ne 0 -or $markerSourcePixel.G -ne 0 -or $markerSourcePixel.B -ne 0) { throw 'The marker bitmap source is not pure black.' }
+        $markerBitmapHandle = $markerBitmap.GetHbitmap()
+        if ($markerBitmapHandle -eq [IntPtr]::Zero) { throw 'Could not create the fixed-color marker bitmap handle.' }
+    } finally {
+        $markerGraphics.Dispose()
+        $markerBitmap.Dispose()
+    }
     $markerWindow = [PoratakeTooltipFixture]::CreateBlackMarker((ConvertTo-FixtureRect $markerInitialBounds))
+    $markerPreviousBitmapHandle = [PoratakeTooltipFixture]::SetBlackMarkerBitmap($markerWindow, $markerBitmapHandle, [uint32]$PID)
+    if ($markerPreviousBitmapHandle -ne [IntPtr]::Zero) { throw 'The new video marker already had an attached bitmap.' }
+    [PoratakeTooltipFixture]::ShowBlackMarker($markerWindow, (ConvertTo-FixtureRect $markerInitialBounds), [uint32]$PID)
     $markerWindowBounds = New-Object PoratakeTooltipProbe+Rect
     if (-not [PoratakeTooltipProbe]::GetWindowRect($markerWindow, [ref]$markerWindowBounds) -or $markerWindowBounds.Left -ne $markerInitialBounds.Left -or $markerWindowBounds.Top -ne $markerInitialBounds.Top -or $markerWindowBounds.Right -ne $markerInitialBounds.Right -or $markerWindowBounds.Bottom -ne $markerInitialBounds.Bottom) {
         throw 'The test-owned black marker did not match its validated initial geometry.'
     }
+    $markerCenter = New-Object PoratakeTooltipProbe+Point
+    $markerCenter.X = $markerInitialBounds.Left + [int]($markerSize / 2)
+    $markerCenter.Y = $markerInitialBounds.Top + [int]($markerSize / 2)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($markerWindow)) { throw 'The fixed-color marker window is not visible.' }
+    $markerCloaked = -1
+    if ([PoratakeTooltipProbe]::DwmGetWindowAttribute($markerWindow, 14, [ref]$markerCloaked, 4) -ne 0 -or $markerCloaked -ne 0) { throw 'The fixed-color marker is DWM-cloaked or its cloak state is unreadable.' }
+    if ([PoratakeTooltipProbe]::ZOrderRelation($markerWindow, $markerBackdropWindow, 512) -ne 1) { throw 'The fixed-color marker is not above its white underlay in the bounded z-order check.' }
+    $markerHitWindow = [PoratakeTooltipProbe]::WindowFromPoint($markerCenter)
+    Write-Host "Marker source/state checks passed: source bitmap center is RGB 0,0,0; HWND is visible, uncloaked, and above its white underlay; hit-test returned $markerHitWindow for marker $markerWindow."
     $markerInitialCapture = Join-Path $captureRoot 'tooltip-video-marker-initial.png'
     Capture-TooltipArea 'tooltip-video-marker-initial' $markerPanelBounds $markerInitialCapture
     Assert-MarkerPanel $markerInitialCapture $markerPanelBounds $markerInitialBounds $markerMovedBounds
@@ -1047,8 +1128,10 @@ try {
     }
     [System.IO.File]::WriteAllText($videoProofPath, ($videoProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoProofPath
-    [PoratakeTooltipProbe]::DestroyOwnedWindow($markerWindow, [uint32]$PID)
-    $markerWindow = [IntPtr]::Zero
+    Release-BlackMarker
+    if ($markerWindow -ne [IntPtr]::Zero -or $markerBitmapHandle -ne [IntPtr]::Zero -or $markerPreviousBitmapHandle -ne [IntPtr]::Zero -or $markerAttachedBitmapHandle -ne [IntPtr]::Zero) {
+        throw 'Could not detach and release the test-owned marker bitmap.'
+    }
     [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID)
     $markerBackdropWindow = [IntPtr]::Zero
     Push-Location (Join-Path $root 'src/main')
@@ -1364,9 +1447,7 @@ try {
     if ($overlapWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
-    if ($markerWindow -ne [IntPtr]::Zero) {
-        try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
-    }
+    Release-BlackMarker
     if ($markerBackdropWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
