@@ -2225,6 +2225,8 @@ mod tests {
         );
         #[cfg(target_os = "linux")]
         {
+            use herogpui::theme::ActiveTheme as _;
+
             let close_delay = visual.update(|_, cx| cx.layout().tooltip_close_delay_ms);
             visual
                 .executor()
