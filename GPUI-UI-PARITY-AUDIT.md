@@ -22,7 +22,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
-| Reviewed visual coverage             | Done   | Hosted CI at `19e8db81` passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                            |
+| Reviewed visual coverage             | Done   | Hosted CI at `258af434` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
 | Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
@@ -65,10 +65,20 @@ Export control on the 1024×768 runner before the export click.
 verified the resized editor and Export control within the work area, opened the
 owned Save dialog and produced a stable file. The output pixel and duration check
 failed before decoding: a later capture-preview tooltip overwrote the recording
-tooltip's paint-proof metadata. Isolating that evidence and rerunning the decoder
-is required before claiming the UI-exported video's pixels or duration are verified.
+tooltip's paint-proof metadata.
+[The native Windows workflow at `258af434`](https://github.com/Porabuild/Poratake/actions/runs/43449868862)
+passed with isolated proof files. It exercised the owned video Save dialog and
+verified the decoded export's duration, dimensions, marker pixels and tooltip
+exclusion. All active jobs passed, including 16 visual profiles and 2,912 baseline
+comparisons on Microsoft Basic Render Driver; Windows packaging was skipped.
+A local GPUI test at `e8d1b9fe` clicks Rectangle, draws on a recording fixture,
+reopens the saved project and compares its preview with a decoded export, including
+the changed annotation pixels. It is not a native UI recording workflow.
+The same full-width tooltip pattern also prevented screenshot-editor Reset Zoom
+clicks. A local pointer test at `a19b9120` verifies both edges of its 56px control.
 Video export, tray file selection, screenshot wallpaper and video media imports
-use asynchronous dialogs to avoid the same nested event-loop pattern. Their
+use asynchronous dialogs to avoid the same nested event-loop pattern. A hosted
+cursor-picker cancel/retry/accept test is prepared but has not run yet; the other
 native selection and cancellation flows still need verification.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
@@ -1783,7 +1793,7 @@ These are not evidence that unrelated features match.
 | Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                             |
 | Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                 |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                          |
-| Blocked or unverified                 | All active CI jobs passed at [`19e8db81`](https://github.com/Porabuild/Poratake/actions/runs/43429066842); Windows packaging was skipped. Pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. |
+| Blocked or unverified                 | All active CI jobs passed at [`258af434`](https://github.com/Porabuild/Poratake/actions/runs/43449868862); Windows packaging was skipped. Pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. |
 
 An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
