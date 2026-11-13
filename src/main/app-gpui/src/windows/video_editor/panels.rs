@@ -2480,7 +2480,7 @@ fn export_panel(
     let cloud_configured = crate::cloud::is_configured(&crate::state::state(cx).config.get().cloud);
     let mut footer = vec![kit::switch_row(
         "export-open-in-finder",
-        "Reveal in Finder after export",
+        "Show in folder after export",
         None,
         settings.open_in_finder,
         theme,
