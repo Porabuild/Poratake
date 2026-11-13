@@ -3138,18 +3138,22 @@ fn zoom_control(
                 .on_press(move |_event, window, cx| zoom_out(window, cx)),
         ))
         .child(
-            div().w(px(chrome::ZOOM_RESET_MIN)).flex_shrink_0().child(
-                herogpui::components::Tooltip::new("Reset Zoom").child(
-                    Button::new("zoom-reset")
-                        .variant(Variant::Ghost)
-                        .recipe("compact")
-                        .recipe("muted")
-                        .full_width(true)
-                        .height(px(ZOOM_BUTTON_SIZE))
-                        .label(format!("{}%", (zoom * 100.0).round() as i32))
-                        .on_press(move |_event, window, cx| zoom_reset(window, cx)),
+            div()
+                .w(px(chrome::ZOOM_RESET_MIN))
+                .flex_shrink_0()
+                .debug_selector(|| "zoom-reset-button".to_string())
+                .child(
+                    herogpui::components::Tooltip::new("Reset Zoom").child(
+                        Button::new("zoom-reset")
+                            .variant(Variant::Ghost)
+                            .recipe("compact")
+                            .recipe("muted")
+                            .width(px(chrome::ZOOM_RESET_MIN))
+                            .height(px(ZOOM_BUTTON_SIZE))
+                            .label(format!("{}%", (zoom * 100.0).round() as i32))
+                            .on_press(move |_event, window, cx| zoom_reset(window, cx)),
+                    ),
                 ),
-            ),
         )
         .child(icon_button::with_tooltip(
             zoom_in_name,
@@ -4213,6 +4217,47 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[herogpui::test]
+    fn reset_zoom_button_accepts_a_pointer_press(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::new(320, 240).save(&source).unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.apply_option_for_test(EditorOption::Zoom(1.5), cx);
+            });
+            window.refresh();
+        });
+        cx.settle();
+        assert_eq!(cx.update(|_, app| editor.read(app).zoom), 1.5);
+        let bounds = cx.expect("zoom-reset-button");
+        assert_eq!(bounds.size.width, px(chrome::ZOOM_RESET_MIN));
+        let center_y = bounds.center().y;
+
+        cx.click_at(gpui::point(bounds.left() + px(2.0), center_y));
+
+        assert_eq!(cx.update(|_, app| editor.read(app).zoom), 1.0);
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.apply_option_for_test(EditorOption::Zoom(1.5), cx);
+            });
+            window.refresh();
+        });
+        cx.settle();
+        cx.click_at(gpui::point(bounds.right() - px(2.0), center_y));
+        assert_eq!(cx.update(|_, app| editor.read(app).zoom), 1.0);
+    }
 
     #[herogpui::test]
     fn background_image_picker_ignores_cancel_and_superseded_drafts(cx: &mut gpui::TestAppContext) {
