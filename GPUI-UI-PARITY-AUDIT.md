@@ -27,7 +27,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                        |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                      |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                      |
-| Final-head CI                        | Open   | The final pushed commit passes all required hosted jobs and the Windows visual matrix.                                                                             |
+| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                       |
 | Windows capture and save             | Open   | In an isolated app instance, capture an area, add a rectangle, save PNG and reopen it; check pixels, fresh selection and editor sizing.                            |
 | Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                          |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.         |
@@ -37,6 +37,11 @@ remaining effort. Partial work does not count as a completed gate.
 [Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
 passed native recording with programmatic cuts and annotation, and compared three
 preview/export frames. It did not exercise editing in the UI or capture audio.
+
+[Hosted Windows CI at `1d6a4d0a`](https://github.com/Porabuild/Poratake/actions/runs/43419762563)
+captured a real area, reopened the selector, and drew a rectangle in the screenshot
+editor. Saving then crashed while opening the native dialog, so the saved-image
+and reopen checks remain open.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
 environment: roughly 2–5 working days, assuming no new major defects. Windows
@@ -98,7 +103,7 @@ the real recording tooltip with the expected text outside its owner and capture
 affinity set, but the tooltip did not disappear after pointer exit; the Windows
 visual matrix did not run on that commit. The [follow-up Windows probe](https://github.com/Porabuild/Poratake/actions/runs/43343136797)
 passed after the pointer-exit fix, including same-point re-entry and an
-overlapping window; its visual matrix is still running.
+overlapping window; its visual matrix also passed.
 
 Each profile has a ten-minute watchdog; the first timeout stops the matrix and
 preserves that profile's partial evidence. On Windows, process-tree termination
@@ -152,7 +157,8 @@ protocol smoke test passed the injected failures and retries. At
 14 of 16 Windows visual profiles passed. The two remaining profiles reached both
 stop attempts and cleanup, then failed a test assertion that searched for the
 window outline only after it had already been shown during selection. The test
-now checks the complete handoff; a hosted rerun is still required.
+now checks the complete handoff; [hosted CI at `0da6a9c6`](https://github.com/Porabuild/Poratake/actions/runs/43387203877)
+passed all 16 Windows visual profiles.
 
 For translucent video wallpaper, the preview now uses the encoder's opaque
 pixel conversion. A Windows MP4 test compares the decoded export with the actual

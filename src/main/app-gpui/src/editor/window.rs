@@ -443,6 +443,7 @@ pub struct EditorWindow {
     pending_editor_state: Option<serde_json::Value>,
     editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
+    save_dialog_open: bool,
     bounds_sub: Option<Subscription>,
     activation_sub: Option<Subscription>,
 }
@@ -593,6 +594,7 @@ impl EditorWindow {
             pending_editor_state: None,
             editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
+            save_dialog_open: false,
             bounds_sub: None,
             activation_sub: None,
         };
@@ -4054,6 +4056,10 @@ impl EditorWindow {
     }
 
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save_dialog_open {
+            return;
+        }
+
         let png = match self.export_png() {
             Ok(png) => png,
             Err(error) => {
@@ -4090,29 +4096,49 @@ impl EditorWindow {
         } else {
             dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
         };
-        let path = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Save Screenshot")
+            .set_parent(window)
             .set_file_name(&default_name)
             .add_filter(if jpeg { "JPEG Image" } else { "PNG Image" }, &[extension])
-            .set_directory(&directory)
-            .save_file();
+            .set_directory(&directory);
+        self.save_dialog_open = true;
+        let window_handle = window.window_handle();
+        let config = crate::state::state(cx).config.clone();
+        let close_on_save = settings.screenshot.close_on_save;
 
-        if let Some(path) = path {
-            match std::fs::write(&path, bytes) {
-                Ok(()) => {
+        cx.spawn(async move |editor, cx| {
+            let Some(file) = dialog.save_file().await else {
+                let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
+                return;
+            };
+            let path = file.path().to_path_buf();
+            let result = cx
+                .background_executor()
+                .spawn(async move { std::fs::write(&path, bytes).map(|()| path) })
+                .await;
+
+            match result {
+                Ok(path) => {
                     if let Some(parent) = path.parent() {
                         let parent = parent.to_string_lossy().to_string();
-                        crate::state::state(cx)
-                            .config
-                            .update(move |config| config.save_locations.screenshot = parent);
+                        config.update(move |config| config.save_locations.screenshot = parent);
                     }
-                    if settings.screenshot.close_on_save {
-                        window.remove_window();
+                    let _ = editor.update(cx, |editor, cx| {
+                        editor.save_dialog_open = false;
+                        cx.notify();
+                    });
+                    if close_on_save {
+                        let _ = window_handle.update(cx, |_, window, _| window.remove_window());
                     }
                 }
-                Err(error) => eprintln!("[editor] save failed: {error}"),
+                Err(error) => {
+                    eprintln!("[editor] save failed: {error}");
+                    let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
+                }
             }
-        }
+        })
+        .detach();
     }
 }
 
