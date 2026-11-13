@@ -1088,11 +1088,11 @@ try {
         $status = Invoke-CaptureDaemonRequest @{ id = "tooltip-video-status-$([guid]::NewGuid().ToString('N'))"; module = 'screen-recorder'; method = 'status' } -deadline $recordingDeadline
         if ($status.state -ne 'recording') { throw "The video recorder left recording state: $($status.state)" }
         $recordingDuration = [double]$status.duration
-        $markerSettled = -not [double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedAtSeconds -ge 0.5
-        if ($recordingDuration -ge 1.2 -and $markerSettled) { break }
+        $markerSettled = -not [double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedAtSeconds -ge 1.2
+        if ($recordingDuration -ge 2.0 -and $markerSettled) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $recordingDeadline)
-    if ($recordingDuration -lt 1.2 -or -not $markerSettled) {
+    if ($recordingDuration -lt 2.0 -or -not $markerSettled) {
         throw "The video did not reach its duration and marker-stability conditions before the deadline: duration=${recordingDuration}s, marker-moved-at=${markerMovedAtSeconds}s, elapsed=$($recordingClock.Elapsed.TotalSeconds)s."
     }
     if ([double]::IsNaN($markerMovedAtSeconds) -or $markerMovedAtSeconds -lt 0.5) { throw "The test-owned marker moved before the expected video time: $markerMovedAtSeconds s." }
@@ -1170,10 +1170,12 @@ try {
     try {
         & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
         if ($LASTEXITCODE -ne 0) { throw "Decoded tooltip video exclusion test failed with exit code $LASTEXITCODE" }
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::export::tests::native_recording_edit_exports_and_decodes -- --ignored --exact
+        if ($LASTEXITCODE -ne 0) { throw "Native recording edit/export regression failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
     }
-    Write-Host "Decoded tooltip video exclusion checked across multiple frames; video=$recordingPath."
+    Write-Host "Decoded native recording and edited preview/export pixels checked; video=$recordingPath."
 
     $tracePath = Join-Path $evidenceRoot 'daemon-trace.log'
     $traceDeadline = [DateTime]::UtcNow.AddSeconds(5)

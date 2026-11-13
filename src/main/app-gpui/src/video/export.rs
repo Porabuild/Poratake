@@ -1374,6 +1374,348 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "requires the hosted native recording fixture"]
+    fn native_recording_edit_exports_and_decodes() {
+        use crate::editor::annotations::Annotation;
+        use crate::windows::video_editor::{model, preview};
+
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let manifest_path = std::env::var_os("PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF")
+            .map(PathBuf::from)
+            .expect("hosted native recording proof manifest");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&manifest_path).expect("read native recording proof manifest"),
+        )
+        .expect("parse native recording proof manifest");
+        let bounds = |name: &str| {
+            let value = &manifest[name];
+            (
+                value["left"].as_i64().expect("left") as i32,
+                value["top"].as_i64().expect("top") as i32,
+                value["right"].as_i64().expect("right") as i32,
+                value["bottom"].as_i64().expect("bottom") as i32,
+            )
+        };
+        let source_path = manifest["videoPath"]
+            .as_str()
+            .map(PathBuf::from)
+            .expect("native recording path");
+        let marker_reference_path = manifest["markerReferencePath"]
+            .as_str()
+            .map(PathBuf::from)
+            .expect("native marker reference path");
+        let marker_reference = image::open(marker_reference_path)
+            .expect("open native marker underlay")
+            .to_rgb8();
+        let capture_bounds = bounds("captureBounds");
+        let marker_panel_bounds = bounds("markerPanelBounds");
+        let marker_initial_bounds = bounds("markerInitialBounds");
+        let marker_moved_bounds = bounds("markerMovedBounds");
+        assert_eq!(
+            marker_reference.dimensions(),
+            (
+                (marker_panel_bounds.2 - marker_panel_bounds.0) as u32,
+                (marker_panel_bounds.3 - marker_panel_bounds.1) as u32
+            )
+        );
+        let marker_move_time = manifest["markerMoveSeconds"]
+            .as_f64()
+            .expect("native marker move time");
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("native-recording.mp4");
+        std::fs::copy(&source_path, &recording)
+            .expect("copy native recording into isolated project");
+        let source_info = VideoDecoder::open(&recording)
+            .expect("open native Windows recording")
+            .info();
+        assert!(source_info.is_valid());
+        assert!(source_info.width >= 160 && source_info.height >= 120);
+        assert_eq!(
+            (source_info.width, source_info.height),
+            (
+                (capture_bounds.2 - capture_bounds.0) as u32,
+                (capture_bounds.3 - capture_bounds.1) as u32
+            )
+        );
+        assert!(
+            source_info.duration >= 1.2,
+            "recording is too short: {}s",
+            source_info.duration
+        );
+
+        assert!(marker_move_time >= 0.5);
+        let first_start = 0.1;
+        let first_end = 0.4;
+        let moved_start = marker_move_time + 0.3;
+        let moved_end = marker_move_time + 0.5;
+        assert!(first_end < marker_move_time);
+        assert!(moved_end < source_info.duration - 0.1);
+        for marker_bounds in [marker_initial_bounds, marker_moved_bounds] {
+            assert!(marker_bounds.0 >= marker_panel_bounds.0);
+            assert!(marker_bounds.1 >= marker_panel_bounds.1);
+            assert!(marker_bounds.2 <= marker_panel_bounds.2);
+            assert!(marker_bounds.3 <= marker_panel_bounds.3);
+            assert!(marker_bounds.0 >= capture_bounds.0);
+            assert!(marker_bounds.1 >= capture_bounds.1);
+            assert!(marker_bounds.2 <= capture_bounds.2);
+            assert!(marker_bounds.3 <= capture_bounds.3);
+        }
+        let timeline_duration = first_end - first_start + moved_end - moved_start;
+        let marker = (source_info.width / 4, source_info.height / 4, 64, 64);
+        for bounds in [marker_initial_bounds, marker_moved_bounds] {
+            let x = (bounds.0 - capture_bounds.0) as u32;
+            let y = (bounds.1 - capture_bounds.1) as u32;
+            assert!(
+                x + (bounds.2 - bounds.0) as u32 <= marker.0
+                    || marker.0 + marker.2 <= x
+                    || y + (bounds.3 - bounds.1) as u32 <= marker.1
+                    || marker.1 + marker.3 <= y,
+                "edit marker overlaps a native recorded marker"
+            );
+        }
+        let mut state = VideoEditorState {
+            source_duration: Some(source_info.duration),
+            segments: vec![
+                model::Segment {
+                    id: "initial-marker-position".into(),
+                    original_start: first_start,
+                    original_end: first_end,
+                    ..model::Segment::spanning(source_info.duration)
+                },
+                model::Segment {
+                    id: "moved-marker-position".into(),
+                    original_start: moved_start,
+                    original_end: moved_end,
+                    ..model::Segment::spanning(source_info.duration)
+                },
+            ],
+            drawing_segments: vec![model::DrawingSegment {
+                id: "hosted-edit-marker".into(),
+                start_time: 0.,
+                end_time: timeline_duration,
+                canvas_width: source_info.width as f64,
+                canvas_height: source_info.height as f64,
+                annotations: vec![Annotation::Rectangle {
+                    id: "hosted-edit-marker-rectangle".into(),
+                    x: marker.0 as f64,
+                    y: marker.1 as f64,
+                    width: marker.2 as f64,
+                    height: marker.3 as f64,
+                    stroke: "#00ff00".into(),
+                    stroke_width: 1.,
+                    fill: Some("#00ff00".into()),
+                }],
+            }],
+            ..VideoEditorState::default()
+        };
+        state.export_settings.format = "mp4".into();
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "8".into();
+        state.export_settings.open_in_finder = false;
+        model::save_state(&recording, &state);
+        let saved_state = model::load_state(&recording);
+        assert_eq!(saved_state, state);
+
+        let mut preview = preview::Source::open(&recording, saved_state.clone())
+            .expect("open native capture in the video composition");
+        let mut unedited_state = saved_state.clone();
+        unedited_state.drawing_segments.clear();
+        let mut unedited_preview = preview::Source::open(&recording, unedited_state)
+            .expect("open unedited native capture in the video composition");
+        let output = directory.path().join("native-recording-edited.mp4");
+        let mut progress = 0.;
+        run(
+            Request {
+                project: recording,
+                output: output.clone(),
+                state: saved_state,
+            },
+            &mut |value| progress = value,
+            &|| false,
+        )
+        .expect("export edited native recording");
+        assert_eq!(progress, 1.);
+
+        let exported_decoder =
+            VideoDecoder::open(&output).expect("open edited native recording export");
+        let exported = exported_decoder.info();
+        assert_eq!(
+            (exported.width, exported.height),
+            (source_info.width, source_info.height)
+        );
+        assert!(
+            (exported.duration - timeline_duration).abs() <= 1. / 8.,
+            "edited duration {}s does not match {timeline_duration}s",
+            exported.duration
+        );
+        assert!(exported.duration < source_info.duration);
+
+        let marker_matches_black = |frame: &[u8], bounds: (i32, i32, i32, i32)| {
+            let mut black = 0usize;
+            let mut count = 0usize;
+            for y in bounds.1 + 3..bounds.3 - 3 {
+                for x in bounds.0 + 3..bounds.2 - 3 {
+                    let pixel = (((y - capture_bounds.1) as u32 * exported.width
+                        + (x - capture_bounds.0) as u32)
+                        * 4) as usize;
+                    if frame[pixel] <= 32 && frame[pixel + 1] <= 32 && frame[pixel + 2] <= 32 {
+                        black += 1;
+                    }
+                    count += 1;
+                }
+            }
+            count > 0 && black * 100 >= count * 90
+        };
+        let marker_matches_underlay = |frame: &[u8], bounds: (i32, i32, i32, i32)| {
+            let mut matching = 0usize;
+            let mut count = 0usize;
+            for y in bounds.1 + 3..bounds.3 - 3 {
+                for x in bounds.0 + 3..bounds.2 - 3 {
+                    let pixel = (((y - capture_bounds.1) as u32 * exported.width
+                        + (x - capture_bounds.0) as u32)
+                        * 4) as usize;
+                    let expected = marker_reference.get_pixel(
+                        (x - marker_panel_bounds.0) as u32,
+                        (y - marker_panel_bounds.1) as u32,
+                    );
+                    let differences = [
+                        frame[pixel + 2].abs_diff(expected[0]),
+                        frame[pixel + 1].abs_diff(expected[1]),
+                        frame[pixel].abs_diff(expected[2]),
+                    ];
+                    if differences.into_iter().max().unwrap_or_default() <= 48 {
+                        matching += 1;
+                    }
+                    count += 1;
+                }
+            }
+            count > 0 && matching * 100 >= count * 85
+        };
+
+        for (time, marker_moved) in [(0.1, false), (0.25, false), (0.4, true)] {
+            let composed = preview
+                .compose(time, None)
+                .expect("compose edited preview frame");
+            let expected = to_bgra(&composed);
+            if marker_moved {
+                assert!(marker_matches_underlay(&expected, marker_initial_bounds));
+                assert!(marker_matches_black(&expected, marker_moved_bounds));
+            } else {
+                assert!(marker_matches_black(&expected, marker_initial_bounds));
+                assert!(marker_matches_underlay(&expected, marker_moved_bounds));
+            }
+            let unedited = to_bgra(
+                &unedited_preview
+                    .compose(time, None)
+                    .expect("compose unedited native frame"),
+            );
+            let marker_left = marker.0 as usize;
+            let marker_top = marker.1 as usize;
+            let marker_right = marker_left + marker.2 as usize;
+            let marker_bottom = marker_top + marker.3 as usize;
+            let mut green_preview_pixels = 0usize;
+            let mut green_pixels = 0usize;
+            for y in marker_top + 8..marker_bottom - 8 {
+                for x in marker_left + 8..marker_right - 8 {
+                    let pixel = (y * exported.width as usize + x) * 4;
+                    if expected[pixel] <= 10
+                        && expected[pixel + 1] >= 245
+                        && expected[pixel + 2] <= 10
+                    {
+                        green_preview_pixels += 1;
+                    }
+                    green_pixels += 1;
+                }
+            }
+            assert!(green_preview_pixels * 100 >= green_pixels * 95);
+
+            let actual = exported_decoder
+                .frame_at(time)
+                .unwrap_or_else(|| panic!("decode edited export at {time:.3}s"));
+            assert_eq!(
+                (actual.width, actual.height),
+                (exported.width, exported.height)
+            );
+            assert_eq!(actual.bgra.len(), expected.len());
+            let mut edit_error = 0u64;
+            let mut green_export_pixels = 0usize;
+            for y in marker_top + 8..marker_bottom - 8 {
+                for x in marker_left + 8..marker_right - 8 {
+                    let pixel = (y * exported.width as usize + x) * 4;
+                    edit_error += (0..3)
+                        .map(|channel| {
+                            u64::from(
+                                actual.bgra[pixel + channel].abs_diff(expected[pixel + channel]),
+                            )
+                        })
+                        .sum::<u64>();
+                    if actual.bgra[pixel] <= 45
+                        && actual.bgra[pixel + 1] >= 180
+                        && actual.bgra[pixel + 2] <= 45
+                    {
+                        green_export_pixels += 1;
+                    }
+                }
+            }
+            assert!(green_export_pixels * 100 >= green_pixels * 95);
+            assert!(
+                edit_error as f64 / ((green_pixels * 3) as f64) < 8.,
+                "edit ROI preview/export error at {time}s"
+            );
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+                .sum();
+            let mean_error = error as f64 / expected.len() as f64;
+            assert!(
+                mean_error < 8.,
+                "preview/export error {mean_error} at {time}s"
+            );
+            let mut outside_checked = 0usize;
+            let mut outside_unchanged = 0usize;
+            let mut outside_export_within_tolerance = 0usize;
+            for y in marker_top.saturating_sub(16)..marker_bottom + 16 {
+                for x in marker_left.saturating_sub(16)..marker_right + 16 {
+                    if x >= marker_left.saturating_sub(2)
+                        && x < marker_right + 2
+                        && y >= marker_top.saturating_sub(2)
+                        && y < marker_bottom + 2
+                    {
+                        continue;
+                    }
+                    let pixel = (y * exported.width as usize + x) * 4;
+                    if expected[pixel..pixel + 3] == unedited[pixel..pixel + 3] {
+                        outside_unchanged += 1;
+                    }
+                    let max_difference = (0..3)
+                        .map(|channel| {
+                            actual.bgra[pixel + channel].abs_diff(expected[pixel + channel])
+                        })
+                        .max()
+                        .unwrap_or_default();
+                    if max_difference <= 40 {
+                        outside_export_within_tolerance += 1;
+                    }
+                    outside_checked += 1;
+                }
+            }
+            assert_eq!(outside_unchanged, outside_checked);
+            assert!(outside_export_within_tolerance * 100 >= outside_checked * 95);
+
+            if marker_moved {
+                assert!(marker_matches_underlay(&actual.bgra, marker_initial_bounds));
+                assert!(marker_matches_black(&actual.bgra, marker_moved_bounds));
+            } else {
+                assert!(marker_matches_black(&actual.bgra, marker_initial_bounds));
+                assert!(marker_matches_underlay(&actual.bgra, marker_moved_bounds));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn edited_gif_exports_match_the_preview_and_timeline_at_each_frame_rate() {
         use crate::editor::annotations::Annotation;
         use crate::windows::video_editor::{model, preview, styles};

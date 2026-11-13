@@ -977,7 +977,7 @@ mod tests {
             "recording has no decodable video dimensions"
         );
         assert!(
-            info.duration >= 0.9,
+            info.duration >= 1.2,
             "recording is too short: {}s",
             info.duration
         );
@@ -1006,7 +1006,7 @@ mod tests {
         let late_sample_time = info.duration - 0.1;
         assert!(manifest.marker_move_seconds >= 0.5);
         assert!(
-            late_sample_time >= manifest.marker_move_seconds + 0.3,
+            late_sample_time >= manifest.marker_move_seconds + 0.7,
             "late sample at {late_sample_time:.3}s is too close to marker move at {:.3}s",
             manifest.marker_move_seconds
         );
