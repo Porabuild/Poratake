@@ -2771,6 +2771,7 @@ impl Render for EditorWindow {
                                 has_layers: !self.layers.is_empty(),
                                 preset_id: &self.wallpaper_preset_id,
                                 draft: self.background_editor.as_ref(),
+                                background_picker_open: self.background_picker_open,
                                 previews: &self.background_previews,
                                 preset_draft: preset_draft.as_ref().map(|(field, name)| {
                                     crate::editor::wallpaper_sheet::PresetDraftView {
@@ -3593,9 +3594,11 @@ impl EditorWindow {
     ) {
         self.background_picker_open = false;
         if generation != self.background_editor_generation {
+            cx.notify();
             return;
         }
         let (Some(path), Some(draft)) = (path, self.background_editor.as_mut()) else {
+            cx.notify();
             return;
         };
         draft.preview = preview;
@@ -3607,6 +3610,9 @@ impl EditorWindow {
     }
 
     fn save_background_editor(&mut self, cx: &mut Context<Self>) {
+        if self.background_picker_open {
+            return;
+        }
         let Some(draft) = self.background_editor.take() else {
             return;
         };
@@ -4269,6 +4275,82 @@ mod tests {
             assert_eq!(draft.image_url.as_deref(), Some(source_path.as_str()));
             assert!(draft.preview.is_some());
             assert!(!editor.background_picker_open);
+        });
+    }
+
+    #[herogpui::test]
+    fn background_image_picker_keeps_replacement_draft_until_preview_load_finishes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            EditorWindow::from_file(&source_path, window, cx)
+        });
+        editor.update(cx, |editor, cx| {
+            let mut draft = BackgroundDraft::new(
+                Some("existing".into()),
+                BACKGROUND_DEFAULT_COLORS
+                    .iter()
+                    .map(|color| color.to_string())
+                    .collect(),
+                135.0,
+                cx,
+            );
+            draft.draft_type = BackgroundDraftType::Image;
+            draft.image_url = Some("old-image.png".into());
+            editor.background_editor = Some(draft);
+            editor.background_picker_open = true;
+            let generation = editor.background_editor_generation;
+
+            editor.save_background_editor(cx);
+
+            assert!(editor.background_picker_open);
+            assert_eq!(
+                editor
+                    .background_editor
+                    .as_ref()
+                    .and_then(|draft| draft.image_url.as_deref()),
+                Some("old-image.png")
+            );
+            assert!(store.get().wallpaper.custom_backgrounds.is_empty());
+
+            let preview = render_image_from_base(&image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255])),
+            ));
+            editor.finish_background_image_picker(
+                generation,
+                Some(source_path.clone()),
+                Some(preview),
+                cx,
+            );
+            assert!(!editor.background_picker_open);
+
+            editor.save_background_editor(cx);
+            assert_eq!(
+                store
+                    .get()
+                    .wallpaper
+                    .custom_backgrounds
+                    .iter()
+                    .find(|background| background.id == "existing")
+                    .and_then(|background| match &background.data {
+                        crate::config::schema::CustomBackgroundData::Image { data } => {
+                            Some(data.image_url.as_str())
+                        }
+                        _ => None,
+                    }),
+                Some(source_path.as_str())
+            );
         });
     }
 
