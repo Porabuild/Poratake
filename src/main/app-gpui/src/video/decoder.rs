@@ -899,6 +899,8 @@ mod tests {
         reference_path: std::path::PathBuf,
         marker_reference_path: std::path::PathBuf,
         marker_move_seconds: f64,
+        #[serde(default)]
+        expected_duration: Option<f64>,
         paint_proof_path: std::path::PathBuf,
         tooltip_hwnd: i64,
         owner_hwnd: i64,
@@ -981,6 +983,14 @@ mod tests {
             "recording is too short: {}s",
             info.duration
         );
+        if let Some(expected_duration) = manifest.expected_duration {
+            assert!(
+                (info.duration - expected_duration).abs() <= 0.100_001,
+                "decoded video duration {}s differs by more than one 10-FPS frame from the expected segment {}s",
+                info.duration,
+                expected_duration
+            );
+        }
 
         let tooltip_width =
             u32::try_from(manifest.tooltip_bounds.right - manifest.tooltip_bounds.left)

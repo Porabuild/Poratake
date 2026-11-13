@@ -2436,6 +2436,7 @@ try {
     if (-not $videoExportFileReady) { throw 'The exported video never reached a closed, stable file state.' }
     $videoExportProof = $videoProof.Clone()
     $videoExportProof.videoPath = $videoExportPath
+    $videoExportProof.expectedDuration = $videoExportDuration
     $videoExportProofPath = Join-Path $evidenceRoot 'tooltip-video-export-proof.json'
     [System.IO.File]::WriteAllText($videoExportProofPath, ($videoExportProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoExportProofPath
