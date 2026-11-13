@@ -320,7 +320,7 @@ impl ScreenRecorderModule {
                         let [width, height] = capturer.get_output_frame_size();
                         grab_frame = Box::new(move || {
                             crate::capture::frame_to_rgba(capturer.get_next_frame().map_err(
-                                |error| anyhow!("the Wayland frame stream failed: {error}"),
+                                |error| anyhow::anyhow!("the Wayland frame stream failed: {error}"),
                             )?)
                         });
                         CaptureRect {
