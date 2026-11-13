@@ -22,6 +22,7 @@ $application = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
+$previousTooltipVideoProof = $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
 $overlapWindow = [IntPtr]::Zero
@@ -30,6 +31,7 @@ $captureDaemon = $null
 $captureDaemonIdentity = $null
 $captureDaemonReady = $false
 $captureRpcTimedOut = $false
+$recordingActive = $false
 $testFailure = $false
 $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerTempRoot, 'poratake-visual-tooltip-' + [guid]::NewGuid().ToString('N')))
 $captureRoot = Join-Path $evidenceRoot 'captures'
@@ -682,6 +684,104 @@ try {
     }
     Assert-TooltipCaptureMatchesFixture $fixtureCapture $shownCapture $shownBounds $bounds
     Write-Host "Capture artifacts preserved in $evidenceRoot; affinity=$affinity."
+
+    $captureBounds = New-Object PoratakeTooltipProbe+Rect
+    $captureBounds.Left = $monitor.Monitor.Left
+    $captureBounds.Top = $monitor.Monitor.Top
+    $captureWidth = $monitor.Monitor.Right - $monitor.Monitor.Left
+    $captureHeight = $monitor.Monitor.Bottom - $monitor.Monitor.Top
+    $captureBounds.Right = $captureBounds.Left + ($captureWidth - ($captureWidth % 2))
+    $captureBounds.Bottom = $captureBounds.Top + ($captureHeight - ($captureHeight % 2))
+    if ($tooltipBounds.Left -lt $captureBounds.Left -or $tooltipBounds.Top -lt $captureBounds.Top -or $tooltipBounds.Right -gt $captureBounds.Right -or $tooltipBounds.Bottom -gt $captureBounds.Bottom) {
+        throw 'The tooltip bounds do not fit inside the even-sized recording monitor rectangle.'
+    }
+    $recordingDirectory = Join-Path $evidenceRoot 'recording'
+    New-Item -ItemType Directory -Path $recordingDirectory -Force | Out-Null
+    $recordingPath = Join-Path $recordingDirectory 'tooltip-recording.mp4'
+    $recordingStart = Invoke-CaptureDaemonRequest @{
+        id = 'tooltip-video-start'
+        module = 'screen-recorder'
+        method = 'start'
+        params = @{
+            x = $captureBounds.Left
+            y = $captureBounds.Top
+            width = $captureBounds.Right - $captureBounds.Left
+            height = $captureBounds.Bottom - $captureBounds.Top
+            frameRate = 15
+            keyboardEnabled = $false
+            includeAudio = $false
+            micEnabled = $false
+            cameraEnabled = $false
+            outputPath = $recordingPath
+        }
+    }
+    if (-not $recordingStart.success -or $recordingStart.state -ne 'recording') { throw 'The native video recording did not start.' }
+    $recordingActive = $true
+    $recordingDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    $recordingDuration = 0.0
+    do {
+        if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -cne $visibleTooltip.Text) {
+            throw 'The native tooltip stopped showing its verified text during video recording.'
+        }
+        $status = Invoke-CaptureDaemonRequest @{ id = "tooltip-video-status-$([guid]::NewGuid().ToString('N'))"; module = 'screen-recorder'; method = 'status' }
+        if ($status.state -ne 'recording') { throw "The video recorder left recording state: $($status.state)" }
+        $recordingDuration = [double]$status.duration
+        if ($recordingDuration -ge 1.2) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $recordingDeadline)
+    if ($recordingDuration -lt 1.2) { throw "The video did not record long enough while the tooltip was visible: ${recordingDuration}s" }
+    $recordingStop = Invoke-CaptureDaemonRequest @{ id = 'tooltip-video-stop'; module = 'screen-recorder'; method = 'stop' }
+    if (-not $recordingStop.success -or $recordingStop.outputPath -ne $recordingPath) { throw 'The native video recording did not finalize at its test-owned output path.' }
+    $recordingActive = $false
+    if (-not [System.IO.File]::Exists($recordingPath) -or (Get-Item -LiteralPath $recordingPath).Length -eq 0) { throw 'The native video recording is missing or empty.' }
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -cne $visibleTooltip.Text) {
+        throw 'The native tooltip was not visible with its verified text through video finalization.'
+    }
+    $videoProofPath = Join-Path $evidenceRoot 'tooltip-video-proof.json'
+    $paintProofMetadata = Get-Content -LiteralPath $tooltipProofMetadataPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $videoProof = @{
+        videoPath = $recordingPath
+        referencePath = $fixtureCapture
+        paintProofPath = $tooltipProofPath
+        tooltipHwnd = $shownTooltip.Handle.ToInt64()
+        ownerHwnd = $owner.ToInt64()
+        tooltipText = $visibleTooltip.Text
+        captureBounds = @{
+            left = $captureBounds.Left
+            top = $captureBounds.Top
+            right = $captureBounds.Right
+            bottom = $captureBounds.Bottom
+        }
+        tooltipBounds = @{
+            left = $tooltipBounds.Left
+            top = $tooltipBounds.Top
+            right = $tooltipBounds.Right
+            bottom = $tooltipBounds.Bottom
+        }
+        ownerBounds = @{
+            left = $bounds.Left
+            top = $bounds.Top
+            right = $bounds.Right
+            bottom = $bounds.Bottom
+        }
+        paintClientBounds = @{
+            screenLeft = [int]$paintProofMetadata.clientBounds.screenLeft
+            screenTop = [int]$paintProofMetadata.clientBounds.screenTop
+            width = [int]$paintProofMetadata.clientBounds.width
+            height = [int]$paintProofMetadata.clientBounds.height
+        }
+    }
+    [System.IO.File]::WriteAllText($videoProofPath, ($videoProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoProofPath
+    Push-Location (Join-Path $root 'src/main')
+    try {
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
+        if ($LASTEXITCODE -ne 0) { throw "Decoded tooltip video exclusion test failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "Decoded tooltip video exclusion checked across multiple frames; video=$recordingPath."
+
     $tracePath = Join-Path $evidenceRoot 'daemon-trace.log'
     $traceDeadline = [DateTime]::UtcNow.AddSeconds(5)
     $captureTrace = @()
@@ -770,6 +870,15 @@ try {
     }
     throw
 } finally {
+    if ($recordingActive -and $captureDaemon -and -not $captureDaemon.HasExited -and -not $captureRpcTimedOut) {
+        try {
+            $null = Invoke-CaptureDaemonRequest @{ id = 'tooltip-video-cleanup-stop'; module = 'screen-recorder'; method = 'stop' }
+            $recordingActive = $false
+        } catch {
+            $safeToDeleteProfile = $false
+            Write-Host "Video recording cleanup failed; retained evidence at $evidenceRoot. $_"
+        }
+    }
     try { Stop-CaptureDaemon } catch { $safeToDeleteProfile = $false; Write-Host "Screenshot daemon cleanup failed; retained evidence at $evidenceRoot. $_" }
     if ($backdropWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($backdropWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
@@ -808,6 +917,7 @@ try {
     if ($null -eq $previousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $previousProfile }
     if ($null -eq $previousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $previousDaemonPath }
     if ($null -eq $previousTooltipProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $previousTooltipProof }
+    if ($null -eq $previousTooltipVideoProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $previousTooltipVideoProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     if ($application -and -not $application.HasExited) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {

@@ -891,6 +891,229 @@ mod backend {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RecordedTooltipProof {
+        video_path: std::path::PathBuf,
+        reference_path: std::path::PathBuf,
+        paint_proof_path: std::path::PathBuf,
+        tooltip_hwnd: i64,
+        owner_hwnd: i64,
+        tooltip_text: String,
+        capture_bounds: RecordedTooltipBounds,
+        tooltip_bounds: RecordedTooltipBounds,
+        owner_bounds: RecordedTooltipBounds,
+        paint_client_bounds: RecordedTooltipClientBounds,
+    }
+
+    #[cfg(windows)]
+    #[derive(serde::Deserialize)]
+    struct RecordedTooltipBounds {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[cfg(windows)]
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RecordedTooltipClientBounds {
+        screen_left: i32,
+        screen_top: i32,
+        width: i32,
+        height: i32,
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires the hosted native tooltip video fixture"]
+    fn recorded_tooltip_is_excluded_from_video_frames() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let manifest_path = std::env::var_os("PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF")
+            .map(std::path::PathBuf::from)
+            .expect("hosted tooltip video proof manifest");
+        let manifest: RecordedTooltipProof = serde_json::from_slice(
+            &std::fs::read(&manifest_path).expect("read hosted tooltip video manifest"),
+        )
+        .expect("parse hosted tooltip video manifest");
+        let reference = image::open(&manifest.reference_path)
+            .expect("open positive white underlay capture")
+            .to_rgba8();
+        let paint_proof = image::open(&manifest.paint_proof_path)
+            .expect("open actual WM_PRINTCLIENT tooltip paint proof")
+            .to_rgba8();
+        let paint_metadata_path = manifest.paint_proof_path.with_extension("json");
+        let paint_metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(paint_metadata_path).expect("read tooltip paint proof metadata"),
+        )
+        .expect("parse tooltip paint proof metadata");
+        assert_eq!(
+            paint_metadata["tooltipHwnd"].as_i64(),
+            Some(manifest.tooltip_hwnd)
+        );
+        assert_eq!(
+            paint_metadata["ownerHwnd"].as_i64(),
+            Some(manifest.owner_hwnd)
+        );
+        assert_eq!(
+            paint_metadata["text"].as_str(),
+            Some(manifest.tooltip_text.as_str())
+        );
+        let decoder = VideoDecoder::open(&manifest.video_path)
+            .expect("open recorded tooltip video with Media Foundation");
+        let info = decoder.info();
+        assert!(
+            info.is_valid(),
+            "recording has no decodable video dimensions"
+        );
+        assert!(
+            info.duration >= 0.9,
+            "recording is too short: {}s",
+            info.duration
+        );
+
+        let tooltip_width =
+            u32::try_from(manifest.tooltip_bounds.right - manifest.tooltip_bounds.left)
+                .expect("positive tooltip width");
+        let tooltip_height =
+            u32::try_from(manifest.tooltip_bounds.bottom - manifest.tooltip_bounds.top)
+                .expect("positive tooltip height");
+        assert_eq!(
+            (reference.width(), reference.height()),
+            (tooltip_width, tooltip_height)
+        );
+        let capture_width =
+            u32::try_from(manifest.capture_bounds.right - manifest.capture_bounds.left)
+                .expect("positive capture width");
+        let capture_height =
+            u32::try_from(manifest.capture_bounds.bottom - manifest.capture_bounds.top)
+                .expect("positive capture height");
+        assert_eq!((info.width, info.height), (capture_width, capture_height));
+        assert!(manifest.tooltip_bounds.left >= manifest.capture_bounds.left);
+        assert!(manifest.tooltip_bounds.top >= manifest.capture_bounds.top);
+        assert!(manifest.tooltip_bounds.right <= manifest.capture_bounds.right);
+        assert!(manifest.tooltip_bounds.bottom <= manifest.capture_bounds.bottom);
+        let paint_client = &manifest.paint_client_bounds;
+        let paint_client_right = paint_client.screen_left + paint_client.width;
+        let paint_client_bottom = paint_client.screen_top + paint_client.height;
+        assert_eq!(
+            paint_proof.dimensions(),
+            (paint_client.width as u32, paint_client.height as u32)
+        );
+        assert!(paint_client.width > 0 && paint_client.height > 0);
+        assert!(paint_client.screen_left >= manifest.tooltip_bounds.left);
+        assert!(paint_client.screen_top >= manifest.tooltip_bounds.top);
+        assert!(paint_client_right <= manifest.tooltip_bounds.right);
+        assert!(paint_client_bottom <= manifest.tooltip_bounds.bottom);
+        assert!(paint_client.screen_left >= manifest.capture_bounds.left);
+        assert!(paint_client.screen_top >= manifest.capture_bounds.top);
+        assert!(paint_client_right <= manifest.capture_bounds.right);
+        assert!(paint_client_bottom <= manifest.capture_bounds.bottom);
+
+        let analyze_frame = |bgra: &[u8]| {
+            let mut compared_pixels = 0usize;
+            let mut high_error_pixels = 0usize;
+            let mut total_error = 0u64;
+            let mut proof = image::RgbaImage::new(tooltip_width, tooltip_height);
+            for y in 0..tooltip_height {
+                for x in 0..tooltip_width {
+                    let screen_x = manifest.tooltip_bounds.left + x as i32;
+                    let screen_y = manifest.tooltip_bounds.top + y as i32;
+                    let frame_x = (screen_x - manifest.capture_bounds.left) as u32;
+                    let frame_y = (screen_y - manifest.capture_bounds.top) as u32;
+                    let offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                    let pixel = &bgra[offset..offset + 4];
+                    proof.put_pixel(x, y, image::Rgba([pixel[2], pixel[1], pixel[0], 255]));
+                    if screen_x >= manifest.owner_bounds.left
+                        && screen_x < manifest.owner_bounds.right
+                        && screen_y >= manifest.owner_bounds.top
+                        && screen_y < manifest.owner_bounds.bottom
+                    {
+                        continue;
+                    }
+                    let expected = reference.get_pixel(x, y);
+                    let differences = [
+                        pixel[2].abs_diff(expected[0]),
+                        pixel[1].abs_diff(expected[1]),
+                        pixel[0].abs_diff(expected[2]),
+                    ];
+                    if differences.into_iter().max().unwrap_or_default() > 24 {
+                        high_error_pixels += 1;
+                    }
+                    total_error += differences.into_iter().map(u64::from).sum::<u64>();
+                    compared_pixels += 1;
+                }
+            }
+            let mean_error = total_error as f64 / (compared_pixels * 3) as f64;
+            let allowed_high_error_pixels = 12.max(compared_pixels / 100);
+            (
+                compared_pixels,
+                high_error_pixels,
+                mean_error,
+                allowed_high_error_pixels,
+                proof,
+            )
+        };
+
+        let sample_times = [0.1, info.duration / 2.0, info.duration - 0.1];
+        for (sample_index, time) in sample_times.into_iter().enumerate() {
+            let frame = decoder
+                .frame_at(time)
+                .unwrap_or_else(|| panic!("could not decode video frame at {time:.3}s"));
+            assert_eq!((frame.width, frame.height), (info.width, info.height));
+            assert_eq!(frame.bgra.len(), (info.width * info.height * 4) as usize);
+            let (compared_pixels, high_error_pixels, mean_error, allowed_high_error_pixels, proof) =
+                analyze_frame(&frame.bgra);
+            let evidence_path =
+                manifest_path.with_file_name(format!("tooltip-video-frame-{sample_index:02}.png"));
+            proof
+                .save(&evidence_path)
+                .expect("save decoded tooltip evidence");
+            assert!(compared_pixels >= 64, "too few outside-owner video pixels");
+            assert!(
+                mean_error <= 6.0,
+                "video underlay differs from the positive white capture at {time:.3}s: mean channel error {mean_error:.2}"
+            );
+            assert!(
+                high_error_pixels <= allowed_high_error_pixels,
+                "tooltip-like video pixels at {time:.3}s: {high_error_pixels} of {compared_pixels} pixels exceeded the 24-level H.264 tolerance"
+            );
+
+            if sample_index == 0 {
+                let mut visible_tooltip_frame = frame.bgra.to_vec();
+                for y in 0..paint_client.height as u32 {
+                    for x in 0..paint_client.width as u32 {
+                        let frame_x =
+                            (paint_client.screen_left - manifest.capture_bounds.left) as u32 + x;
+                        let frame_y =
+                            (paint_client.screen_top - manifest.capture_bounds.top) as u32 + y;
+                        let frame_offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                        let pixel = paint_proof.get_pixel(x, y);
+                        visible_tooltip_frame[frame_offset..frame_offset + 4]
+                            .copy_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
+                    }
+                }
+                let (
+                    control_pixels,
+                    control_outliers,
+                    control_mean_error,
+                    control_allowed_outliers,
+                    visible_tooltip_roi,
+                ) = analyze_frame(&visible_tooltip_frame);
+                visible_tooltip_roi
+                    .save(manifest_path.with_file_name("tooltip-video-visible-control.png"))
+                    .expect("save synthetic visible-tooltip control");
+                assert!(control_pixels >= 64, "too few positive-control pixels");
+                assert!(
+                    control_mean_error > 6.0 || control_outliers > control_allowed_outliers,
+                    "the video comparator accepted the actual tooltip WM_PRINTCLIENT pixels against the white underlay"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_unreadable_file_yields_no_decoder() {
         let missing = crate::util::test_paths::unique_temp("poratake-missing-video.mov");

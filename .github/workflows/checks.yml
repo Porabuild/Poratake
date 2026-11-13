@@ -273,6 +273,7 @@ jobs:
             ${{ runner.temp }}/poratake-visual-*/**/renderer.json
             ${{ runner.temp }}/poratake-visual-*/*.json
             ${{ runner.temp }}/poratake-visual-*/*.log
+            ${{ runner.temp }}/poratake-visual-tooltip-*/recording/*.mp4
           if-no-files-found: ignore
 
       - name: Test native Windows clipboard roundtrip
