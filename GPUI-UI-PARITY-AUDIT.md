@@ -19,20 +19,20 @@ Each gate counts once only when its stated evidence exists. As of 2026-11-13,
 six of twelve gates are complete: 50% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
-| Gate                                 | Status | Completion evidence                                                                                                                                                |
-| ------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                  |
-| Reviewed visual coverage             | Done   | A previous hosted run passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                     |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                            |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                        |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                      |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                      |
-| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                       |
-| Windows capture and save             | Open   | In an isolated app instance, capture an area, add a rectangle, save PNG and reopen it; check pixels, fresh selection and editor sizing.                            |
-| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                          |
-| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.         |
-| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures. |
-| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                             |
+| Gate                                 | Status | Completion evidence                                                                                                                                                                          |
+| ------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                                            |
+| Reviewed visual coverage             | Done   | Hosted CI at `19e8db81` passed 16 Windows profiles and 2,912 reviewed baselines.                                                                                                             |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                      |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                  |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                |
+| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                                                 |
+| Windows capture and save             | Open   | Hosted Windows captured an area, added a rectangle, saved and reopened a PNG, and checked sampled pixels and editor size. Verify that a reopened selector starts with no previous selection. |
+| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                                                    |
+| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                   |
+| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.                           |
+| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                                                       |
 
 [Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
 passed native recording with programmatic cuts and annotation, and compared three
@@ -43,13 +43,21 @@ captured a real area, reopened the selector, and drew a rectangle in the screens
 editor. Saving then crashed while opening the native dialog, so the saved-image
 and reopen checks remain open.
 [The next Windows run](https://github.com/Porabuild/Poratake/actions/runs/43425397059)
-passed real capture and selector reset but did not reach the editor: its Edit
+passed real capture and reopened the selector but did not reach the editor: its Edit
 click did not wait for the hover controls to render. The harness now checks their
-readiness and the preview HWND hit test before clicking; the Save fix remains
-unverified.
-The video export and tray file pickers also use asynchronous dialogs to avoid the
-same nested event-loop pattern; their native selection and cancellation flows
-still need verification.
+readiness and the preview HWND hit test before clicking.
+[The Windows native workflow at `19e8db81`](https://github.com/Porabuild/Poratake/actions/runs/43429066842)
+passed capture, rectangle annotation, the owned Save dialog and reopen, including
+sampled output pixels and matching editor dimensions. The selector reopened and
+cancelled without producing another capture, but capture protection prevented
+checking its selection pixels. All active CI jobs passed; Windows packaging was
+skipped.
+The next hosted workflow also drags inside the previous region to check that a
+fresh selector creates a smaller capture, and exercises the video editor's Save
+dialog and decoded output. Those additions have not yet run on a hosted runner.
+Video export, tray file selection, screenshot wallpaper and video media imports
+use asynchronous dialogs to avoid the same nested event-loop pattern. Their
+native selection and cancellation flows still need verification.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
 environment: roughly 2–5 working days, assuming no new major defects. Windows
@@ -1756,14 +1764,14 @@ These are not evidence that unrelated features match.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                                           |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above. |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                              |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                        |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                            |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                     |
-| Blocked or unverified                 | Full CI passed at `06f04daf`; the pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.              |
+| Review category                       | Result                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.      |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                   |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                             |
+| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                 |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                          |
+| Blocked or unverified                 | All active CI jobs passed at [`19e8db81`](https://github.com/Porabuild/Poratake/actions/runs/43429066842); Windows packaging was skipped. Pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. |
 
 An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
