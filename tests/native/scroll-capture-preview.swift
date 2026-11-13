@@ -323,7 +323,8 @@ struct ScrollCapturePreviewTest {
                 try await runRecordingCoordinationChecks()
                 exit(EXIT_SUCCESS)
             } catch {
-                fatalError("Recording coordination checks failed: \(error)")
+                FileHandle.standardError.write(Data("Recording coordination checks failed: \(error)\n".utf8))
+                exit(EXIT_FAILURE)
             }
         }
         dispatchMain()
@@ -647,13 +648,17 @@ struct ScrollCapturePreviewTest {
         }
 
         FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: start\n".utf8))
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: AppKit initialization begin\n".utf8))
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: AppKit initialization complete\n".utf8))
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: display lookup begin\n".utf8))
         guard let screen = NSScreen.main ?? NSScreen.screens.first,
               let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
         else {
             throw CaptureFrameError.missingFixtureDisplay
         }
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: display lookup complete\n".utf8))
         let screenFrame = screen.frame
         let sourceFrame = NSRect(
             x: screenFrame.midX - 160,
@@ -667,6 +672,7 @@ struct ScrollCapturePreviewTest {
             width: 96,
             height: 64
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: window creation begin\n".utf8))
         let sourceWindow = fixtureWindow(
             frame: sourceFrame,
             color: NSColor(calibratedRed: 0.04, green: 0.84, blue: 0.12, alpha: 1),
@@ -677,6 +683,7 @@ struct ScrollCapturePreviewTest {
             color: NSColor(calibratedRed: 0.9, green: 0.04, blue: 0.04, alpha: 1),
             level: .floating
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: window creation complete\n".utf8))
         defer {
             controlWindow.orderOut(nil)
             sourceWindow.orderOut(nil)
@@ -684,9 +691,11 @@ struct ScrollCapturePreviewTest {
             sourceWindow.close()
         }
 
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: window show begin\n".utf8))
         sourceWindow.orderFrontRegardless()
         controlWindow.orderFrontRegardless()
         application.updateWindows()
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: window show complete\n".utf8))
         guard let controlWindowID = CGWindowID(exactly: controlWindow.windowNumber) else {
             throw CaptureFrameError.missingFixtureWindow
         }
@@ -701,15 +710,19 @@ struct ScrollCapturePreviewTest {
             y: Double(controlFrame.midY),
             screenFrame: screenFrame
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: control hide begin\n".utf8))
         controlWindow.orderOut(nil)
         application.updateWindows()
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: control hide complete\n".utf8))
         guard !controlWindow.isVisible else {
             throw CaptureFrameError.fixtureControlWasNotHidden
         }
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: hidden content query begin\n".utf8))
         let hiddenContent = try await SCShareableContent.excludingDesktopWindows(
             false,
             onScreenWindowsOnly: false
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: hidden content query complete\n".utf8))
         guard let hiddenApplication = hiddenContent.applications.first(where: {
             $0.processID == ProcessInfo.processInfo.processIdentifier
         }),
@@ -729,6 +742,7 @@ struct ScrollCapturePreviewTest {
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.queueDepth = 3
         configuration.showsCursor = false
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream setup begin\n".utf8))
         let exclusionFilter = SCContentFilter(
             display: hiddenDisplay,
             including: [hiddenApplication],
@@ -745,14 +759,21 @@ struct ScrollCapturePreviewTest {
             type: .screen,
             sampleHandlerQueue: DispatchQueue(label: "poratake.capture-exclusion-filtered")
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream setup complete\n".utf8))
         do {
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream start begin\n".utf8))
             try await exclusionStream.startCapture()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream start complete\n".utf8))
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: control show begin\n".utf8))
             controlWindow.orderFrontRegardless()
             application.updateWindows()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: control show complete\n".utf8))
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: visible content query begin\n".utf8))
             let shownContent = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: true
             )
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: visible content query complete\n".utf8))
             guard controlWindow.isVisible,
                   shownContent.windows.contains(where: { $0.windowID == controlWindowID })
             else {
@@ -762,10 +783,12 @@ struct ScrollCapturePreviewTest {
                 sourceWindow,
                 NSColor(calibratedRed: 0.04, green: 0.12, blue: 0.9, alpha: 1)
             )
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered frame wait begin\n".utf8))
             let filtered = try await exclusionOutput.frame { frame in
                 isFixtureBlue(frame.color(x: sourceSample.0, topY: sourceSample.1))
                     && isFixtureBlue(frame.color(x: controlSample.0, topY: controlSample.1))
             }
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered frame wait complete\n".utf8))
             precondition(
                 isFixtureBlue(filtered.color(x: sourceSample.0, topY: sourceSample.1)),
                 "The fixture source must remain visible through the app-only filter"
@@ -775,13 +798,17 @@ struct ScrollCapturePreviewTest {
                 "The control hidden at filter creation must remain excluded after showing"
             )
             exclusionOutput.finish()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream stop begin\n".utf8))
             try await exclusionStream.stopCapture()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream stop complete\n".utf8))
         } catch {
             exclusionOutput.finish()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: filtered stream error: \(error)\n".utf8))
             try? await exclusionStream.stopCapture()
             throw error
         }
 
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control filter setup begin\n".utf8))
         let visibleControlFilter = SCContentFilter(
             display: hiddenDisplay,
             including: [hiddenApplication],
@@ -798,12 +825,17 @@ struct ScrollCapturePreviewTest {
             type: .screen,
             sampleHandlerQueue: DispatchQueue(label: "poratake.capture-control-positive")
         )
+        FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control filter setup complete\n".utf8))
         do {
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control stream start begin\n".utf8))
             try await visibleControlStream.startCapture()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control stream start complete\n".utf8))
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control frame wait begin\n".utf8))
             let visibleControl = try await visibleControlOutput.frame { frame in
                 isFixtureBlue(frame.color(x: sourceSample.0, topY: sourceSample.1))
                     && isFixtureRed(frame.color(x: controlSample.0, topY: controlSample.1))
             }
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control frame wait complete\n".utf8))
             precondition(
                 isFixtureBlue(visibleControl.color(x: sourceSample.0, topY: sourceSample.1)),
                 "The fixture source must remain visible through its app-only filter"
@@ -813,9 +845,12 @@ struct ScrollCapturePreviewTest {
                 "The shown control must appear when the app-only filter has no exception"
             )
             visibleControlOutput.finish()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control stream stop begin\n".utf8))
             try await visibleControlStream.stopCapture()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control stream stop complete\n".utf8))
         } catch {
             visibleControlOutput.finish()
+            FileHandle.standardError.write(Data("ScreenCaptureKit hidden-window exclusion: positive-control stream error: \(error)\n".utf8))
             try? await visibleControlStream.stopCapture()
             throw error
         }
