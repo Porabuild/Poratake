@@ -16,6 +16,13 @@ use crate::windows::video_editor::VideoEditorWindow;
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const VIDEO_EXTENSIONS: &[&str] = &["poratake", "mp4", "mov", "webm"];
 
+#[derive(Default)]
+struct TrayFilePickerState {
+    open: bool,
+}
+
+impl gpui::Global for TrayFilePickerState {}
+
 pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
     if !intent.is_supported() {
         crate::windows::toast::Toast::show(
@@ -215,35 +222,61 @@ pub fn open_settings(category: Category, cx: &mut App) {
     });
 }
 
-fn pick_file(title: &str, extensions: &[&str]) -> Option<std::path::PathBuf> {
-    rfd::FileDialog::new()
-        .set_title(title)
-        .add_filter("Supported files", extensions)
-        .pick_file()
-}
-
 fn open_picked_image(cx: &mut App) {
-    let Some(path) = pick_file("Open in Editor", IMAGE_EXTENSIONS) else {
-        return;
-    };
-    crate::open_editor_for(cx, path.to_string_lossy().as_ref());
+    pick_file("Open in Editor", IMAGE_EXTENSIONS, cx, |path, cx| {
+        crate::open_editor_for(cx, path.to_string_lossy().as_ref());
+    });
 }
 
 fn pin_picked_image(cx: &mut App) {
-    let Some(path) = pick_file("Pin Image", IMAGE_EXTENSIONS) else {
-        return;
-    };
-    match std::fs::read(&path) {
-        Ok(bytes) => crate::windows::pin::PinWindow::open(cx, bytes),
-        Err(error) => eprintln!("[intent] failed to read {}: {error}", path.display()),
-    }
+    pick_file(
+        "Pin Image",
+        IMAGE_EXTENSIONS,
+        cx,
+        |path, cx| match std::fs::read(&path) {
+            Ok(bytes) => crate::windows::pin::PinWindow::open(cx, bytes),
+            Err(error) => eprintln!("[intent] failed to read {}: {error}", path.display()),
+        },
+    );
 }
 
 fn open_picked_video(cx: &mut App) {
-    let Some(path) = pick_file("Open in Video Editor", VIDEO_EXTENSIONS) else {
+    pick_file("Open in Video Editor", VIDEO_EXTENSIONS, cx, |path, cx| {
+        VideoEditorWindow::open(cx, Some(path.to_string_lossy().to_string()));
+    });
+}
+
+fn pick_file(
+    title: &'static str,
+    extensions: &'static [&'static str],
+    cx: &mut App,
+    on_selected: impl FnOnce(std::path::PathBuf, &mut App) + Send + 'static,
+) {
+    if cx.try_global::<TrayFilePickerState>().is_none() {
+        cx.set_global(TrayFilePickerState::default());
+    }
+    let picker_state = cx.global_mut::<TrayFilePickerState>();
+    if picker_state.open {
         return;
-    };
-    VideoEditorWindow::open(cx, Some(path.to_string_lossy().to_string()));
+    }
+    picker_state.open = true;
+
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .add_filter("Supported files", extensions);
+    cx.spawn(async move |cx| {
+        let path = dialog
+            .pick_file()
+            .await
+            .map(|file| file.path().to_path_buf());
+        cx.update(move |cx| {
+            cx.global_mut::<TrayFilePickerState>().open = false;
+            if let Some(path) = path {
+                on_selected(path, cx);
+            }
+        });
+    })
+    .detach();
 }
 
 fn hide_tray_icon(cx: &mut App) {

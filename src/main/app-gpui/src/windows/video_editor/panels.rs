@@ -2659,14 +2659,15 @@ fn export_panel(
             |this, cx| this.cancel_export(cx),
         ));
     } else {
-        footer.push(kit::tertiary_text_button(
-            "export-start",
-            if is_gif { "Export GIF" } else { "Export Video" },
-            false,
-            false,
-            cx,
-            |this, cx| this.start_export(cx),
-        ));
+        footer.push(
+            Button::new("export-start")
+                .variant(Variant::Tertiary)
+                .recipe("compact")
+                .label(if is_gif { "Export GIF" } else { "Export Video" })
+                .full_width(true)
+                .on_press(cx.listener(|this, _event, window, cx| this.start_export(window, cx)))
+                .into_any_element(),
+        );
     }
     if let Some(error) = view.export_error() {
         footer.push(kit::error(error, theme));

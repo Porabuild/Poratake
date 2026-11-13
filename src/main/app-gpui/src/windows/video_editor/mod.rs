@@ -137,6 +137,7 @@ pub struct VideoEditorWindow {
     is_scrubbing: bool,
     is_cut_tool_active: bool,
     is_exporting: bool,
+    is_export_dialog_open: bool,
     export_progress: f32,
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
@@ -323,6 +324,7 @@ impl VideoEditorWindow {
             is_scrubbing: false,
             is_cut_tool_active: false,
             is_exporting: false,
+            is_export_dialog_open: false,
             export_progress: 0.0,
             selected_clip: None,
             menu: MenuHandle::new(),
@@ -394,8 +396,8 @@ impl VideoEditorWindow {
 
     /// Asks for a destination and renders the timeline to it. Every frame goes
     /// through the composition engine the preview uses.
-    pub fn start_export(&mut self, cx: &mut Context<Self>) {
-        if self.is_exporting {
+    pub fn start_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting || self.is_export_dialog_open {
             return;
         }
         let Some(project) = self.path.clone() else {
@@ -421,7 +423,7 @@ impl VideoEditorWindow {
             true => saved_directory,
             false => suggested.parent().unwrap_or(&project).to_path_buf(),
         };
-        let Some(output) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .add_filter(filter_name, extensions)
             .set_file_name(
                 suggested
@@ -430,16 +432,42 @@ impl VideoEditorWindow {
                     .unwrap_or(if is_gif { "export.gif" } else { "export.mp4" }),
             )
             .set_directory(&directory)
-            .save_file()
-        else {
+            .set_parent(window);
+        let config = crate::state::state(cx).config.clone();
+        self.is_export_dialog_open = true;
+
+        cx.spawn(async move |entity, cx| {
+            let Some(file) = dialog.save_file().await else {
+                let _ = entity.update(cx, |this, cx| {
+                    this.finish_export_dialog(None, project, state, is_gif, cx);
+                });
+                return;
+            };
+            let output = file.path().to_path_buf();
+            let _ = entity.update(cx, |this, cx| {
+                if let Some(parent) = output.parent() {
+                    let parent = parent.to_string_lossy().to_string();
+                    config.update(move |config| config.save_locations.video = parent);
+                }
+                this.finish_export_dialog(Some(output), project, state, is_gif, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_export_dialog(
+        &mut self,
+        output: Option<PathBuf>,
+        project: PathBuf,
+        state: VideoEditorState,
+        is_gif: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_export_dialog_open = false;
+        let Some(output) = output else {
+            cx.notify();
             return;
         };
-        if let Some(parent) = output.parent() {
-            let parent = parent.to_string_lossy().to_string();
-            crate::state::state(cx)
-                .config
-                .update(move |config| config.save_locations.video = parent);
-        }
         let output = match is_gif
             && !output
                 .extension()
@@ -3806,6 +3834,27 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn cancelling_export_destination_clears_dialog_without_starting_worker(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let project = dir.path().join("recording.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.is_export_dialog_open = true;
+                let state = editor.state.clone();
+                editor.finish_export_dialog(None, project, state, false, cx);
+                assert!(!editor.is_export_dialog_open);
+                assert!(!editor.is_exporting);
+            })
+            .unwrap();
     }
 
     #[herogpui::test]
