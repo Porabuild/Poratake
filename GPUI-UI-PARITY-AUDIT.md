@@ -1437,10 +1437,6 @@ and unchanged export for thin and thick circles. At fractional zoom, antialiasin
 can blend the ring and a thin stroke into the same device pixel. Verify selection
 outlines for other overlapping annotation types and on physical displays.
 
-Electron's all-in-one screenshot code also starts the frozen selection before it
-hides desktop icons. That suggests the same frozen-frame mismatch, but it has not
-been reproduced in a native Electron session.
-
 An isolated Electron canvas probe applied its current redaction operations to the
 same unredacted inset-attachment PNG used by GPUI. Across 4,136 interior pixels
 per effect at simulated 125% and 200%, blackout and pixelation matched exactly.
@@ -1671,16 +1667,16 @@ These are not evidence that unrelated features match.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Scope reviewed                        | Changed capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence against `ac384ae`; independent behavior/interface and proof/simplification passes, with targeted review of attachment, pin, permission, icon measurement, capture previews, unit isolation, renderer profiles and camera/zoom export proof. |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                                                    |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                                              |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                                                  |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                                           |
-| Blocked or unverified                 | Full CI passed at `06f04daf`; the pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.                                                                    |
+| Review category                       | Result                                                                                                                                                                                                                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above. |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                              |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                        |
+| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                            |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                     |
+| Blocked or unverified                 | Full CI passed at `06f04daf`; the pull request checks show the current head's status. Physical mixed-DPI, remaining native media/capture workflows and other platforms remain in the backlog. The approved permission isolation and icon-only contrast refinements are implemented.              |
 
-The local Windows GPUI suite passed serially with 948 tests and one ignored. One
+An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
 three tests were unfinished. Those tests passed individually, and the video-
 export group passed with four test threads. An earlier revision also recorded
