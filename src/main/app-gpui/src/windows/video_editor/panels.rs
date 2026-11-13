@@ -770,26 +770,30 @@ fn drawing_tool_grid(
                     let selected = tool.id() == active;
                     let id = tool.id();
                     let label = tool.label();
-                    div().flex_1().min_w_0().child(
-                        herogpui::components::Tooltip::new(label).child(
-                            Button::new(SharedString::from(format!("drawing-tool-{id}")))
-                                .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
-                                .variant(if selected {
-                                    Variant::Tertiary
-                                } else {
-                                    Variant::Ghost
-                                })
-                                .size(Size::Sm)
-                                .is_icon_only(true)
-                                .aria_label(label)
-                                .full_width(true)
-                                .on_press(cx.listener(move |this, _event, _window, cx| {
-                                    this.update_drawing_tools(cx, |tools| {
-                                        tools.active_tool = id.to_string()
-                                    });
-                                })),
-                        ),
-                    )
+                    let selector = format!("drawing-tool-{id}-cell");
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .debug_selector(move || selector.clone())
+                        .child(
+                            herogpui::components::Tooltip::new(label).child(
+                                Button::new(SharedString::from(format!("drawing-tool-{id}")))
+                                    .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
+                                    .variant(if selected {
+                                        Variant::Tertiary
+                                    } else {
+                                        Variant::Ghost
+                                    })
+                                    .size(Size::Sm)
+                                    .is_icon_only(true)
+                                    .aria_label(label)
+                                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                                        this.update_drawing_tools(cx, |tools| {
+                                            tools.active_tool = id.to_string()
+                                        });
+                                    })),
+                            ),
+                        )
                 }))
                 .into_any_element()
         })

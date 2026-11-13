@@ -4333,35 +4333,376 @@ mod keyboard_demo_tests {
     fn export_video_button_fits_the_small_work_area_window(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         test_state(cx, dir.path());
+        let (bounds, _) = video_editor_window_geometry(
+            Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: size(px(1024.0), px(728.0)),
+            },
+            None,
+        );
         let mut window_handle = None;
         let (_editor, cx) = cx.add_window_view(|window, cx| {
             let mut editor = VideoEditorWindow::new_for_test(None, cx);
             editor.state.ui.sidebar_open = true;
             editor.state.ui.sidebar_tab = "export".into();
-            let (bounds, _) = video_editor_window_geometry(
-                Bounds {
-                    origin: gpui::point(px(0.0), px(0.0)),
-                    size: size(px(1024.0), px(728.0)),
-                },
-                None,
-            );
-            window.resize(bounds.size);
             window_handle = Some(window.window_handle());
             editor
         });
 
+        let window_handle = window_handle.unwrap();
+        cx.simulate_window_resize(window_handle, bounds.size);
         cx.refresh().unwrap();
         let button = cx.debug_bounds("video-export-start").unwrap();
         let viewport = cx
-            .update_window(window_handle.unwrap(), |_, window, _| {
-                window.viewport_size()
-            })
+            .update_window(window_handle, |_, window, _| window.viewport_size())
             .unwrap();
+        assert_eq!(viewport, bounds.size);
         assert!(button.size.width > px(0.0) && button.size.height > px(0.0));
         assert!(button.left() >= px(0.0));
         assert!(button.top() >= px(0.0));
         assert!(button.right() <= viewport.width);
         assert!(button.bottom() <= viewport.height);
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn drawing_tool_ui_edit_survives_reopen_and_matches_export(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let notifications = crate::system::notification::capture_for_test();
+        let project = dir.path().join("Drawing workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = project::recording_video_path(&project);
+        std::fs::write(
+            &recording,
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let source_info = crate::video::decoder::VideoDecoder::open(&recording)
+            .expect("open recording fixture")
+            .info();
+        let mut initial_state = model::VideoEditorState {
+            source_duration: Some(source_info.duration),
+            segments: vec![model::Segment::spanning(source_info.duration)],
+            ..model::VideoEditorState::default()
+        };
+        initial_state.export_settings.resolution = "original".into();
+        initial_state.export_settings.frame_rate = "10".into();
+        initial_state.export_settings.open_in_finder = false;
+        model::save_state(&recording, &initial_state);
+
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+        let original_preview = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                editor
+                    .preview_image()
+                    .expect("loaded editor preview")
+                    .as_bytes(0)
+                    .expect("preview pixels")
+                    .to_vec()
+            })
+        });
+
+        let drawing_shortcut = cx.update(|_, app| {
+            crate::state::state(app)
+                .config
+                .get()
+                .shortcuts
+                .video_editor_sidebar
+                .drawing
+                .clone()
+        });
+        cx.press(&drawing_shortcut);
+        assert_eq!(
+            cx.update(|_, app| editor.update(app, |editor, _| editor.active_tab())),
+            SidebarTab::Drawing
+        );
+        let cell_bounds = cx.expect("drawing-tool-rectangle-cell");
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let sidebar_state = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                (
+                    editor.state.ui.sidebar_open,
+                    editor.sidebar_closing,
+                    editor.sidebar_animation_generation,
+                )
+            })
+        });
+        assert!(
+            cell_bounds.left() >= px(0.0)
+                && cell_bounds.top() >= px(0.0)
+                && cell_bounds.right() <= viewport.width
+                && cell_bounds.bottom() <= viewport.height,
+            "Drawing tool cell {cell_bounds:?} is outside viewport {viewport:?}; sidebar={sidebar_state:?}"
+        );
+        let tool_center = cell_bounds.center();
+        cx.simulate_mouse_move(tool_center, None, gpui::Modifiers::none());
+        cx.settle();
+        cx.simulate_mouse_down(
+            tool_center,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        cx.simulate_mouse_up(
+            tool_center,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let active_after_up = cx.update(|_, app| {
+            editor.update(app, |editor, _| editor.drawing_tools.active_tool.clone())
+        });
+        assert_eq!(
+            active_after_up,
+            "rectangle",
+            "rectangle press was not activated: viewport={viewport:?}, cell={cell_bounds:?}, sidebar={sidebar_state:?}"
+        );
+        let (start, end, composition) = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let content = editor.preview_content_rect().expect("preview bounds");
+                let composition = editor.composition_size.expect("composition size");
+                (
+                    gpui::point(
+                        px(content.x + content.width * 0.25),
+                        px(content.y + content.height * 0.25),
+                    ),
+                    gpui::point(
+                        px(content.x + content.width * 0.55),
+                        px(content.y + content.height * 0.55),
+                    ),
+                    composition,
+                )
+            })
+        });
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.run_until_parked();
+
+        let edited_preview = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                assert_eq!(editor.drawing_tools.active_tool, "select");
+                assert_eq!(editor.state.drawing_segments.len(), 1);
+                assert_eq!(editor.state.drawing_segments[0].annotations.len(), 1);
+                editor
+                    .preview_image()
+                    .expect("composed edited preview")
+                    .as_bytes(0)
+                    .expect("edited preview pixels")
+                    .to_vec()
+            })
+        });
+        assert_eq!(edited_preview.len(), original_preview.len());
+        let decoded = crate::video::decoder::VideoDecoder::open(&recording)
+            .unwrap()
+            .info();
+        assert_eq!(
+            (decoded.width, decoded.height),
+            (source_info.width, source_info.height)
+        );
+
+        let annotation_bounds = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let segment = &editor.state.drawing_segments[0];
+                let crate::editor::annotations::Annotation::Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } = &segment.annotations[0]
+                else {
+                    panic!("UI gesture did not create a rectangle")
+                };
+                (
+                    (*x * source_info.width as f64 / composition.0) as usize,
+                    (*y * source_info.height as f64 / composition.1) as usize,
+                    ((*x + *width) * source_info.width as f64 / composition.0) as usize,
+                    ((*y + *height) * source_info.height as f64 / composition.1) as usize,
+                )
+            })
+        });
+        let mut changed_roi_pixels = 0usize;
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(source_info.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(source_info.width as usize)
+            {
+                let pixel = (y * source_info.width as usize + x) * 4;
+                if (0..3).any(|channel| {
+                    original_preview[pixel + channel].abs_diff(edited_preview[pixel + channel]) > 24
+                }) {
+                    changed_roi_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            changed_roi_pixels > 20,
+            "UI annotation did not change its preview ROI"
+        );
+
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let saved_state = model::load_state(&recording);
+        assert_eq!(saved_state.drawing_segments.len(), 1);
+        assert_eq!(saved_state.drawing_segments[0].annotations.len(), 1);
+        assert!(matches!(
+            saved_state.drawing_segments[0].annotations[0],
+            crate::editor::annotations::Annotation::Rectangle { .. }
+        ));
+
+        let (reopened, cx) = cx.cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+        let reopened_preview = cx.update(|_, app| {
+            reopened.update(app, |editor, _| {
+                assert_eq!(editor.state, saved_state);
+                editor
+                    .preview_image()
+                    .expect("reopened editor preview")
+                    .as_bytes(0)
+                    .expect("reopened preview pixels")
+                    .to_vec()
+            })
+        });
+        assert_eq!(reopened_preview, edited_preview);
+
+        let output = dir.path().join("edited.mp4");
+        cx.update(|_, app| {
+            reopened.update(app, |editor, cx| {
+                editor.start_export_to_path(
+                    project.clone(),
+                    output.clone(),
+                    editor.state.clone(),
+                    cx,
+                );
+            })
+        });
+        cx.run_until_parked();
+        reopened.update(&mut cx.cx, |editor, _| {
+            assert!(!editor.is_exporting);
+            assert!(editor.export_error.is_none());
+            assert!(editor.export_completed_at.is_some());
+        });
+        assert_eq!(&*notifications.borrow(), &["Export Complete"]);
+
+        let exported =
+            crate::video::decoder::VideoDecoder::open(&output).expect("decode UI-edited export");
+        let frame = exported.frame_at(0.0).expect("exported first frame");
+        assert_eq!(
+            (frame.width, frame.height),
+            (source_info.width, source_info.height)
+        );
+        assert_eq!(frame.bgra.len(), reopened_preview.len());
+        let mut roi_error = 0u64;
+        let mut roi_samples = 0u64;
+        let mean_error = frame
+            .bgra
+            .iter()
+            .zip(&reopened_preview)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum::<u64>() as f64
+            / reopened_preview.len() as f64;
+        assert!(
+            mean_error < 8.0,
+            "reopened preview/export mean error {mean_error}"
+        );
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(frame.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(frame.width as usize)
+            {
+                let pixel = (y * frame.width as usize + x) * 4;
+                for channel in 0..4 {
+                    roi_error += u64::from(
+                        frame.bgra[pixel + channel].abs_diff(reopened_preview[pixel + channel]),
+                    );
+                    roi_samples += 1;
+                }
+            }
+        }
+        let roi_mean_error = roi_error as f64 / roi_samples as f64;
+        assert!(
+            roi_mean_error < 8.0,
+            "reopened preview/export annotation ROI mean error {roi_mean_error}"
+        );
+        let mut changed_export_roi_pixels = 0usize;
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(frame.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(frame.width as usize)
+            {
+                let pixel = (y * frame.width as usize + x) * 4;
+                if (0..3).any(|channel| {
+                    frame.bgra[pixel + channel].abs_diff(original_preview[pixel + channel]) > 24
+                }) {
+                    changed_export_roi_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            changed_export_roi_pixels > 20,
+            "exported video does not contain the UI drawing edit"
+        );
+        let mut changed_preview_pixels = 0usize;
+        let mut edited_error = 0u64;
+        let mut original_error = 0u64;
+        for pixel in (0..frame.bgra.len()).step_by(4) {
+            if !(0..3).any(|channel| {
+                reopened_preview[pixel + channel].abs_diff(original_preview[pixel + channel]) > 24
+            }) {
+                continue;
+            }
+            changed_preview_pixels += 1;
+            for channel in 0..3 {
+                edited_error += u64::from(
+                    frame.bgra[pixel + channel].abs_diff(reopened_preview[pixel + channel]),
+                );
+                original_error += u64::from(
+                    frame.bgra[pixel + channel].abs_diff(original_preview[pixel + channel]),
+                );
+            }
+        }
+        assert!(
+            changed_preview_pixels > 20,
+            "edited preview has too few changed pixels to verify the export"
+        );
+        let changed_samples = (changed_preview_pixels * 3) as f64;
+        let edited_mean_error = edited_error as f64 / changed_samples;
+        let original_mean_error = original_error as f64 / changed_samples;
+        eprintln!(
+            "UI drawing mask preview/export RGB MAE: edited={edited_mean_error:.2}, original={original_mean_error:.2}, pixels={changed_preview_pixels}"
+        );
+        assert!(
+            edited_mean_error < 32.0,
+            "decoded export differs from edited preview on changed pixels: MAE={edited_mean_error:.2}"
+        );
+        assert!(
+            edited_mean_error + 8.0 < original_mean_error,
+            "decoded export changed pixels do not favor the edited preview: edited MAE={edited_mean_error:.2}, original MAE={original_mean_error:.2}"
+        );
     }
 
     #[cfg(windows)]
