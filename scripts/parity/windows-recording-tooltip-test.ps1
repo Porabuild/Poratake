@@ -132,6 +132,8 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint colorKey, out byte alpha, out uint flags);
+    [DllImport("dwmapi.dll", PreserveSig = true)] public static extern int DwmGetWindowAttribute(IntPtr hwnd, uint attribute, out int value, uint size);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
     [DllImport("user32.dll")] public static extern IntPtr GetThreadDpiAwarenessContext();
@@ -149,6 +151,17 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     public static uint MonitorInfoSize() { return (uint)Marshal.SizeOf(typeof(MonitorInfo)); }
+
+    public static int ZOrderRelation(IntPtr target, IntPtr owner, int maxSteps) {
+        if (target == IntPtr.Zero || owner == IntPtr.Zero || target == owner || maxSteps <= 0) return 0;
+        var current = owner;
+        for (var step = 0; step < maxSteps; step++) {
+            current = GetWindow(current, 3);
+            if (current == IntPtr.Zero) return 0;
+            if (current == target) return 1;
+        }
+        return -1;
+    }
 
     public static IntPtr CreateCoverWindow(int x, int y) {
         var hwnd = CreateWindowEx(0x08000008, "BUTTON", "", 0x90000000, x, y, 4, 4, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
@@ -265,6 +278,24 @@ function Get-VisibleTooltipWindow([int]$processId, [IntPtr]$owner) {
         return $handle
     }
     return $null
+}
+
+function Assert-NativeTooltipWindowState([IntPtr]$tooltip, [IntPtr]$owner, [string]$surface) {
+    $cloaked = -1
+    $dwmResult = [PoratakeTooltipProbe]::DwmGetWindowAttribute($tooltip, 14, [ref]$cloaked, 4)
+    if ($dwmResult -ne 0) { throw "DwmGetWindowAttribute failed for the $surface tooltip with HRESULT $dwmResult." }
+    if ($cloaked -ne 0) { throw "The $surface tooltip is DWM-cloaked." }
+    $colorKey = [uint32]0
+    $alpha = [byte]0
+    $flags = [uint32]0
+    if (-not [PoratakeTooltipProbe]::GetLayeredWindowAttributes($tooltip, [ref]$colorKey, [ref]$alpha, [ref]$flags)) {
+        throw "GetLayeredWindowAttributes failed for the $surface tooltip."
+    }
+    if ($alpha -eq 0 -or ($flags -band 2) -eq 0) { throw "The $surface tooltip has no nonzero layered alpha." }
+    $zOrder = [PoratakeTooltipProbe]::ZOrderRelation($tooltip, $owner, 512)
+    if ($zOrder -eq 0) { throw "The $surface tooltip is not above its owner in the top-level z-order." }
+    if ($zOrder -lt 0) { throw "Top-level z-order search exceeded its 512-window bound for the $surface tooltip." }
+    Write-Host "Native $surface tooltip state checks passed: uncloaked, layered-alpha=$alpha, above owner. These state checks do not prove final on-screen pixels."
 }
 
 function Wait-Until([scriptblock]$condition, [int]$timeoutMilliseconds, [string]$failure) {
@@ -749,6 +780,7 @@ try {
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -ne $visibleTooltip.Text) {
         throw 'Native tooltip was not visible with the expected text throughout the production screenshot.'
     }
+    Assert-NativeTooltipWindowState $shownTooltip.Handle $owner 'recording-control'
     Assert-TooltipCaptureMatchesFixture $fixtureCapture $shownCapture $shownBounds $bounds
     Write-Host "Capture artifacts preserved in $evidenceRoot; affinity=$affinity."
 
@@ -1116,6 +1148,7 @@ try {
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -cne 'Close preview') {
         throw 'Capture-preview tooltip stopped showing its verified text during the shown screenshot capture.'
     }
+    Assert-NativeTooltipWindowState $shownPreviewTooltip.Handle $previewOwnerHandle 'capture-preview'
     $emptyOwner = New-Object PoratakeTooltipProbe+Rect
     $emptyOwner.Left = [int]::MaxValue
     $emptyOwner.Top = [int]::MaxValue
