@@ -7,12 +7,16 @@ if ($env:GITHUB_ACTIONS -ne 'true') {
 $root = if ($env:GITHUB_WORKSPACE) { (Resolve-Path $env:GITHUB_WORKSPACE).Path } else { 'E:\work\poratake\.poracode\worktrees\poracode-nimble-badger-314d2ec2' }
 $profileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-tooltip-' + [guid]::NewGuid().ToString('N')))
 $previewProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-preview-tooltip-' + [guid]::NewGuid().ToString('N')))
+$workflowProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-capture-workflow-' + [guid]::NewGuid().ToString('N')))
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $profileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing profile outside the runner temporary directory: $profileRoot"
 }
 if (-not $previewProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing preview profile outside the runner temporary directory: $previewProfileRoot"
+}
+if (-not $workflowProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing workflow profile outside the runner temporary directory: $workflowProfileRoot"
 }
 $runnerTempRoot = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 
@@ -24,8 +28,12 @@ $stdoutPath = Join-Path $profileRoot 'stdout.log'
 $stderrPath = Join-Path $profileRoot 'stderr.log'
 $previewStdoutPath = Join-Path $previewProfileRoot 'stdout.log'
 $previewStderrPath = Join-Path $previewProfileRoot 'stderr.log'
+$workflowStdoutPath = Join-Path $workflowProfileRoot 'stdout.log'
+$workflowStderrPath = Join-Path $workflowProfileRoot 'stderr.log'
 $application = $null
 $previewApplication = $null
+$workflowApplication = $null
+$reopenApplication = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
@@ -39,6 +47,10 @@ $markerWindow = [IntPtr]::Zero
 $markerBitmapHandle = [IntPtr]::Zero
 $markerPreviousBitmapHandle = [IntPtr]::Zero
 $markerAttachedBitmapHandle = [IntPtr]::Zero
+$workflowFixtureWindow = [IntPtr]::Zero
+$workflowFixtureBitmapHandle = [IntPtr]::Zero
+$workflowFixturePreviousBitmapHandle = [IntPtr]::Zero
+$workflowFixtureAttachedBitmapHandle = [IntPtr]::Zero
 $captureDaemon = $null
 $captureDaemonIdentity = $null
 $captureDaemonReady = $false
@@ -135,6 +147,10 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", EntryPoint="WindowFromPoint")] public static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+    [DllImport("user32.dll")] static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
     [DllImport("user32.dll", EntryPoint="CreateWindowExW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool DestroyWindow(IntPtr hwnd);
@@ -186,6 +202,61 @@ public static class PoratakeTooltipProbe {
         Rect rect;
         return ScreenToClient(hwnd, ref point) && GetClientRect(hwnd, out rect) &&
             point.X >= rect.Left && point.X < rect.Right && point.Y >= rect.Top && point.Y < rect.Bottom;
+    }
+
+    public static void Drag(int left, int top, int right, int bottom) {
+        if (!SetCursorPos(left, top)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not move to the drag start.");
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+        for (var step = 1; step <= 12; step++) {
+            var x = left + (right - left) * step / 12;
+            var y = top + (bottom - top) * step / 12;
+            if (!SetCursorPos(x, y)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not move during the drag.");
+            System.Threading.Thread.Sleep(15);
+        }
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    public static void Click(int x, int y) {
+        if (!SetCursorPos(x, y)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not move to the click target.");
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    public static void PressKey(byte virtualKey) {
+        keybd_event(virtualKey, 0, 0, UIntPtr.Zero);
+        keybd_event(virtualKey, 0, 2, UIntPtr.Zero);
+    }
+
+    public static void PressControlS() {
+        keybd_event(0x11, 0, 0, UIntPtr.Zero);
+        keybd_event(0x53, 0, 0, UIntPtr.Zero);
+        keybd_event(0x53, 0, 2, UIntPtr.Zero);
+        keybd_event(0x11, 0, 2, UIntPtr.Zero);
+    }
+
+    public static void PressAltS() {
+        keybd_event(0x12, 0, 0, UIntPtr.Zero);
+        keybd_event(0x53, 0, 0, UIntPtr.Zero);
+        keybd_event(0x53, 0, 2, UIntPtr.Zero);
+        keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    }
+
+    public static void PressCaptureAreaHotkey() {
+        keybd_event(0x12, 0, 0, UIntPtr.Zero);
+        keybd_event(0x10, 0, 0, UIntPtr.Zero);
+        keybd_event(0x34, 0, 0, UIntPtr.Zero);
+        keybd_event(0x34, 0, 2, UIntPtr.Zero);
+        keybd_event(0x10, 0, 2, UIntPtr.Zero);
+        keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    }
+
+    public static List<IntPtr> WindowsWithText(string expectedText) {
+        var result = new List<IntPtr>();
+        EnumWindows((hwnd, _) => {
+            if (WindowText(hwnd) == expectedText) result.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        return result;
     }
 
     public static void DestroyOwnedWindow(IntPtr hwnd, uint processId) {
@@ -334,6 +405,43 @@ public static class PoratakeTooltipFixture {
     [DllImport("user32.dll", EntryPoint="SendMessageW")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("gdi32.dll", SetLastError=true)] static extern bool DeleteObject(IntPtr obj);
 
+    public static IntPtr CreateScreenshotWindow(Rect rect) {
+        var hwnd = CreateWindowEx(0x00000080, "STATIC", "", 0x9000010E, rect.Left, rect.Top,
+            rect.Right - rect.Left, rect.Bottom - rect.Top, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create the screenshot fixture window.");
+        return hwnd;
+    }
+
+    public static IntPtr SetScreenshotBitmap(IntPtr hwnd, IntPtr bitmap, uint processId) {
+        if (hwnd == IntPtr.Zero || bitmap == IntPtr.Zero) throw new InvalidOperationException("The screenshot fixture window or bitmap is empty.");
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to set a bitmap on a fixture outside the test process.");
+        return SendMessage(hwnd, 0x0172, IntPtr.Zero, bitmap);
+    }
+
+    public static IntPtr DetachScreenshotBitmap(IntPtr hwnd, uint processId) {
+        if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to detach a bitmap from a fixture outside the test process.");
+        return SendMessage(hwnd, 0x0172, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    public static void ShowScreenshotWindow(IntPtr hwnd, Rect rect, uint processId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to show a fixture outside the test process.");
+        if (!SetWindowPos(hwnd, IntPtr.Zero, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
+            !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not show the screenshot fixture window.");
+        }
+        Rect actual;
+        if (!GetWindowRect(hwnd, out actual) || actual.Left != rect.Left || actual.Top != rect.Top || actual.Right != rect.Right || actual.Bottom != rect.Bottom) {
+            throw new InvalidOperationException("The screenshot fixture window did not reach its expected bounds.");
+        }
+    }
+
     public static IntPtr CreateBackdrop(Rect rect, IntPtr owner) {
         uint style = 0x98000006u;
         IntPtr hwnd = CreateWindowEx(0x080000A0, "STATIC", "", style, rect.Left, rect.Top,
@@ -427,6 +535,95 @@ function Release-BlackMarker {
             if ($script:markerPreviousBitmapHandle -eq $bitmap) { $script:markerPreviousBitmapHandle = [IntPtr]::Zero }
             if ($script:markerAttachedBitmapHandle -eq $bitmap) { $script:markerAttachedBitmapHandle = [IntPtr]::Zero }
         } catch { $script:safeToDeleteProfile = $false }
+    }
+}
+
+function Release-ScreenshotFixture {
+    if ($script:workflowFixtureWindow -ne [IntPtr]::Zero) {
+        try {
+            $detachedBitmap = [PoratakeTooltipFixture]::DetachScreenshotBitmap($script:workflowFixtureWindow, [uint32]$PID)
+            if ($detachedBitmap -ne [IntPtr]::Zero) { $script:workflowFixtureAttachedBitmapHandle = $detachedBitmap }
+        } catch { $script:safeToDeleteProfile = $false }
+        try {
+            [PoratakeTooltipProbe]::DestroyOwnedWindow($script:workflowFixtureWindow, [uint32]$PID)
+            $script:workflowFixtureWindow = [IntPtr]::Zero
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+    if ($script:workflowFixtureWindow -ne [IntPtr]::Zero) { return }
+    $releasedHandles = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($bitmap in @($script:workflowFixtureBitmapHandle, $script:workflowFixturePreviousBitmapHandle, $script:workflowFixtureAttachedBitmapHandle)) {
+        if ($bitmap -eq [IntPtr]::Zero -or -not $releasedHandles.Add($bitmap.ToInt64())) { continue }
+        try {
+            [PoratakeTooltipFixture]::DeleteBlackMarkerBitmap($bitmap)
+            if ($script:workflowFixtureBitmapHandle -eq $bitmap) { $script:workflowFixtureBitmapHandle = [IntPtr]::Zero }
+            if ($script:workflowFixturePreviousBitmapHandle -eq $bitmap) { $script:workflowFixturePreviousBitmapHandle = [IntPtr]::Zero }
+            if ($script:workflowFixtureAttachedBitmapHandle -eq $bitmap) { $script:workflowFixtureAttachedBitmapHandle = [IntPtr]::Zero }
+        } catch { $script:safeToDeleteProfile = $false }
+    }
+}
+
+function Get-WorkflowColorBounds([string]$path, [System.Drawing.Color]$target) {
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $left = $image.Width
+        $top = $image.Height
+        $right = -1
+        $bottom = -1
+        $count = 0
+        for ($y = 0; $y -lt $image.Height; $y++) {
+            for ($x = 0; $x -lt $image.Width; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ([Math]::Abs([int]$pixel.R - [int]$target.R) -gt 8 -or [Math]::Abs([int]$pixel.G - [int]$target.G) -gt 8 -or [Math]::Abs([int]$pixel.B - [int]$target.B) -gt 8) { continue }
+                $left = [Math]::Min($left, $x)
+                $top = [Math]::Min($top, $y)
+                $right = [Math]::Max($right, $x + 1)
+                $bottom = [Math]::Max($bottom, $y + 1)
+                $count++
+            }
+        }
+        return @{ Left = $left; Top = $top; Right = $right; Bottom = $bottom; PixelCount = $count }
+    } finally {
+        $image.Dispose()
+    }
+}
+
+function Assert-WorkflowRectangle([string]$sourcePath, [string]$exportPath, [int]$startX, [int]$startY, [int]$endX, [int]$endY, [hashtable]$upperLeftColorBounds) {
+    $source = [System.Drawing.Bitmap]::new($sourcePath)
+    $export = [System.Drawing.Bitmap]::new($exportPath)
+    try {
+        if ($source.Width -ne $export.Width -or $source.Height -ne $export.Height) { throw "Saved annotation dimensions changed from $($source.Width)x$($source.Height) to $($export.Width)x$($export.Height)." }
+        $scaleX = ($upperLeftColorBounds.Right - $upperLeftColorBounds.Left) / ($source.Width / 2.0)
+        $scaleY = ($upperLeftColorBounds.Bottom - $upperLeftColorBounds.Top) / ($source.Height / 2.0)
+        if ($scaleX -le 0 -or $scaleY -le 0) { throw 'Could not map the editor canvas back to captured image pixels.' }
+        $left = [int][Math]::Round(($startX - $upperLeftColorBounds.Left) / $scaleX)
+        $right = [int][Math]::Round(($endX - $upperLeftColorBounds.Left) / $scaleX)
+        $top = [int][Math]::Round(($startY - $upperLeftColorBounds.Top) / $scaleY)
+        $bottom = [int][Math]::Round(($endY - $upperLeftColorBounds.Top) / $scaleY)
+        if ($left -lt 4 -or $top -lt 4 -or $right -ge $source.Width - 4 -or $bottom -ge $source.Height - 4 -or $right -le $left -or $bottom -le $top) { throw "Rectangle input mapped outside the captured image: $left,$top-$right,$bottom." }
+        $changed = { param($x, $y) $a = $source.GetPixel($x, $y); $b = $export.GetPixel($x, $y); return [Math]::Max([Math]::Abs([int]$a.R - [int]$b.R), [Math]::Max([Math]::Abs([int]$a.G - [int]$b.G), [Math]::Abs([int]$a.B - [int]$b.B))) -gt 18 }
+        $edgeSamples = @(
+            @{ Name = 'top'; ChangedPixels = 0; FromX = $left + 6; ToX = $right - 6; FromY = $top - 6; ToY = $top + 7 },
+            @{ Name = 'bottom'; ChangedPixels = 0; FromX = $left + 6; ToX = $right - 6; FromY = $bottom - 7; ToY = $bottom + 6 },
+            @{ Name = 'left'; ChangedPixels = 0; FromX = $left - 6; ToX = $left + 7; FromY = $top + 6; ToY = $bottom - 6 },
+            @{ Name = 'right'; ChangedPixels = 0; FromX = $right - 7; ToX = $right + 6; FromY = $top + 6; ToY = $bottom - 6 }
+        )
+        foreach ($edge in $edgeSamples) {
+            for ($y = $edge.FromY; $y -lt $edge.ToY; $y++) {
+                for ($x = $edge.FromX; $x -lt $edge.ToX; $x++) {
+                    if (& $changed $x $y) { $edge.ChangedPixels++ }
+                }
+            }
+            if ($edge.ChangedPixels -lt 12) { throw "Saved export is missing the rectangle's $($edge.Name) edge near $left,$top-$right,$bottom (changed $($edge.ChangedPixels) pixels)." }
+        }
+        $center = $source.GetPixel([int](($left + $right) / 2), [int](($top + $bottom) / 2))
+        $centerSaved = $export.GetPixel([int](($left + $right) / 2), [int](($top + $bottom) / 2))
+        if ($center.ToArgb() -ne $centerSaved.ToArgb()) { throw 'The rectangle interior changed; the workflow expects an unfilled outline.' }
+        $edgeCounts = ($edgeSamples | ForEach-Object { $_.ChangedPixels }) -join ','
+        Write-Host "Rectangle export check passed at image pixels $left,$top-$right,$bottom; changed edge pixels: $edgeCounts."
+        return @{ Left = $left; Top = $top; Right = $right; Bottom = $bottom }
+    } finally {
+        $source.Dispose()
+        $export.Dispose()
     }
 }
 
@@ -1483,12 +1680,391 @@ try {
     $emptyOwner.Bottom = [int]::MaxValue
     Assert-TooltipCaptureMatchesFixture $previewHiddenCapture $previewShownCapture $shownPreviewBounds $emptyOwner
     Write-Host 'Capture-preview tooltip ROI matches with all pixels checked; no preview-owner pixels were excluded.'
+
+    foreach ($retiredApplication in @($application, $previewApplication)) {
+        Capture-OwnedDaemonChildren $retiredApplication
+        if (-not $retiredApplication.HasExited) {
+            try { $retiredApplication.Kill() } catch { if (-not $retiredApplication.HasExited) { throw } }
+            if (-not $retiredApplication.WaitForExit(5000)) { throw 'A tooltip-probe app did not exit before the capture workflow.' }
+        }
+    }
+
+    $workflowCaptureDirectory = Join-Path $captureRoot 'real-captures'
+    $workflowExportDirectory = Join-Path $captureRoot 'real-exports'
+    New-Item -ItemType Directory -Path $workflowProfileRoot,$workflowCaptureDirectory,$workflowExportDirectory -Force | Out-Null
+    $workflowConfig = @{
+        onboarding = @{ completed = $true }
+        screenshot = @{
+            showPreview = $true
+            autoCopyToClipboard = $false
+            captureToClipboard = $false
+            hideDesktopIcons = $false
+            freezeScreen = $false
+            format = 'png'
+        }
+        storage = @{ screenshotsPath = $workflowCaptureDirectory }
+        saveLocations = @{ screenshot = $workflowExportDirectory }
+        preview = @{ corner = 'bottom-right'; autoDismiss = $false }
+        recording = @{ micEnabled = $false; camera = @{ enabled = $false } }
+    } | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText((Join-Path $workflowProfileRoot 'config.json'), $workflowConfig, [System.Text.UTF8Encoding]::new($false))
+
+    $monitorWidth = $monitor.Monitor.Right - $monitor.Monitor.Left
+    $monitorHeight = $monitor.Monitor.Bottom - $monitor.Monitor.Top
+    $fixtureWidth = 640
+    $fixtureHeight = 360
+    if ($monitorWidth -lt $fixtureWidth + 100 -or $monitorHeight -lt $fixtureHeight + 100) { throw "Hosted runner monitor is too small for the real capture fixture: ${monitorWidth}x${monitorHeight}." }
+    $fixtureBounds = New-Object PoratakeTooltipProbe+Rect
+    $fixtureBounds.Left = $monitor.Monitor.Left + [int](($monitorWidth - $fixtureWidth) / 2)
+    $fixtureBounds.Top = $monitor.Monitor.Top + [int](($monitorHeight - $fixtureHeight) / 2)
+    $fixtureBounds.Right = $fixtureBounds.Left + $fixtureWidth
+    $fixtureBounds.Bottom = $fixtureBounds.Top + $fixtureHeight
+    $fixtureBitmap = [System.Drawing.Bitmap]::new($fixtureWidth, $fixtureHeight, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $fixtureGraphics = [System.Drawing.Graphics]::FromImage($fixtureBitmap)
+    $fixtureColors = @(
+        [System.Drawing.Color]::FromArgb(182, 41, 151),
+        [System.Drawing.Color]::FromArgb(37, 184, 105),
+        [System.Drawing.Color]::FromArgb(49, 90, 199),
+        [System.Drawing.Color]::FromArgb(224, 177, 58)
+    )
+    try {
+        for ($index = 0; $index -lt $fixtureColors.Count; $index++) {
+            $brush = [System.Drawing.SolidBrush]::new($fixtureColors[$index])
+            try {
+                $x = if (($index % 2) -eq 0) { 0 } else { $fixtureWidth / 2 }
+                $y = if ($index -lt 2) { 0 } else { $fixtureHeight / 2 }
+                $fixtureGraphics.FillRectangle($brush, $x, $y, $fixtureWidth / 2, $fixtureHeight / 2)
+            } finally {
+                $brush.Dispose()
+            }
+        }
+        $workflowFixtureBitmapHandle = $fixtureBitmap.GetHbitmap()
+        if ($workflowFixtureBitmapHandle -eq [IntPtr]::Zero) { throw 'Could not create the real-capture fixture bitmap.' }
+    } finally {
+        $fixtureGraphics.Dispose()
+        $fixtureBitmap.Dispose()
+    }
+    $workflowFixtureWindow = [PoratakeTooltipFixture]::CreateScreenshotWindow((ConvertTo-FixtureRect $fixtureBounds))
+    $workflowFixturePreviousBitmapHandle = [PoratakeTooltipFixture]::SetScreenshotBitmap($workflowFixtureWindow, $workflowFixtureBitmapHandle, [uint32]$PID)
+    if ($workflowFixturePreviousBitmapHandle -ne [IntPtr]::Zero) { throw 'The screenshot fixture window already had an attached bitmap.' }
+    [PoratakeTooltipFixture]::ShowScreenshotWindow($workflowFixtureWindow, (ConvertTo-FixtureRect $fixtureBounds), [uint32]$PID)
+    $fixtureCenter = New-Object PoratakeTooltipProbe+Point
+    $fixtureCenter.X = [int](($fixtureBounds.Left + $fixtureBounds.Right) / 2)
+    $fixtureCenter.Y = [int](($fixtureBounds.Top + $fixtureBounds.Bottom) / 2)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($workflowFixtureWindow)) { throw 'The real-capture test fixture is not visible.' }
+    $fixtureWindowBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($workflowFixtureWindow, [ref]$fixtureWindowBounds) -or $fixtureWindowBounds.Left -ne $fixtureBounds.Left -or $fixtureWindowBounds.Top -ne $fixtureBounds.Top -or $fixtureWindowBounds.Right -ne $fixtureBounds.Right -or $fixtureWindowBounds.Bottom -ne $fixtureBounds.Bottom) {
+        throw 'The real-capture fixture HWND does not match its expected screen bounds.'
+    }
+
+    $workflowPreviousProfile = $env:PORATAKE_CONFIG_DIR
+    $workflowPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    try {
+        $env:PORATAKE_CONFIG_DIR = $workflowProfileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $workflowApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'capture-area') -WorkingDirectory $root -RedirectStandardOutput $workflowStdoutPath -RedirectStandardError $workflowStderrPath -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $workflowPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $workflowPreviousProfile }
+        if ($null -eq $workflowPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $workflowPreviousDaemonPath }
+    }
+    if (-not $workflowApplication) { throw 'Could not launch the isolated real-capture GPUI app.' }
+    Capture-OwnedDaemonChildren $workflowApplication
+    $overlayHit = Wait-Until {
+        if ($workflowApplication.HasExited) { throw 'The real-capture GPUI app exited before its area overlay appeared.' }
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        $hitProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
+        if ($hitProcess -ne [uint32]$workflowApplication.Id) { return $null }
+        $rect = New-Object PoratakeTooltipProbe+Rect
+        if (-not [PoratakeTooltipProbe]::GetWindowRect($hit, [ref]$rect) -or $rect.Left -gt $fixtureCenter.X -or $rect.Top -gt $fixtureCenter.Y -or $rect.Right -le $fixtureCenter.X -or $rect.Bottom -le $fixtureCenter.Y) { return $null }
+        return $hit
+    } 30000 'The real GPUI area overlay did not receive hit testing over the fixture.'
+    $selectionStart = New-Object PoratakeTooltipProbe+Point
+    $selectionStart.X = $fixtureBounds.Left + 1
+    $selectionStart.Y = $fixtureBounds.Top + 1
+    $selectionEnd = New-Object PoratakeTooltipProbe+Point
+    $selectionEnd.X = $fixtureBounds.Right - 1
+    $selectionEnd.Y = $fixtureBounds.Bottom - 1
+    $startHit = [PoratakeTooltipProbe]::WindowFromPoint($selectionStart)
+    $startHitProcess = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($startHit, [ref]$startHitProcess)
+    if ($startHitProcess -ne [uint32]$workflowApplication.Id) { throw 'Native hit testing at the selection start did not reach the real GPUI overlay.' }
+    [PoratakeTooltipProbe]::Drag($selectionStart.X, $selectionStart.Y, $selectionEnd.X, $selectionEnd.Y)
+    $sourceCapturePath = Wait-Until {
+        $files = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop)
+        if ($files.Count -eq 1) { return $files[0].FullName }
+        if ($files.Count -gt 1) { throw "Expected one test-owned screenshot, found $($files.Count)." }
+        return $null
+    } 30000 'The real area selection did not save a screenshot.'
+    $sourceCapture = [System.Drawing.Bitmap]::new($sourceCapturePath)
+    $sourceCaptureWidth = $sourceCapture.Width
+    $sourceCaptureHeight = $sourceCapture.Height
+    try {
+        if ([Math]::Abs($sourceCaptureWidth - ($fixtureWidth - 2)) -gt 1 -or [Math]::Abs($sourceCaptureHeight - ($fixtureHeight - 2)) -gt 1) {
+            throw "WGC capture dimensions did not match the dragged fixture region: ${sourceCaptureWidth}x${sourceCaptureHeight}."
+        }
+        for ($index = 0; $index -lt $fixtureColors.Count; $index++) {
+            $x = if (($index % 2) -eq 0) { [int]($sourceCaptureWidth / 4) } else { [int](3 * $sourceCaptureWidth / 4) }
+            $y = if ($index -lt 2) { [int]($sourceCaptureHeight / 4) } else { [int](3 * $sourceCaptureHeight / 4) }
+            $actual = $sourceCapture.GetPixel($x, $y)
+            $expected = $fixtureColors[$index]
+            if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 8 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 8 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 8) {
+                throw "Real WGC source color $index at $x,$y was $($actual.R),$($actual.G),$($actual.B), expected $($expected.R),$($expected.G),$($expected.B)."
+            }
+        }
+    } finally {
+        $sourceCapture.Dispose()
+    }
+    Write-Host "Real WGC area capture passed: $sourceCapturePath ($fixtureWidth x $fixtureHeight fixture, exact quadrant colors)."
+
+    $capturePreviewHandle = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) {
+            if ([PoratakeTooltipProbe]::WindowText($handle) -eq 'Poratake capture preview' -and [PoratakeTooltipProbe]::IsWindowVisible($handle)) { return $handle }
+        }
+        return $null
+    } 30000 'The real capture did not open its preview window.'
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        $foregroundProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($foreground, [ref]$foregroundProcess)
+        return $foregroundProcess -eq [uint32]$workflowApplication.Id
+    } 3000 'The real capture preview did not become the foreground input target.'
+    [PoratakeTooltipProbe]::PressCaptureAreaHotkey()
+    $resetOverlay = Wait-Until {
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        $hitProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
+        if ($hitProcess -ne [uint32]$workflowApplication.Id) { return $null }
+        return $hit
+    } 10000 'The capture-area hotkey did not reopen the GPUI selector.'
+    $resetOverlayRoot = [PoratakeTooltipProbe]::GetAncestor($resetOverlay, 2)
+    if ($resetOverlayRoot -eq [IntPtr]::Zero) { throw 'Could not resolve the reopened area selector root window.' }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($resetOverlayRoot)
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $resetOverlayRoot
+    } 3000 'The reopened area selector did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::PressKey(0x1B)
+    Wait-Until {
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        $hitProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
+        return $hitProcess -eq [uint32]$PID
+    } 5000 'Escape did not dismiss the reopened area selector.' | Out-Null
+    if (@(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File).Count -ne 1) { throw 'Cancelling the reopened area selector created another capture.' }
+    Write-Host 'The area selector reopened and Escape cancelled it without saving; protected selector pixels are not asserted by WGC.'
+    $previewClient = New-Object PoratakeTooltipProbe+Rect
+    $previewClientOrigin = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetClientRect($capturePreviewHandle, [ref]$previewClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($capturePreviewHandle, [ref]$previewClientOrigin)) { throw 'Could not measure the real capture-preview client area.' }
+    $previewScale = [double][PoratakeTooltipProbe]::GetDpiForWindow($capturePreviewHandle) / 96.0
+    $editX = $previewClientOrigin.X + [int][Math]::Round(104 * $previewScale)
+    $editY = $previewClientOrigin.Y + [int][Math]::Round(530 * $previewScale)
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($capturePreviewHandle, $editX, $editY)) { throw 'The real preview Edit target falls outside its client area.' }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $capturePreviewHandle
+    } 3000 'The capture preview did not regain foreground input before Edit.' | Out-Null
+    $editorBeforeHandles = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) { $null = $editorBeforeHandles.Add($handle.ToInt64()) }
+    [PoratakeTooltipProbe]::Click($editX, $editY)
+    $workflowEditor = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) {
+            if ($editorBeforeHandles.Contains($handle.ToInt64()) -or -not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            if ([PoratakeTooltipProbe]::WindowText($handle) -eq 'Poratake capture preview') { continue }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
+            if ($rect.Right - $rect.Left -lt 900 -or $rect.Bottom - $rect.Top -lt 600) { continue }
+            return @{ Handle = $handle; Bounds = $rect }
+        }
+        return $null
+    } 10000 'The capture preview Edit action did not open the screenshot editor.'
+    $editorHandle = $workflowEditor.Handle
+    $editorBounds = $workflowEditor.Bounds
+    $editorClient = New-Object PoratakeTooltipProbe+Rect
+    $editorClientOrigin = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetClientRect($editorHandle, [ref]$editorClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($editorHandle, [ref]$editorClientOrigin)) { throw 'Could not measure the real screenshot editor client area.' }
+    $editorScreenBounds = New-Object PoratakeTooltipProbe+Rect
+    $editorScreenBounds.Left = $editorClientOrigin.X + $editorClient.Left
+    $editorScreenBounds.Top = $editorClientOrigin.Y + $editorClient.Top
+    $editorScreenBounds.Right = $editorClientOrigin.X + $editorClient.Right
+    $editorScreenBounds.Bottom = $editorClientOrigin.Y + $editorClient.Bottom
+    $editorCapturePath = Join-Path $captureRoot 'real-editor-before-annotation.png'
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($monitor.Monitor.Left + 10, $monitor.Monitor.Top + 10)) { throw 'Could not move the runner pointer outside the editor before its readiness captures.' }
+    $script:editorReadinessAttempt = 0
+    $script:editorReadinessFailure = 'The captured source image did not reach stable pixels in the editor.'
+    $editorReady = Wait-Until {
+        if ($script:editorReadinessAttempt -ge 4) { return @{ Exhausted = $true } }
+        $script:editorReadinessAttempt++
+        $firstEditorCapture = Join-Path $captureRoot ("real-editor-readiness-{0:D2}-a.png" -f $script:editorReadinessAttempt)
+        $secondEditorCapture = Join-Path $captureRoot ("real-editor-readiness-{0:D2}-b.png" -f $script:editorReadinessAttempt)
+        try { Capture-TooltipArea "real-editor-readiness-$($script:editorReadinessAttempt)-a" $editorScreenBounds $firstEditorCapture 5 } catch { $script:editorReadinessFailure = $_.Exception.Message; return $null }
+        foreach ($color in $fixtureColors) {
+            $bounds = Get-WorkflowColorBounds $firstEditorCapture $color
+            if ($bounds.PixelCount -lt 1000) { $script:editorReadinessFailure = "The editor had only $($bounds.PixelCount) pixels of an expected source color."; return $null }
+        }
+        try { Capture-TooltipArea "real-editor-readiness-$($script:editorReadinessAttempt)-b" $editorScreenBounds $secondEditorCapture 5 } catch { $script:editorReadinessFailure = $_.Exception.Message; return $null }
+        $secondColorBounds = @()
+        foreach ($color in $fixtureColors) {
+            $bounds = Get-WorkflowColorBounds $secondEditorCapture $color
+            if ($bounds.PixelCount -lt 1000) { $script:editorReadinessFailure = "The editor had only $($bounds.PixelCount) pixels of an expected source color."; return $null }
+            $secondColorBounds += $bounds
+        }
+        if (-not (Test-PreviewPixelsStable $firstEditorCapture $secondEditorCapture $editorScreenBounds)) {
+            $script:editorReadinessFailure = 'Editor pixels changed between consecutive source-image readiness captures.'
+            return $null
+        }
+        Copy-Item -LiteralPath $secondEditorCapture -Destination $editorCapturePath -Force -ErrorAction Stop
+        return @{ ColorBounds = $secondColorBounds }
+    } 20000 ''
+    if (-not $editorReady -or $editorReady.Exhausted) { throw "The real editor image did not become ready after $($script:editorReadinessAttempt) bounded captures: $script:editorReadinessFailure" }
+    $upperLeftBounds = $editorReady.ColorBounds[0]
+    $editorScaleX = ($upperLeftBounds.Right - $upperLeftBounds.Left) / ($sourceCaptureWidth / 2.0)
+    $editorScaleY = ($upperLeftBounds.Bottom - $upperLeftBounds.Top) / ($sourceCaptureHeight / 2.0)
+    if ($editorScaleX -le 0 -or $editorScaleY -le 0) { throw 'The editor capture could not establish image-to-window scale.' }
+    $annotationStartX = $editorScreenBounds.Left + [int][Math]::Round($upperLeftBounds.Left + ($upperLeftBounds.Right - $upperLeftBounds.Left) * 0.25)
+    $annotationStartY = $editorScreenBounds.Top + [int][Math]::Round($upperLeftBounds.Top + ($upperLeftBounds.Bottom - $upperLeftBounds.Top) * 0.25)
+    $annotationEndX = $editorScreenBounds.Left + [int][Math]::Round($upperLeftBounds.Left + ($upperLeftBounds.Right - $upperLeftBounds.Left) * 0.75)
+    $annotationEndY = $editorScreenBounds.Top + [int][Math]::Round($upperLeftBounds.Top + ($upperLeftBounds.Bottom - $upperLeftBounds.Top) * 0.75)
+    if ($annotationStartX -le $editorScreenBounds.Left -or $annotationStartY -le $editorScreenBounds.Top -or $annotationEndX -ge $editorScreenBounds.Right -or $annotationEndY -ge $editorScreenBounds.Bottom) { throw 'The measured real-editor rectangle gesture falls outside the editor client.' }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $editorHandle
+    } 3000 'The screenshot editor did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::PressKey(0x52)
+    [PoratakeTooltipProbe]::Drag($annotationStartX, $annotationStartY, $annotationEndX, $annotationEndY)
+    [PoratakeTooltipProbe]::PressControlS()
+    $saveDialog = Wait-Until {
+        $handles = [PoratakeTooltipProbe]::WindowsWithText('Save Screenshot')
+        foreach ($handle in $handles) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            $dialogProcess = [uint32]0
+            [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handle, [ref]$dialogProcess)
+            $rootOwner = [PoratakeTooltipProbe]::GetAncestor($handle, 3)
+            if ($dialogProcess -ne [uint32]$workflowApplication.Id -and $rootOwner -ne $editorHandle) { continue }
+            return $handle
+        }
+        return $null
+    } 10000 'Ctrl+S did not open the native Save Screenshot dialog.'
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $saveDialog -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $saveDialog
+    } 3000 'The owned Save Screenshot dialog did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::PressAltS()
+    $savedExportPath = Wait-Until {
+        $files = @(Get-ChildItem -LiteralPath $workflowExportDirectory -Filter '*.png' -File -ErrorAction Stop)
+        if ($files.Count -eq 1) { return $files[0].FullName }
+        if ($files.Count -gt 1) { throw "Expected one saved annotation export, found $($files.Count)." }
+        return $null
+    } 15000 'The native Save Screenshot dialog did not create the PNG export.'
+    $workflowRectangle = Assert-WorkflowRectangle $sourceCapturePath $savedExportPath ($annotationStartX - $editorScreenBounds.Left) ($annotationStartY - $editorScreenBounds.Top) ($annotationEndX - $editorScreenBounds.Left) ($annotationEndY - $editorScreenBounds.Top) $upperLeftBounds
+    Write-Host "Real editor rectangle export passed: $savedExportPath."
+
+    Capture-OwnedDaemonChildren $workflowApplication
+    $workflowApplication.Kill()
+    if (-not $workflowApplication.WaitForExit(5000)) { throw 'The capture/editor app did not exit before reopen verification.' }
+    $reopenPreviousProfile = $env:PORATAKE_CONFIG_DIR
+    $reopenPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    try {
+        $env:PORATAKE_CONFIG_DIR = $workflowProfileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $reopenApplication = Start-Process -FilePath $executable -ArgumentList @("`"$savedExportPath`"") -WorkingDirectory $root -RedirectStandardOutput (Join-Path $workflowProfileRoot 'reopen-stdout.log') -RedirectStandardError (Join-Path $workflowProfileRoot 'reopen-stderr.log') -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $reopenPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $reopenPreviousProfile }
+        if ($null -eq $reopenPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $reopenPreviousDaemonPath }
+    }
+    if (-not $reopenApplication) { throw 'Could not launch the saved-image reopen app.' }
+    Capture-OwnedDaemonChildren $reopenApplication
+    $reopenedEditor = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$reopenApplication.Id)) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
+            if ($rect.Right - $rect.Left -lt 900 -or $rect.Bottom - $rect.Top -lt 600) { continue }
+            return @{ Handle = $handle; Bounds = $rect }
+        }
+        return $null
+    } 30000 'The saved screenshot did not reopen in the GPUI editor.'
+    Capture-OwnedDaemonChildren $reopenApplication
+    $reopenedBounds = $reopenedEditor.Bounds
+    if (($reopenedBounds.Right - $reopenedBounds.Left) -ne ($editorBounds.Right - $editorBounds.Left) -or ($reopenedBounds.Bottom - $reopenedBounds.Top) -ne ($editorBounds.Bottom - $editorBounds.Top)) {
+        throw "Editor dimensions changed on save/reopen: first=$($editorBounds.Right - $editorBounds.Left)x$($editorBounds.Bottom - $editorBounds.Top), reopened=$($reopenedBounds.Right - $reopenedBounds.Left)x$($reopenedBounds.Bottom - $reopenedBounds.Top)."
+    }
+    $reopenedClient = New-Object PoratakeTooltipProbe+Rect
+    $reopenedClientOrigin = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetClientRect($reopenedEditor.Handle, [ref]$reopenedClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($reopenedEditor.Handle, [ref]$reopenedClientOrigin)) { throw 'Could not measure the reopened editor client area.' }
+    $reopenedScreenBounds = New-Object PoratakeTooltipProbe+Rect
+    $reopenedScreenBounds.Left = $reopenedClientOrigin.X + $reopenedClient.Left
+    $reopenedScreenBounds.Top = $reopenedClientOrigin.Y + $reopenedClient.Top
+    $reopenedScreenBounds.Right = $reopenedClientOrigin.X + $reopenedClient.Right
+    $reopenedScreenBounds.Bottom = $reopenedClientOrigin.Y + $reopenedClient.Bottom
+    $reopenedEditorCapturePath = Join-Path $captureRoot 'real-editor-reopened.png'
+    Capture-TooltipArea 'real-editor-reopened' $reopenedScreenBounds $reopenedEditorCapturePath
+    $reopenedQuadrantBounds = @()
+    foreach ($color in $fixtureColors) {
+        $colorBounds = Get-WorkflowColorBounds $reopenedEditorCapturePath $color
+        if ($colorBounds.PixelCount -lt 1000) { throw 'Reopened editor did not render the saved screenshot fixture pixels.' }
+        $reopenedQuadrantBounds += $colorBounds
+    }
+    $savedBitmap = [System.Drawing.Bitmap]::new($savedExportPath)
+    $reopenedBitmap = [System.Drawing.Bitmap]::new($reopenedEditorCapturePath)
+    try {
+        if ($savedBitmap.Width -ne $sourceCaptureWidth -or $savedBitmap.Height -ne $sourceCaptureHeight) { throw 'The saved PNG dimensions do not match the captured source.' }
+        $reopenSamples = @(
+            @{ SourceX = [int]($savedBitmap.Width * 0.25); SourceY = [int]($savedBitmap.Height * 0.25); Index = 0 },
+            @{ SourceX = [int]($savedBitmap.Width * 0.75); SourceY = [int]($savedBitmap.Height * 0.25); Index = 1 },
+            @{ SourceX = [int]($savedBitmap.Width * 0.25); SourceY = [int]($savedBitmap.Height * 0.75); Index = 2 },
+            @{ SourceX = [int]($savedBitmap.Width * 0.75); SourceY = [int]($savedBitmap.Height * 0.75); Index = 3 }
+        )
+        for ($index = 0; $index -lt $reopenSamples.Count; $index++) {
+            $sample = $reopenSamples[$index]
+            $bounds = $reopenedQuadrantBounds[$sample.Index]
+            $screenX = [int][Math]::Round(($bounds.Left + $bounds.Right) / 2.0)
+            $screenY = [int][Math]::Round(($bounds.Top + $bounds.Bottom) / 2.0)
+            $expected = $savedBitmap.GetPixel($sample.SourceX, $sample.SourceY)
+            $actual = $reopenedBitmap.GetPixel($screenX, $screenY)
+            if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 20 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 20 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 20) {
+                throw "Reopened editor pixel $index did not match the saved flattened image: actual=$($actual.R),$($actual.G),$($actual.B), expected=$($expected.R),$($expected.G),$($expected.B)."
+            }
+        }
+        $rectangleBounds = $reopenedQuadrantBounds[0]
+        $rectangleX = [int](($workflowRectangle.Left + $workflowRectangle.Right) / 2)
+        $rectangleY = $workflowRectangle.Top
+        $expectedEdge = $savedBitmap.GetPixel($rectangleX, $rectangleY)
+        $screenEdgeX = [int][Math]::Round($rectangleBounds.Left + ($rectangleX / ($savedBitmap.Width / 2.0)) * ($rectangleBounds.Right - $rectangleBounds.Left))
+        $screenEdgeY = [int][Math]::Round($rectangleBounds.Top + ($rectangleY / ($savedBitmap.Height / 2.0)) * ($rectangleBounds.Bottom - $rectangleBounds.Top))
+        $edgeMatches = $false
+        for ($dy = -3; $dy -le 3 -and -not $edgeMatches; $dy++) {
+            for ($dx = -3; $dx -le 3; $dx++) {
+                $actual = $reopenedBitmap.GetPixel($screenEdgeX + $dx, $screenEdgeY + $dy)
+                if ([Math]::Abs([int]$actual.R - [int]$expectedEdge.R) -le 30 -and [Math]::Abs([int]$actual.G - [int]$expectedEdge.G) -le 30 -and [Math]::Abs([int]$actual.B - [int]$expectedEdge.B) -le 30) { $edgeMatches = $true; break }
+            }
+        }
+        if (-not $edgeMatches) { throw 'The saved rectangle edge did not appear in the reopened editor pixels.' }
+    } finally {
+        $savedBitmap.Dispose()
+        $reopenedBitmap.Dispose()
+    }
+    Write-Host "Saved flattened screenshot reopened and rendered with matching pixels at $($reopenedBounds.Right - $reopenedBounds.Left)x$($reopenedBounds.Bottom - $reopenedBounds.Top)."
 } catch {
     $testFailure = $true
     if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath | Write-Host }
     if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath | Write-Host }
     if (Test-Path -LiteralPath $previewStdoutPath) { Get-Content -LiteralPath $previewStdoutPath | Write-Host }
     if (Test-Path -LiteralPath $previewStderrPath) { Get-Content -LiteralPath $previewStderrPath | Write-Host }
+    foreach ($log in @(
+        @{ Source = $workflowStdoutPath; Name = 'capture-workflow-stdout.log' },
+        @{ Source = $workflowStderrPath; Name = 'capture-workflow-stderr.log' },
+        @{ Source = (Join-Path $workflowProfileRoot 'reopen-stdout.log'); Name = 'capture-reopen-stdout.log' },
+        @{ Source = (Join-Path $workflowProfileRoot 'reopen-stderr.log'); Name = 'capture-reopen-stderr.log' }
+    )) {
+        if (Test-Path -LiteralPath $log.Source) {
+            try { Copy-Item -LiteralPath $log.Source -Destination (Join-Path $evidenceRoot $log.Name) -Force } catch { Write-Host "Could not preserve $($log.Name): $_" }
+        }
+    }
     if (Test-Path -LiteralPath $evidenceRoot) {
         Write-Host "Failure capture evidence retained at $evidenceRoot."
         $tracePath = Join-Path $evidenceRoot 'daemon-trace.log'
@@ -1516,9 +2092,12 @@ try {
     if ($markerBackdropWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
+    Release-ScreenshotFixture
     Capture-OwnedDaemonChildren
     Capture-OwnedDaemonChildren $previewApplication
-    foreach ($ownedApplication in @($application, $previewApplication)) {
+    Capture-OwnedDaemonChildren $workflowApplication
+    Capture-OwnedDaemonChildren $reopenApplication
+    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication)) {
         if ($ownedApplication -and -not $ownedApplication.HasExited) {
             try {
                 $ownedApplication.Kill()
@@ -1528,7 +2107,7 @@ try {
             }
         }
     }
-    $ownedApplicationIds = @($application, $previewApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
+    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
         if (-not $process.HasExited) {
@@ -1554,7 +2133,8 @@ try {
     if ($null -eq $previousTooltipVideoProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $previousTooltipVideoProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
-    if (($application -and -not $application.HasExited) -or ($previewApplication -and -not $previewApplication.HasExited)) { $safeToDeleteProfile = $false }
+    $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)
+    if (@($application, $previewApplication, $workflowApplication, $reopenApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {
         if (-not $owned.Process.HasExited) { $safeToDeleteProfile = $false }
         $owned.Process.Dispose()
@@ -1574,6 +2154,9 @@ try {
     }
     if ($safeToDeleteProfile -and $resolvedPreviewProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedPreviewProfile)) {
         Remove-Item -LiteralPath $resolvedPreviewProfile -Recurse -Force
+    }
+    if ($safeToDeleteProfile -and $resolvedWorkflowProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedWorkflowProfile)) {
+        Remove-Item -LiteralPath $resolvedWorkflowProfile -Recurse -Force
     }
     if (-not $safeToDeleteProfile) {
         if ($testFailure) { Write-Host 'Owned GPUI or daemon process did not exit; retained its temporary profile for safe recovery.' }
