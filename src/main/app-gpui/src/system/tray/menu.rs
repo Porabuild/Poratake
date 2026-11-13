@@ -253,13 +253,13 @@ fn specs(state: &TrayMenuState) -> Vec<Spec> {
             .accelerator(&recording.area)
             .enabled(!state.is_recording),
     );
-    push_gated(
-        &mut specs,
-        Feature::Recording,
-        item(Intent::RecordWindow, "Record Window", "app-window")
-            .accelerator(&recording.window)
-            .enabled(!state.is_recording),
-    );
+    if Intent::RecordWindow.is_supported() {
+        specs.push(
+            item(Intent::RecordWindow, "Record Window", "app-window")
+                .accelerator(&recording.window)
+                .enabled(!state.is_recording),
+        );
+    }
     push_gated(
         &mut specs,
         Feature::VideoEditor,
@@ -493,10 +493,19 @@ mod tests {
         let record_screen = built.iter().find(
             |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::RecordScreen),
         );
+        let record_area = built.iter().find(
+            |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::RecordArea),
+        );
+        let record_window = built.iter().find(
+            |spec| matches!(spec, Spec::Item { intent, .. } if *intent == Intent::RecordWindow),
+        );
+        assert_eq!(record_window.is_some(), Intent::RecordWindow.is_supported());
         if !is_supported(Feature::Recording) {
             assert!(record_screen.is_none());
+            assert!(record_area.is_none());
             return;
         }
+        assert!(record_area.is_some());
         match record_screen {
             Some(Spec::Item { enabled, .. }) => assert!(!enabled),
             _ => panic!("record screen item missing"),

@@ -17,10 +17,7 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const VIDEO_EXTENSIONS: &[&str] = &["poratake", "mp4", "mov", "webm"];
 
 pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
-    if intent
-        .feature()
-        .is_some_and(|feature| !is_supported(feature))
-    {
+    if !intent.is_supported() {
         crate::windows::toast::Toast::show(
             cx,
             "Not available",

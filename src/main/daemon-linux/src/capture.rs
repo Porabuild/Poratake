@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
-use image::{DynamicImage, RgbaImage};
+use image::{DynamicImage, Rgba, RgbaImage};
+use poratake_daemon_common::geometry::fit_rect_pixels;
 use poratake_daemon_common::geometry::{
     CaptureAreaRequest, CaptureRect, CaptureWindowRequest, DisplayInfo, DisplayOrigin,
     WindowBounds, WindowInfo,
@@ -73,9 +74,12 @@ impl FrozenFrames {
 }
 
 pub(crate) fn x11_connection() -> Result<(xcb::Connection, usize)> {
-    let (connection, screen_number) =
-        xcb::Connection::connect_with_extensions(None, &[xcb::Extension::RandR], &[])
-            .context("could not connect to the X11 display")?;
+    let (connection, screen_number) = xcb::Connection::connect_with_extensions(
+        None,
+        &[xcb::Extension::RandR],
+        &[xcb::Extension::Composite],
+    )
+    .context("could not connect to the X11 display")?;
     Ok((connection, screen_number as usize))
 }
 
@@ -695,23 +699,10 @@ fn x11_window_info(
         return Ok(None);
     }
 
-    let frame_window = x11_frame_window(connection, root, window)?;
-    let geometry = connection
-        .wait_for_reply(connection.send_request(&x::GetGeometry {
-            drawable: x::Drawable::Window(frame_window),
-        }))
-        .context("could not read X11 window geometry")?;
-    if geometry.width() < MIN_WINDOW_SIZE || geometry.height() < MIN_WINDOW_SIZE {
+    let bounds = x11_window_bounds(connection, root, window)?;
+    if bounds.width < i32::from(MIN_WINDOW_SIZE) || bounds.height < i32::from(MIN_WINDOW_SIZE) {
         return Ok(None);
     }
-    let position = connection
-        .wait_for_reply(connection.send_request(&x::TranslateCoordinates {
-            src_window: frame_window,
-            dst_window: root,
-            src_x: 0,
-            src_y: 0,
-        }))
-        .context("could not translate X11 window coordinates")?;
 
     let owner_pid = x11_property(connection, window, atoms.pid)?
         .value::<u32>()
@@ -737,12 +728,58 @@ fn x11_window_info(
         owner_name,
         owner_pid: i64::from(owner_pid),
         bounds: WindowBounds {
-            x: f64::from(position.dst_x()),
-            y: f64::from(position.dst_y()),
-            width: f64::from(geometry.width()),
-            height: f64::from(geometry.height()),
+            x: f64::from(bounds.x),
+            y: f64::from(bounds.y),
+            width: f64::from(bounds.width),
+            height: f64::from(bounds.height),
         },
     }))
+}
+
+pub(crate) fn x11_window_bounds(
+    connection: &xcb::Connection,
+    root: x::Window,
+    client: x::Window,
+) -> Result<CaptureRect> {
+    x11_window_geometry(connection, root, client).map(|(bounds, _)| bounds)
+}
+
+fn x11_window_geometry(
+    connection: &xcb::Connection,
+    root: x::Window,
+    client: x::Window,
+) -> Result<(CaptureRect, x::Window)> {
+    let frame_window = x11_frame_window(connection, root, client)?;
+    Ok((
+        x11_frame_bounds(connection, root, frame_window)?,
+        frame_window,
+    ))
+}
+
+fn x11_frame_bounds(
+    connection: &xcb::Connection,
+    root: x::Window,
+    frame_window: x::Window,
+) -> Result<CaptureRect> {
+    let geometry = connection
+        .wait_for_reply(connection.send_request(&x::GetGeometry {
+            drawable: x::Drawable::Window(frame_window),
+        }))
+        .context("could not read X11 window geometry")?;
+    let position = connection
+        .wait_for_reply(connection.send_request(&x::TranslateCoordinates {
+            src_window: frame_window,
+            dst_window: root,
+            src_x: 0,
+            src_y: 0,
+        }))
+        .context("could not translate X11 window coordinates")?;
+    Ok(CaptureRect {
+        x: i32::from(position.dst_x()),
+        y: i32::from(position.dst_y()),
+        width: i32::from(geometry.width()),
+        height: i32::from(geometry.height()),
+    })
 }
 
 fn x11_frame_window(
@@ -815,6 +852,354 @@ fn x11_redirected_pixmap(
     })
 }
 
+#[derive(Debug)]
+pub(crate) struct X11WindowClosed;
+
+impl std::fmt::Display for X11WindowClosed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the recorded X11 window was closed")
+    }
+}
+
+impl std::error::Error for X11WindowClosed {}
+
+pub(crate) struct X11WindowSource {
+    connection: xcb::Connection,
+    screen_number: usize,
+    root: x::Window,
+    client: x::Window,
+    frame: x::Window,
+    pixmap: Option<x::Pixmap>,
+    redirected: bool,
+    refresh_pixmap: bool,
+    width: u16,
+    height: u16,
+    bounds: Arc<Mutex<CaptureRect>>,
+    resolve_frame: bool,
+}
+
+impl X11WindowSource {
+    pub(crate) fn new(window_id: i64) -> Result<Self> {
+        let window_id = u32::try_from(window_id).context("X11 window id was invalid")?;
+        let client = x::Window::new(window_id);
+        let (connection, screen_number) = x11_connection()?;
+        ensure_x11_composite(&connection)?;
+        let screen = x11_screen(&connection, screen_number)?;
+        let root = screen.root();
+        let attributes = connection
+            .wait_for_reply(connection.send_request(&x::GetWindowAttributes { window: client }))
+            .context("could not read X11 window attributes")?;
+        if attributes.map_state() != x::MapState::Viewable {
+            return Err(anyhow!("X11 window is not visible"));
+        }
+        let (bounds, frame) = x11_window_geometry(&connection, root, client)?;
+        if bounds.width <= 0 || bounds.height <= 0 {
+            return Err(anyhow!("X11 window has no drawable area"));
+        }
+        for observed_window in [client, frame] {
+            connection
+                .send_and_check_request(&x::ChangeWindowAttributes {
+                    window: observed_window,
+                    value_list: &[x::Cw::EventMask(x::EventMask::STRUCTURE_NOTIFY)],
+                })
+                .context("could not observe X11 window changes")?;
+        }
+        let pixmap = name_x11_window_pixmap(&connection, frame)?;
+        Ok(Self {
+            connection,
+            screen_number,
+            root,
+            client,
+            frame,
+            pixmap: Some(pixmap),
+            redirected: true,
+            refresh_pixmap: false,
+            width: bounds.width as u16,
+            height: bounds.height as u16,
+            bounds: Arc::new(Mutex::new(bounds)),
+            resolve_frame: false,
+        })
+    }
+
+    pub(crate) fn bounds(&self) -> CaptureRect {
+        *self.bounds.lock().unwrap()
+    }
+
+    pub(crate) fn bounds_tracker(&self) -> Arc<Mutex<CaptureRect>> {
+        self.bounds.clone()
+    }
+
+    pub(crate) fn capture_frame(&mut self, target: (u32, u32)) -> Result<RgbaImage> {
+        self.poll_events()?;
+        let mut geometry = if self.resolve_frame {
+            x11_window_geometry(&self.connection, self.root, self.client)
+                .map_err(|error| map_window_geometry_error(&self.connection, self.client, error))?
+        } else {
+            match x11_frame_bounds(&self.connection, self.root, self.frame) {
+                Ok(bounds) => (bounds, self.frame),
+                Err(error) if has_bad_window(&error) || has_bad_drawable(&error) => {
+                    match x11_window_geometry(&self.connection, self.root, self.client) {
+                        Ok((bounds, frame)) if frame != self.frame => (bounds, frame),
+                        Ok(_) => return Err(error),
+                        Err(error) => {
+                            return Err(map_window_geometry_error(
+                                &self.connection,
+                                self.client,
+                                error,
+                            ));
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        self.poll_events()?;
+        if self.resolve_frame {
+            geometry = x11_window_geometry(&self.connection, self.root, self.client)
+                .map_err(|error| map_window_geometry_error(&self.connection, self.client, error))?;
+        }
+        self.resolve_frame = false;
+        let (bounds, frame) = geometry;
+        if bounds.width <= 0 || bounds.height <= 0 {
+            return Err(anyhow!("X11 window has no drawable area"));
+        }
+        let width = bounds.width as u16;
+        let height = bounds.height as u16;
+        if frame != self.frame {
+            self.release_pixmap();
+            self.frame = frame;
+            self.connection
+                .send_and_check_request(&x::ChangeWindowAttributes {
+                    window: frame,
+                    value_list: &[x::Cw::EventMask(x::EventMask::STRUCTURE_NOTIFY)],
+                })
+                .context("could not observe the X11 window frame")?;
+            self.width = width;
+            self.height = height;
+            self.pixmap = Some(name_x11_window_pixmap(&self.connection, frame)?);
+            self.redirected = true;
+            self.refresh_pixmap = false;
+        } else if width != self.width || height != self.height {
+            self.free_pixmap();
+            self.width = width;
+            self.height = height;
+            self.pixmap = Some(if self.redirected {
+                name_redirected_x11_window_pixmap(&self.connection, frame)?
+            } else {
+                let pixmap = name_x11_window_pixmap(&self.connection, frame)?;
+                self.redirected = true;
+                pixmap
+            });
+            self.refresh_pixmap = false;
+        } else if self.refresh_pixmap {
+            self.free_pixmap();
+            self.pixmap = Some(if self.redirected {
+                name_redirected_x11_window_pixmap(&self.connection, frame)?
+            } else {
+                let pixmap = name_x11_window_pixmap(&self.connection, frame)?;
+                self.redirected = true;
+                pixmap
+            });
+            self.refresh_pixmap = false;
+        } else if self.pixmap.is_none() {
+            self.pixmap = Some(if self.redirected {
+                name_redirected_x11_window_pixmap(&self.connection, frame)?
+            } else {
+                let pixmap = name_x11_window_pixmap(&self.connection, frame)?;
+                self.redirected = true;
+                pixmap
+            });
+        }
+        *self.bounds.lock().unwrap() = bounds;
+        let screen = x11_screen(&self.connection, self.screen_number)?;
+        let Some(pixmap) = self.pixmap else {
+            return Err(anyhow!("X11 window pixmap is unavailable"));
+        };
+        let image = capture_x11_drawable(
+            &self.connection,
+            screen,
+            x::Drawable::Pixmap(pixmap),
+            0,
+            0,
+            self.width,
+            self.height,
+        )?;
+        Ok(fit_window_frame(image, target))
+    }
+
+    fn poll_events(&mut self) -> Result<()> {
+        while let Some(event) = self.connection.poll_for_event()? {
+            match event {
+                xcb::Event::X(x::Event::DestroyNotify(event)) if event.window() == self.client => {
+                    return Err(anyhow::Error::new(X11WindowClosed));
+                }
+                xcb::Event::X(x::Event::ReparentNotify(event)) if event.window() == self.client => {
+                    self.resolve_frame = true;
+                }
+                xcb::Event::X(x::Event::MapNotify(event))
+                    if event.window() == self.client || event.window() == self.frame =>
+                {
+                    self.refresh_pixmap = true;
+                }
+                xcb::Event::X(x::Event::UnmapNotify(event)) if event.window() == self.frame => {}
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn release_pixmap(&mut self) {
+        self.free_pixmap();
+        if self.redirected {
+            self.connection.send_request(&composite::UnredirectWindow {
+                window: self.frame,
+                update: composite::Redirect::Automatic,
+            });
+            self.redirected = false;
+        }
+        let _ = self.connection.flush();
+    }
+
+    fn free_pixmap(&mut self) {
+        if let Some(pixmap) = self.pixmap.take() {
+            self.connection.send_request(&x::FreePixmap { pixmap });
+        }
+    }
+}
+
+impl Drop for X11WindowSource {
+    fn drop(&mut self) {
+        self.release_pixmap();
+    }
+}
+
+fn name_x11_window_pixmap(connection: &xcb::Connection, window: x::Window) -> Result<x::Pixmap> {
+    let redirect = connection.send_request_checked(&composite::RedirectWindow {
+        window,
+        update: composite::Redirect::Automatic,
+    });
+    connection
+        .check_request(redirect)
+        .context("could not redirect the X11 window for recording")?;
+    match name_redirected_x11_window_pixmap(connection, window) {
+        Ok(pixmap) => Ok(pixmap),
+        Err(error) => {
+            connection.send_request(&composite::UnredirectWindow {
+                window,
+                update: composite::Redirect::Automatic,
+            });
+            let _ = connection.flush();
+            Err(error)
+        }
+    }
+}
+
+fn ensure_x11_composite(connection: &xcb::Connection) -> Result<()> {
+    if connection
+        .active_extensions()
+        .any(|extension| extension == xcb::Extension::Composite)
+    {
+        return Ok(());
+    }
+    Err(anyhow!("X11 window capture needs the Composite extension"))
+}
+
+fn name_redirected_x11_window_pixmap(
+    connection: &xcb::Connection,
+    window: x::Window,
+) -> Result<x::Pixmap> {
+    let pixmap = connection.generate_id();
+    let name = connection.send_request_checked(&composite::NameWindowPixmap { window, pixmap });
+    connection
+        .check_request(name)
+        .context("could not access the composited X11 window pixels")?;
+    Ok(pixmap)
+}
+
+fn is_bad_window(error: &xcb::ProtocolError) -> bool {
+    matches!(error, xcb::ProtocolError::X(x::Error::Window(_), _))
+}
+
+fn is_bad_drawable(error: &xcb::ProtocolError) -> bool {
+    matches!(error, xcb::ProtocolError::X(x::Error::Drawable(_), _))
+}
+
+fn has_bad_drawable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<xcb::ProtocolError>()
+            .is_some_and(is_bad_drawable)
+    })
+}
+
+fn has_bad_window(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<xcb::ProtocolError>()
+            .is_some_and(is_bad_window)
+    })
+}
+
+fn map_window_geometry_error(
+    connection: &xcb::Connection,
+    client: x::Window,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if !has_bad_window(&error) {
+        return error;
+    }
+    match connection
+        .wait_for_reply(connection.send_request(&x::GetWindowAttributes { window: client }))
+    {
+        Err(xcb::Error::Protocol(error)) if is_bad_window(&error) => {
+            anyhow::Error::new(X11WindowClosed)
+        }
+        Err(error) => anyhow!("could not verify X11 window after geometry error: {error}"),
+        Ok(_) => error,
+    }
+}
+
+fn fit_window_frame(image: RgbaImage, target: (u32, u32)) -> RgbaImage {
+    if image.dimensions() == target {
+        return image;
+    }
+    let fit = fit_rect_pixels(image.dimensions(), target);
+    let mut frame = RgbaImage::from_pixel(target.0, target.1, Rgba([0, 0, 0, 255]));
+    if fit.width == 0 || fit.height == 0 {
+        return frame;
+    }
+    if fit.width == image.width() && fit.height == image.height() {
+        image::imageops::overlay(&mut frame, &image, i64::from(fit.x), i64::from(fit.y));
+        return frame;
+    }
+    let resized = image::imageops::resize(
+        &image,
+        fit.width,
+        fit.height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    image::imageops::overlay(&mut frame, &resized, i64::from(fit.x), i64::from(fit.y));
+    frame
+}
+
+pub(crate) fn even_video_dimensions(size: (u32, u32)) -> (u32, u32) {
+    (size.0 + size.0 % 2, size.1 + size.1 % 2)
+}
+
+pub(crate) fn pad_video_frame(image: RgbaImage, target: (u32, u32)) -> Result<RgbaImage> {
+    if image.width() > target.0 || image.height() > target.1 {
+        return Err(anyhow!(
+            "captured frame is larger than its encoded dimensions"
+        ));
+    }
+    if image.dimensions() == target {
+        return Ok(image);
+    }
+    let mut frame = RgbaImage::from_pixel(target.0, target.1, Rgba([0, 0, 0, 255]));
+    image::imageops::overlay(&mut frame, &image, 0, 0);
+    Ok(frame)
+}
+
 pub fn list_windows(backend: Backend) -> Result<Vec<WindowInfo>> {
     if backend != Backend::X11 {
         return Err(anyhow!(
@@ -842,6 +1227,7 @@ pub fn capture_window_to_file(backend: Backend, capture: &CaptureWindowRequest) 
     let window_id = u32::try_from(capture.window_id).context("X11 window id was invalid")?;
     let window = x::Window::new(window_id);
     let (connection, screen_number) = x11_connection()?;
+    ensure_x11_composite(&connection)?;
     let screen = x11_screen(&connection, screen_number)?;
     let frame_window = x11_frame_window(&connection, screen.root(), window)?;
     let attributes = connection
@@ -1196,6 +1582,344 @@ mod tests {
         .expect("image");
         let cropped = crop(&image, rect(1, 0, 1, 2)).expect("crop");
         assert_eq!(cropped.into_raw(), vec![2, 0, 0, 255, 4, 0, 0, 255]);
+    }
+
+    #[test]
+    fn pads_odd_area_frames_without_moving_or_resizing_the_captured_pixels() {
+        let image = RgbaImage::from_raw(3, 3, [9, 8, 7, 255].repeat(9)).expect("image");
+        let padded = pad_video_frame(image, even_video_dimensions((3, 3))).expect("padded frame");
+
+        assert_eq!(padded.dimensions(), (4, 4));
+        assert_eq!(padded.get_pixel(2, 2).0, [9, 8, 7, 255]);
+        assert_eq!(padded.get_pixel(3, 2).0, [0, 0, 0, 255]);
+        assert_eq!(padded.get_pixel(2, 3).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn fits_resized_window_frames_into_even_encoder_dimensions() {
+        let image = RgbaImage::from_pixel(4, 2, Rgba([255, 0, 0, 255]));
+        let fitted = fit_window_frame(image, (4, 4));
+
+        assert_eq!(fitted.dimensions(), (4, 4));
+        assert_eq!(fitted.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        assert_eq!(fitted.get_pixel(1, 1).0, [255, 0, 0, 255]);
+        assert_eq!(fitted.get_pixel(1, 2).0, [255, 0, 0, 255]);
+        assert_eq!(fitted.get_pixel(1, 3).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn leaves_unchanged_window_frames_unallocated() {
+        let image = RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255]));
+        let pixels = image.as_ptr();
+
+        let fitted = fit_window_frame(image, (2, 2));
+
+        assert_eq!(fitted.as_ptr(), pixels);
+    }
+
+    #[test]
+    fn keeps_odd_size_window_pixels_when_the_integer_fit_needs_no_resize() {
+        let image = RgbaImage::from_pixel(3, 4, Rgba([1, 2, 3, 255]));
+        let fitted = fit_window_frame(image, (4, 4));
+
+        assert_eq!(fitted.dimensions(), (4, 4));
+        assert_eq!(fitted.get_pixel(2, 3).0, [1, 2, 3, 255]);
+        assert_eq!(fitted.get_pixel(3, 3).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    #[ignore = "requires an X11 display"]
+    fn window_source_tracks_moves_resizes_and_closure_at_a_fixed_frame_size() {
+        let (connection, screen_number) = x11_connection().expect("connect to X11");
+        let screen = x11_screen(&connection, screen_number).expect("X11 screen");
+        let window: x::Window = connection.generate_id();
+        connection
+            .check_request(connection.send_request_checked(&x::CreateWindow {
+                depth: x::COPY_FROM_PARENT as u8,
+                wid: window,
+                parent: screen.root(),
+                x: 20,
+                y: 30,
+                width: 80,
+                height: 40,
+                border_width: 0,
+                class: x::WindowClass::InputOutput,
+                visual: screen.root_visual(),
+                value_list: &[x::Cw::BackPixel(0x00ff_0000)],
+            }))
+            .expect("create test window");
+        connection.send_request(&x::MapWindow { window });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize test window");
+
+        let mut source =
+            X11WindowSource::new(i64::from(window.resource_id())).expect("create recording source");
+        let original = source
+            .capture_frame((80, 40))
+            .expect("capture original window");
+        assert_eq!(original.dimensions(), (80, 40));
+        assert_eq!(original.get_pixel(40, 20).0, [255, 0, 0, 255]);
+
+        connection.send_request(&x::UnmapWindow { window });
+        connection.send_request(&x::ChangeWindowAttributes {
+            window,
+            value_list: &[x::Cw::BackPixel(0x0000_ff00)],
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize unmapped window");
+        let unmapped = source
+            .capture_frame((80, 40))
+            .expect("capture last unmapped frame");
+        assert_eq!(unmapped.get_pixel(40, 20).0, [255, 0, 0, 255]);
+
+        connection.send_request(&x::MapWindow { window });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize remapped window");
+        let remapped = source
+            .capture_frame((80, 40))
+            .expect("capture remapped window");
+        assert_eq!(remapped.get_pixel(40, 20).0, [0, 255, 0, 255]);
+        connection.send_request(&x::ChangeWindowAttributes {
+            window,
+            value_list: &[x::Cw::BackPixel(0x00ff_0000)],
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize restored window");
+        assert_eq!(
+            source
+                .capture_frame((80, 40))
+                .expect("capture restored window")
+                .get_pixel(40, 20)
+                .0,
+            [255, 0, 0, 255]
+        );
+
+        connection.send_request(&x::ConfigureWindow {
+            window,
+            value_list: &[x::ConfigWindow::X(90), x::ConfigWindow::Y(100)],
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize moved window");
+        source
+            .capture_frame((80, 40))
+            .expect("capture moved window");
+        assert_eq!((source.bounds().x, source.bounds().y), (90, 100));
+
+        let frame: x::Window = connection.generate_id();
+        connection
+            .check_request(connection.send_request_checked(&x::CreateWindow {
+                depth: x::COPY_FROM_PARENT as u8,
+                wid: frame,
+                parent: screen.root(),
+                x: 100,
+                y: 110,
+                width: 80,
+                height: 40,
+                border_width: 0,
+                class: x::WindowClass::InputOutput,
+                visual: screen.root_visual(),
+                value_list: &[x::Cw::BackPixel(0x0000_ff00)],
+            }))
+            .expect("create replacement frame");
+        connection.send_request(&x::MapWindow { window: frame });
+        connection.send_request(&x::ConfigureWindow {
+            window,
+            value_list: &[x::ConfigWindow::Width(40), x::ConfigWindow::Height(40)],
+        });
+        connection.send_request(&x::ReparentWindow {
+            window,
+            parent: frame,
+            x: 0,
+            y: 0,
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window: frame,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize reparented window");
+        let reparented = source
+            .capture_frame((80, 40))
+            .expect("capture reparented window");
+        assert_eq!((source.bounds().x, source.bounds().y), (100, 110));
+        assert_eq!(reparented.get_pixel(60, 20).0, [0, 255, 0, 255]);
+
+        let client_pixmap = source.pixmap.expect("named frame pixmap");
+        connection.send_request(&x::UnmapWindow { window });
+        connection.send_request(&x::ChangeWindowAttributes {
+            window,
+            value_list: &[x::Cw::BackPixel(0x00ff_ffff)],
+        });
+        connection.send_request(&x::MapWindow { window });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize remapped client");
+        let remapped_client = source
+            .capture_frame((80, 40))
+            .expect("capture remapped client");
+        assert_ne!(
+            source.pixmap.expect("refreshed frame pixmap"),
+            client_pixmap
+        );
+        assert_eq!(remapped_client.get_pixel(10, 20).0, [255, 255, 255, 255]);
+        connection.send_request(&x::ChangeWindowAttributes {
+            window,
+            value_list: &[x::Cw::BackPixel(0x00ff_0000)],
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize restored client");
+
+        connection.send_request(&x::UnmapWindow { window: frame });
+        connection.send_request(&x::ChangeWindowAttributes {
+            window: frame,
+            value_list: &[x::Cw::BackPixel(0x0000_00ff)],
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window: frame,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize unmapped frame");
+        let unmapped_frame = source
+            .capture_frame((80, 40))
+            .expect("capture last unmapped frame");
+        assert_eq!(unmapped_frame.get_pixel(60, 20).0, [0, 255, 0, 255]);
+
+        connection.send_request(&x::MapWindow { window: frame });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window: frame,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize remapped frame");
+        let remapped_frame = source
+            .capture_frame((80, 40))
+            .expect("capture remapped frame");
+        assert_eq!(remapped_frame.get_pixel(60, 20).0, [0, 0, 255, 255]);
+
+        connection.send_request(&x::ConfigureWindow {
+            window: frame,
+            value_list: &[x::ConfigWindow::Width(40), x::ConfigWindow::Height(40)],
+        });
+        connection.send_request(&x::ChangeWindowAttributes {
+            window: frame,
+            value_list: &[x::Cw::BackPixel(0x0000_ff00)],
+        });
+        connection.send_request(&x::ClearArea {
+            exposures: false,
+            window: frame,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize resized window");
+        let resized = source
+            .capture_frame((80, 40))
+            .expect("capture resized window");
+        assert_eq!(resized.dimensions(), (80, 40));
+        assert_eq!(resized.get_pixel(10, 20).0, [0, 0, 0, 255]);
+        assert_eq!(resized.get_pixel(20, 20).0, [255, 0, 0, 255]);
+        assert_eq!(resized.get_pixel(59, 20).0, [255, 0, 0, 255]);
+        assert_eq!(resized.get_pixel(60, 20).0, [0, 0, 0, 255]);
+
+        connection.send_request(&x::DestroyWindow { window: frame });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize closed window");
+        let error = source
+            .capture_frame((80, 40))
+            .expect_err("closed target should end frame capture");
+        assert!(error.downcast_ref::<X11WindowClosed>().is_some());
+    }
+
+    #[test]
+    #[ignore = "requires Xvfb started without the Composite extension"]
+    fn x11_connection_keeps_working_when_composite_is_unavailable() {
+        let (connection, _) = x11_connection().expect("connect to X11 without Composite");
+
+        assert!(
+            !connection
+                .active_extensions()
+                .any(|extension| extension == xcb::Extension::Composite)
+        );
+        assert!(
+            ensure_x11_composite(&connection)
+                .expect_err("window capture requires Composite")
+                .to_string()
+                .contains("Composite extension")
+        );
     }
 
     #[test]

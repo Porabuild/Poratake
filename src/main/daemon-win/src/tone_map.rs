@@ -1,4 +1,4 @@
-use crate::modules::recorder_types::fit_rect;
+use poratake_daemon_common::geometry::fit_rect;
 use std::ffi::CStr;
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile};
 use windows::Win32::Graphics::Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob};
