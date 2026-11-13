@@ -88,25 +88,149 @@ public static class PoratakeVideoExportDpi {
                 )
             )
             $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            $fileNameCandidate = $null
+            $selectedBy = $null
+            $editInventory = @()
             do {
                 $edits = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-                $namedEdits = @($edits | Where-Object { $_.Current.Name -match 'File name' })
-                $fileNameEdit = $null
-                if ($namedEdits.Count -eq 1) {
-                    $fileNameEdit = $namedEdits[0]
-                } elseif ($namedEdits.Count -eq 0 -and $edits.Count -eq 1) {
-                    $fileNameEdit = $edits[0]
+                $namedCandidates = [System.Collections.Generic.List[object]]::new()
+                $automationIdCandidates = [System.Collections.Generic.List[object]]::new()
+                $inventory = [System.Collections.Generic.List[object]]::new()
+                foreach ($edit in $edits) {
+                    try {
+                        $current = $edit.Current
+                    } catch {
+                        [void]$inventory.Add(@{
+                            name = ''
+                            automationId = ''
+                            className = ''
+                            bounds = $null
+                            isVisible = $false
+                            isEnabled = $false
+                            supportsValuePattern = $false
+                            parent = $null
+                            readError = $_.Exception.Message
+                        })
+                        continue
+                    }
+                    $bounds = $current.BoundingRectangle
+                    $parentMetadata = $null
+                    try {
+                        $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($edit)
+                        if ($null -ne $parent) {
+                            $parentCurrent = $parent.Current
+                            $parentBounds = $parentCurrent.BoundingRectangle
+                            $parentMetadata = @{
+                                name = $parentCurrent.Name
+                                automationId = $parentCurrent.AutomationId
+                                className = $parentCurrent.ClassName
+                                controlType = $parentCurrent.ControlType.ProgrammaticName
+                                bounds = @{ left = $parentBounds.Left; top = $parentBounds.Top; right = $parentBounds.Right; bottom = $parentBounds.Bottom }
+                                isVisible = -not $parentCurrent.IsOffscreen -and -not $parentBounds.IsEmpty
+                                isEnabled = $parentCurrent.IsEnabled
+                            }
+                        }
+                    } catch {
+                        $parentMetadata = @{ readError = $_.Exception.Message }
+                    }
+                    $valuePattern = $null
+                    $supportsValuePattern = $false
+                    try {
+                        $valuePattern = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+                        $supportsValuePattern = $null -ne $valuePattern
+                    } catch {
+                        $supportsValuePattern = $false
+                    }
+                    $isVisible = -not $current.IsOffscreen -and -not $bounds.IsEmpty -and $bounds.Width -gt 0 -and $bounds.Height -gt 0
+                    $metadata = @{
+                        name = $current.Name
+                        automationId = $current.AutomationId
+                        className = $current.ClassName
+                        bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
+                        isVisible = $isVisible
+                        isEnabled = $current.IsEnabled
+                        supportsValuePattern = $supportsValuePattern
+                        parent = $parentMetadata
+                    }
+                    [void]$inventory.Add($metadata)
+                    if (-not $isVisible -or -not $current.IsEnabled -or -not $supportsValuePattern) { continue }
+                    $candidate = @{ element = $edit; valuePattern = $valuePattern; metadata = $metadata }
+                    if ($current.Name -match 'File name' -or ($null -ne $parentMetadata -and $parentMetadata.name -match 'File name')) {
+                        [void]$namedCandidates.Add($candidate)
+                    }
+                    if ($current.AutomationId -ceq '1148') { [void]$automationIdCandidates.Add($candidate) }
                 }
                 $openButton = $rootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $openCondition)
-                if ($null -ne $fileNameEdit -and $null -ne $openButton -and $openButton.Current.IsEnabled) { break }
+                $editInventory = @($inventory.ToArray())
+                if ($namedCandidates.Count -eq 1) {
+                    $fileNameCandidate = $namedCandidates[0]
+                    $selectedBy = 'name'
+                } elseif ($automationIdCandidates.Count -eq 1) {
+                    $fileNameCandidate = $automationIdCandidates[0]
+                    $selectedBy = 'automationId-1148'
+                } else {
+                    $fileNameCandidate = $null
+                    $selectedBy = $null
+                }
+                if ($null -ne $fileNameCandidate -and $null -ne $openButton -and $openButton.Current.IsEnabled) { break }
                 [System.Threading.Thread]::Sleep(100)
             } while ($timer.ElapsedMilliseconds -lt 8000)
-            if ($null -eq $fileNameEdit -or $null -eq $openButton -or -not $openButton.Current.IsEnabled) {
-                throw "The native dialog did not expose a file-name edit and enabled Open button: edits=$($edits.Count), named=$($namedEdits.Count)."
+            if ($null -eq $fileNameCandidate -or $null -eq $openButton -or -not $openButton.Current.IsEnabled) {
+                $result = @{
+                    selected = $false
+                    path = $SelectedFilePath
+                    dpiContext = $helperContext.ToInt64()
+                    dpiAware = $dpiAware
+                    editInventory = $editInventory
+                }
+                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+                throw "The native dialog did not expose a unique visible, enabled filename Edit with ValuePattern or an enabled Open button. Named candidates=$($namedCandidates.Count), AutomationId 1148 candidates=$($automationIdCandidates.Count)."
             }
-            $fileNameEdit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($SelectedFilePath)
+            $readBack = $null
+            try {
+                $fileNameCandidate.valuePattern.SetValue($SelectedFilePath)
+                $valueTimer = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $readBack = [string]$fileNameCandidate.valuePattern.Current.Value
+                    if ([string]::Equals($readBack, $SelectedFilePath, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+                    [System.Threading.Thread]::Sleep(50)
+                } while ($valueTimer.ElapsedMilliseconds -lt 2000)
+            } catch {
+                $result = @{
+                    selected = $false
+                    path = $SelectedFilePath
+                    failure = $_.Exception.Message
+                    dpiContext = $helperContext.ToInt64()
+                    dpiAware = $dpiAware
+                    editInventory = $editInventory
+                }
+                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+                throw
+            }
+            if (-not [string]::Equals($readBack, $SelectedFilePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $result = @{
+                    selected = $false
+                    path = $SelectedFilePath
+                    valueReadBack = $readBack
+                    selectedBy = $selectedBy
+                    selectedControl = $fileNameCandidate.metadata
+                    dpiContext = $helperContext.ToInt64()
+                    dpiAware = $dpiAware
+                    editInventory = $editInventory
+                }
+                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+                throw 'The native file dialog filename field did not retain the selected fixture path.'
+            }
             $openButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            $result = @{ selected = $true; path = $SelectedFilePath; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware }
+            $result = @{
+                selected = $true
+                path = $SelectedFilePath
+                valueReadBack = $readBack
+                selectedBy = $selectedBy
+                selectedControl = $fileNameCandidate.metadata
+                dpiContext = $helperContext.ToInt64()
+                dpiAware = $dpiAware
+            }
         }
         [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 4), [System.Text.UTF8Encoding]::new($false))
         exit 0

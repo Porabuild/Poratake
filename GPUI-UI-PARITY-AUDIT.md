@@ -85,10 +85,17 @@ passed screenshot reopen and verified that the recording selection hole is clear
 when the same native overlay window is parked and reused. A UI trim was saved, but
 the after-image check missed the selected clip's changed color, so export and picker
 checks did not run. GitHub cancelled the macOS job before it started because no
-hosted runner was available. The trimmed export still needs a hosted retry.
+hosted runner was available.
+[Windows CI at `e76c8e8e`](https://github.com/Porabuild/Poratake/actions/runs/43467897146)
+passed screenshot reopen and the native recording overlay reuse check, trimmed a
+recorded clip through the video editor and verified the decoded export's duration,
+marker pixels and tooltip exclusion. The cursor picker opened, cancelled and
+reopened; its acceptance check stopped because UI Automation exposed nine edit
+controls without the expected name. Native file acceptance still needs verification.
+The macOS build and test job passed in that run; real macOS screen-capture exclusion
+remains unverified.
 Video export, tray file selection, screenshot wallpaper and video media imports
-use asynchronous dialogs to avoid the same nested event-loop pattern. A hosted
-cursor-picker cancel/retry/accept test is prepared but has not run yet; the other
+use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
