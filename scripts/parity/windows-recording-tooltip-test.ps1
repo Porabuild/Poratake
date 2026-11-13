@@ -6,9 +6,13 @@ if ($env:GITHUB_ACTIONS -ne 'true') {
 
 $root = if ($env:GITHUB_WORKSPACE) { (Resolve-Path $env:GITHUB_WORKSPACE).Path } else { 'E:\work\poratake\.poracode\worktrees\poracode-nimble-badger-314d2ec2' }
 $profileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-tooltip-' + [guid]::NewGuid().ToString('N')))
+$previewProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-preview-tooltip-' + [guid]::NewGuid().ToString('N')))
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $profileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing profile outside the runner temporary directory: $profileRoot"
+}
+if (-not $previewProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing preview profile outside the runner temporary directory: $previewProfileRoot"
 }
 $runnerTempRoot = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 
@@ -18,7 +22,10 @@ $daemonCandidates = @()
 $daemonExecutable = $null
 $stdoutPath = Join-Path $profileRoot 'stdout.log'
 $stderrPath = Join-Path $profileRoot 'stderr.log'
+$previewStdoutPath = Join-Path $previewProfileRoot 'stdout.log'
+$previewStderrPath = Join-Path $previewProfileRoot 'stderr.log'
 $application = $null
+$previewApplication = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
@@ -33,15 +40,18 @@ $captureDaemonReady = $false
 $captureRpcTimedOut = $false
 $recordingActive = $false
 $testFailure = $false
+$previousDpiAwarenessContext = [IntPtr]::Zero
 $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerTempRoot, 'poratake-visual-tooltip-' + [guid]::NewGuid().ToString('N')))
 $captureRoot = Join-Path $evidenceRoot 'captures'
+$previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
 if (-not $evidenceRoot.StartsWith($runnerTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing evidence outside the runner temporary directory: $evidenceRoot"
 }
-function Capture-OwnedDaemonChildren {
-    if (-not $script:application) { return }
+function Capture-OwnedDaemonChildren([System.Diagnostics.Process]$parentApplication) {
+    if (-not $parentApplication) { $parentApplication = $script:application }
+    if (-not $parentApplication) { return }
     try {
-        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($script:application.Id)" -ErrorAction Stop)
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($parentApplication.Id)" -ErrorAction Stop)
     } catch {
         $script:safeToDeleteProfile = $false
         return
@@ -122,6 +132,11 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+    [DllImport("user32.dll")] public static extern IntPtr GetThreadDpiAwarenessContext();
+    [DllImport("user32.dll")] public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr dpiContext);
+    [DllImport("user32.dll")] public static extern bool AreDpiAwarenessContextsEqual(IntPtr first, IntPtr second);
     [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr VirtualAllocEx(IntPtr process, IntPtr address, UIntPtr size, uint allocationType, uint protection);
@@ -295,11 +310,11 @@ public static class PoratakeTooltipFixture {
 }
 '@
 
-function Invoke-CaptureDaemonRequest([hashtable]$request) {
+function Invoke-CaptureDaemonRequest([hashtable]$request, [int]$timeoutSeconds = 35) {
     if (-not $script:captureDaemon -or $script:captureDaemon.HasExited -or $script:captureRpcTimedOut) { throw 'Screenshot daemon is unavailable.' }
     $script:captureDaemon.StandardInput.WriteLine(($request | ConvertTo-Json -Compress -Depth 8))
     $script:captureDaemon.StandardInput.Flush()
-    $deadline = [DateTime]::UtcNow.AddSeconds(35)
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
         $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
         if ($remaining -le 0) { break }
@@ -339,13 +354,13 @@ function Start-CaptureDaemon {
     $null = Invoke-CaptureDaemonRequest @{ id = 'tooltip-probe-ping'; module = 'system'; method = 'ping' }
 }
 
-function Capture-TooltipArea([string]$id, [PoratakeTooltipProbe+Rect]$rect, [string]$path) {
+function Capture-TooltipArea([string]$id, [PoratakeTooltipProbe+Rect]$rect, [string]$path, [int]$timeoutSeconds = 35) {
     $result = Invoke-CaptureDaemonRequest @{
         id = $id
         module = 'screenshot'
         method = 'capture-area'
         params = @{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top; path = $path; cached = $false }
-    }
+    } $timeoutSeconds
     if ($result.width -ne ($rect.Right - $rect.Left) -or $result.height -ne ($rect.Bottom - $rect.Top) -or -not [System.IO.File]::Exists($path)) {
         throw "Daemon capture did not match the requested rectangle: $path"
     }
@@ -400,6 +415,50 @@ function Assert-TooltipCaptureMatchesFixture([string]$fixturePath, [string]$show
         }
         if ($checked -lt 64) { throw "Only $checked outside-owner pixels were tested." }
     } finally { $fixture.Dispose(); $shown.Dispose() }
+}
+
+function Assert-PreviewPixelsCaptured([string]$path, [PoratakeTooltipProbe+Rect]$rect, [switch]$Quiet) {
+    Add-Type -AssemblyName System.Drawing
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $width = $rect.Right - $rect.Left
+        $height = $rect.Bottom - $rect.Top
+        if ($image.Width -ne $width -or $image.Height -ne $height) { throw 'Preview screenshot dimensions do not match the requested image region.' }
+        $magenta = 0
+        $checked = 0
+        for ($y = 0; $y -lt $height; $y++) {
+            for ($x = 0; $x -lt $width; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ($pixel.R -ge 110 -and $pixel.G -le 80 -and $pixel.B -ge 100) { $magenta++ }
+                $checked++
+            }
+        }
+        if ($checked -lt 256 -or $magenta -lt [Math]::Ceiling($checked * 0.7)) {
+            throw "The daemon screenshot did not positively capture the deterministic preview image: magenta=$magenta/$checked."
+        }
+        if (-not $Quiet) { Write-Host "Daemon screenshot positively captured the preview image: magenta=$magenta/$checked pixels." }
+    } finally { $image.Dispose() }
+}
+
+function Test-PreviewPixelsStable([string]$firstPath, [string]$secondPath, [PoratakeTooltipProbe+Rect]$rect) {
+    Add-Type -AssemblyName System.Drawing
+    $first = [System.Drawing.Bitmap]::new($firstPath)
+    $second = [System.Drawing.Bitmap]::new($secondPath)
+    try {
+        if ($first.Width -ne $second.Width -or $first.Height -ne $second.Height -or $first.Width -ne ($rect.Right - $rect.Left) -or $first.Height -ne ($rect.Bottom - $rect.Top)) {
+            throw 'Preview readiness captures do not have matching expected dimensions.'
+        }
+        $stable = 0
+        $checked = $first.Width * $first.Height
+        for ($y = 0; $y -lt $first.Height; $y++) {
+            for ($x = 0; $x -lt $first.Width; $x++) {
+                $a = $first.GetPixel($x, $y)
+                $b = $second.GetPixel($x, $y)
+                if ([Math]::Abs([int]$a.R - [int]$b.R) -le 3 -and [Math]::Abs([int]$a.G - [int]$b.G) -le 3 -and [Math]::Abs([int]$a.B - [int]$b.B) -le 3) { $stable++ }
+            }
+        }
+        return $stable -ge [Math]::Ceiling($checked * 0.995)
+    } finally { $first.Dispose(); $second.Dispose() }
 }
 
 function Test-TooltipInteriorForeground([System.Drawing.Bitmap]$image, [int]$screenLeft, [int]$screenTop, [PoratakeTooltipProbe+Rect]$ownerBounds) {
@@ -460,7 +519,7 @@ function Test-TooltipInteriorForeground([System.Drawing.Bitmap]$image, [int]$scr
     }
 }
 
-function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr]$owner, [string]$text, [uint32]$affinity, [PoratakeTooltipProbe+Rect]$tip, [PoratakeTooltipProbe+Rect]$ownerBounds) {
+function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr]$owner, [string]$text, [uint32]$affinity, [PoratakeTooltipProbe+Rect]$tip, [PoratakeTooltipProbe+Rect]$ownerBounds, [switch]$IncludeOwnerPixels) {
     $metadataPath = [System.IO.Path]::ChangeExtension($path, '.json')
     Wait-Until { [System.IO.File]::Exists($path) -and [System.IO.File]::Exists($metadataPath) } 5000 'The in-process native tooltip paint proof was not written.' | Out-Null
     $proof = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json -ErrorAction Stop
@@ -484,6 +543,8 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
     Add-Type -AssemblyName System.Drawing
     $image = [System.Drawing.Bitmap]::new($path)
     try {
+        $paintOwnerBounds = $ownerBounds
+        if ($IncludeOwnerPixels) { $paintOwnerBounds = New-Object PoratakeTooltipProbe+Rect }
         $client = $proof.clientBounds
         if ($image.Width -ne [int]$client.width -or $image.Height -ne [int]$client.height -or $image.Width -le 0 -or $image.Height -le 0) {
             throw 'The in-process paint proof image dimensions do not match its client geometry.'
@@ -498,7 +559,7 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
                 $null = $colors.Add($color)
                 $screenX = [int]$client.screenLeft + $x
                 $screenY = [int]$client.screenTop + $y
-                if ($screenX -lt $ownerBounds.Left -or $screenX -ge $ownerBounds.Right -or $screenY -lt $ownerBounds.Top -or $screenY -ge $ownerBounds.Bottom) {
+                if ($screenX -lt $paintOwnerBounds.Left -or $screenX -ge $paintOwnerBounds.Right -or $screenY -lt $paintOwnerBounds.Top -or $screenY -ge $paintOwnerBounds.Bottom) {
                     $null = $outsideColors.Add($color)
                     if ($pixel.R -ne 0 -or $pixel.G -ne 0 -or $pixel.B -ne 0) { $outsideNonBackground++ }
                 }
@@ -507,7 +568,7 @@ function Assert-NativeTooltipPaintProof([string]$path, [IntPtr]$tooltip, [IntPtr
         if ($colors.Count -le 2 -or $outsideColors.Count -le 1 -or $outsideNonBackground -lt 20) {
             throw "The in-process paint proof lacks multicolor pixels outside its owner: colors=$($colors.Count), outside-colors=$($outsideColors.Count), outside-non-background=$outsideNonBackground."
         }
-        $foreground = Test-TooltipInteriorForeground $image ([int]$client.screenLeft) ([int]$client.screenTop) $ownerBounds
+        $foreground = Test-TooltipInteriorForeground $image ([int]$client.screenLeft) ([int]$client.screenTop) $paintOwnerBounds
         if (-not $foreground.Passed) {
             throw "The in-process paint proof lacks contrasting interior foreground across several rows: pixels=$($foreground.Pixels), rows=$($foreground.Rows), distinct-row-counts=$($foreground.DistinctRows)."
         }
@@ -558,6 +619,12 @@ function Stop-CaptureDaemon {
 }
 
 try {
+    $previousDpiAwarenessContext = [PoratakeTooltipProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    if ($previousDpiAwarenessContext -eq [IntPtr]::Zero) { throw 'Could not set the probe thread to per-monitor-aware V2.' }
+    $probeDpiAwarenessContext = [PoratakeTooltipProbe]::GetThreadDpiAwarenessContext()
+    if ([PoratakeTooltipProbe]::GetAwarenessFromDpiAwarenessContext($probeDpiAwarenessContext) -ne 2 -or -not [PoratakeTooltipProbe]::AreDpiAwarenessContextsEqual($probeDpiAwarenessContext, [IntPtr](-4))) {
+        throw 'The probe thread did not enter the per-monitor-aware V2 coordinate context.'
+    }
     New-Item -ItemType Directory -Path $profileRoot | Out-Null
     New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
     $tooltipProofPath = Join-Path $evidenceRoot 'native-tooltip-paint.png'
@@ -859,10 +926,209 @@ try {
     if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move the runner pointer away after overlap re-entry.' }
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($afterOverlap.Handle) } 2000 'The native GPUI tooltip stayed visible after overlap re-entry.' | Out-Null
     Write-Host 'Native GPUI tooltip returned after the overlap window closed.'
+
+    New-Item -ItemType Directory -Path $previewProfileRoot -Force | Out-Null
+    $previewImagePath = Join-Path $captureRoot 'capture-preview-source.png'
+    Add-Type -AssemblyName System.Drawing
+    $previewImage = [System.Drawing.Bitmap]::new(200, 140)
+    $previewGraphics = [System.Drawing.Graphics]::FromImage($previewImage)
+    try {
+        $previewGraphics.Clear([System.Drawing.Color]::FromArgb(230, 0, 200))
+        $previewImage.Save($previewImagePath, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $previewGraphics.Dispose()
+        $previewImage.Dispose()
+    }
+    [System.IO.File]::WriteAllText((Join-Path $previewProfileRoot 'config.json'), '{"onboarding":{"completed":true},"recording":{"micEnabled":false,"camera":{"enabled":false}},"preview":{"corner":"bottom-right","autoDismiss":false}}', [System.Text.UTF8Encoding]::new($false))
+    $env:PORATAKE_CONFIG_DIR = $previewProfileRoot
+    $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+    $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $previewTooltipProofPath
+    try {
+        $previewApplication = Start-Process -FilePath $executable -ArgumentList @('--preview-window', 'capture-preview', $previewImagePath) -WorkingDirectory $root -RedirectStandardOutput $previewStdoutPath -RedirectStandardError $previewStderrPath -WindowStyle Hidden -PassThru
+    } finally {
+        $env:PORATAKE_CONFIG_DIR = $profileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $tooltipProofPath
+    }
+    if (-not $previewApplication) { throw 'Could not launch the isolated capture-preview app.' }
+    Capture-OwnedDaemonChildren $previewApplication
+
+    $previewOwner = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$previewApplication.Id)) {
+            if ([PoratakeTooltipProbe]::WindowText($handle) -ne 'Poratake capture preview' -or -not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
+            if ($rect.Right -le $rect.Left -or $rect.Bottom -le $rect.Top) { continue }
+            return @{ Handle = $handle; Bounds = $rect }
+        }
+        return $null
+    } 30000 'The capture-preview window did not appear.'
+    Capture-OwnedDaemonChildren $previewApplication
+    $previewOwnerHandle = $previewOwner.Handle
+    $previewOwnerBounds = $previewOwner.Bounds
+    $previewDpi = [PoratakeTooltipProbe]::GetDpiForWindow($previewOwnerHandle)
+    if ($previewDpi -lt 96) { throw "The capture-preview window returned an invalid DPI: $previewDpi" }
+    $previewScale = [double]$previewDpi / 96.0
+    $previewOwnerWidth = $previewOwnerBounds.Right - $previewOwnerBounds.Left
+    $previewOwnerHeight = $previewOwnerBounds.Bottom - $previewOwnerBounds.Top
+    if ([Math]::Abs($previewOwnerWidth - 208 * $previewScale) -gt 4 -or [Math]::Abs($previewOwnerHeight - 604 * $previewScale) -gt 5) {
+        throw "Capture-preview owner geometry does not match its expected DPI-scaled stack: ${previewOwnerWidth}x${previewOwnerHeight}, dpi=$previewDpi."
+    }
+    $previewCard = New-Object PoratakeTooltipProbe+Rect
+    $previewCard.Left = $previewOwnerBounds.Left + [int][Math]::Round(4 * $previewScale)
+    $previewCard.Top = $previewOwnerBounds.Top + [int][Math]::Round(460 * $previewScale)
+    $previewCard.Right = $previewCard.Left + [int][Math]::Round(200 * $previewScale)
+    $previewCard.Bottom = $previewCard.Top + [int][Math]::Round(140 * $previewScale)
+    if ($previewCard.Left -lt $previewOwnerBounds.Left -or $previewCard.Top -lt $previewOwnerBounds.Top -or $previewCard.Right -gt $previewOwnerBounds.Right -or $previewCard.Bottom -gt $previewOwnerBounds.Bottom) {
+        throw 'The test-owned preview card geometry falls outside its preview owner window.'
+    }
+    $previewMonitor = New-Object PoratakeTooltipProbe+MonitorInfo
+    $previewMonitor.Size = [PoratakeTooltipProbe]::MonitorInfoSize()
+    $previewMonitorHandle = [PoratakeTooltipProbe]::MonitorFromWindow($previewOwnerHandle, 2)
+    if ($previewMonitorHandle -eq [IntPtr]::Zero -or -not [PoratakeTooltipProbe]::GetMonitorInfo($previewMonitorHandle, [ref]$previewMonitor)) { throw 'Could not read capture-preview monitor bounds.' }
+    if ($previewCard.Left -lt $previewMonitor.Monitor.Left -or $previewCard.Top -lt $previewMonitor.Monitor.Top -or $previewCard.Right -gt $previewMonitor.Monitor.Right -or $previewCard.Bottom -gt $previewMonitor.Monitor.Bottom) {
+        throw 'The test-owned preview card falls outside monitor bounds.'
+    }
+    $previewPositiveControl = New-Object PoratakeTooltipProbe+Rect
+    $previewPositiveControl.Left = $previewCard.Left + [int][Math]::Round(40 * $previewScale)
+    $previewPositiveControl.Top = $previewCard.Top + [int][Math]::Round(40 * $previewScale)
+    $previewPositiveControl.Right = $previewCard.Left + [int][Math]::Round(160 * $previewScale)
+    $previewPositiveControl.Bottom = $previewCard.Top + [int][Math]::Round(100 * $previewScale)
+    if (-not [PoratakeTooltipProbe]::SetCursorPos(($previewCard.Left + $previewCard.Right) / 2, ($previewCard.Top + $previewCard.Bottom) / 2)) {
+        throw 'Could not move the runner pointer onto the test-owned preview image.'
+    }
+    $previewImageCapture = Join-Path $captureRoot 'capture-preview-image.png'
+    $script:previewReadinessAttempt = 0
+    $script:previewReadinessFailure = 'The preview image did not reach a stable magenta capture before the readiness deadline.'
+    $previewImageReady = Wait-Until {
+        if ($script:previewReadinessAttempt -ge 6) { return @{ Exhausted = $true } }
+        $script:previewReadinessAttempt++
+        $firstReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-a.png" -f $script:previewReadinessAttempt)
+        $secondReadinessCapture = Join-Path $captureRoot ("capture-preview-readiness-{0:D2}-b.png" -f $script:previewReadinessAttempt)
+        Capture-TooltipArea "capture-preview-image-readiness-$($script:previewReadinessAttempt)-a" $previewPositiveControl $firstReadinessCapture 10
+        try { Assert-PreviewPixelsCaptured $firstReadinessCapture $previewPositiveControl -Quiet } catch { $script:previewReadinessFailure = $_.Exception.Message; return $null }
+        Capture-TooltipArea "capture-preview-image-readiness-$($script:previewReadinessAttempt)-b" $previewPositiveControl $secondReadinessCapture 10
+        try {
+            Assert-PreviewPixelsCaptured $secondReadinessCapture $previewPositiveControl -Quiet
+            if (-not (Test-PreviewPixelsStable $firstReadinessCapture $secondReadinessCapture $previewPositiveControl)) {
+                throw 'Preview image pixels changed between readiness captures.'
+            }
+            Copy-Item -LiteralPath $secondReadinessCapture -Destination $previewImageCapture -Force -ErrorAction Stop
+            return $true
+        } catch {
+            $script:previewReadinessFailure = $_.Exception.Message
+            return $null
+        }
+    } 15000 ''
+    if (-not $previewImageReady -or $previewImageReady.Exhausted) { throw "Capture-preview image readiness failed after $($script:previewReadinessAttempt) bounded attempts: $script:previewReadinessFailure" }
+    Assert-PreviewPixelsCaptured $previewImageCapture $previewPositiveControl
+
+    $previewTrigger = New-Object PoratakeTooltipProbe+Point
+    $previewTrigger.X = $previewCard.Left + [int][Math]::Round(20 * $previewScale)
+    $previewTrigger.Y = $previewCard.Top + [int][Math]::Round(20 * $previewScale)
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewTrigger.X, $previewTrigger.Y)) { throw 'Could not move the runner pointer onto the capture-preview close control.' }
+    $previewTooltip = Wait-Until {
+        $handle = Get-VisibleTooltipWindow $previewApplication.Id $previewOwnerHandle
+        if (-not $handle) { return $null }
+        $text = [PoratakeTooltipProbe]::TooltipText($handle, $previewOwnerHandle, [uint32]$previewApplication.Id)
+        if ($text -cne 'Close preview') { return $null }
+        return @{ Handle = $handle; Text = $text }
+    } 5000 'The capture-preview native tooltip did not show its expected text.'
+    if ([PoratakeTooltipProbe]::GetWindow($previewTooltip.Handle, 4) -ne $previewOwnerHandle) { throw 'The capture-preview tooltip is not owned by the real preview window.' }
+    $previewTooltipBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($previewTooltip.Handle, [ref]$previewTooltipBounds)) { throw 'Could not read capture-preview tooltip bounds.' }
+    $previewTooltipWidth = $previewTooltipBounds.Right - $previewTooltipBounds.Left
+    $previewTooltipHeight = $previewTooltipBounds.Bottom - $previewTooltipBounds.Top
+    if ($previewTooltipWidth -le 0 -or $previewTooltipHeight -le 0) { throw 'The capture-preview tooltip has invalid geometry.' }
+    if ($previewTooltipBounds.Left -lt $previewOwnerBounds.Left -or $previewTooltipBounds.Top -lt $previewOwnerBounds.Top -or $previewTooltipBounds.Right -gt $previewOwnerBounds.Right -or $previewTooltipBounds.Bottom -gt $previewOwnerBounds.Bottom) {
+        throw 'The capture-preview tooltip must be measured inside the preview HWND for this no-owner-mask comparison.'
+    }
+    $previewTriggerBounds = New-Object PoratakeTooltipProbe+Rect
+    $previewTriggerBounds.Left = $previewCard.Left + [int][Math]::Round(8 * $previewScale)
+    $previewTriggerBounds.Top = $previewCard.Top + [int][Math]::Round(8 * $previewScale)
+    $previewTriggerBounds.Right = $previewCard.Left + [int][Math]::Round(32 * $previewScale)
+    $previewTriggerBounds.Bottom = $previewCard.Top + [int][Math]::Round(32 * $previewScale)
+    if ($previewTooltipBounds.Left -lt $previewTriggerBounds.Right -and $previewTooltipBounds.Right -gt $previewTriggerBounds.Left -and $previewTooltipBounds.Top -lt $previewTriggerBounds.Bottom -and $previewTooltipBounds.Bottom -gt $previewTriggerBounds.Top) {
+        throw 'The capture-preview tooltip ROI overlaps its hovered control and would make the hidden/shown comparison ambiguous.'
+    }
+    $previewNeutralPoint = New-Object PoratakeTooltipProbe+Point
+    $previewNeutralPoint.X = [int](($previewCard.Left + $previewCard.Right) / 2)
+    $previewNeutralPoint.Y = [int](($previewCard.Top + $previewCard.Bottom) / 2)
+    if ($previewNeutralPoint.X -ge $previewTooltipBounds.Left -and $previewNeutralPoint.X -lt $previewTooltipBounds.Right -and $previewNeutralPoint.Y -ge $previewTooltipBounds.Top -and $previewNeutralPoint.Y -lt $previewTooltipBounds.Bottom) {
+        throw 'The neutral preview hover point overlaps the tooltip comparison ROI.'
+    }
+    $tooltipMonitor = New-Object PoratakeTooltipProbe+MonitorInfo
+    $tooltipMonitor.Size = [PoratakeTooltipProbe]::MonitorInfoSize()
+    $tooltipMonitorHandle = [PoratakeTooltipProbe]::MonitorFromWindow($previewTooltip.Handle, 2)
+    if ($tooltipMonitorHandle -eq [IntPtr]::Zero -or -not [PoratakeTooltipProbe]::GetMonitorInfo($tooltipMonitorHandle, [ref]$tooltipMonitor)) { throw 'Could not read capture-preview tooltip monitor bounds.' }
+    if ($previewTooltipBounds.Left -lt $tooltipMonitor.Monitor.Left -or $previewTooltipBounds.Top -lt $tooltipMonitor.Monitor.Top -or $previewTooltipBounds.Right -gt $tooltipMonitor.Monitor.Right -or $previewTooltipBounds.Bottom -gt $tooltipMonitor.Monitor.Bottom) {
+        throw 'The capture-preview tooltip falls outside monitor bounds.'
+    }
+    $previewAffinity = [uint32]0
+    if (-not [PoratakeTooltipProbe]::GetWindowDisplayAffinity($previewTooltip.Handle, [ref]$previewAffinity) -or $previewAffinity -eq 0) { throw 'The capture-preview tooltip has no capture-affinity protection.' }
+    Write-Host "Visible capture-preview tooltip '$($previewTooltip.Text)' at $($previewTooltipBounds.Left),$($previewTooltipBounds.Top)-$($previewTooltipBounds.Right),$($previewTooltipBounds.Bottom), affinity=$previewAffinity."
+
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewNeutralPoint.X, $previewNeutralPoint.Y)) { throw 'Could not hide capture-preview tooltip before the fresh paint proof.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($previewTooltip.Handle) } 2000 'Capture-preview tooltip stayed visible before its fresh paint proof.' | Out-Null
+    $previewProofMetadataPath = [System.IO.Path]::ChangeExtension($previewTooltipProofPath, '.json')
+    foreach ($proofFile in @($previewTooltipProofPath, $previewProofMetadataPath)) {
+        if ([System.IO.File]::Exists($proofFile)) { Remove-Item -LiteralPath $proofFile -Force -ErrorAction Stop }
+        if ([System.IO.File]::Exists($proofFile)) { throw "Could not clear stale capture-preview paint proof: $proofFile" }
+    }
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewTrigger.X, $previewTrigger.Y)) { throw 'Could not retrigger capture-preview tooltip paint proof.' }
+    $shownPreviewTooltip = Wait-Until {
+        $handle = Get-VisibleTooltipWindow $previewApplication.Id $previewOwnerHandle
+        if (-not $handle) { return $null }
+        $text = [PoratakeTooltipProbe]::TooltipText($handle, $previewOwnerHandle, [uint32]$previewApplication.Id)
+        if ($text -cne $previewTooltip.Text) { return $null }
+        return @{ Handle = $handle; Text = $text }
+    } 3000 'Capture-preview tooltip did not return for paint proof.'
+    $shownPreviewBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($shownPreviewTooltip.Handle, [ref]$shownPreviewBounds)) { throw 'Could not read capture-preview tooltip bounds after re-entry.' }
+    if ($shownPreviewBounds.Left -ne $previewTooltipBounds.Left -or $shownPreviewBounds.Top -ne $previewTooltipBounds.Top -or $shownPreviewBounds.Right -ne $previewTooltipBounds.Right -or $shownPreviewBounds.Bottom -ne $previewTooltipBounds.Bottom) {
+        throw 'Capture-preview tooltip moved between paint proof and screenshot comparison.'
+    }
+    Assert-NativeTooltipPaintProof $previewTooltipProofPath $shownPreviewTooltip.Handle $previewOwnerHandle $shownPreviewTooltip.Text $previewAffinity $shownPreviewBounds $previewOwnerBounds -IncludeOwnerPixels
+
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewNeutralPoint.X, $previewNeutralPoint.Y)) { throw 'Could not move off the capture-preview tooltip trigger.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) } 2000 'Capture-preview tooltip stayed visible at the hidden baseline.' | Out-Null
+    $previewHiddenCapture = Join-Path $captureRoot 'capture-preview-tooltip-hidden.png'
+    $previewShownCapture = Join-Path $captureRoot 'capture-preview-tooltip-shown.png'
+    Capture-TooltipArea 'capture-preview-tooltip-hidden' $previewTooltipBounds $previewHiddenCapture
+    Assert-PreviewPixelsCaptured $previewHiddenCapture $previewTooltipBounds
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($previewTrigger.X, $previewTrigger.Y)) { throw 'Could not move back onto the capture-preview tooltip trigger.' }
+    $shownPreviewTooltip = Wait-Until {
+        $handle = Get-VisibleTooltipWindow $previewApplication.Id $previewOwnerHandle
+        if (-not $handle) { return $null }
+        $text = [PoratakeTooltipProbe]::TooltipText($handle, $previewOwnerHandle, [uint32]$previewApplication.Id)
+        if ($text -cne $previewTooltip.Text) { return $null }
+        return @{ Handle = $handle; Text = $text }
+    } 3000 'Capture-preview tooltip did not reappear for shown screenshot.'
+    $shownPreviewBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($shownPreviewTooltip.Handle, [ref]$shownPreviewBounds)) { throw 'Could not read capture-preview tooltip bounds before shown screenshot.' }
+    if ($shownPreviewBounds.Left -ne $previewTooltipBounds.Left -or $shownPreviewBounds.Top -ne $previewTooltipBounds.Top -or $shownPreviewBounds.Right -ne $previewTooltipBounds.Right -or $shownPreviewBounds.Bottom -ne $previewTooltipBounds.Bottom) {
+        throw 'Capture-preview tooltip moved between hidden and shown screenshot captures.'
+    }
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -cne 'Close preview') {
+        throw 'Capture-preview tooltip was not visible with its verified text during shown screenshot capture.'
+    }
+    Capture-TooltipArea 'capture-preview-tooltip-shown' $shownPreviewBounds $previewShownCapture
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownPreviewTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownPreviewTooltip.Handle, $previewOwnerHandle, [uint32]$previewApplication.Id) -cne 'Close preview') {
+        throw 'Capture-preview tooltip stopped showing its verified text during the shown screenshot capture.'
+    }
+    $emptyOwner = New-Object PoratakeTooltipProbe+Rect
+    $emptyOwner.Left = [int]::MaxValue
+    $emptyOwner.Top = [int]::MaxValue
+    $emptyOwner.Right = [int]::MaxValue
+    $emptyOwner.Bottom = [int]::MaxValue
+    Assert-TooltipCaptureMatchesFixture $previewHiddenCapture $previewShownCapture $shownPreviewBounds $emptyOwner
+    Write-Host 'Capture-preview tooltip ROI matches with all pixels checked; no preview-owner pixels were excluded.'
 } catch {
     $testFailure = $true
     if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath | Write-Host }
     if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath | Write-Host }
+    if (Test-Path -LiteralPath $previewStdoutPath) { Get-Content -LiteralPath $previewStdoutPath | Write-Host }
+    if (Test-Path -LiteralPath $previewStderrPath) { Get-Content -LiteralPath $previewStderrPath | Write-Host }
     if (Test-Path -LiteralPath $evidenceRoot) {
         Write-Host "Failure capture evidence retained at $evidenceRoot."
         $tracePath = Join-Path $evidenceRoot 'daemon-trace.log'
@@ -887,14 +1153,18 @@ try {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
     Capture-OwnedDaemonChildren
-    if ($application -and -not $application.HasExited) {
-        try {
-            $application.Kill()
-            if (-not $application.WaitForExit(5000)) { $safeToDeleteProfile = $false }
-        } catch {
-            if (-not $application.HasExited) { $safeToDeleteProfile = $false }
+    Capture-OwnedDaemonChildren $previewApplication
+    foreach ($ownedApplication in @($application, $previewApplication)) {
+        if ($ownedApplication -and -not $ownedApplication.HasExited) {
+            try {
+                $ownedApplication.Kill()
+                if (-not $ownedApplication.WaitForExit(5000)) { $safeToDeleteProfile = $false }
+            } catch {
+                if (-not $ownedApplication.HasExited) { $safeToDeleteProfile = $false }
+            }
         }
     }
+    $ownedApplicationIds = @($application, $previewApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
         if (-not $process.HasExited) {
@@ -902,7 +1172,7 @@ try {
                 $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $($owned.ProcessId)" -ErrorAction Stop
                 $imagePath = [System.IO.Path]::GetFullPath($process.MainModule.FileName)
                 $created = [datetime]$identity.CreationDate
-                $sameIdentity = $identity.Name -eq 'poratake-daemon.exe' -and [int]$identity.ParentProcessId -eq $owned.ParentProcessId -and $owned.ParentProcessId -eq $application.Id -and $imagePath -ieq $owned.ImagePath -and $imagePath -in $daemonCandidates -and $process.StartTime -eq $owned.StartTime -and [Math]::Abs(($process.StartTime - $created).TotalSeconds) -le 1
+                $sameIdentity = $identity.Name -eq 'poratake-daemon.exe' -and [int]$identity.ParentProcessId -eq $owned.ParentProcessId -and $owned.ParentProcessId -in $ownedApplicationIds -and $imagePath -ieq $owned.ImagePath -and $imagePath -in $daemonCandidates -and $process.StartTime -eq $owned.StartTime -and [Math]::Abs(($process.StartTime - $created).TotalSeconds) -le 1
                 if (-not $sameIdentity) {
                     $safeToDeleteProfile = $false
                     continue
@@ -919,13 +1189,27 @@ try {
     if ($null -eq $previousTooltipProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $previousTooltipProof }
     if ($null -eq $previousTooltipVideoProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $previousTooltipVideoProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
-    if ($application -and -not $application.HasExited) { $safeToDeleteProfile = $false }
+    $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
+    if (($application -and -not $application.HasExited) -or ($previewApplication -and -not $previewApplication.HasExited)) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {
         if (-not $owned.Process.HasExited) { $safeToDeleteProfile = $false }
         $owned.Process.Dispose()
     }
+    if ($previousDpiAwarenessContext -ne [IntPtr]::Zero) {
+        try {
+            if ([PoratakeTooltipProbe]::SetThreadDpiAwarenessContext($previousDpiAwarenessContext) -eq [IntPtr]::Zero) {
+                throw 'Could not restore the probe thread DPI awareness context.'
+            }
+        } catch {
+            if ($testFailure) { Write-Host "Could not restore the probe thread DPI awareness context: $_" }
+            else { throw }
+        }
+    }
     if ($safeToDeleteProfile -and $resolvedProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedProfile)) {
         Remove-Item -LiteralPath $resolvedProfile -Recurse -Force
+    }
+    if ($safeToDeleteProfile -and $resolvedPreviewProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedPreviewProfile)) {
+        Remove-Item -LiteralPath $resolvedPreviewProfile -Recurse -Force
     }
     if (-not $safeToDeleteProfile) {
         if ($testFailure) { Write-Host 'Owned GPUI or daemon process did not exit; retained its temporary profile for safe recovery.' }
