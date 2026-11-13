@@ -1519,6 +1519,11 @@ Verify saved pixels against a real selected area, including a full-width area,
 before claiming that the overlay is absent from capture output. This is separate
 from the ScreenCaptureKit recording-window exclusions below.
 
+On Linux the recording-control and capture-preview tooltips are drawn inside
+their GPUI windows. X11 screen and area recording reads the root drawable with
+no window exclusions, so a tooltip overlapping the recorded area can appear in
+the output. Native GPUI hover and recorded pixels still need verification.
+
 Windows tooltip capture protection falls back to `WDA_MONITOR` if full exclusion
 fails; that mode can leave a black rectangle in a recording. If both affinity
 methods fail, the tooltip is suppressed and the error is logged. Verify native
