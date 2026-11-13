@@ -2475,6 +2475,129 @@ mod tests {
     }
 
     #[test]
+    fn zero_padding_balanced_unframed_attachment_preview_matches_export() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment_path = directory.path().join("right.png");
+        RgbaImage::from_fn(20, 20, |x, y| {
+            if x == 0 || y == 0 || x == 19 || y == 19 {
+                image::Rgba([40, 200, 64, 255])
+            } else {
+                image::Rgba([240, 80, 64, 255])
+            }
+        })
+        .save(&attachment_path)
+        .unwrap();
+        let layers = [ImageLayer {
+            id: "right".into(),
+            image_url: attachment_path.to_string_lossy().into_owned(),
+            natural_width: 20.0,
+            natural_height: 20.0,
+            edge: Edge::Right,
+        }];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (20..90).contains(&x) && (15..75).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        assert_eq!(
+            balance_bounds(&base.to_rgba8()),
+            Some(crate::render::color_detection::ContentBounds {
+                top: 5,
+                right: 0,
+                bottom: 0,
+                left: 10,
+            })
+        );
+        for (scale, inset, expected_dimensions, sample_points) in [
+            (
+                1.0,
+                4.0,
+                (181, 83),
+                [(1, 20), (14, 14), (99, 20), (122, 24)],
+            ),
+            (
+                1.25,
+                5.0,
+                (185, 85),
+                [(1, 20), (15, 15), (101, 20), (125, 25)],
+            ),
+        ] {
+            let settings = WallpaperSettings {
+                balance: true,
+                inset: 4.0,
+                ..WallpaperSettings::default()
+            }
+            .for_scale(scale);
+            assert!(settings.is_active(true));
+            assert!(settings.is_active_with_layers(true));
+            assert_eq!(settings.layer_inset(true), inset);
+            assert!(settings.supports_edge_preview(true));
+
+            let exported =
+                compose_with_layers(Some(&base), 100, 80, &[], &settings, &layers, scale);
+            assert_eq!(exported.dimensions(), expected_dimensions);
+
+            let (preview, _, composite) = render_backdrop(
+                &settings,
+                expected_dimensions.0,
+                expected_dimensions.1,
+                100.0,
+                80.0,
+                Some("#ffffff".into()),
+                &layers,
+                Some(&base),
+                scale,
+                [24, 24, 27],
+            )
+            .unwrap();
+            assert!(composite);
+            assert_eq!(
+                (
+                    u32::from(preview.size(0).width),
+                    u32::from(preview.size(0).height)
+                ),
+                expected_dimensions
+            );
+            let mut preview_pixels = preview.as_bytes(0).unwrap().to_vec();
+            for pixel in preview_pixels.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let preview =
+                RgbaImage::from_raw(expected_dimensions.0, expected_dimensions.1, preview_pixels)
+                    .unwrap();
+            let changed = exported
+                .pixels()
+                .zip(preview.pixels())
+                .filter(|(actual, expected)| actual != expected)
+                .count();
+            assert_eq!(changed, 0, "balanced attachment preview/export at {scale}x");
+
+            let [(primary_border_x, primary_border_y), (primary_content_x, primary_content_y), (layer_border_x, layer_border_y), (layer_content_x, layer_content_y)] =
+                sample_points;
+            assert_eq!(
+                exported.get_pixel(primary_border_x, primary_border_y).0,
+                [255, 255, 255, 255]
+            );
+            assert_eq!(
+                exported.get_pixel(primary_content_x, primary_content_y).0,
+                [64, 112, 192, 255]
+            );
+            assert_eq!(
+                exported.get_pixel(layer_border_x, layer_border_y).0,
+                [40, 200, 64, 255]
+            );
+            assert_eq!(
+                exported.get_pixel(layer_content_x, layer_content_y).0,
+                [240, 80, 64, 255]
+            );
+        }
+    }
+
+    #[test]
     fn left_framed_attachment_matches_preview_at_fractional_scale() {
         use crate::editor::layers::{Edge, ImageLayer};
 
