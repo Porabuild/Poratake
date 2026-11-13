@@ -71,11 +71,12 @@ passed with isolated proof files. It exercised the owned video Save dialog and
 verified the decoded export's duration, dimensions, marker pixels and tooltip
 exclusion. All active jobs passed, including 16 visual profiles and 2,912 baseline
 comparisons on Microsoft Basic Render Driver; Windows packaging was skipped.
-A local GPUI test at `e8d1b9fe` clicks Rectangle, draws on a recording fixture,
+A GPUI test added at `e8d1b9fe` clicks Rectangle, draws on a recording fixture,
 reopens the saved project and compares its preview with a decoded export, including
-the changed annotation pixels. It is not a native UI recording workflow.
-The same full-width tooltip pattern also prevented screenshot-editor Reset Zoom
-clicks. A local pointer test at `a19b9120` verifies both edges of its 56px control.
+the changed annotation pixels. It passed in the Windows Rust suite at `e3907912`;
+it is not a native UI recording workflow. The same full-width tooltip pattern also
+prevented screenshot-editor Reset Zoom clicks. A pointer test verifies both edges
+of its 56px control and passed in that Windows suite.
 [Windows CI at `baa80bc0`](https://github.com/Porabuild/Poratake/actions/runs/43458601974)
 passed the native Rust suite but stopped before the picker and visual matrix: the
 runner terminal covered the reopened screenshot editor during its pixel capture.
@@ -99,6 +100,11 @@ passed screenshot reopen and overlay reuse, but did not reach the picker: the
 Export tab was not active when its button was queried. The harness now waits for
 and clicks the actual sidebar tab before checking Export Video. The macOS CI
 build and test job passed on that run.
+[Windows CI at `e3907912`](https://github.com/Porabuild/Poratake/actions/runs/43477996629)
+passed the tab, trim and decoded export checks. Picker acceptance again stopped;
+the captured UI Automation inventory showed file-list properties and a search box,
+but no filename Edit. The dialog did expose the isolated recording directory's
+file items, so acceptance must use a verified item rather than an arbitrary edit.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -1575,8 +1581,11 @@ case but stopped a valid periodic page early, so it was not adopted. Rounding th
 5,412-case periodic corpus. A narrower contiguous-band fallback avoided those
 stops but misclassified a no-footer page and shifted an animated block by 16px,
 changing 672 pixels relative to the baseline stitch. Neither candidate was applied.
-Resolving that ambiguity with a later frame would require changes to the capture
-lifecycle.
+A three-frame uniqueness prototype also changed 672 pixels in that no-footer case.
+Separate periodic-content models with 16px and 24px scroll steps produced identical
+three-frame pixels but different expected heights. Additional frames alone cannot
+resolve every sequence; a safe lookahead would require lifecycle changes and must
+retain the accepted prefix when evidence remains ambiguous.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

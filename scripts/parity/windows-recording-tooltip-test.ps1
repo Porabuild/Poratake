@@ -1,11 +1,12 @@
 param(
-    [ValidateSet('inspect', 'select-file')]
+    [ValidateSet('inspect', 'select-item')]
     [string]$VideoExportButtonAction,
     [long]$VideoEditorWindowHandle,
     [string]$VideoExportButtonResultPath,
     [string]$VideoEditorButtonName = 'Export Video',
     [long]$NativeDialogHandle,
-    [string]$SelectedFilePath,
+    [string]$ExpectedFixtureBaseName,
+    [string]$ExpectedStateBaseName,
     [int]$VideoExportButtonTimeoutMilliseconds = 12000
 )
 
@@ -73,9 +74,9 @@ public static class PoratakeVideoExportDpi {
             } while ($timer.ElapsedMilliseconds -lt $VideoExportButtonTimeoutMilliseconds)
         } else {
             $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($NativeDialogHandle))
-            $editCondition = [System.Windows.Automation.PropertyCondition]::new(
+            $listItemCondition = [System.Windows.Automation.PropertyCondition]::new(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::Edit
+                [System.Windows.Automation.ControlType]::ListItem
             )
             $openCondition = [System.Windows.Automation.AndCondition]::new(
                 [System.Windows.Automation.PropertyCondition]::new(
@@ -88,17 +89,23 @@ public static class PoratakeVideoExportDpi {
                 )
             )
             $timer = [System.Diagnostics.Stopwatch]::StartNew()
-            $fileNameCandidate = $null
-            $selectedBy = $null
-            $editInventory = @()
+            $fixtureNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $null = $fixtureNames.Add($ExpectedFixtureBaseName)
+            $null = $fixtureNames.Add("$ExpectedFixtureBaseName.json")
+            $stateNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $null = $stateNames.Add($ExpectedStateBaseName)
+            $null = $stateNames.Add("$ExpectedStateBaseName.json")
+            $fixtureCandidate = $null
+            $stateCandidate = $null
+            $listItemInventory = @()
             do {
-                $edits = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-                $namedCandidates = [System.Collections.Generic.List[object]]::new()
-                $automationIdCandidates = [System.Collections.Generic.List[object]]::new()
+                $listItems = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $listItemCondition)
+                $fixtureCandidates = [System.Collections.Generic.List[object]]::new()
+                $stateCandidates = [System.Collections.Generic.List[object]]::new()
                 $inventory = [System.Collections.Generic.List[object]]::new()
-                foreach ($edit in $edits) {
+                foreach ($listItem in $listItems) {
                     try {
-                        $current = $edit.Current
+                        $current = $listItem.Current
                     } catch {
                         [void]$inventory.Add(@{
                             name = ''
@@ -107,7 +114,8 @@ public static class PoratakeVideoExportDpi {
                             bounds = $null
                             isVisible = $false
                             isEnabled = $false
-                            supportsValuePattern = $false
+                            isSelected = $false
+                            supportsSelectionItemPattern = $false
                             parent = $null
                             readError = $_.Exception.Message
                         })
@@ -116,7 +124,7 @@ public static class PoratakeVideoExportDpi {
                     $bounds = $current.BoundingRectangle
                     $parentMetadata = $null
                     try {
-                        $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($edit)
+                        $parent = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($listItem)
                         if ($null -ne $parent) {
                             $parentCurrent = $parent.Current
                             $parentBounds = $parentCurrent.BoundingRectangle
@@ -133,13 +141,17 @@ public static class PoratakeVideoExportDpi {
                     } catch {
                         $parentMetadata = @{ readError = $_.Exception.Message }
                     }
-                    $valuePattern = $null
-                    $supportsValuePattern = $false
+                    $selectionPattern = $null
+                    $supportsSelectionItemPattern = $false
                     try {
-                        $valuePattern = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-                        $supportsValuePattern = $null -ne $valuePattern
+                        $selectionPattern = $listItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                        $supportsSelectionItemPattern = $null -ne $selectionPattern
                     } catch {
-                        $supportsValuePattern = $false
+                        $supportsSelectionItemPattern = $false
+                    }
+                    $isSelected = $false
+                    if ($supportsSelectionItemPattern) {
+                        try { $isSelected = [bool]$selectionPattern.Current.IsSelected } catch { $isSelected = $false }
                     }
                     $isVisible = -not $current.IsOffscreen -and -not $bounds.IsEmpty -and $bounds.Width -gt 0 -and $bounds.Height -gt 0
                     $metadata = @{
@@ -149,85 +161,94 @@ public static class PoratakeVideoExportDpi {
                         bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
                         isVisible = $isVisible
                         isEnabled = $current.IsEnabled
-                        supportsValuePattern = $supportsValuePattern
+                        isSelected = $isSelected
+                        supportsSelectionItemPattern = $supportsSelectionItemPattern
                         parent = $parentMetadata
                     }
                     [void]$inventory.Add($metadata)
-                    if (-not $isVisible -or -not $current.IsEnabled -or -not $supportsValuePattern) { continue }
-                    $candidate = @{ element = $edit; valuePattern = $valuePattern; metadata = $metadata }
-                    if ($current.Name -match 'File name' -or ($null -ne $parentMetadata -and $parentMetadata.name -match 'File name')) {
-                        [void]$namedCandidates.Add($candidate)
-                    }
-                    if ($current.AutomationId -ceq '1148') { [void]$automationIdCandidates.Add($candidate) }
+                    if (-not $isVisible -or -not $current.IsEnabled) { continue }
+                    $candidate = @{ element = $listItem; selectionPattern = $selectionPattern; metadata = $metadata }
+                    if ($fixtureNames.Contains([string]$current.Name) -and $supportsSelectionItemPattern) { [void]$fixtureCandidates.Add($candidate) }
+                    if ($stateNames.Contains([string]$current.Name)) { [void]$stateCandidates.Add($candidate) }
                 }
                 $openButton = $rootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $openCondition)
-                $editInventory = @($inventory.ToArray())
-                if ($namedCandidates.Count -eq 1) {
-                    $fileNameCandidate = $namedCandidates[0]
-                    $selectedBy = 'name'
-                } elseif ($automationIdCandidates.Count -eq 1) {
-                    $fileNameCandidate = $automationIdCandidates[0]
-                    $selectedBy = 'automationId-1148'
-                } else {
-                    $fileNameCandidate = $null
-                    $selectedBy = $null
+                $listItemInventory = @($inventory.ToArray())
+                $fixtureCandidate = $null
+                $stateCandidate = $null
+                if ($fixtureCandidates.Count -eq 1) {
+                    foreach ($candidate in $fixtureCandidates) { $fixtureCandidate = $candidate; break }
                 }
-                if ($null -ne $fileNameCandidate -and $null -ne $openButton -and $openButton.Current.IsEnabled) { break }
+                if ($stateCandidates.Count -eq 1) {
+                    foreach ($candidate in $stateCandidates) { $stateCandidate = $candidate; break }
+                }
+                if ($null -ne $fixtureCandidate -and $null -ne $stateCandidate -and $null -ne $openButton -and $openButton.Current.IsEnabled) { break }
                 [System.Threading.Thread]::Sleep(100)
             } while ($timer.ElapsedMilliseconds -lt 8000)
-            if ($null -eq $fileNameCandidate -or $null -eq $openButton -or -not $openButton.Current.IsEnabled) {
+            if ($null -eq $fixtureCandidate -or $null -eq $stateCandidate -or $null -eq $openButton -or -not $openButton.Current.IsEnabled) {
                 $result = @{
                     selected = $false
-                    path = $SelectedFilePath
+                    fixtureBaseName = $ExpectedFixtureBaseName
+                    stateBaseName = $ExpectedStateBaseName
                     dpiContext = $helperContext.ToInt64()
                     dpiAware = $dpiAware
-                    editInventory = $editInventory
+                    listItemInventory = $listItemInventory
                 }
                 [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
-                throw "The native dialog did not expose a unique visible, enabled filename Edit with ValuePattern or an enabled Open button. Named candidates=$($namedCandidates.Count), AutomationId 1148 candidates=$($automationIdCandidates.Count)."
+                throw "The native dialog did not expose unique visible, enabled fixture and state ListItems, a fixture SelectionItemPattern, and an enabled Open button. Fixture matches=$($fixtureCandidates.Count), state matches=$($stateCandidates.Count)."
             }
-            $readBack = $null
             try {
-                $fileNameCandidate.valuePattern.SetValue($SelectedFilePath)
-                $valueTimer = [System.Diagnostics.Stopwatch]::StartNew()
-                do {
-                    $readBack = [string]$fileNameCandidate.valuePattern.Current.Value
-                    if ([string]::Equals($readBack, $SelectedFilePath, [System.StringComparison]::OrdinalIgnoreCase)) { break }
-                    [System.Threading.Thread]::Sleep(50)
-                } while ($valueTimer.ElapsedMilliseconds -lt 2000)
+                $fixtureCandidate.selectionPattern.Select()
             } catch {
                 $result = @{
                     selected = $false
-                    path = $SelectedFilePath
+                    fixtureBaseName = $ExpectedFixtureBaseName
+                    stateBaseName = $ExpectedStateBaseName
                     failure = $_.Exception.Message
                     dpiContext = $helperContext.ToInt64()
                     dpiAware = $dpiAware
-                    editInventory = $editInventory
+                    listItemInventory = $listItemInventory
                 }
                 [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
                 throw
             }
-            if (-not [string]::Equals($readBack, $SelectedFilePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $readbackTimer = [System.Diagnostics.Stopwatch]::StartNew()
+            $selectionReadBack = $false
+            do {
+                $listItems = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $listItemCondition)
+                $selectedFixtures = [System.Collections.Generic.List[object]]::new()
+                foreach ($listItem in $listItems) {
+                    try { $current = $listItem.Current } catch { continue }
+                    if (-not $fixtureNames.Contains([string]$current.Name)) { continue }
+                    try {
+                        $pattern = $listItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                        if ($pattern.Current.IsSelected) { [void]$selectedFixtures.Add($current.Name) }
+                    } catch { }
+                }
+                if ($selectedFixtures.Count -eq 1) { $selectionReadBack = $true; break }
+                [System.Threading.Thread]::Sleep(50)
+            } while ($readbackTimer.ElapsedMilliseconds -lt 2000)
+            if (-not $selectionReadBack) {
                 $result = @{
                     selected = $false
-                    path = $SelectedFilePath
-                    valueReadBack = $readBack
-                    selectedBy = $selectedBy
-                    selectedControl = $fileNameCandidate.metadata
+                    fixtureBaseName = $ExpectedFixtureBaseName
+                    stateBaseName = $ExpectedStateBaseName
                     dpiContext = $helperContext.ToInt64()
                     dpiAware = $dpiAware
-                    editInventory = $editInventory
+                    listItemInventory = $listItemInventory
                 }
                 [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
-                throw 'The native file dialog filename field did not retain the selected fixture path.'
+                throw 'The native dialog did not report the selected fixture ListItem as selected.'
             }
+            $selectedName = $null
+            foreach ($name in $selectedFixtures) { $selectedName = $name; break }
+            $stateName = $stateCandidate.metadata.name
             $openButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
             $result = @{
                 selected = $true
-                path = $SelectedFilePath
-                valueReadBack = $readBack
-                selectedBy = $selectedBy
-                selectedControl = $fileNameCandidate.metadata
+                selectionReadBack = $true
+                itemName = $selectedName
+                positiveControlName = $stateName
+                selectedBy = 'SelectionItemPattern'
                 dpiContext = $helperContext.ToInt64()
                 dpiAware = $dpiAware
             }
@@ -788,7 +809,7 @@ function Get-VideoEditorButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
     }
 }
 
-function Select-OpenDialogFile([IntPtr]$dialog, [string]$path, [string]$resultPath) {
+function Select-OpenDialogItem([IntPtr]$dialog, [string]$fixtureBaseName, [string]$stateBaseName, [string]$resultPath) {
     if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
     $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
     $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
@@ -797,11 +818,13 @@ function Select-OpenDialogFile([IntPtr]$dialog, [string]$path, [string]$resultPa
         '-File',
         "`"$PSCommandPath`"",
         '-VideoExportButtonAction',
-        'select-file',
+        'select-item',
         '-NativeDialogHandle',
         [string]$dialog.ToInt64(),
-        '-SelectedFilePath',
-        "`"$path`"",
+        '-ExpectedFixtureBaseName',
+        "`"$fixtureBaseName`"",
+        '-ExpectedStateBaseName',
+        "`"$stateBaseName`"",
         '-VideoExportButtonResultPath',
         "`"$resultPath`""
     )
@@ -818,7 +841,11 @@ function Select-OpenDialogFile([IntPtr]$dialog, [string]$path, [string]$resultPa
         }
         if (-not [System.IO.File]::Exists($resultPath)) { throw 'The native-dialog UI Automation helper produced no selection evidence.' }
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
-        if (-not $result.dpiAware -or -not $result.selected -or $result.path -cne $path) { throw 'The native file dialog did not report the requested fixture as selected.' }
+        $fixtureNames = @($fixtureBaseName, "$fixtureBaseName.json")
+        $stateNames = @($stateBaseName, "$stateBaseName.json")
+        if (-not $result.dpiAware -or -not $result.selected -or -not $result.selectionReadBack -or $result.itemName -cnotin $fixtureNames -or $result.positiveControlName -cnotin $stateNames) {
+            throw 'The native file dialog did not confirm the unique selected fixture and state-file directory control.'
+        }
     } finally {
         if (-not $helper.HasExited) {
             try {
@@ -3175,7 +3202,9 @@ try {
     } finally {
         Pop-Location
     }
-    $cursorFixturePath = Join-Path $videoProfileRoot 'cursor-picker-fixture.json'
+    $cursorFixturePath = Join-Path $recordingDirectory 'cursor-picker-fixture.json'
+    if ([System.IO.File]::Exists($cursorFixturePath)) { throw "The cursor picker fixture path already exists: $cursorFixturePath" }
+    if (-not [System.IO.File]::Exists($videoEditorStatePath)) { throw "The state file is missing from the picker test directory: $videoEditorStatePath" }
     $cursorFixture = @{
         recordingArea = @{ width = 640; height = 360 }
         events = @(
@@ -3199,7 +3228,7 @@ try {
     if ([System.IO.File]::Exists($cursorSidecarPath)) { throw 'Cancelling the cursor picker unexpectedly created a sidecar.' }
     $acceptCursorDialog = Retry-EditorOwnedDialogUntilOpened $videoEditorHandle $cursorImportButtonBounds 'Import Cursor Data'
     $cursorSelectionResultPath = Join-Path $evidenceRoot 'cursor-picker-selection.json'
-    Select-OpenDialogFile $acceptCursorDialog $cursorFixturePath $cursorSelectionResultPath
+    Select-OpenDialogItem $acceptCursorDialog 'cursor-picker-fixture' 'tooltip-recording.state' $cursorSelectionResultPath
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($acceptCursorDialog) } 10000 'The cursor file dialog did not close after selecting the fixture.' | Out-Null
     $expectedCursorHash = (Get-FileHash -LiteralPath $cursorFixturePath -Algorithm SHA256).Hash
     $cursorImportReady = Wait-Until {
