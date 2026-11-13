@@ -80,8 +80,12 @@ clicks. A local pointer test at `a19b9120` verifies both edges of its 56px contr
 passed the native Rust suite but stopped before the picker and visual matrix: the
 runner terminal covered the reopened screenshot editor during its pixel capture.
 The harness now waits for the editor to be foregrounded, hit-tested and painted.
-A native record-area region-reuse check and a UI timeline-trim/export check are
-prepared locally; neither has passed hosted Windows yet.
+[Windows CI at `bae84b8f`](https://github.com/Porabuild/Poratake/actions/runs/43463210217)
+passed screenshot reopen and verified that the recording selection hole is cleared
+when the same native overlay window is parked and reused. A UI trim was saved, but
+the after-image check missed the selected clip's changed color, so export and picker
+checks did not run. GitHub cancelled the macOS job before it started because no
+hosted runner was available. The trimmed export still needs a hosted retry.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. A hosted
 cursor-picker cancel/retry/accept test is prepared but has not run yet; the other

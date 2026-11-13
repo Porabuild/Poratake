@@ -1055,6 +1055,51 @@ function Get-VideoTimelineClipBounds([string]$path) {
     }
 }
 
+function Get-SelectedVideoTimelineClipBounds([string]$path, $referenceBounds) {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::new($path)
+    try {
+        $minX = [Math]::Max(0, $referenceBounds.Left - 4)
+        $maxX = [Math]::Min($bitmap.Width, $referenceBounds.Right + 4)
+        $rows = [System.Collections.Generic.List[object]]::new()
+        $maximumRun = 0
+        for ($y = $referenceBounds.Top; $y -le $referenceBounds.Bottom; $y++) {
+            $runStart = -1
+            $rowBest = $null
+            for ($x = $minX; $x -lt $maxX; $x++) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                $matchesSelectedVideo = $pixel.B -ge 170 -and $pixel.G -ge 100 -and $pixel.B - $pixel.G -ge 35 -and $pixel.G -ge ($pixel.R - 2)
+                if ($matchesSelectedVideo -and $runStart -lt 0) { $runStart = $x }
+                if ($runStart -ge 0 -and ((-not $matchesSelectedVideo) -or $x -eq $maxX - 1)) {
+                    $runEnd = if ($matchesSelectedVideo -and $x -eq $maxX - 1) { $x } else { $x - 1 }
+                    $length = $runEnd - $runStart + 1
+                    if ($null -eq $rowBest -or $length -gt $rowBest.Length) {
+                        $rowBest = [pscustomobject]@{ Left = $runStart; Right = $runEnd; Length = $length; Y = $y }
+                    }
+                    $runStart = -1
+                }
+            }
+            if ($null -ne $rowBest -and $rowBest.Length -ge 80) {
+                $rows.Add($rowBest)
+                $maximumRun = [Math]::Max($maximumRun, $rowBest.Length)
+            }
+        }
+        if ($maximumRun -lt 100) { throw "Could not find the selected video clip in its pre-trim timeline row: max run=$maximumRun pixels." }
+        $clipRows = @($rows | Where-Object { $_.Length -ge ($maximumRun * 0.9) })
+        if ($clipRows.Count -lt 3) { throw "The selected video clip was not stable across enough rows: $($clipRows.Count) rows." }
+        $clipRows = @($clipRows | Sort-Object Y)
+        return [pscustomobject]@{
+            Left = [int]($clipRows | Measure-Object Left -Minimum).Minimum
+            Right = [int]($clipRows | Measure-Object Right -Maximum).Maximum
+            Top = [int]$clipRows[0].Y
+            Bottom = [int]$clipRows[-1].Y
+            Width = $maximumRun
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
 function Set-VideoEditorNeutralPointer([IntPtr]$windowHandle, [PoratakeTooltipProbe+Rect]$client, [PoratakeTooltipProbe+Point]$clientOrigin) {
     $point = New-Object PoratakeTooltipProbe+Point
     $point.X = $clientOrigin.X + [int][Math]::Floor(($client.Right - $client.Left) / 2.0)
@@ -2915,7 +2960,7 @@ try {
             $script:trimReadinessAttempt++
             $candidate = Join-Path $captureRoot ("real-video-editor-trim-readiness-{0:D2}.png" -f $script:trimReadinessAttempt)
             Capture-TooltipArea "real-video-editor-after-trim-$($script:trimReadinessAttempt)" $videoEditorScreenBounds $candidate 5
-            $clip = Get-VideoTimelineClipBounds $candidate
+            $clip = Get-SelectedVideoTimelineClipBounds $candidate $videoClipBefore
             $measuredPixelTrim = $videoClipBefore.Width - $clip.Width
             if ($measuredPixelTrim -lt 15 -or [Math]::Abs($measuredPixelTrim - $trimPixels) -gt 8) { return $null }
             Copy-Item -LiteralPath $candidate -Destination $videoAfterTrimCapture -Force -ErrorAction Stop
@@ -3039,6 +3084,8 @@ try {
         @{ Source = $workflowStderrPath; Name = 'capture-workflow-stderr.log' },
         @{ Source = (Join-Path $workflowProfileRoot 'reopen-stdout.log'); Name = 'capture-reopen-stdout.log' },
         @{ Source = (Join-Path $workflowProfileRoot 'reopen-stderr.log'); Name = 'capture-reopen-stderr.log' },
+        @{ Source = $handoffStdoutPath; Name = 'recording-handoff-stdout.log' },
+        @{ Source = $handoffStderrPath; Name = 'recording-handoff-stderr.log' },
         @{ Source = $videoStdoutPath; Name = 'video-editor-stdout.log' },
         @{ Source = $videoStderrPath; Name = 'video-editor-stderr.log' }
     )) {
