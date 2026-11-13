@@ -34,6 +34,8 @@ $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
 $overlapWindow = [IntPtr]::Zero
 $backdropWindow = [IntPtr]::Zero
+$markerBackdropWindow = [IntPtr]::Zero
+$markerWindow = [IntPtr]::Zero
 $captureDaemon = $null
 $captureDaemonIdentity = $null
 $captureDaemonReady = $false
@@ -322,6 +324,8 @@ public static class PoratakeTooltipFixture {
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
 
     public static IntPtr CreateBackdrop(Rect rect, IntPtr owner) {
         uint style = 0x98000006u;
@@ -337,18 +341,46 @@ public static class PoratakeTooltipFixture {
         return hwnd;
     }
 
+    public static IntPtr CreateBlackMarker(Rect rect) {
+        var hwnd = CreateWindowEx(0x08000080, "STATIC", "", 0x90000004, rect.Left, rect.Top,
+            rect.Right - rect.Left, rect.Bottom - rect.Top, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create the video marker.");
+        if (!SetWindowPos(hwnd, new IntPtr(-1), rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
+            !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
+            int error = Marshal.GetLastWin32Error();
+            DestroyWindow(hwnd);
+            throw new System.ComponentModel.Win32Exception(error, "Could not paint the video marker.");
+        }
+        return hwnd;
+    }
+
+    public static void MoveBlackMarker(IntPtr hwnd, Rect rect, uint processId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to move a marker outside the test process.");
+        if (!SetWindowPos(hwnd, new IntPtr(-1), rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
+            !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not move and repaint the video marker.");
+        }
+        Rect actual;
+        if (!GetWindowRect(hwnd, out actual) || actual.Left != rect.Left || actual.Top != rect.Top || actual.Right != rect.Right || actual.Bottom != rect.Bottom) {
+            throw new InvalidOperationException("The video marker did not reach its expected test-owned bounds.");
+        }
+    }
+
     [DllImport("user32.dll", SetLastError=true)] static extern bool DestroyWindow(IntPtr hwnd);
 }
 '@
 
-function Invoke-CaptureDaemonRequest([hashtable]$request, [int]$timeoutSeconds = 35) {
+function Invoke-CaptureDaemonRequest([hashtable]$request, [double]$timeoutSeconds = 35.0, [DateTime]$deadline = [DateTime]::MinValue) {
     if (-not $script:captureDaemon -or $script:captureDaemon.HasExited -or $script:captureRpcTimedOut) { throw 'Screenshot daemon is unavailable.' }
+    $hasDeadline = $deadline -ne [DateTime]::MinValue
     $script:captureDaemon.StandardInput.WriteLine(($request | ConvertTo-Json -Compress -Depth 8))
     $script:captureDaemon.StandardInput.Flush()
-    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    if (-not $hasDeadline) { $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds) }
     while ([DateTime]::UtcNow -lt $deadline) {
         $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
-        if ($remaining -le 0) { break }
+        if ($remaining -le 0) { $script:captureRpcTimedOut = $true; break }
         $line = $script:captureDaemon.StandardOutput.ReadLineAsync()
         if (-not $line.Wait($remaining)) { $script:captureRpcTimedOut = $true; break }
         if ($null -eq $line.Result) { throw 'Screenshot daemon closed stdout.' }
@@ -468,6 +500,65 @@ function Assert-PreviewPixelsCaptured([string]$path, [PoratakeTooltipProbe+Rect]
             throw "The daemon screenshot did not positively capture the deterministic preview image: magenta=$magenta/$checked."
         }
         if (-not $Quiet) { Write-Host "Daemon screenshot positively captured the preview image: magenta=$magenta/$checked pixels." }
+    } finally { $image.Dispose() }
+}
+
+function Test-RectIntersects([PoratakeTooltipProbe+Rect]$first, [PoratakeTooltipProbe+Rect]$second) {
+    return $first.Left -lt $second.Right -and $first.Right -gt $second.Left -and $first.Top -lt $second.Bottom -and $first.Bottom -gt $second.Top
+}
+
+function ConvertTo-FixtureRect([PoratakeTooltipProbe+Rect]$rect) {
+    $fixtureRect = New-Object PoratakeTooltipFixture+Rect
+    $fixtureRect.Left = $rect.Left
+    $fixtureRect.Top = $rect.Top
+    $fixtureRect.Right = $rect.Right
+    $fixtureRect.Bottom = $rect.Bottom
+    return $fixtureRect
+}
+
+function Assert-WhiteMarkerPanel([string]$path, [PoratakeTooltipProbe+Rect]$rect) {
+    Add-Type -AssemblyName System.Drawing
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $width = $rect.Right - $rect.Left
+        $height = $rect.Bottom - $rect.Top
+        if ($image.Width -ne $width -or $image.Height -ne $height) { throw 'Marker underlay capture dimensions do not match the test-owned panel.' }
+        $white = 0
+        $checked = $width * $height
+        for ($y = 0; $y -lt $height; $y++) {
+            for ($x = 0; $x -lt $width; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ($pixel.R -ge 240 -and $pixel.G -ge 240 -and $pixel.B -ge 240) { $white++ }
+            }
+        }
+        if ($checked -lt 256 -or $white -lt [Math]::Ceiling($checked * 0.98)) { throw "The captured marker underlay is not a uniform white positive control: white=$white/$checked." }
+    } finally { $image.Dispose() }
+}
+
+function Assert-MarkerPanel([string]$path, [PoratakeTooltipProbe+Rect]$panel, [PoratakeTooltipProbe+Rect]$blackRect, [PoratakeTooltipProbe+Rect]$whiteRect) {
+    Add-Type -AssemblyName System.Drawing
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $width = $panel.Right - $panel.Left
+        $height = $panel.Bottom - $panel.Top
+        if ($image.Width -ne $width -or $image.Height -ne $height) { throw 'Marker capture dimensions do not match the test-owned panel.' }
+        $black = 0
+        $white = 0
+        $blackCount = ($blackRect.Right - $blackRect.Left) * ($blackRect.Bottom - $blackRect.Top)
+        $whiteCount = ($whiteRect.Right - $whiteRect.Left) * ($whiteRect.Bottom - $whiteRect.Top)
+        for ($y = 0; $y -lt $height; $y++) {
+            for ($x = 0; $x -lt $width; $x++) {
+                $screenX = $panel.Left + $x
+                $screenY = $panel.Top + $y
+                $pixel = $image.GetPixel($x, $y)
+                if ($screenX -ge $blackRect.Left -and $screenX -lt $blackRect.Right -and $screenY -ge $blackRect.Top -and $screenY -lt $blackRect.Bottom -and $pixel.R -le 16 -and $pixel.G -le 16 -and $pixel.B -le 16) { $black++ }
+                if ($screenX -ge $whiteRect.Left -and $screenX -lt $whiteRect.Right -and $screenY -ge $whiteRect.Top -and $screenY -lt $whiteRect.Bottom -and $pixel.R -ge 240 -and $pixel.G -ge 240 -and $pixel.B -ge 240) { $white++ }
+            }
+        }
+        if ($black -lt [Math]::Ceiling($blackCount * 0.95) -or $white -lt [Math]::Ceiling($whiteCount * 0.95)) {
+            throw "The captured marker state did not show black at its active position and white at its inactive position: black=$black/$blackCount, white=$white/$whiteCount."
+        }
+        Write-Host "Marker screenshot positive control passed: black=$black/$blackCount, white=$white/$whiteCount."
     } finally { $image.Dispose() }
 }
 
@@ -794,6 +885,52 @@ try {
     if ($tooltipBounds.Left -lt $captureBounds.Left -or $tooltipBounds.Top -lt $captureBounds.Top -or $tooltipBounds.Right -gt $captureBounds.Right -or $tooltipBounds.Bottom -gt $captureBounds.Bottom) {
         throw 'The tooltip bounds do not fit inside the even-sized recording monitor rectangle.'
     }
+    $markerSize = 32
+    $markerInitialBounds = $null
+    $markerMovedBounds = $null
+    $markerPanelBounds = $null
+    foreach ($offsetY in @(120, 180, 240, 300, 360)) {
+        $candidateA = New-Object PoratakeTooltipProbe+Rect
+        $candidateA.Left = $monitor.Work.Left + 24
+        $candidateA.Top = $monitor.Work.Top + $offsetY
+        $candidateA.Right = $candidateA.Left + $markerSize
+        $candidateA.Bottom = $candidateA.Top + $markerSize
+        $candidateB = New-Object PoratakeTooltipProbe+Rect
+        $candidateB.Left = $candidateA.Left + 96
+        $candidateB.Top = $candidateA.Top
+        $candidateB.Right = $candidateB.Left + $markerSize
+        $candidateB.Bottom = $candidateB.Top + $markerSize
+        $candidatePanel = New-Object PoratakeTooltipProbe+Rect
+        $candidatePanel.Left = $candidateA.Left
+        $candidatePanel.Top = $candidateA.Top
+        $candidatePanel.Right = $candidateB.Right
+        $candidatePanel.Bottom = $candidateA.Bottom
+        $insideWorkArea = $candidatePanel.Left -ge $monitor.Work.Left -and $candidatePanel.Top -ge $monitor.Work.Top -and $candidatePanel.Right -le $monitor.Work.Right -and $candidatePanel.Bottom -le $monitor.Work.Bottom
+        $insideCapture = $candidatePanel.Left -ge $captureBounds.Left -and $candidatePanel.Top -ge $captureBounds.Top -and $candidatePanel.Right -le $captureBounds.Right -and $candidatePanel.Bottom -le $captureBounds.Bottom
+        if (-not $insideWorkArea -or -not $insideCapture -or (Test-RectIntersects $candidatePanel $bounds) -or (Test-RectIntersects $candidatePanel $tooltipBounds)) { continue }
+        $markerInitialBounds = $candidateA
+        $markerMovedBounds = $candidateB
+        $markerPanelBounds = $candidatePanel
+        break
+    }
+    if (-not $markerInitialBounds) { throw 'Could not find a marker location inside the monitor and outside the recording owner and tooltip.' }
+    $markerBackdropWindow = [PoratakeTooltipFixture]::CreateBackdrop((ConvertTo-FixtureRect $markerPanelBounds), $owner)
+    $markerBackdropBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($markerBackdropWindow, [ref]$markerBackdropBounds) -or $markerBackdropBounds.Left -ne $markerPanelBounds.Left -or $markerBackdropBounds.Top -ne $markerPanelBounds.Top -or $markerBackdropBounds.Right -ne $markerPanelBounds.Right -or $markerBackdropBounds.Bottom -ne $markerPanelBounds.Bottom) {
+        throw 'The test-owned white marker panel did not match its validated geometry.'
+    }
+    $markerReferencePath = Join-Path $captureRoot 'tooltip-video-marker-underlay.png'
+    Capture-TooltipArea 'tooltip-video-marker-underlay' $markerPanelBounds $markerReferencePath
+    Assert-WhiteMarkerPanel $markerReferencePath $markerPanelBounds
+    $markerWindow = [PoratakeTooltipFixture]::CreateBlackMarker((ConvertTo-FixtureRect $markerInitialBounds))
+    $markerWindowBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($markerWindow, [ref]$markerWindowBounds) -or $markerWindowBounds.Left -ne $markerInitialBounds.Left -or $markerWindowBounds.Top -ne $markerInitialBounds.Top -or $markerWindowBounds.Right -ne $markerInitialBounds.Right -or $markerWindowBounds.Bottom -ne $markerInitialBounds.Bottom) {
+        throw 'The test-owned black marker did not match its validated initial geometry.'
+    }
+    $markerInitialCapture = Join-Path $captureRoot 'tooltip-video-marker-initial.png'
+    Capture-TooltipArea 'tooltip-video-marker-initial' $markerPanelBounds $markerInitialCapture
+    Assert-MarkerPanel $markerInitialCapture $markerPanelBounds $markerInitialBounds $markerMovedBounds
+    Write-Host "Video marker positive control passed at $($markerInitialBounds.Left),$($markerInitialBounds.Top) and $($markerMovedBounds.Left),$($markerMovedBounds.Top), outside tooltip and owner bounds."
     $recordingDirectory = Join-Path $evidenceRoot 'recording'
     New-Item -ItemType Directory -Path $recordingDirectory -Force | Out-Null
     $recordingPath = Join-Path $recordingDirectory 'tooltip-recording.mp4'
@@ -816,19 +953,37 @@ try {
     }
     if (-not $recordingStart.success -or $recordingStart.state -ne 'recording') { throw 'The native video recording did not start.' }
     $recordingActive = $true
+    $recordingClock = [System.Diagnostics.Stopwatch]::StartNew()
     $recordingDeadline = [DateTime]::UtcNow.AddSeconds(20)
     $recordingDuration = 0.0
+    $markerMovedAtSeconds = [double]::NaN
     do {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -cne $visibleTooltip.Text) {
             throw 'The native tooltip stopped showing its verified text during video recording.'
         }
-        $status = Invoke-CaptureDaemonRequest @{ id = "tooltip-video-status-$([guid]::NewGuid().ToString('N'))"; module = 'screen-recorder'; method = 'status' }
+        if ([double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds -ge 0.5) {
+            [PoratakeTooltipFixture]::MoveBlackMarker($markerWindow, (ConvertTo-FixtureRect $markerMovedBounds), [uint32]$PID)
+            $markerMovedAtSeconds = $recordingClock.Elapsed.TotalSeconds
+            Write-Host "Video marker moved to its second validated position at $([Math]::Round($markerMovedAtSeconds, 3))s."
+        }
+        $expectedMarkerBounds = if ([double]::IsNaN($markerMovedAtSeconds)) { $markerInitialBounds } else { $markerMovedBounds }
+        $currentMarkerBounds = New-Object PoratakeTooltipProbe+Rect
+        if (-not [PoratakeTooltipProbe]::IsWindowVisible($markerWindow) -or -not [PoratakeTooltipProbe]::GetWindowRect($markerWindow, [ref]$currentMarkerBounds) -or $currentMarkerBounds.Left -ne $expectedMarkerBounds.Left -or $currentMarkerBounds.Top -ne $expectedMarkerBounds.Top -or $currentMarkerBounds.Right -ne $expectedMarkerBounds.Right -or $currentMarkerBounds.Bottom -ne $expectedMarkerBounds.Bottom) {
+            throw 'The test-owned video marker left its expected position during recording.'
+        }
+        if ([DateTime]::UtcNow -ge $recordingDeadline) { break }
+        $status = Invoke-CaptureDaemonRequest @{ id = "tooltip-video-status-$([guid]::NewGuid().ToString('N'))"; module = 'screen-recorder'; method = 'status' } -deadline $recordingDeadline
         if ($status.state -ne 'recording') { throw "The video recorder left recording state: $($status.state)" }
         $recordingDuration = [double]$status.duration
-        if ($recordingDuration -ge 1.2) { break }
+        $markerSettled = -not [double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedAtSeconds -ge 0.5
+        if ($recordingDuration -ge 1.2 -and $markerSettled) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $recordingDeadline)
-    if ($recordingDuration -lt 1.2) { throw "The video did not record long enough while the tooltip was visible: ${recordingDuration}s" }
+    if ($recordingDuration -lt 1.2 -or -not $markerSettled) {
+        throw "The video did not reach its duration and marker-stability conditions before the deadline: duration=${recordingDuration}s, marker-moved-at=${markerMovedAtSeconds}s, elapsed=$($recordingClock.Elapsed.TotalSeconds)s."
+    }
+    if ([double]::IsNaN($markerMovedAtSeconds) -or $markerMovedAtSeconds -lt 0.5) { throw "The test-owned marker moved before the expected video time: $markerMovedAtSeconds s." }
+    $recordingClock.Stop()
     $recordingStop = Invoke-CaptureDaemonRequest @{ id = 'tooltip-video-stop'; module = 'screen-recorder'; method = 'stop' }
     if (-not $recordingStop.success -or $recordingStop.outputPath -ne $recordingPath) { throw 'The native video recording did not finalize at its test-owned output path.' }
     $recordingActive = $false
@@ -841,6 +996,8 @@ try {
     $videoProof = @{
         videoPath = $recordingPath
         referencePath = $fixtureCapture
+        markerReferencePath = $markerReferencePath
+        markerMoveSeconds = $markerMovedAtSeconds
         paintProofPath = $tooltipProofPath
         tooltipHwnd = $shownTooltip.Handle.ToInt64()
         ownerHwnd = $owner.ToInt64()
@@ -869,9 +1026,31 @@ try {
             width = [int]$paintProofMetadata.clientBounds.width
             height = [int]$paintProofMetadata.clientBounds.height
         }
+        markerPanelBounds = @{
+            left = $markerPanelBounds.Left
+            top = $markerPanelBounds.Top
+            right = $markerPanelBounds.Right
+            bottom = $markerPanelBounds.Bottom
+        }
+        markerInitialBounds = @{
+            left = $markerInitialBounds.Left
+            top = $markerInitialBounds.Top
+            right = $markerInitialBounds.Right
+            bottom = $markerInitialBounds.Bottom
+        }
+        markerMovedBounds = @{
+            left = $markerMovedBounds.Left
+            top = $markerMovedBounds.Top
+            right = $markerMovedBounds.Right
+            bottom = $markerMovedBounds.Bottom
+        }
     }
     [System.IO.File]::WriteAllText($videoProofPath, ($videoProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoProofPath
+    [PoratakeTooltipProbe]::DestroyOwnedWindow($markerWindow, [uint32]$PID)
+    $markerWindow = [IntPtr]::Zero
+    [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID)
+    $markerBackdropWindow = [IntPtr]::Zero
     Push-Location (Join-Path $root 'src/main')
     try {
         & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
@@ -1184,6 +1363,12 @@ try {
     }
     if ($overlapWindow -ne [IntPtr]::Zero) {
         try { [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
+    }
+    if ($markerWindow -ne [IntPtr]::Zero) {
+        try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
+    }
+    if ($markerBackdropWindow -ne [IntPtr]::Zero) {
+        try { [PoratakeTooltipProbe]::DestroyOwnedWindow($markerBackdropWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
     }
     Capture-OwnedDaemonChildren
     Capture-OwnedDaemonChildren $previewApplication

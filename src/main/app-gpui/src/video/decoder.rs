@@ -897,6 +897,8 @@ mod tests {
     struct RecordedTooltipProof {
         video_path: std::path::PathBuf,
         reference_path: std::path::PathBuf,
+        marker_reference_path: std::path::PathBuf,
+        marker_move_seconds: f64,
         paint_proof_path: std::path::PathBuf,
         tooltip_hwnd: i64,
         owner_hwnd: i64,
@@ -904,6 +906,9 @@ mod tests {
         capture_bounds: RecordedTooltipBounds,
         tooltip_bounds: RecordedTooltipBounds,
         owner_bounds: RecordedTooltipBounds,
+        marker_panel_bounds: RecordedTooltipBounds,
+        marker_initial_bounds: RecordedTooltipBounds,
+        marker_moved_bounds: RecordedTooltipBounds,
         paint_client_bounds: RecordedTooltipClientBounds,
     }
 
@@ -940,6 +945,9 @@ mod tests {
         .expect("parse hosted tooltip video manifest");
         let reference = image::open(&manifest.reference_path)
             .expect("open positive white underlay capture")
+            .to_rgba8();
+        let marker_reference = image::open(&manifest.marker_reference_path)
+            .expect("open white marker underlay capture")
             .to_rgba8();
         let paint_proof = image::open(&manifest.paint_proof_path)
             .expect("open actual WM_PRINTCLIENT tooltip paint proof")
@@ -995,6 +1003,54 @@ mod tests {
         assert!(manifest.tooltip_bounds.top >= manifest.capture_bounds.top);
         assert!(manifest.tooltip_bounds.right <= manifest.capture_bounds.right);
         assert!(manifest.tooltip_bounds.bottom <= manifest.capture_bounds.bottom);
+        let late_sample_time = info.duration - 0.1;
+        assert!(manifest.marker_move_seconds >= 0.5);
+        assert!(
+            late_sample_time >= manifest.marker_move_seconds + 0.3,
+            "late sample at {late_sample_time:.3}s is too close to marker move at {:.3}s",
+            manifest.marker_move_seconds
+        );
+        let marker_panel_width =
+            u32::try_from(manifest.marker_panel_bounds.right - manifest.marker_panel_bounds.left)
+                .expect("positive marker panel width");
+        let marker_panel_height =
+            u32::try_from(manifest.marker_panel_bounds.bottom - manifest.marker_panel_bounds.top)
+                .expect("positive marker panel height");
+        assert_eq!(
+            marker_reference.dimensions(),
+            (marker_panel_width, marker_panel_height)
+        );
+        for marker in [
+            &manifest.marker_initial_bounds,
+            &manifest.marker_moved_bounds,
+        ] {
+            assert!(marker.left >= manifest.marker_panel_bounds.left);
+            assert!(marker.top >= manifest.marker_panel_bounds.top);
+            assert!(marker.right <= manifest.marker_panel_bounds.right);
+            assert!(marker.bottom <= manifest.marker_panel_bounds.bottom);
+            assert!(marker.left >= manifest.capture_bounds.left);
+            assert!(marker.top >= manifest.capture_bounds.top);
+            assert!(marker.right <= manifest.capture_bounds.right);
+            assert!(marker.bottom <= manifest.capture_bounds.bottom);
+            assert!(
+                marker.right <= manifest.owner_bounds.left
+                    || marker.left >= manifest.owner_bounds.right
+                    || marker.bottom <= manifest.owner_bounds.top
+                    || marker.top >= manifest.owner_bounds.bottom
+            );
+            assert!(
+                marker.right <= manifest.tooltip_bounds.left
+                    || marker.left >= manifest.tooltip_bounds.right
+                    || marker.bottom <= manifest.tooltip_bounds.top
+                    || marker.top >= manifest.tooltip_bounds.bottom
+            );
+        }
+        assert!(
+            manifest.marker_initial_bounds.right <= manifest.marker_moved_bounds.left
+                || manifest.marker_moved_bounds.right <= manifest.marker_initial_bounds.left
+                || manifest.marker_initial_bounds.bottom <= manifest.marker_moved_bounds.top
+                || manifest.marker_moved_bounds.bottom <= manifest.marker_initial_bounds.top
+        );
         let paint_client = &manifest.paint_client_bounds;
         let paint_client_right = paint_client.screen_left + paint_client.width;
         let paint_client_bottom = paint_client.screen_top + paint_client.height;
@@ -1057,13 +1113,104 @@ mod tests {
             )
         };
 
-        let sample_times = [0.1, info.duration / 2.0, info.duration - 0.1];
+        let marker_crop = |bgra: &[u8]| {
+            let mut crop = image::RgbaImage::new(marker_panel_width, marker_panel_height);
+            for y in 0..marker_panel_height {
+                for x in 0..marker_panel_width {
+                    let frame_x = (manifest.marker_panel_bounds.left - manifest.capture_bounds.left)
+                        as u32
+                        + x;
+                    let frame_y =
+                        (manifest.marker_panel_bounds.top - manifest.capture_bounds.top) as u32 + y;
+                    let offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                    let pixel = &bgra[offset..offset + 4];
+                    crop.put_pixel(x, y, image::Rgba([pixel[2], pixel[1], pixel[0], 255]));
+                }
+            }
+            crop
+        };
+        let marker_matches_black = |bgra: &[u8], bounds: &RecordedTooltipBounds| {
+            let mut black = 0usize;
+            let mut compared = 0usize;
+            for y in bounds.top + 3..bounds.bottom - 3 {
+                for x in bounds.left + 3..bounds.right - 3 {
+                    let frame_x = (x - manifest.capture_bounds.left) as u32;
+                    let frame_y = (y - manifest.capture_bounds.top) as u32;
+                    let offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                    let pixel = &bgra[offset..offset + 4];
+                    if pixel[0] <= 24 && pixel[1] <= 24 && pixel[2] <= 24 {
+                        black += 1;
+                    }
+                    compared += 1;
+                }
+            }
+            compared > 0 && black * 100 >= compared * 90
+        };
+        let marker_matches_reference = |bgra: &[u8], bounds: &RecordedTooltipBounds| {
+            let mut matching = 0usize;
+            let mut compared = 0usize;
+            for y in bounds.top + 3..bounds.bottom - 3 {
+                for x in bounds.left + 3..bounds.right - 3 {
+                    let frame_x = (x - manifest.capture_bounds.left) as u32;
+                    let frame_y = (y - manifest.capture_bounds.top) as u32;
+                    let offset = ((frame_y * info.width + frame_x) * 4) as usize;
+                    let pixel = &bgra[offset..offset + 4];
+                    let expected = marker_reference.get_pixel(
+                        (x - manifest.marker_panel_bounds.left) as u32,
+                        (y - manifest.marker_panel_bounds.top) as u32,
+                    );
+                    let max_difference = [
+                        pixel[2].abs_diff(expected[0]),
+                        pixel[1].abs_diff(expected[1]),
+                        pixel[0].abs_diff(expected[2]),
+                    ]
+                    .into_iter()
+                    .max()
+                    .unwrap_or_default();
+                    if max_difference <= 24 {
+                        matching += 1;
+                    }
+                    compared += 1;
+                }
+            }
+            compared > 0 && matching * 100 >= compared * 90
+        };
+
+        let sample_times = [0.1, info.duration / 2.0, late_sample_time];
         for (sample_index, time) in sample_times.into_iter().enumerate() {
             let frame = decoder
                 .frame_at(time)
                 .unwrap_or_else(|| panic!("could not decode video frame at {time:.3}s"));
             assert_eq!((frame.width, frame.height), (info.width, info.height));
             assert_eq!(frame.bgra.len(), (info.width * info.height * 4) as usize);
+            if sample_index == 0 {
+                assert!(
+                    marker_matches_black(&frame.bgra, &manifest.marker_initial_bounds),
+                    "initial video sample does not contain the black marker at its starting position"
+                );
+                assert!(
+                    marker_matches_reference(&frame.bgra, &manifest.marker_moved_bounds),
+                    "initial video sample does not match the white underlay at the marker's later position"
+                );
+            }
+            if sample_index == 2 {
+                assert!(
+                    marker_matches_reference(&frame.bgra, &manifest.marker_initial_bounds),
+                    "late video sample does not match the white underlay at the marker's starting position"
+                );
+                assert!(
+                    marker_matches_black(&frame.bgra, &manifest.marker_moved_bounds),
+                    "late video sample does not contain the black marker at its later position"
+                );
+            }
+            if sample_index == 0 || sample_index == 2 {
+                marker_crop(&frame.bgra)
+                    .save(
+                        manifest_path
+                            .with_file_name(format!("tooltip-video-marker-{sample_index:02}.png")),
+                    )
+                    .expect("save decoded marker-state evidence");
+            }
             let (compared_pixels, high_error_pixels, mean_error, allowed_high_error_pixels, proof) =
                 analyze_frame(&frame.bgra);
             let evidence_path =
