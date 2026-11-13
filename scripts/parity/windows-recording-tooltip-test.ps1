@@ -1901,6 +1901,29 @@ try {
         $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
         return $foreground -eq $capturePreviewHandle
     } 3000 'The capture preview did not regain foreground input before Edit.' | Out-Null
+    $closeX = $previewClientOrigin.X + [int][Math]::Round(24 * $previewScale)
+    $closeY = $previewClientOrigin.Y + [int][Math]::Round(480 * $previewScale)
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($capturePreviewHandle, $closeX, $closeY)) { throw 'The real preview Close target falls outside its client area.' }
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($closeX, $closeY)) { throw 'Could not move to the real preview Close control.' }
+    $readyTooltip = Wait-Until {
+        $handle = Get-VisibleTooltipWindow $workflowApplication.Id $capturePreviewHandle
+        if (-not $handle) { return $null }
+        if ([PoratakeTooltipProbe]::TooltipText($handle, $capturePreviewHandle, [uint32]$workflowApplication.Id) -cne 'Close preview') { return $null }
+        return $handle
+    } 5000 'The real preview hover controls did not become ready.'
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($editX, $editY)) { throw 'Could not move to the real preview Edit control.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($readyTooltip) } 3000 'The real preview Close tooltip did not hide before Edit.' | Out-Null
+    $editPoint = New-Object PoratakeTooltipProbe+Point
+    $editPoint.X = $editX
+    $editPoint.Y = $editY
+    $editHit = [PoratakeTooltipProbe]::WindowFromPoint($editPoint)
+    if ($editHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($editHit, 2) -ne $capturePreviewHandle) { throw 'Native hit testing at Edit did not reach the real capture preview.' }
+    $realPreviewCard = New-Object PoratakeTooltipProbe+Rect
+    $realPreviewCard.Left = $previewClientOrigin.X + [int][Math]::Round(4 * $previewScale)
+    $realPreviewCard.Top = $previewClientOrigin.Y + [int][Math]::Round(460 * $previewScale)
+    $realPreviewCard.Right = $previewClientOrigin.X + [int][Math]::Round(204 * $previewScale)
+    $realPreviewCard.Bottom = $previewClientOrigin.Y + [int][Math]::Round(600 * $previewScale)
+    Capture-TooltipArea 'real-preview-edit-ready' $realPreviewCard (Join-Path $captureRoot 'real-preview-edit-ready.png') 5
     $editorBeforeHandles = [System.Collections.Generic.HashSet[long]]::new()
     foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) { $null = $editorBeforeHandles.Add($handle.ToInt64()) }
     [PoratakeTooltipProbe]::Click($editX, $editY)

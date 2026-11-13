@@ -42,6 +42,14 @@ preview/export frames. It did not exercise editing in the UI or capture audio.
 captured a real area, reopened the selector, and drew a rectangle in the screenshot
 editor. Saving then crashed while opening the native dialog, so the saved-image
 and reopen checks remain open.
+[The next Windows run](https://github.com/Porabuild/Poratake/actions/runs/43425397059)
+passed real capture and selector reset but did not reach the editor: its Edit
+click did not wait for the hover controls to render. The harness now checks their
+readiness and the preview HWND hit test before clicking; the Save fix remains
+unverified.
+The video export and tray file pickers also use asynchronous dialogs to avoid the
+same nested event-loop pattern; their native selection and cancellation flows
+still need verification.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
 environment: roughly 2–5 working days, assuming no new major defects. Windows
