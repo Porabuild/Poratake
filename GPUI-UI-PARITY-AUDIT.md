@@ -29,10 +29,14 @@ remaining effort. Partial work does not count as a completed gate.
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                      |
 | Final-head CI                        | Open   | The final pushed commit passes all required hosted jobs and the Windows visual matrix.                                                                             |
 | Windows capture and save             | Open   | In an isolated app instance, capture an area, add a rectangle, save PNG and reopen it; check pixels, fresh selection and editor sizing.                            |
-| Windows recording and export         | Open   | Record a real short take, trim and annotate it, then compare duration and three preview/export frames; check system audio if available without prompting.          |
+| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                          |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.         |
 | macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures. |
 | Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                             |
+
+[Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
+passed native recording with programmatic cuts and annotation, and compared three
+preview/export frames. It did not exercise editing in the UI or capture audio.
 
 Estimate with an isolated Windows desktop and an already-authorized macOS test
 environment: roughly 2–5 working days, assuming no new major defects. Windows

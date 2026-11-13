@@ -1790,12 +1790,18 @@ try {
     [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($startHit, [ref]$startHitProcess)
     if ($startHitProcess -ne [uint32]$workflowApplication.Id) { throw 'Native hit testing at the selection start did not reach the real GPUI overlay.' }
     [PoratakeTooltipProbe]::Drag($selectionStart.X, $selectionStart.Y, $selectionEnd.X, $selectionEnd.Y)
+    $capturePreviewHandle = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) {
+            if ([PoratakeTooltipProbe]::WindowText($handle) -eq 'Poratake capture preview' -and [PoratakeTooltipProbe]::IsWindowVisible($handle)) { return $handle }
+        }
+        return $null
+    } 30000 'The real capture did not open its preview window.'
     $sourceCapturePath = Wait-Until {
-        $files = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop)
+        $files = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' })
         if ($files.Count -eq 1) { return $files[0].FullName }
         if ($files.Count -gt 1) { throw "Expected one test-owned screenshot, found $($files.Count)." }
         return $null
-    } 30000 'The real area selection did not save a screenshot.'
+    } 10000 'The ready capture preview had no published screenshot file.'
     $sourceCapture = [System.Drawing.Bitmap]::new($sourceCapturePath)
     $sourceCaptureWidth = $sourceCapture.Width
     $sourceCaptureHeight = $sourceCapture.Height
@@ -1817,12 +1823,6 @@ try {
     }
     Write-Host "Real WGC area capture passed: $sourceCapturePath ($fixtureWidth x $fixtureHeight fixture, exact quadrant colors)."
 
-    $capturePreviewHandle = Wait-Until {
-        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$workflowApplication.Id)) {
-            if ([PoratakeTooltipProbe]::WindowText($handle) -eq 'Poratake capture preview' -and [PoratakeTooltipProbe]::IsWindowVisible($handle)) { return $handle }
-        }
-        return $null
-    } 30000 'The real capture did not open its preview window.'
     [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
     Wait-Until {
         $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
@@ -1954,12 +1954,54 @@ try {
         return $foreground -eq $saveDialog -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $saveDialog
     } 3000 'The owned Save Screenshot dialog did not become the foreground input target.' | Out-Null
     [PoratakeTooltipProbe]::PressAltS()
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($saveDialog) } 10000 'The owned Save Screenshot dialog did not close after Save.' | Out-Null
+    $script:previousExportLength = [int64]-1
+    $script:exportReadinessFailure = 'The saved image did not become a complete, decodable PNG.'
+    $pngEndMarker = [byte[]](0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82)
     $savedExportPath = Wait-Until {
         $files = @(Get-ChildItem -LiteralPath $workflowExportDirectory -Filter '*.png' -File -ErrorAction Stop)
-        if ($files.Count -eq 1) { return $files[0].FullName }
         if ($files.Count -gt 1) { throw "Expected one saved annotation export, found $($files.Count)." }
-        return $null
-    } 15000 'The native Save Screenshot dialog did not create the PNG export.'
+        if ($files.Count -eq 0) { return $null }
+        try {
+            $png = [System.IO.File]::Open($files[0].FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                if ($png.Length -lt $pngEndMarker.Length) { $script:exportReadinessFailure = 'The saved PNG is shorter than its required end chunk.'; return $null }
+                $png.Position = $png.Length - $pngEndMarker.Length
+                $actualEndMarker = [byte[]]::new($pngEndMarker.Length)
+                if ($png.Read($actualEndMarker, 0, $actualEndMarker.Length) -ne $actualEndMarker.Length) { $script:exportReadinessFailure = 'Could not read the complete PNG end chunk.'; return $null }
+                for ($index = 0; $index -lt $pngEndMarker.Length; $index++) {
+                    if ($actualEndMarker[$index] -ne $pngEndMarker[$index]) { $script:exportReadinessFailure = 'The saved PNG has no complete IEND trailer yet.'; return $null }
+                }
+            } finally {
+                $png.Dispose()
+            }
+            $image = [System.Drawing.Bitmap]::new($files[0].FullName)
+            try {
+                if ($image.Width -ne $sourceCaptureWidth -or $image.Height -ne $sourceCaptureHeight) { throw "Saved PNG dimensions are $($image.Width)x$($image.Height), expected ${sourceCaptureWidth}x${sourceCaptureHeight}." }
+                for ($index = 0; $index -lt $fixtureColors.Count; $index++) {
+                    $x = if (($index % 2) -eq 0) { [int]($image.Width / 4) } else { [int](3 * $image.Width / 4) }
+                    $y = if ($index -lt 2) { [int]($image.Height / 4) } else { [int](3 * $image.Height / 4) }
+                    $actual = $image.GetPixel($x, $y)
+                    $expected = $fixtureColors[$index]
+                    if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 12 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 12 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 12) {
+                        throw "Saved PNG is not fully decoded at quadrant ${index}: actual=$($actual.R),$($actual.G),$($actual.B), expected=$($expected.R),$($expected.G),$($expected.B)."
+                    }
+                }
+                $length = (Get-Item -LiteralPath $files[0].FullName -ErrorAction Stop).Length
+                if ($length -le 0 -or $length -ne $script:previousExportLength) {
+                    $script:previousExportLength = $length
+                    return $null
+                }
+                return $files[0].FullName
+            } finally {
+                $image.Dispose()
+            }
+        } catch {
+            $script:exportReadinessFailure = $_.Exception.Message
+            return $null
+        }
+    } 15000 ''
+    if (-not $savedExportPath) { throw "The saved image did not become a stable, complete PNG: $script:exportReadinessFailure" }
     $workflowRectangle = Assert-WorkflowRectangle $sourceCapturePath $savedExportPath ($annotationStartX - $editorScreenBounds.Left) ($annotationStartY - $editorScreenBounds.Top) ($annotationEndX - $editorScreenBounds.Left) ($annotationEndY - $editorScreenBounds.Top) $upperLeftBounds
     Write-Host "Real editor rectangle export passed: $savedExportPath."
 
