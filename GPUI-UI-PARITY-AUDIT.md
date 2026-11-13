@@ -867,6 +867,14 @@ Bugs fixed in this pass:
   wait for restoration before opening the controls. New fake-daemon workflows
   cover saved pixels, recording targets, failures, replacement and a second overlay;
   they still need a hosted visual run and native desktop verification.
+  Electron also hides icons before taking its frozen snapshot and restores its
+  capture reference before revealing the overlay. Synthetic-pixel tests cover
+  cancellation, replacement and restoration failures; native icon transitions
+  remain unverified. Confirmed frozen frames stay owned until the screenshot
+  consumer finishes; held-selection and held-capture tests check that a
+  replacement waits. Windows live captures fall back to Electron's window hide
+  if the native hide fails; unit tests also cover a delayed hide failure after a
+  newer show.
 - The frozen multi-display screenshot picker had the same ordering problem. It
   now hides icons before freezing and retains the hide until capture or
   cancellation. A fake-daemon workflow duplicates a display target and verifies

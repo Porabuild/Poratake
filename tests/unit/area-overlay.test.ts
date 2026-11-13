@@ -5,6 +5,7 @@ const mockCaptureFrozenWindowToFile = vi.fn();
 const mockCaptureWindowByIdToFile = vi.fn();
 const mockResolveWindowPickTargets = vi.fn();
 const mockFreezeScreen = vi.fn();
+const mockIsScreenFrozen = vi.fn();
 const mockReleaseScreen = vi.fn();
 const mockIsFreezeScreenEnabled = vi.fn();
 const mockDaemonCall = vi.fn();
@@ -19,6 +20,7 @@ const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
 const loadHandlers = new Map<number, () => void>();
 const commandLineSwitches = new Set<string>();
+let failNextOverlayHide = false;
 
 class MockBrowserWindow {
   static nextWebContentsId = 1;
@@ -137,11 +139,25 @@ vi.mock('@/main/capture/area-overlay/window-pick-targets', () => ({
 
 vi.mock('@/main/capture/freeze-screen', () => ({
   freezeScreen: (...a: unknown[]) => mockFreezeScreen(...a),
+  isScreenFrozen: () => mockIsScreenFrozen(),
   releaseScreen: (...a: unknown[]) => mockReleaseScreen(...a),
 }));
 
 vi.mock('@/main/capture/freeze-screen/preference', () => ({
   isFreezeScreenEnabled: () => mockIsFreezeScreenEnabled(),
+}));
+
+vi.mock('@/main/capture/desktop-icons', () => ({
+  hideDesktopIcons: vi.fn().mockResolvedValue(true),
+  showDesktopIcons: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock('@/main/capture/desktop-icons/preference', () => ({
+  shouldHideDesktopIconsForCapture: () => false,
+}));
+
+vi.mock('@/main/utils/notification', () => ({
+  showTransientNotification: vi.fn(),
 }));
 
 vi.mock('@/main/daemon', () => ({
@@ -191,6 +207,7 @@ describe('area overlay', () => {
     overlayWindows.length = 0;
     loadHandlers.clear();
     commandLineSwitches.clear();
+    failNextOverlayHide = false;
     mockGetAllDisplays.mockReturnValue([display]);
     mockGetCursorScreenPoint.mockReturnValue({ x: 200, y: 100 });
     mockGetDisplayNearestPoint.mockReturnValue(display);
@@ -199,6 +216,7 @@ describe('area overlay', () => {
     mockCaptureFrozenWindowToFile.mockResolvedValue(true);
     mockCaptureWindowByIdToFile.mockResolvedValue(true);
     mockFreezeScreen.mockResolvedValue(true);
+    mockIsScreenFrozen.mockReturnValue(false);
     mockReleaseScreen.mockResolvedValue(true);
     mockIsFreezeScreenEnabled.mockReturnValue(true);
     mockDaemonCall.mockImplementation(
@@ -210,6 +228,10 @@ describe('area overlay', () => {
           if (window) window.visible = true;
         }
         if (method === 'hideWindowWithoutTransitions') {
+          if (failNextOverlayHide) {
+            failNextOverlayHide = false;
+            return Promise.reject(new Error('native hide failed'));
+          }
           const window = overlayWindows.find(
             item => item.webContents.id.toString() === params.windowHandle
           );
@@ -994,6 +1016,66 @@ describe('area overlay', () => {
     expect(mockReleaseScreen).toHaveBeenCalled();
   });
 
+  it('keeps a frozen frame until screenshot capture completes before starting a replacement', async () => {
+    const order: string[] = [];
+    let finishCapture!: (captured: boolean) => void;
+    mockFreezeScreen.mockImplementation(async () => {
+      order.push('freeze');
+      return true;
+    });
+    mockReleaseScreen.mockImplementation(async () => {
+      order.push('release');
+      return true;
+    });
+    mockCaptureRegionToFile.mockImplementationOnce(
+      () =>
+        new Promise<boolean>(resolve => {
+          finishCapture = captured => {
+            order.push('capture-finished');
+            resolve(captured);
+          };
+        })
+    );
+
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureAreaToFile('/tmp/shot.png');
+    await settle();
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+
+    await vi.waitFor(() => {
+      expect(mockCaptureRegionToFile).toHaveBeenCalledOnce();
+    });
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      { x: 110, y: 70, width: 300, height: 200 },
+      '/tmp/shot.png',
+      { cached: true }
+    );
+    expect(mockReleaseScreen).not.toHaveBeenCalled();
+
+    const replacement = module.selectAreaWithOverlay();
+    await settle();
+    expect(mockFreezeScreen).toHaveBeenCalledOnce();
+    expect(overlayWindows).toHaveLength(1);
+
+    finishCapture(true);
+    expect(await captured).toBe(true);
+    await settle();
+    expect(mockReleaseScreen).toHaveBeenCalledOnce();
+    expect(mockFreezeScreen).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(['freeze', 'capture-finished', 'release', 'freeze']);
+
+    fire('area-overlay:cancel', overlayWindows[0].webContents.id);
+    expect(await replacement).toBeNull();
+  });
+
   it('announces capture preparation after native area capture starts', async () => {
     const calls: string[] = [];
     mockCaptureRegionToFile.mockImplementationOnce(async () => {
@@ -1062,6 +1144,72 @@ describe('area overlay', () => {
     expect(overlayWindows[0].hide).not.toHaveBeenCalled();
     expect(overlayWindows[0].setOpacity).toHaveBeenLastCalledWith(1);
     expect(mockReleaseScreen).not.toHaveBeenCalled();
+  });
+
+  it('hides the live overlay with Electron before capturing when native hide fails', async () => {
+    mockIsFreezeScreenEnabled.mockReturnValue(false);
+    let visibleAtCapture: boolean | undefined;
+    mockCaptureRegionToFile.mockImplementationOnce(async () => {
+      visibleAtCapture = overlayWindows[0].isVisible();
+      return true;
+    });
+
+    const module = await import('@/main/capture/area-overlay');
+    const captured = module.captureAreaToFile('/tmp/shot.png');
+    await settle();
+
+    fire('area-overlay:ready', overlayWindows[0].webContents.id);
+    await settle();
+    expect(overlayWindows[0].isVisible()).toBe(true);
+
+    failNextOverlayHide = true;
+    fire('area-overlay:confirm', overlayWindows[0].webContents.id, {
+      displayId: display.id,
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    });
+
+    expect(await captured).toBe(true);
+    expect(overlayWindows[0].hide).toHaveBeenCalledOnce();
+    expect(visibleAtCapture).toBe(false);
+    expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
+      { x: 110, y: 70, width: 300, height: 200 },
+      '/tmp/shot.png',
+      { cached: false }
+    );
+  });
+
+  it('does not apply a delayed hide failure after a newer show', async () => {
+    const window = new MockBrowserWindow({});
+    window.visible = true;
+    let rejectHide!: (error: Error) => void;
+    mockDaemonCall.mockImplementation((_module: string, method: string) => {
+      if (method === 'hideWindowWithoutTransitions') {
+        window.visible = false;
+        return new Promise((_, reject) => {
+          rejectHide = reject;
+        });
+      }
+      if (method === 'showWindowWithoutTransitions') {
+        window.visible = true;
+      }
+      return Promise.resolve({ disabled: true });
+    });
+
+    const { concealOverlayWindow, showOverlayWindow } =
+      await import('@/main/capture/area-overlay/window-pool');
+    const hiding = concealOverlayWindow(window);
+    await Promise.resolve();
+    await showOverlayWindow(window);
+    expect(window.isVisible()).toBe(true);
+
+    rejectHide(new Error('native hide failed'));
+    await hiding;
+
+    expect(window.hide).not.toHaveBeenCalled();
+    expect(window.isVisible()).toBe(true);
   });
 
   it('crops the picked window from the retained frame', async () => {
