@@ -433,7 +433,7 @@ public static class PoratakeTooltipFixture {
         uint ownerProcessId;
         GetWindowThreadProcessId(hwnd, out ownerProcessId);
         if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to show a fixture outside the test process.");
-        if (!SetWindowPos(hwnd, IntPtr.Zero, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
+        if (!SetWindowPos(hwnd, new IntPtr(-1), rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
             !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not show the screenshot fixture window.");
         }
@@ -1775,6 +1775,7 @@ try {
     $fixtureCenter.X = [int](($fixtureBounds.Left + $fixtureBounds.Right) / 2)
     $fixtureCenter.Y = [int](($fixtureBounds.Top + $fixtureBounds.Bottom) / 2)
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($workflowFixtureWindow)) { throw 'The real-capture test fixture is not visible.' }
+    if ([PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter) -ne $workflowFixtureWindow) { throw 'The real-capture fixture is not the topmost window at its center.' }
     $fixtureWindowBounds = New-Object PoratakeTooltipProbe+Rect
     if (-not [PoratakeTooltipProbe]::GetWindowRect($workflowFixtureWindow, [ref]$fixtureWindowBounds) -or $fixtureWindowBounds.Left -ne $fixtureBounds.Left -or $fixtureWindowBounds.Top -ne $fixtureBounds.Top -or $fixtureWindowBounds.Right -ne $fixtureBounds.Right -or $fixtureWindowBounds.Bottom -ne $fixtureBounds.Bottom) {
         throw 'The real-capture fixture HWND does not match its expected screen bounds.'
@@ -1884,6 +1885,8 @@ try {
     } 5000 'Escape did not dismiss the reopened area selector.' | Out-Null
     if (@(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File).Count -ne 1) { throw 'Cancelling the reopened area selector created another capture.' }
     Write-Host 'The area selector reopened and Escape cancelled it without saving; protected selector pixels are not asserted by WGC.'
+    Release-ScreenshotFixture
+    if ($workflowFixtureWindow -ne [IntPtr]::Zero) { throw 'Could not close the real-capture fixture before editing.' }
     $previewClient = New-Object PoratakeTooltipProbe+Rect
     $previewClientOrigin = New-Object PoratakeTooltipProbe+Point
     if (-not [PoratakeTooltipProbe]::GetClientRect($capturePreviewHandle, [ref]$previewClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($capturePreviewHandle, [ref]$previewClientOrigin)) { throw 'Could not measure the real capture-preview client area.' }
