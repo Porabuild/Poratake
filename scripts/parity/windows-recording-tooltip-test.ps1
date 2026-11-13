@@ -1852,6 +1852,8 @@ try {
         return $null
     } 10000 'The ready capture preview had no published screenshot file.'
     $sourceCaptureSize = Assert-QuadrantFixtureCapture $sourceCapturePath ($fixtureWidth - 2) ($fixtureHeight - 2) 1 $fixtureColors 8 'Real WGC area capture'
+    $sourceCaptureWidth = $sourceCaptureSize.Width
+    $sourceCaptureHeight = $sourceCaptureSize.Height
     Write-Host "Real WGC area capture passed: $sourceCapturePath ($($sourceCaptureSize.Width)x$($sourceCaptureSize.Height), exact quadrant colors)."
 
     [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
