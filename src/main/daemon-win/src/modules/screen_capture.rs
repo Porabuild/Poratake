@@ -483,7 +483,17 @@ fn run_worker(
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if start_sender.is_none() {
+                            update_live_duration(
+                                &mut runtime.timeline,
+                                source_time,
+                                &shared,
+                                generation,
+                                paused,
+                            );
+                        }
+                    }
                     Err(error) => {
                         fail_worker(
                             error,
@@ -535,7 +545,17 @@ fn run_worker(
                 );
                 break;
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                if start_sender.is_none() {
+                    update_live_duration(
+                        &mut runtime.timeline,
+                        unsafe { MFGetSystemTime() },
+                        &shared,
+                        generation,
+                        paused,
+                    );
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => {
                 fail_worker(
                     RecorderError::capture("Windows capture frame source stopped"),
@@ -734,7 +754,12 @@ fn handle_command(
 
 fn set_running(shared: &Arc<Mutex<ControllerState>>, status: RecorderStatus, generation: u64) {
     if let Ok(mut state) = shared.lock() {
-        if state.generation != generation {
+        if state.generation != generation
+            || matches!(
+                state.phase,
+                ControllerPhase::Stopping | ControllerPhase::Idle
+            )
+        {
             return;
         }
         state.phase = ControllerPhase::Running;
@@ -744,10 +769,23 @@ fn set_running(shared: &Arc<Mutex<ControllerState>>, status: RecorderStatus, gen
 
 fn update_duration(shared: &Arc<Mutex<ControllerState>>, duration: f64, generation: u64) {
     if let Ok(mut state) = shared.lock() {
-        if state.generation != generation {
+        if state.generation != generation || state.phase != ControllerPhase::Running {
             return;
         }
         state.status.duration = duration;
+    }
+}
+
+fn update_live_duration(
+    timeline: &mut VideoTimeline,
+    source_time: i64,
+    shared: &Arc<Mutex<ControllerState>>,
+    generation: u64,
+    paused: bool,
+) {
+    timeline.observe(source_time);
+    if !paused {
+        update_duration(shared, timeline.duration(), generation);
     }
 }
 
@@ -2609,6 +2647,108 @@ mod tests {
         assert_eq!(timeline.duration(), 2.);
         assert_eq!(timeline.end_timestamp(), 20_000_000);
         assert_eq!(timeline.timestamp_for(90_000_000), Some(20_000_000));
+    }
+
+    #[test]
+    fn static_source_updates_live_status_and_freezes_it_during_pause() {
+        let generation = 3;
+        let shared = Arc::new(Mutex::new(ControllerState {
+            phase: ControllerPhase::Running,
+            status: RecorderStatus {
+                state: RecorderState::Recording,
+                duration: 0.0,
+            },
+            command_sender: None,
+            generation,
+        }));
+        let mut timeline = VideoTimeline::new(30);
+        assert_eq!(timeline.timestamp_for(50_000_000), Some(0));
+        timeline.commit(0);
+
+        update_live_duration(&mut timeline, 62_000_000, &shared, generation, false);
+        let recording = shared.lock().unwrap().status.clone();
+        assert_eq!(recording.state, RecorderState::Recording);
+        assert_eq!(recording.duration, 1.2);
+
+        timeline.pause();
+        shared.lock().unwrap().status.state = RecorderState::Paused;
+        update_live_duration(&mut timeline, 82_000_000, &shared, generation, true);
+        let paused = shared.lock().unwrap().status.clone();
+        assert_eq!(paused.state, RecorderState::Paused);
+        assert_eq!(paused.duration, recording.duration);
+
+        timeline.resume(82_000_000);
+        shared.lock().unwrap().status.state = RecorderState::Recording;
+        update_live_duration(&mut timeline, 90_000_000, &shared, generation, false);
+        let resumed = shared.lock().unwrap().status.clone();
+        assert_eq!(resumed.state, RecorderState::Recording);
+        assert_eq!(resumed.duration, 2.0);
+
+        shared.lock().unwrap().phase = ControllerPhase::Stopping;
+        update_live_duration(&mut timeline, 100_000_000, &shared, generation, false);
+        assert_eq!(shared.lock().unwrap().status.duration, resumed.duration);
+
+        let mut state = shared.lock().unwrap();
+        state.phase = ControllerPhase::Running;
+        state.generation = generation + 1;
+        drop(state);
+        update_live_duration(&mut timeline, 110_000_000, &shared, generation, false);
+        assert_eq!(shared.lock().unwrap().status.duration, resumed.duration);
+    }
+
+    #[test]
+    fn queued_pause_cannot_reopen_controller_after_stop_is_queued() {
+        let generation = 5;
+        let (command_sender, commands) = std::sync::mpsc::channel();
+        let controller = CaptureController {
+            state: Arc::new(Mutex::new(ControllerState {
+                phase: ControllerPhase::Running,
+                status: RecorderStatus {
+                    state: RecorderState::Recording,
+                    duration: 1.25,
+                },
+                command_sender: Some(command_sender),
+                generation,
+            })),
+        };
+        let pause_controller = CaptureController {
+            state: controller.state.clone(),
+        };
+        let pause = std::thread::spawn(move || pause_controller.pause());
+        let command = commands
+            .recv_timeout(Duration::from_secs(1))
+            .expect("queued pause command");
+        let WorkerCommand::Pause(pause_response) = command else {
+            panic!("expected queued pause");
+        };
+        let _stop_response = controller.stop().expect("queue stop command");
+        assert!(matches!(
+            commands
+                .recv_timeout(Duration::from_secs(1))
+                .expect("queued stop command"),
+            WorkerCommand::Stop(_)
+        ));
+        set_running(
+            &controller.state,
+            RecorderStatus {
+                state: RecorderState::Paused,
+                duration: 2.0,
+            },
+            generation,
+        );
+        let state = controller.state.lock().unwrap();
+        assert!(state.phase == ControllerPhase::Stopping);
+        assert_eq!(state.status.state, RecorderState::Idle);
+        assert_eq!(state.status.duration, 1.25);
+        drop(state);
+        pause_response
+            .send(Ok(RecorderStatus {
+                state: RecorderState::Paused,
+                duration: 2.0,
+            }))
+            .expect("complete queued pause");
+        assert!(pause.join().expect("pause request thread").is_ok());
+        assert!(controller.stop().is_err());
     }
 
     #[test]
