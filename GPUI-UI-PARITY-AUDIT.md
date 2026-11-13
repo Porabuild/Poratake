@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-13 for Poratake 0.9.6.
+Refreshed 2026-11-14 for Poratake 0.9.6.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -15,24 +15,24 @@ required work for this pass. Minor antialiasing differences and Linux-only
 enhancements are deferred unless they expose a critical shared defect or have a
 small verified fix. Exhaustive states for every control remain deferred.
 
-Each gate counts once only when its stated evidence exists. As of 2026-11-13,
-seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
+Each gate counts once only when its stated evidence exists. As of 2026-11-14,
+eight of twelve gates are complete: 67% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
-| Reviewed visual coverage             | Done   | Hosted CI at `aef5a9f3` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
+| Reviewed visual coverage             | Done   | Hosted CI at `e3e5775f` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
 | Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                                |
+| Hosted code-and-baseline CI          | Done   | All active jobs passed at `e3e5775f`; Windows packaging was skipped. The final review must also check the actual PR head.                                                   |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
-| Windows recording and export         | Open   | A real recording was trimmed through the UI and exported; compare its native preview with output and check system audio if available without prompting.                     |
+| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
 | macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.          |
-| Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                                      |
+| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                      |
 
 [Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
 passed native recording with programmatic cuts and annotation, and compared three
@@ -139,8 +139,11 @@ passed that later native check: the editor sought past the moving marker and its
 preview marker samples matched the decoded export while rejecting the initial
 frame. This checks a sampled region. Its visual matrix reported 32 expected
 export-label differences across 16 profiles; those Microsoft Basic captures
-were reviewed and all 2,912 images match their updated references offline.
-The final hosted rerun and affected NVIDIA references remain unverified.
+were reviewed and all 2,912 images matched their updated references offline.
+[Hosted CI at `e3e5775f`](https://github.com/Porabuild/Poratake/actions/runs/43521864369)
+then passed all active jobs, including the native seek workflow and all 16
+Windows visual profiles. Windows packaging was skipped. The affected NVIDIA
+references are stale and have not been regenerated or verified.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -1858,14 +1861,14 @@ These are not evidence that unrelated features match.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                        |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                     |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                               |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                   |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                            |
-| Blocked or unverified                 | The last full CI pass was at [`aef5a9f3`](https://github.com/Porabuild/Poratake/actions/runs/43508581901); Windows packaging was skipped. Later seek and export-label changes need hosted verification. NVIDIA baselines, physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
+| Review category                       | Result                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                  |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                               |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                         |
+| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                             |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                      |
+| Blocked or unverified                 | The last full CI pass was at [`e3e5775f`](https://github.com/Porabuild/Poratake/actions/runs/43521864369); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
 
 An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while
