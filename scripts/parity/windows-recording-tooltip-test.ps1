@@ -1324,6 +1324,87 @@ function Get-SelectedVideoTimelineClipBounds([string]$path, $referenceBounds) {
     }
 }
 
+function Get-VideoTimelinePlayheadCounts([string]$path, [int]$targetX, [int]$timelineStartX, [int]$top, [int]$bottom) {
+    Add-Type -AssemblyName System.Drawing
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        $target = 0
+        $start = 0
+        for ($y = [Math]::Max(0, $top); $y -lt [Math]::Min($image.Height, $bottom); $y++) {
+            for ($x = [Math]::Max(0, $targetX - 3); $x -le [Math]::Min($image.Width - 1, $targetX + 3); $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ($pixel.R -ge 220 -and $pixel.G -le 100 -and $pixel.B -le 110 -and $pixel.R - $pixel.G -ge 80) { $target++ }
+            }
+            for ($x = [Math]::Max(0, $timelineStartX - 3); $x -le [Math]::Min($image.Width - 1, $timelineStartX + 3); $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ($pixel.R -ge 220 -and $pixel.G -le 100 -and $pixel.B -le 110 -and $pixel.R - $pixel.G -ge 80) { $start++ }
+            }
+        }
+        return [pscustomobject]@{ Target = $target; Start = $start }
+    } finally {
+        $image.Dispose()
+    }
+}
+
+function Get-VideoPreviewChangedPixelCount([System.Drawing.Bitmap]$first, [System.Drawing.Bitmap]$second, [int]$top, [int]$right, [int]$bottom, [int]$threshold = 24) {
+    if ($first.Width -ne $second.Width -or $first.Height -ne $second.Height -or $top -lt 0 -or $right -le 0 -or $bottom -le $top -or $right -gt $first.Width -or $bottom -gt $first.Height) {
+        throw 'The video preview comparison bounds do not fit matching screenshots.'
+    }
+    $changed = 0
+    for ($y = $top; $y -lt $bottom; $y += 2) {
+        for ($x = 0; $x -lt $right; $x += 2) {
+            $a = $first.GetPixel($x, $y)
+            $b = $second.GetPixel($x, $y)
+            if ([Math]::Abs([int]$a.R - [int]$b.R) -gt $threshold -or [Math]::Abs([int]$a.G - [int]$b.G) -gt $threshold -or [Math]::Abs([int]$a.B - [int]$b.B) -gt $threshold) { $changed++ }
+        }
+    }
+    return $changed
+}
+
+function Assert-VideoPreviewChangeDetector {
+    Add-Type -AssemblyName System.Drawing
+    $first = [System.Drawing.Bitmap]::new(64, 64)
+    $unchanged = [System.Drawing.Bitmap]::new(64, 64)
+    $changed = [System.Drawing.Bitmap]::new(64, 64)
+    $firstGraphics = [System.Drawing.Graphics]::FromImage($first)
+    $changedGraphics = [System.Drawing.Graphics]::FromImage($changed)
+    try {
+        $firstGraphics.Clear([System.Drawing.Color]::FromArgb(48, 48, 48))
+        $changedGraphics.Clear([System.Drawing.Color]::FromArgb(48, 48, 48))
+        $changedGraphics.FillRectangle([System.Drawing.Brushes]::White, 24, 24, 16, 16)
+        $unchangedGraphics = [System.Drawing.Graphics]::FromImage($unchanged)
+        $unchangedGraphics.Clear([System.Drawing.Color]::FromArgb(48, 48, 48))
+        $unchangedGraphics.Dispose()
+        $unchangedPixels = Get-VideoPreviewChangedPixelCount $first $unchanged 4 56 56
+        $changedPixels = Get-VideoPreviewChangedPixelCount $first $changed 4 56 56
+        if ($unchangedPixels -ne 0 -or $changedPixels -ne 64) { throw "The video preview change detector failed its numeric controls: unchanged=$unchangedPixels, changed=$changedPixels." }
+    } finally {
+        $firstGraphics.Dispose()
+        $changedGraphics.Dispose()
+        $first.Dispose()
+        $unchanged.Dispose()
+        $changed.Dispose()
+    }
+}
+
+function Get-VideoPreviewPixelComparison([string]$firstPath, [string]$secondPath, [int]$timelineTop, [int]$threshold = 24) {
+    Add-Type -AssemblyName System.Drawing
+    $first = [System.Drawing.Bitmap]::new($firstPath)
+    $second = [System.Drawing.Bitmap]::new($secondPath)
+    try {
+        $top = [int]($first.Height * 0.04)
+        $right = [int]($first.Width * 0.68)
+        $bottom = [int][Math]::Min($first.Height * 0.70, $timelineTop - 20)
+        if ($bottom -le $top) { throw 'The measured editor layout does not leave a video preview pane above its timeline transport.' }
+        $checked = [Math]::Ceiling($right / 2.0) * [Math]::Ceiling(($bottom - $top) / 2.0)
+        $changed = Get-VideoPreviewChangedPixelCount $first $second $top $right $bottom $threshold
+        return [pscustomobject]@{ Changed = $changed; Checked = $checked }
+    } finally {
+        $first.Dispose()
+        $second.Dispose()
+    }
+}
+
 function Set-VideoEditorNeutralPointer([IntPtr]$windowHandle, [PoratakeTooltipProbe+Rect]$client, [PoratakeTooltipProbe+Point]$clientOrigin) {
     $point = New-Object PoratakeTooltipProbe+Point
     $point.X = $clientOrigin.X + [int][Math]::Floor(($client.Right - $client.Left) / 2.0)
@@ -1967,8 +2048,8 @@ try {
     $fiducialHeight = 72
     $fiducialCellSize = 12
     $fiducialBounds = New-Object PoratakeTooltipProbe+Rect
-    $fiducialBounds.Left = $monitor.Work.Left + [int][Math]::Floor(($monitor.Work.Right - $monitor.Work.Left) * 0.62)
-    $fiducialBounds.Top = $monitor.Work.Top + 180
+    $fiducialBounds.Left = $markerPanelBounds.Right + 8
+    $fiducialBounds.Top = $markerPanelBounds.Top
     $fiducialBounds.Right = $fiducialBounds.Left + $fiducialWidth
     $fiducialBounds.Bottom = $fiducialBounds.Top + $fiducialHeight
     if ($fiducialBounds.Left -lt $monitor.Work.Left -or $fiducialBounds.Top -lt $monitor.Work.Top -or $fiducialBounds.Right -gt $monitor.Work.Right -or $fiducialBounds.Bottom -gt $monitor.Work.Bottom) { throw 'The monitor work area cannot contain the video fiducial.' }
@@ -3329,6 +3410,50 @@ try {
     if ($videoExportButtonBounds.left -lt $videoMonitor.Work.Left -or $videoExportButtonBounds.top -lt $videoMonitor.Work.Top -or $videoExportButtonBounds.right -gt $videoMonitor.Work.Right -or $videoExportButtonBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export Video control exceeds the monitor work area.' }
     $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
+    Assert-VideoPreviewChangeDetector
+    $videoPreviewSeekTime = [Math]::Ceiling(($markerMovedAtSeconds + 0.3) * 10.0) / 10.0
+    if ($videoPreviewSeekTime -le ($markerMovedAtSeconds + 0.2) -or $videoPreviewSeekTime -ge ($videoExportDuration - 0.25)) {
+        throw "No interior timeline ruler time remains after the marker move: marker=$markerMovedAtSeconds, seek=$videoPreviewSeekTime, trimmed duration=$videoExportDuration."
+    }
+    $timelinePixelsPerSecond = $videoClipBefore.Width / $videoSourceDuration
+    $timelineRulerPoint = New-Object PoratakeTooltipProbe+Point
+    $timelineRulerPoint.X = $videoEditorClientOrigin.X + [int][Math]::Round($videoClipBefore.Left + $videoPreviewSeekTime * $timelinePixelsPerSecond)
+    $timelineRulerPoint.Y = $videoEditorClientOrigin.Y + $videoClipBefore.Top - 14
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($videoEditorHandle, $timelineRulerPoint.X, $timelineRulerPoint.Y)) { throw 'The measured seek point falls outside the editor client.' }
+    $timelineRulerHit = [PoratakeTooltipProbe]::WindowFromPoint($timelineRulerPoint)
+    if ($timelineRulerHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($timelineRulerHit, 2) -ne $videoEditorHandle) { throw 'Native hit testing at the measured timeline ruler point did not reach the video editor.' }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($videoEditorHandle)) { throw 'Could not foreground the video editor before seeking its timeline ruler.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $videoEditorHandle } 3000 'The video editor did not regain focus before the timeline seek.' | Out-Null
+    [PoratakeTooltipProbe]::Click($timelineRulerPoint.X, $timelineRulerPoint.Y)
+    $seekPreviewCapturePath = Join-Path $captureRoot 'real-video-editor-after-seek.png'
+    $script:videoSeekCaptureAttempt = 0
+    $videoSeekReadiness = Wait-Until {
+        $first = $null
+        $second = $null
+        try {
+            Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+            $script:videoSeekCaptureAttempt++
+            $first = Join-Path $captureRoot ("video-editor-seek-{0:D2}-a.png" -f $script:videoSeekCaptureAttempt)
+            $second = Join-Path $captureRoot ("video-editor-seek-{0:D2}-b.png" -f $script:videoSeekCaptureAttempt)
+            Capture-TooltipArea "video-editor-seek-$script:videoSeekCaptureAttempt-a" $videoEditorScreenBounds $first 5
+            $firstCounts = Get-VideoTimelinePlayheadCounts $first ($timelineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
+            if ($firstCounts.Target -lt 8 -or $firstCounts.Start -gt 6) { return $null }
+            $firstPreview = Get-VideoPreviewPixelComparison $videoEditorReadyCapture $first $videoClipBefore.Top
+            if ($firstPreview.Changed -lt 24) { return $null }
+            Capture-TooltipArea "video-editor-seek-$script:videoSeekCaptureAttempt-b" $videoEditorScreenBounds $second 5
+            $secondCounts = Get-VideoTimelinePlayheadCounts $second ($timelineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
+            $stablePreview = Get-VideoPreviewPixelComparison $first $second $videoClipBefore.Top 3
+            if ($secondCounts.Target -lt 8 -or $secondCounts.Start -gt 6 -or $stablePreview.Changed -gt [Math]::Ceiling($stablePreview.Checked * 0.005)) { return $null }
+            $secondPreview = Get-VideoPreviewPixelComparison $videoEditorReadyCapture $second $videoClipBefore.Top
+            if ($secondPreview.Changed -lt 24) { return $null }
+            Copy-Item -LiteralPath $second -Destination $seekPreviewCapturePath -Force -ErrorAction Stop
+            Write-Host "Timeline ruler seek to ${videoPreviewSeekTime}s is visible and stable: preview changed pixels=$($secondPreview.Changed), target playhead pixels=$($secondCounts.Target), start-position pixels=$($secondCounts.Start)."
+            return $true
+        } catch {
+            return $null
+        }
+    } 15000 'The video editor preview did not settle at the after-marker timeline ruler position.'
+    if (-not $videoSeekReadiness -or -not [System.IO.File]::Exists($seekPreviewCapturePath)) { throw 'The after-seek video preview screenshot is not ready.' }
     $videoExportClickX = [int][Math]::Round(($videoExportButtonBounds.left + $videoExportButtonBounds.right) / 2.0)
     $videoExportClickY = [int][Math]::Round(($videoExportButtonBounds.top + $videoExportButtonBounds.bottom) / 2.0)
     if (-not [PoratakeTooltipProbe]::SetCursorPos($videoExportClickX, $videoExportClickY)) { throw 'Could not move to the measured Export Video control.' }
@@ -3376,6 +3501,8 @@ try {
     $videoExportProof.videoPath = $videoExportPath
     $videoExportProof.expectedDuration = $videoExportDuration
     $videoExportProof.editorPreviewPath = $videoEditorReadyCapture
+    $videoExportProof.editorPreviewSeekPath = $seekPreviewCapturePath
+    $videoExportProof.editorPreviewSeekTime = $videoPreviewSeekTime
     $videoExportProofPath = Join-Path $evidenceRoot 'tooltip-video-export-proof.json'
     [System.IO.File]::WriteAllText($videoExportProofPath, ($videoExportProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoExportProofPath

@@ -902,6 +902,10 @@ mod tests {
         fiducial_bounds: RecordedTooltipBounds,
         #[serde(default)]
         editor_preview_path: Option<std::path::PathBuf>,
+        #[serde(default)]
+        editor_preview_seek_path: Option<std::path::PathBuf>,
+        #[serde(default)]
+        editor_preview_seek_time: Option<f64>,
         marker_move_seconds: f64,
         #[serde(default)]
         expected_duration: Option<f64>,
@@ -994,6 +998,179 @@ mod tests {
             }
         }
         channels.map(|channel| channel / count)
+    }
+
+    #[cfg(windows)]
+    fn average_frame_rgb(frame: &DecodedFrame, x: f64, y: f64, radius: i32) -> [f64; 3] {
+        let center_x = x.round() as i32;
+        let center_y = y.round() as i32;
+        let mut channels = [0.0; 3];
+        let mut count = 0.0;
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let sample_x = (center_x + dx).clamp(0, frame.width as i32 - 1) as u32;
+                let sample_y = (center_y + dy).clamp(0, frame.height as i32 - 1) as u32;
+                let offset = ((sample_y * frame.width + sample_x) * 4) as usize;
+                channels[0] += f64::from(frame.bgra[offset + 2]);
+                channels[1] += f64::from(frame.bgra[offset + 1]);
+                channels[2] += f64::from(frame.bgra[offset]);
+                count += 1.0;
+            }
+        }
+        channels.map(|channel| channel / count)
+    }
+
+    #[cfg(windows)]
+    fn marker_preview_sample_errors(
+        screenshot: &image::RgbaImage,
+        frame: &DecodedFrame,
+        capture_bounds: &RecordedTooltipBounds,
+        marker_panel_bounds: &RecordedTooltipBounds,
+        fiducial_bounds: &RecordedTooltipBounds,
+        fiducial_match: FiducialPreviewMatch,
+    ) -> Vec<f64> {
+        let mut errors = Vec::with_capacity(18);
+        let markers = [
+            RecordedTooltipBounds {
+                left: marker_panel_bounds.left,
+                top: marker_panel_bounds.top,
+                right: marker_panel_bounds.left + 32,
+                bottom: marker_panel_bounds.top + 32,
+            },
+            RecordedTooltipBounds {
+                left: marker_panel_bounds.right - 32,
+                top: marker_panel_bounds.top,
+                right: marker_panel_bounds.right,
+                bottom: marker_panel_bounds.bottom,
+            },
+        ];
+        for marker in markers {
+            for y_fraction in [0.25, 0.5, 0.75] {
+                for x_fraction in [0.25, 0.5, 0.75] {
+                    let source_x =
+                        f64::from(marker.left) + f64::from(marker.right - marker.left) * x_fraction;
+                    let source_y =
+                        f64::from(marker.top) + f64::from(marker.bottom - marker.top) * y_fraction;
+                    let preview_x = f64::from(fiducial_match.left)
+                        + (source_x - f64::from(fiducial_bounds.left)) * fiducial_match.scale;
+                    let preview_y = f64::from(fiducial_match.top)
+                        + (source_y - f64::from(fiducial_bounds.top)) * fiducial_match.scale;
+                    let preview = average_rgb(screenshot, preview_x, preview_y);
+                    let decoded = average_frame_rgb(
+                        frame,
+                        source_x - f64::from(capture_bounds.left),
+                        source_y - f64::from(capture_bounds.top),
+                        3,
+                    );
+                    errors.push(
+                        (0..3)
+                            .map(|channel| (preview[channel] - decoded[channel]).abs())
+                            .sum::<f64>()
+                            / 3.0,
+                    );
+                }
+            }
+        }
+        errors
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn marker_preview_sample_errors_handles_scaled_mapping_offset_and_stale_polarity() {
+        fn marker_frame(marker_left: u32) -> DecodedFrame {
+            let mut image = image::RgbaImage::from_pixel(320, 180, image::Rgba([96, 96, 96, 255]));
+            for y in 30..62 {
+                for x in 30..158 {
+                    image.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+                }
+            }
+            for y in 30..62 {
+                for x in marker_left..marker_left + 32 {
+                    image.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+                }
+            }
+            let bgra = image
+                .pixels()
+                .flat_map(|pixel| [pixel[2], pixel[1], pixel[0], pixel[3]])
+                .collect::<Vec<_>>();
+            DecodedFrame {
+                width: 320,
+                height: 180,
+                bgra: bgra.into(),
+            }
+        }
+
+        fn preview(frame: &DecodedFrame) -> image::RgbaImage {
+            let source = image::RgbaImage::from_fn(frame.width, frame.height, |x, y| {
+                let offset = ((y * frame.width + x) * 4) as usize;
+                image::Rgba([
+                    frame.bgra[offset + 2],
+                    frame.bgra[offset + 1],
+                    frame.bgra[offset],
+                    frame.bgra[offset + 3],
+                ])
+            });
+            let scaled =
+                image::imageops::resize(&source, 160, 90, image::imageops::FilterType::Nearest);
+            let mut screenshot =
+                image::RgbaImage::from_pixel(200, 140, image::Rgba([24, 24, 24, 255]));
+            image::imageops::overlay(&mut screenshot, &scaled, 17, 25);
+            screenshot
+        }
+
+        let moved_frame = marker_frame(126);
+        let stale_frame = marker_frame(30);
+        let screenshot = preview(&moved_frame);
+        let capture_bounds = RecordedTooltipBounds {
+            left: -200,
+            top: -100,
+            right: 120,
+            bottom: 80,
+        };
+        let marker_panel_bounds = RecordedTooltipBounds {
+            left: -170,
+            top: -70,
+            right: -42,
+            bottom: -38,
+        };
+        let fiducial_bounds = RecordedTooltipBounds {
+            left: -34,
+            top: -70,
+            right: 62,
+            bottom: 2,
+        };
+        let fiducial_match = FiducialPreviewMatch {
+            left: 101,
+            top: 38,
+            width: 48,
+            height: 36,
+            scale: 0.5,
+            mean_error: 0.0,
+        };
+        let moved_errors = marker_preview_sample_errors(
+            &screenshot,
+            &moved_frame,
+            &capture_bounds,
+            &marker_panel_bounds,
+            &fiducial_bounds,
+            fiducial_match,
+        );
+        let stale_errors = marker_preview_sample_errors(
+            &screenshot,
+            &stale_frame,
+            &capture_bounds,
+            &marker_panel_bounds,
+            &fiducial_bounds,
+            fiducial_match,
+        );
+        assert!(
+            moved_errors.iter().all(|error| *error <= 1.0),
+            "scaled moved marker ROI errors: {moved_errors:?}"
+        );
+        assert!(
+            stale_errors.iter().all(|error| *error >= 80.0),
+            "stale marker polarity errors: {stale_errors:?}"
+        );
     }
 
     #[cfg(windows)]
@@ -1443,6 +1620,11 @@ mod tests {
                 "UI-export proof must include the actual editor screenshot for fiducial parity"
             );
             assert!(
+                manifest.editor_preview_seek_path.is_some()
+                    && manifest.editor_preview_seek_time.is_some(),
+                "UI-export proof must include an after-seek editor screenshot and timestamp"
+            );
+            assert!(
                 (info.duration - expected_duration).abs() <= 0.100_001,
                 "decoded video duration {}s differs by more than one 10-FPS frame from the expected segment {}s",
                 info.duration,
@@ -1860,6 +2042,105 @@ mod tests {
                         full_top,
                         full_right,
                         full_bottom
+                    );
+                }
+                if let (Some(seek_path), Some(seek_time)) = (
+                    &manifest.editor_preview_seek_path,
+                    manifest.editor_preview_seek_time,
+                ) {
+                    assert!(seek_time > manifest.marker_move_seconds + 0.2);
+                    assert!(seek_time < info.duration - 0.25);
+                    let seek_frame = decoder.frame_at(seek_time).unwrap_or_else(|| {
+                        panic!("could not decode sought preview frame at {seek_time:.3}s")
+                    });
+                    assert!(
+                        marker_matches_reference(&seek_frame.bgra, &manifest.marker_initial_bounds),
+                        "after-seek export frame does not show the marker's initial position as white"
+                    );
+                    assert!(
+                        marker_matches_black(&seek_frame.bgra, &manifest.marker_moved_bounds),
+                        "after-seek export frame does not show the moved marker as black"
+                    );
+                    marker_crop(&seek_frame.bgra)
+                        .save(manifest_path.with_file_name("tooltip-video-seek-marker-export.png"))
+                        .expect("save after-seek decoded marker ROI");
+                    let seek_screenshot = image::open(seek_path)
+                        .expect("open actual GPUI editor screenshot after ruler seek")
+                        .to_rgba8();
+                    let seek_fiducial = fiducial_crop(&seek_frame.bgra);
+                    let seek_search = RecordedTooltipBounds {
+                        left: 0,
+                        top: (seek_screenshot.height() as f32 * 0.04) as i32,
+                        right: (seek_screenshot.width() as f32 * 0.68) as i32,
+                        bottom: (seek_screenshot.height() as f32 * 0.70) as i32,
+                    };
+                    let seek_match =
+                        preview_fiducial_match(&seek_screenshot, &seek_fiducial, &seek_search)
+                            .expect("unique fiducial match in the after-seek editor screenshot");
+                    let negative_match = preview_fiducial_match(
+                        &seek_screenshot,
+                        &image::imageops::rotate180(&seek_fiducial),
+                        &seek_search,
+                    );
+                    assert!(
+                        negative_match.is_none(),
+                        "rotated fiducial also matched the after-seek preview"
+                    );
+                    let seek_full_left = f64::from(seek_match.left)
+                        - (manifest.fiducial_bounds.left - manifest.capture_bounds.left) as f64
+                            * seek_match.scale;
+                    let seek_full_top = f64::from(seek_match.top)
+                        - (manifest.fiducial_bounds.top - manifest.capture_bounds.top) as f64
+                            * seek_match.scale;
+                    let seek_full_right = seek_full_left + f64::from(info.width) * seek_match.scale;
+                    let seek_full_bottom =
+                        seek_full_top + f64::from(info.height) * seek_match.scale;
+                    assert!(seek_full_left >= f64::from(seek_search.left));
+                    assert!(seek_full_top >= f64::from(seek_search.top));
+                    assert!(seek_full_right <= f64::from(seek_search.right));
+                    assert!(seek_full_bottom <= f64::from(seek_search.bottom));
+                    let seek_matches = marker_preview_sample_errors(
+                        &seek_screenshot,
+                        &seek_frame,
+                        &manifest.capture_bounds,
+                        &manifest.marker_panel_bounds,
+                        &manifest.fiducial_bounds,
+                        seek_match,
+                    );
+                    let stale_frame = decoder
+                        .frame_at(0.1)
+                        .expect("decode pre-move stale marker negative frame");
+                    assert!(marker_matches_black(
+                        &stale_frame.bgra,
+                        &manifest.marker_initial_bounds
+                    ));
+                    assert!(marker_matches_reference(
+                        &stale_frame.bgra,
+                        &manifest.marker_moved_bounds
+                    ));
+                    let stale_matches = marker_preview_sample_errors(
+                        &seek_screenshot,
+                        &stale_frame,
+                        &manifest.capture_bounds,
+                        &manifest.marker_panel_bounds,
+                        &manifest.fiducial_bounds,
+                        seek_match,
+                    );
+                    let seek_error = seek_matches.iter().sum::<f64>() / seek_matches.len() as f64;
+                    let stale_error =
+                        stale_matches.iter().sum::<f64>() / stale_matches.len() as f64;
+                    let seek_match_count =
+                        seek_matches.iter().filter(|error| **error <= 48.0).count();
+                    let stale_match_count =
+                        stale_matches.iter().filter(|error| **error <= 48.0).count();
+                    assert!(
+                        seek_match_count >= 16
+                            && stale_match_count <= 2
+                            && stale_error >= seek_error + 80.0,
+                        "after-seek preview did not match the moved-marker export: seek={seek_match_count}/18 mean={seek_error:.2}, stale={stale_match_count}/18 mean={stale_error:.2}"
+                    );
+                    eprintln!(
+                        "After-seek preview marker ROI matched export at {seek_time:.3}s: {seek_match_count}/18 samples, mean error {seek_error:.2}; stale polarity {stale_match_count}/18, mean error {stale_error:.2}."
                     );
                 }
             }
