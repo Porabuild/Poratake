@@ -122,6 +122,8 @@ $profileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.I
 $previewProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-preview-tooltip-' + [guid]::NewGuid().ToString('N')))
 $workflowProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-capture-workflow-' + [guid]::NewGuid().ToString('N')))
 $videoProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-video-export-workflow-' + [guid]::NewGuid().ToString('N')))
+$handoffProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-recording-handoff-' + [guid]::NewGuid().ToString('N')))
+$handoffRecordingRoot = Join-Path $handoffProfileRoot 'recordings'
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $profileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing profile outside the runner temporary directory: $profileRoot"
@@ -134,6 +136,9 @@ if (-not $workflowProfileRoot.StartsWith($tempRoot, [System.StringComparison]::O
 }
 if (-not $videoProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing video export profile outside the runner temporary directory: $videoProfileRoot"
+}
+if (-not $handoffProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing recording handoff profile outside the runner temporary directory: $handoffProfileRoot"
 }
 $runnerTempRoot = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 
@@ -149,11 +154,14 @@ $workflowStdoutPath = Join-Path $workflowProfileRoot 'stdout.log'
 $workflowStderrPath = Join-Path $workflowProfileRoot 'stderr.log'
 $videoStdoutPath = Join-Path $videoProfileRoot 'stdout.log'
 $videoStderrPath = Join-Path $videoProfileRoot 'stderr.log'
+$handoffStdoutPath = Join-Path $handoffProfileRoot 'stdout.log'
+$handoffStderrPath = Join-Path $handoffProfileRoot 'stderr.log'
 $application = $null
 $previewApplication = $null
 $workflowApplication = $null
 $reopenApplication = $null
 $videoApplication = $null
+$handoffApplication = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
@@ -270,6 +278,10 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", SetLastError=true)] static extern int GetWindowRgn(IntPtr hwnd, IntPtr region);
+    [DllImport("gdi32.dll", SetLastError=true)] static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] static extern bool PtInRegion(IntPtr region, int x, int y);
+    [DllImport("gdi32.dll", SetLastError=true)] static extern bool DeleteObject(IntPtr obj);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
     [DllImport("user32.dll")] static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
     [DllImport("user32.dll", EntryPoint="CreateWindowExW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
@@ -369,6 +381,29 @@ public static class PoratakeTooltipProbe {
         keybd_event(0x34, 0, 2, UIntPtr.Zero);
         keybd_event(0x10, 0, 2, UIntPtr.Zero);
         keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    }
+
+    public static void PressRecordingAreaHotkey() {
+        keybd_event(0x12, 0, 0, UIntPtr.Zero);
+        keybd_event(0x10, 0, 0, UIntPtr.Zero);
+        keybd_event(0x52, 0, 0, UIntPtr.Zero);
+        keybd_event(0x52, 0, 2, UIntPtr.Zero);
+        keybd_event(0x10, 0, 2, UIntPtr.Zero);
+        keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    }
+
+    public static bool WindowRegionContainsScreenPoint(IntPtr hwnd, int screenX, int screenY) {
+        var region = CreateRectRgn(0, 0, 0, 0);
+        if (region == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create the native window-region probe.");
+        try {
+            var kind = GetWindowRgn(hwnd, region);
+            if (kind == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "GetWindowRgn failed for the recording overlay.");
+            var point = new Point { X = screenX, Y = screenY };
+            if (!ScreenToClient(hwnd, ref point)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not convert the native region probe point to overlay client coordinates.");
+            return PtInRegion(region, point.X, point.Y);
+        } finally {
+            if (!DeleteObject(region)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not release the native window-region probe.");
+        }
     }
 
     public static List<IntPtr> WindowsWithText(string expectedText) {
@@ -2510,6 +2545,171 @@ try {
         $reopenApplication.Kill()
         if (-not $reopenApplication.WaitForExit(5000)) { throw 'The screenshot editor did not exit before the isolated video editor workflow.' }
     }
+    New-Item -ItemType Directory -Path $handoffProfileRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $handoffRecordingRoot -Force | Out-Null
+    $handoffConfig = @{
+        onboarding = @{ completed = $true }
+        screenshot = @{ freezeScreen = $false; hideDesktopIcons = $false }
+        recording = @{
+            startDelay = 0
+            frameRate = 10
+            showPreview = $false
+            systemAudio = $false
+            micEnabled = $false
+            camera = @{ enabled = $false }
+        }
+        shortcuts = @{ recording = @{ area = 'Alt+Shift+R' } }
+        saveLocations = @{ video = $handoffRecordingRoot }
+    } | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText((Join-Path $handoffProfileRoot 'config.json'), $handoffConfig, [System.Text.UTF8Encoding]::new($false))
+    $handoffPreviousProfile = $env:PORATAKE_CONFIG_DIR
+    $handoffPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    try {
+        $env:PORATAKE_CONFIG_DIR = $handoffProfileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $handoffApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'record-area') -WorkingDirectory $root -RedirectStandardOutput $handoffStdoutPath -RedirectStandardError $handoffStderrPath -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $handoffPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $handoffPreviousProfile }
+        if ($null -eq $handoffPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $handoffPreviousDaemonPath }
+    }
+    if (-not $handoffApplication) { throw 'Could not launch the isolated record-area handoff app.' }
+    Capture-OwnedDaemonChildren $handoffApplication
+    $handoffOverlay = Wait-Until {
+        if ($handoffApplication.HasExited) { throw 'The isolated record-area app exited before its selector appeared.' }
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$handoffApplication.Id)) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle) -or [PoratakeTooltipProbe]::WindowText($handle) -cne 'Poratake capture overlay') { continue }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
+            if ($rect.Right - $rect.Left -lt ($monitor.Monitor.Right - $monitor.Monitor.Left) -or $rect.Bottom - $rect.Top -lt ($monitor.Monitor.Bottom - $monitor.Monitor.Top)) { continue }
+            return $handle
+        }
+        return $null
+    } 20000 'The isolated record-area selector did not appear over the display.'
+    $handoffSelectionStart = New-Object PoratakeTooltipProbe+Point
+    $handoffSelectionStart.X = $monitor.Monitor.Left + 180
+    $handoffSelectionStart.Y = $monitor.Monitor.Top + 180
+    $handoffSelectionEnd = New-Object PoratakeTooltipProbe+Point
+    $handoffSelectionEnd.X = $handoffSelectionStart.X + 260
+    $handoffSelectionEnd.Y = $handoffSelectionStart.Y + 180
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($handoffOverlay, $handoffSelectionStart.X, $handoffSelectionStart.Y) -or -not [PoratakeTooltipProbe]::IsPointInsideClient($handoffOverlay, $handoffSelectionEnd.X, $handoffSelectionEnd.Y)) { throw 'The record-area selection points are outside the selector client.' }
+    $handoffSelectionHit = [PoratakeTooltipProbe]::WindowFromPoint($handoffSelectionStart)
+    $handoffSelectionProcess = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handoffSelectionHit, [ref]$handoffSelectionProcess)
+    if ($handoffSelectionProcess -ne [uint32]$handoffApplication.Id -or [PoratakeTooltipProbe]::GetAncestor($handoffSelectionHit, 2) -ne $handoffOverlay) { throw 'Native hit testing at the record-area drag did not reach the isolated GPUI selector.' }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($handoffOverlay)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffOverlay } 3000 'The record-area selector did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::Drag($handoffSelectionStart.X, $handoffSelectionStart.Y, $handoffSelectionEnd.X, $handoffSelectionEnd.Y)
+    $handoffControl = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$handoffApplication.Id)) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle) -or [PoratakeTooltipProbe]::WindowText($handle) -cne 'Poratake recording controls') { continue }
+            return $handle
+        }
+        return $null
+    } 20000 'Selecting the recording area did not open the recording controls.'
+    $handoffControlBounds = New-Object PoratakeTooltipProbe+Rect
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffControl, [ref]$handoffControlBounds)) { throw 'Could not measure the area-recording control window.' }
+    $handoffStartButtonProof = Join-Path $evidenceRoot 'recording-handoff-start-button.json'
+    $handoffStartButton = Get-VideoEditorButtonReadiness $handoffControl $handoffControlBounds $handoffStartButtonProof 'Start recording'
+    $handoffInsidePoint = New-Object PoratakeTooltipProbe+Point
+    $handoffInsidePoint.X = [int](($handoffSelectionStart.X + $handoffSelectionEnd.X) / 2)
+    $handoffInsidePoint.Y = [int](($handoffSelectionStart.Y + $handoffSelectionEnd.Y) / 2)
+    $handoffOutsidePoint = New-Object PoratakeTooltipProbe+Point
+    $handoffOutsidePoint.X = $handoffSelectionStart.X - 32
+    $handoffOutsidePoint.Y = $handoffSelectionStart.Y - 32
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y) -or -not [PoratakeTooltipProbe]::IsPointInsideClient($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)) { throw 'The handoff region probes are outside the overlay client.' }
+    $handoffStartBounds = $handoffStartButton.button.bounds
+    $handoffStartX = [int][Math]::Round(($handoffStartBounds.left + $handoffStartBounds.right) / 2.0)
+    $handoffStartY = [int][Math]::Round(($handoffStartBounds.top + $handoffStartBounds.bottom) / 2.0)
+    $handoffStartPoint = New-Object PoratakeTooltipProbe+Point
+    $handoffStartPoint.X = $handoffStartX
+    $handoffStartPoint.Y = $handoffStartY
+    $handoffStartHit = [PoratakeTooltipProbe]::WindowFromPoint($handoffStartPoint)
+    if ($handoffStartHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($handoffStartHit, 2) -ne $handoffControl) { throw 'Native hit testing at Start recording did not reach its control window.' }
+    [PoratakeTooltipProbe]::Click($handoffStartX, $handoffStartY)
+    $regionHoleReady = Wait-Until {
+        try {
+            $inside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y)
+            $outside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+            if (-not $inside -and $outside) { return $true }
+        } catch { }
+        return $null
+    } 15000 'Starting the real area recording did not cut a hole in its selector window region.'
+    if (-not $regionHoleReady) { throw 'The recording selector window region does not exclude its selected area.' }
+    Write-Host "Recording handoff region excluded the selected point $($handoffInsidePoint.X),$($handoffInsidePoint.Y) and retained outside point $($handoffOutsidePoint.X),$($handoffOutsidePoint.Y) on HWND $($handoffOverlay.ToInt64())."
+    if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffControl, [ref]$handoffControlBounds)) { throw 'Could not measure the active area-recording control window.' }
+    $handoffStopButtonProof = Join-Path $evidenceRoot 'recording-handoff-stop-button.json'
+    $handoffStopButton = Get-VideoEditorButtonReadiness $handoffControl $handoffControlBounds $handoffStopButtonProof 'Stop recording'
+    $handoffStopBounds = $handoffStopButton.button.bounds
+    $handoffStopX = [int][Math]::Round(($handoffStopBounds.left + $handoffStopBounds.right) / 2.0)
+    $handoffStopY = [int][Math]::Round(($handoffStopBounds.top + $handoffStopBounds.bottom) / 2.0)
+    $handoffStopPoint = New-Object PoratakeTooltipProbe+Point
+    $handoffStopPoint.X = $handoffStopX
+    $handoffStopPoint.Y = $handoffStopY
+    $handoffStopHit = [PoratakeTooltipProbe]::WindowFromPoint($handoffStopPoint)
+    if ($handoffStopHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($handoffStopHit, 2) -ne $handoffControl) { throw 'Native hit testing at Stop recording did not reach its control window.' }
+    [PoratakeTooltipProbe]::Click($handoffStopX, $handoffStopY)
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffControl) } 15000 'The area recording control did not close after stopping.' | Out-Null
+    $parkedRegionReady = Wait-Until {
+        try {
+            $inside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y)
+            $outside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+            if ($inside -and $outside -and -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $true }
+        } catch { }
+        return $null
+    } 15000 'Stopping the recording did not restore and park the pooled selector region.'
+    if (-not $parkedRegionReady) { throw 'The parked selector did not restore the full window region.' }
+    [PoratakeTooltipProbe]::PressRecordingAreaHotkey()
+    $reopenedHandoffOverlay = Wait-Until {
+        if (-not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
+        if ([PoratakeTooltipProbe]::WindowText($handoffOverlay) -cne 'Poratake capture overlay') { return $null }
+        $ownerProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handoffOverlay, [ref]$ownerProcess)
+        if ($ownerProcess -ne [uint32]$handoffApplication.Id) { return $null }
+        $inside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y)
+        $outside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+        if ($inside -and $outside) { return $handoffOverlay }
+        return $null
+    } 15000 'The record-area hotkey did not reopen the same pooled overlay with its full region.'
+    if ($reopenedHandoffOverlay -ne $handoffOverlay) { throw 'The pooled selector HWND identity changed across stop and reopen.' }
+    Write-Host "Recording handoff restored the full region and reused pooled HWND $($handoffOverlay.ToInt64()) after reopen."
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($handoffOverlay)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffOverlay } 3000 'The reopened record-area selector did not regain input focus.' | Out-Null
+    [PoratakeTooltipProbe]::PressKey(0x1B)
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay) } 10000 'Escape did not cancel the reopened record-area selector.' | Out-Null
+    $cancelledRegionReady = Wait-Until {
+        try {
+            return [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y) -and [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+        } catch { return $null }
+    } 5000 'Cancelling the reopened selector changed its restored full region.'
+    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not retain its full native window region.' }
+    Write-Host 'Record-area native handoff, park, pooled-window reuse and Escape cancellation passed.'
+    Capture-OwnedDaemonChildren $handoffApplication
+    $handoffProcessId = $handoffApplication.Id
+    if (-not $handoffApplication.HasExited) {
+        $handoffApplication.Kill()
+        if (-not $handoffApplication.WaitForExit(5000)) {
+            $safeToDeleteProfile = $false
+            throw 'The test-owned recording handoff app did not exit before the video export workflow.'
+        }
+    }
+    foreach ($owned in $ownedDaemons | Where-Object { $_.ParentProcessId -eq $handoffProcessId }) {
+        $process = $owned.Process
+        if ($process.HasExited) { continue }
+        $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $($owned.ProcessId)" -ErrorAction Stop
+        $imagePath = [System.IO.Path]::GetFullPath($process.MainModule.FileName)
+        $created = [datetime]$identity.CreationDate
+        $sameIdentity = $identity.Name -eq 'poratake-daemon.exe' -and [int]$identity.ParentProcessId -eq $handoffProcessId -and $imagePath -ieq $owned.ImagePath -and $imagePath -in $daemonCandidates -and $process.StartTime -eq $owned.StartTime -and [Math]::Abs(($process.StartTime - $created).TotalSeconds) -le 1
+        if (-not $sameIdentity) {
+            $safeToDeleteProfile = $false
+            throw 'The recording handoff daemon identity changed; refusing to stop it.'
+        }
+        $process.Kill()
+        if (-not $process.WaitForExit(5000)) {
+            $safeToDeleteProfile = $false
+            throw 'The test-owned recording handoff daemon did not exit before the video export workflow.'
+        }
+    }
+
     New-Item -ItemType Directory -Path $videoProfileRoot -Force | Out-Null
     $videoConfig = @{
         onboarding = @{ completed = $true }
@@ -2722,7 +2922,8 @@ try {
     Capture-OwnedDaemonChildren $workflowApplication
     Capture-OwnedDaemonChildren $reopenApplication
     Capture-OwnedDaemonChildren $videoApplication
-    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication)) {
+    Capture-OwnedDaemonChildren $handoffApplication
+    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication)) {
         if ($ownedApplication -and -not $ownedApplication.HasExited) {
             try {
                 $ownedApplication.Kill()
@@ -2732,7 +2933,7 @@ try {
             }
         }
     }
-    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
+    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
         if (-not $process.HasExited) {
@@ -2760,7 +2961,8 @@ try {
     $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
     $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)
     $resolvedVideoProfile = [System.IO.Path]::GetFullPath($videoProfileRoot)
-    if (@($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
+    $resolvedHandoffProfile = [System.IO.Path]::GetFullPath($handoffProfileRoot)
+    if (@($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {
         if (-not $owned.Process.HasExited) { $safeToDeleteProfile = $false }
         $owned.Process.Dispose()
@@ -2786,6 +2988,9 @@ try {
     }
     if ($safeToDeleteProfile -and $resolvedVideoProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedVideoProfile)) {
         Remove-Item -LiteralPath $resolvedVideoProfile -Recurse -Force
+    }
+    if ($safeToDeleteProfile -and $resolvedHandoffProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedHandoffProfile)) {
+        Remove-Item -LiteralPath $resolvedHandoffProfile -Recurse -Force
     }
     if (-not $safeToDeleteProfile) {
         if ($testFailure) { Write-Host 'Owned GPUI or daemon process did not exit; retained its temporary profile for safe recovery.' }
