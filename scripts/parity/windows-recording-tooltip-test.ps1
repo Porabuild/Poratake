@@ -1969,7 +1969,11 @@ try {
         return $foreground -eq $editorHandle
     } 3000 'The screenshot editor did not become the foreground input target.' | Out-Null
     [PoratakeTooltipProbe]::PressKey(0x52)
+    $rectangleToolCapturePath = Join-Path $captureRoot 'real-editor-rectangle-tool.png'
+    Capture-TooltipArea 'real-editor-rectangle-tool' $editorScreenBounds $rectangleToolCapturePath
     [PoratakeTooltipProbe]::Drag($annotationStartX, $annotationStartY, $annotationEndX, $annotationEndY)
+    $annotatedEditorCapturePath = Join-Path $captureRoot 'real-editor-after-annotation.png'
+    Capture-TooltipArea 'real-editor-after-annotation' $editorScreenBounds $annotatedEditorCapturePath
     [PoratakeTooltipProbe]::PressControlS()
     $saveDialog = Wait-Until {
         $handles = [PoratakeTooltipProbe]::WindowsWithText('Save Screenshot')

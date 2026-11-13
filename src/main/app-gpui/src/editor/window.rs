@@ -622,6 +622,7 @@ impl EditorWindow {
         }
         editor.refresh_raster_patches();
         editor.sync_snapshot(cx);
+        window.focus(&editor.focus_handle, cx);
         editor
     }
 

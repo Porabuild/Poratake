@@ -338,6 +338,33 @@ mod interaction_tests {
     use std::sync::Arc;
 
     #[herogpui::test]
+    fn a_fresh_editor_selects_rectangle_from_the_default_shortcut_without_a_click(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            crate::editor::actions::init_bindings(cx);
+        });
+        let path = scratch.path().join("capture.png");
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            crate::editor::window::EditorWindow::from_file(path.to_str().unwrap(), window, cx)
+        });
+        cx.settle();
+        cx.press("r");
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.tool),
+            crate::ui::colors::Tool::Rectangle
+        );
+    }
+
+    #[herogpui::test]
     fn toolbar_select_commits_and_keeps_editor_shortcuts_outside_the_open_list(
         cx: &mut gpui::TestAppContext,
     ) {
