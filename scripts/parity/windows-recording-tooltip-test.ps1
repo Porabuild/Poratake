@@ -1,13 +1,86 @@
+param(
+    [ValidateSet('inspect')]
+    [string]$VideoExportButtonAction,
+    [long]$VideoEditorWindowHandle,
+    [string]$VideoExportButtonResultPath,
+    [int]$VideoExportButtonTimeoutMilliseconds = 12000
+)
+
 $ErrorActionPreference = 'Stop'
 
 if ($env:GITHUB_ACTIONS -ne 'true') {
     throw 'This desktop interaction test runs only on an isolated GitHub Actions Windows runner.'
 }
 
+if ($VideoExportButtonAction) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class PoratakeVideoExportDpi {
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetThreadDpiAwarenessContext();
+    [DllImport("user32.dll")]
+    public static extern bool AreDpiAwarenessContextsEqual(IntPtr first, IntPtr second);
+}
+'@
+    $previousContext = [PoratakeVideoExportDpi]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    if ($previousContext -eq [IntPtr]::Zero) { throw 'Could not set the UI Automation helper to per-monitor-aware V2.' }
+    try {
+        $helperContext = [PoratakeVideoExportDpi]::GetThreadDpiAwarenessContext()
+        $dpiAware = [PoratakeVideoExportDpi]::AreDpiAwarenessContextsEqual($helperContext, [IntPtr](-4))
+        if (-not $dpiAware) {
+            throw 'The UI Automation helper did not retain per-monitor-aware V2 coordinates.'
+        }
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($VideoEditorWindowHandle))
+        $condition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::NameProperty,
+            'Export Video'
+        )
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $result = @{ found = $false; ready = $false; buttons = @(); dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware }
+        do {
+            $buttons = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            foreach ($button in $buttons) {
+                $current = $button.Current
+                if ($current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+                $bounds = $current.BoundingRectangle
+                $buttonResult = @{
+                    name = $current.Name
+                    controlType = $current.ControlType.ProgrammaticName
+                    isEnabled = $current.IsEnabled
+                    isOffscreen = $current.IsOffscreen
+                    bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
+                }
+                $result.buttons = @($buttonResult)
+                if ($bounds.IsEmpty -or $bounds.Width -le 0 -or $bounds.Height -le 0) { continue }
+                if (-not $current.IsEnabled -or $current.IsOffscreen) { continue }
+                $result.found = $true
+                $result.ready = $true
+                $result.button = $buttonResult
+                break
+            }
+            if ($result.ready) { break }
+            [System.Threading.Thread]::Sleep(100)
+        } while ($timer.ElapsedMilliseconds -lt $VideoExportButtonTimeoutMilliseconds)
+        [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 4), [System.Text.UTF8Encoding]::new($false))
+        exit 0
+    } finally {
+        if ([PoratakeVideoExportDpi]::SetThreadDpiAwarenessContext($previousContext) -eq [IntPtr]::Zero) {
+            throw 'Could not restore the UI Automation helper DPI awareness context.'
+        }
+    }
+}
+
 $root = if ($env:GITHUB_WORKSPACE) { (Resolve-Path $env:GITHUB_WORKSPACE).Path } else { 'E:\work\poratake\.poracode\worktrees\poracode-nimble-badger-314d2ec2' }
 $profileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-tooltip-' + [guid]::NewGuid().ToString('N')))
 $previewProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-preview-tooltip-' + [guid]::NewGuid().ToString('N')))
 $workflowProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-capture-workflow-' + [guid]::NewGuid().ToString('N')))
+$videoProfileRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'poratake-video-export-workflow-' + [guid]::NewGuid().ToString('N')))
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $profileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing profile outside the runner temporary directory: $profileRoot"
@@ -17,6 +90,9 @@ if (-not $previewProfileRoot.StartsWith($tempRoot, [System.StringComparison]::Or
 }
 if (-not $workflowProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing workflow profile outside the runner temporary directory: $workflowProfileRoot"
+}
+if (-not $videoProfileRoot.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing video export profile outside the runner temporary directory: $videoProfileRoot"
 }
 $runnerTempRoot = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 
@@ -30,10 +106,13 @@ $previewStdoutPath = Join-Path $previewProfileRoot 'stdout.log'
 $previewStderrPath = Join-Path $previewProfileRoot 'stderr.log'
 $workflowStdoutPath = Join-Path $workflowProfileRoot 'stdout.log'
 $workflowStderrPath = Join-Path $workflowProfileRoot 'stderr.log'
+$videoStdoutPath = Join-Path $videoProfileRoot 'stdout.log'
+$videoStderrPath = Join-Path $videoProfileRoot 'stderr.log'
 $application = $null
 $previewApplication = $null
 $workflowApplication = $null
 $reopenApplication = $null
+$videoApplication = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
@@ -284,6 +363,15 @@ public static class PoratakeTooltipProbe {
         return result;
     }
 
+    public static List<IntPtr> WindowsOwnedBy(IntPtr owner) {
+        var result = new List<IntPtr>();
+        EnumWindows((hwnd, _) => {
+            if (GetWindow(hwnd, 4) == owner) result.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
     public static string ClassName(IntPtr hwnd) {
         var text = new StringBuilder(256);
         GetClassName(hwnd, text, text.Capacity);
@@ -386,6 +474,56 @@ function Wait-Until([scriptblock]$condition, [int]$timeoutMilliseconds, [string]
     }
     if ($failure) { throw $failure }
     return $null
+}
+
+function Get-VideoExportButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, [string]$resultPath) {
+    if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
+    $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
+    $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
+    $argumentList = @(
+        '-NoProfile',
+        '-File',
+        "`"$PSCommandPath`"",
+        '-VideoExportButtonAction',
+        'inspect',
+        '-VideoEditorWindowHandle',
+        [string]$editorHandle.ToInt64(),
+        '-VideoExportButtonResultPath',
+        "`"$resultPath`"",
+        '-VideoExportButtonTimeoutMilliseconds',
+        '12000'
+    )
+    $helper = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $argumentList -WorkingDirectory $root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+    try {
+        if (-not $helper.WaitForExit(15000)) {
+            $helper.Kill()
+            if (-not $helper.WaitForExit(3000)) { throw 'The owned UI Automation helper did not exit after its bounded timeout.' }
+            throw 'The owned UI Automation helper timed out while finding or invoking Export Video.'
+        }
+        if ($helper.ExitCode -ne 0) {
+            $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+            throw "The owned UI Automation helper failed with exit code $($helper.ExitCode): $detail"
+        }
+        if (-not [System.IO.File]::Exists($resultPath)) { throw 'The UI Automation helper produced no Export Video readiness evidence.' }
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not $result.dpiAware) { throw 'The UI Automation helper did not report per-monitor-aware V2 coordinates.' }
+        if (-not $result.ready -or $result.button.name -cne 'Export Video' -or $result.button.controlType -cne 'ControlType.Button' -or -not $result.button.isEnabled -or $result.button.isOffscreen) { throw 'The visible, enabled Export Video control did not become ready before the bounded helper deadline.' }
+        if ($result.button.bounds.left -lt $editorBounds.Left -or $result.button.bounds.top -lt $editorBounds.Top -or $result.button.bounds.right -gt $editorBounds.Right -or $result.button.bounds.bottom -gt $editorBounds.Bottom) {
+            throw 'The Export Video accessibility bounds fall outside the video editor window.'
+        }
+        Write-Host "Visible Export Video control ready at $($result.button.bounds.left),$($result.button.bounds.top)-$($result.button.bounds.right),$($result.button.bounds.bottom)."
+        return $result
+    } finally {
+        if (-not $helper.HasExited) {
+            try {
+                $helper.Kill()
+                if (-not $helper.WaitForExit(3000)) { $script:safeToDeleteProfile = $false }
+            } catch {
+                if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
+            }
+        }
+        $helper.Dispose()
+    }
 }
 
 Add-Type @'
@@ -1289,17 +1427,18 @@ try {
     $recordingClock = [System.Diagnostics.Stopwatch]::StartNew()
     $recordingDeadline = [DateTime]::UtcNow.AddSeconds(20)
     $recordingDuration = 0.0
+    $markerMovedWallSeconds = [double]::NaN
     $markerMovedAtSeconds = [double]::NaN
+    $videoExportDuration = [double]::NaN
     do {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) -or [PoratakeTooltipProbe]::TooltipText($shownTooltip.Handle, $owner, [uint32]$application.Id) -cne $visibleTooltip.Text) {
             throw 'The native tooltip stopped showing its verified text during video recording.'
         }
-        if ([double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds -ge 0.5) {
+        if ([double]::IsNaN($markerMovedWallSeconds) -and $recordingClock.Elapsed.TotalSeconds -ge 0.5) {
             [PoratakeTooltipFixture]::MoveBlackMarker($markerWindow, (ConvertTo-FixtureRect $markerMovedBounds), [uint32]$PID)
-            $markerMovedAtSeconds = $recordingClock.Elapsed.TotalSeconds
-            Write-Host "Video marker moved to its second validated position at $([Math]::Round($markerMovedAtSeconds, 3))s."
+            $markerMovedWallSeconds = $recordingClock.Elapsed.TotalSeconds
         }
-        $expectedMarkerBounds = if ([double]::IsNaN($markerMovedAtSeconds)) { $markerInitialBounds } else { $markerMovedBounds }
+        $expectedMarkerBounds = if ([double]::IsNaN($markerMovedWallSeconds)) { $markerInitialBounds } else { $markerMovedBounds }
         $currentMarkerBounds = New-Object PoratakeTooltipProbe+Rect
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($markerWindow) -or -not [PoratakeTooltipProbe]::GetWindowRect($markerWindow, [ref]$currentMarkerBounds) -or $currentMarkerBounds.Left -ne $expectedMarkerBounds.Left -or $currentMarkerBounds.Top -ne $expectedMarkerBounds.Top -or $currentMarkerBounds.Right -ne $expectedMarkerBounds.Right -or $currentMarkerBounds.Bottom -ne $expectedMarkerBounds.Bottom) {
             throw 'The test-owned video marker left its expected position during recording.'
@@ -1308,12 +1447,19 @@ try {
         $status = Invoke-CaptureDaemonRequest @{ id = "tooltip-video-status-$([guid]::NewGuid().ToString('N'))"; module = 'screen-recorder'; method = 'status' } -deadline $recordingDeadline
         if ($status.state -ne 'recording') { throw "The video recorder left recording state: $($status.state)" }
         $recordingDuration = [double]$status.duration
-        $markerSettled = -not [double]::IsNaN($markerMovedAtSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedAtSeconds -ge 1.2
-        if ($recordingDuration -ge 2.0 -and $markerSettled) { break }
+        if (-not [double]::IsNaN($markerMovedWallSeconds) -and [double]::IsNaN($markerMovedAtSeconds)) {
+            $markerMovedAtSeconds = [Math]::Max($markerMovedWallSeconds, $recordingDuration)
+            $videoExportDuration = [Math]::Max(2.0, [Math]::Ceiling(($markerMovedAtSeconds + 1.0) * 10.0) / 10.0)
+            Write-Host "Video marker moved to its second validated position by $([Math]::Round($markerMovedAtSeconds, 3))s of recording."
+            Write-Host "The 10-FPS export target is $videoExportDuration s to retain the late marker and tooltip samples."
+        }
+        $markerSettled = -not [double]::IsNaN($markerMovedWallSeconds) -and $recordingClock.Elapsed.TotalSeconds - $markerMovedWallSeconds -ge 1.2
+        $videoExportSourceReady = -not [double]::IsNaN($videoExportDuration) -and $recordingDuration -ge ($videoExportDuration + 0.1)
+        if ($videoExportSourceReady -and $markerSettled) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $recordingDeadline)
-    if ($recordingDuration -lt 2.0 -or -not $markerSettled) {
-        throw "The video did not reach its duration and marker-stability conditions before the deadline: duration=${recordingDuration}s, marker-moved-at=${markerMovedAtSeconds}s, elapsed=$($recordingClock.Elapsed.TotalSeconds)s."
+    if ([double]::IsNaN($videoExportDuration) -or -not $videoExportSourceReady -or -not $markerSettled) {
+        throw "The recording did not extend past the 10-FPS export target and marker-stability conditions before the deadline: duration=${recordingDuration}s, export-target=${videoExportDuration}s, marker-moved-at=${markerMovedAtSeconds}s, elapsed=$($recordingClock.Elapsed.TotalSeconds)s."
     }
     if ([double]::IsNaN($markerMovedAtSeconds) -or $markerMovedAtSeconds -lt 0.5) { throw "The test-owned marker moved before the expected video time: $markerMovedAtSeconds s." }
     $recordingClock.Stop()
@@ -1878,6 +2024,35 @@ try {
         $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
         return $foreground -eq $resetOverlayRoot
     } 3000 'The reopened area selector did not become the foreground input target.' | Out-Null
+    $resetStart = New-Object PoratakeTooltipProbe+Point
+    $resetStart.X = $fixtureBounds.Left + 200
+    $resetStart.Y = $fixtureBounds.Top + 100
+    $resetEnd = New-Object PoratakeTooltipProbe+Point
+    $resetEnd.X = $fixtureBounds.Left + 440
+    $resetEnd.Y = $fixtureBounds.Top + 260
+    $resetHit = [PoratakeTooltipProbe]::WindowFromPoint($resetStart)
+    if ($resetHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($resetHit, 2) -ne $resetOverlayRoot) { throw 'The new selection start did not reach the reopened selector.' }
+    [PoratakeTooltipProbe]::Drag($resetStart.X, $resetStart.Y, $resetEnd.X, $resetEnd.Y)
+    $resetCapturePath = Wait-Until {
+        $files = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' })
+        if ($files.Count -gt 2) { throw "Expected two test-owned screenshots, found $($files.Count)." }
+        if ($files.Count -ne 2) { return $null }
+        return @($files | Where-Object { $_.FullName -ne $sourceCapturePath })[0].FullName
+    } 10000 'Dragging inside the previous selection did not create a new capture.'
+    $null = Assert-QuadrantFixtureCapture $resetCapturePath ($resetEnd.X - $resetStart.X) ($resetEnd.Y - $resetStart.Y) 1 $fixtureColors 8 'Reopened selector capture'
+    Write-Host 'The reopened selector created a new smaller capture inside the previous region.'
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $capturePreviewHandle } 3000 'The capture preview did not regain foreground input before the cancellation check.' | Out-Null
+    [PoratakeTooltipProbe]::PressCaptureAreaHotkey()
+    $cancelOverlay = Wait-Until {
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        $hitProcess = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
+        if ($hitProcess -ne [uint32]$workflowApplication.Id) { return $null }
+        return [PoratakeTooltipProbe]::GetAncestor($hit, 2)
+    } 10000 'The capture-area hotkey did not reopen the selector for cancellation.'
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($cancelOverlay)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $cancelOverlay } 3000 'The selector did not become the foreground input target for cancellation.' | Out-Null
     [PoratakeTooltipProbe]::PressKey(0x1B)
     Wait-Until {
         $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
@@ -1885,7 +2060,7 @@ try {
         [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
         return $hitProcess -eq [uint32]$PID
     } 5000 'Escape did not dismiss the reopened area selector.' | Out-Null
-    if (@(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File).Count -ne 1) { throw 'Cancelling the reopened area selector created another capture.' }
+    if (@(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File).Count -ne 2) { throw 'Cancelling the reopened area selector created another capture.' }
     Write-Host 'The area selector reopened and Escape cancelled it without saving; protected selector pixels are not asserted by WGC.'
     Release-ScreenshotFixture
     if ($workflowFixtureWindow -ne [IntPtr]::Zero) { throw 'Could not close the real-capture fixture before editing.' }
@@ -2153,6 +2328,125 @@ try {
         $reopenedBitmap.Dispose()
     }
     Write-Host "Saved flattened screenshot reopened and rendered with matching pixels at $($reopenedBounds.Right - $reopenedBounds.Left)x$($reopenedBounds.Bottom - $reopenedBounds.Top)."
+
+    Capture-OwnedDaemonChildren $reopenApplication
+    if (-not $reopenApplication.HasExited) {
+        $reopenApplication.Kill()
+        if (-not $reopenApplication.WaitForExit(5000)) { throw 'The screenshot editor did not exit before the isolated video editor workflow.' }
+    }
+    New-Item -ItemType Directory -Path $videoProfileRoot -Force | Out-Null
+    $videoConfig = @{
+        onboarding = @{ completed = $true }
+        recording = @{ micEnabled = $false; camera = @{ enabled = $false } }
+        saveLocations = @{ video = $recordingDirectory }
+    } | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText((Join-Path $videoProfileRoot 'config.json'), $videoConfig, [System.Text.UTF8Encoding]::new($false))
+    $videoEditorStatePath = [System.IO.Path]::ChangeExtension($recordingPath, 'state.json')
+    $videoEditorState = @{
+        version = 2
+        sourceDuration = $videoExportDuration
+        segments = @(@{ id = 'hosted-export'; originalStart = 0.0; originalEnd = $videoExportDuration; trimMinStart = 0.0; trimMaxEnd = $videoExportDuration })
+        exportSettings = @{ format = 'mp4'; resolution = 'original'; qualityPreset = 'studio'; frameRate = '10'; openInFinder = $false }
+    } | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText($videoEditorStatePath, $videoEditorState, [System.Text.UTF8Encoding]::new($false))
+    $videoExportPath = Join-Path $recordingDirectory 'tooltip-recording-exported.mp4'
+    if ([System.IO.File]::Exists($videoExportPath)) { throw "The test-owned video export path already exists: $videoExportPath" }
+    $videoPreviousProfile = $env:PORATAKE_CONFIG_DIR
+    $videoPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    try {
+        $env:PORATAKE_CONFIG_DIR = $videoProfileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $videoApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'open-in-video-editor', "`"$recordingPath`"") -WorkingDirectory $root -RedirectStandardOutput $videoStdoutPath -RedirectStandardError $videoStderrPath -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $videoPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $videoPreviousProfile }
+        if ($null -eq $videoPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $videoPreviousDaemonPath }
+    }
+    if (-not $videoApplication) { throw 'Could not launch the isolated GPUI video editor.' }
+    Capture-OwnedDaemonChildren $videoApplication
+    $videoEditor = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$videoApplication.Id)) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
+            if ($rect.Right - $rect.Left -lt 700 -or $rect.Bottom - $rect.Top -lt 550) { continue }
+            return @{ Handle = $handle; Bounds = $rect }
+        }
+        return $null
+    } 30000 'The CLI-opened video editor window did not appear.'
+    $videoEditorHandle = $videoEditor.Handle
+    $videoEditorBounds = $videoEditor.Bounds
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($videoEditorHandle)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $videoEditorHandle } 3000 'The video editor did not become the foreground input target.' | Out-Null
+    $videoEditorClient = New-Object PoratakeTooltipProbe+Rect
+    $videoEditorClientOrigin = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetClientRect($videoEditorHandle, [ref]$videoEditorClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($videoEditorHandle, [ref]$videoEditorClientOrigin)) { throw 'Could not measure the video editor client area.' }
+    $videoEditorScreenBounds = New-Object PoratakeTooltipProbe+Rect
+    $videoEditorScreenBounds.Left = $videoEditorClientOrigin.X + $videoEditorClient.Left
+    $videoEditorScreenBounds.Top = $videoEditorClientOrigin.Y + $videoEditorClient.Top
+    $videoEditorScreenBounds.Right = $videoEditorClientOrigin.X + $videoEditorClient.Right
+    $videoEditorScreenBounds.Bottom = $videoEditorClientOrigin.Y + $videoEditorClient.Bottom
+    $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
+    [PoratakeTooltipProbe]::PressControlS()
+    $videoExportButtonProofPath = Join-Path $evidenceRoot 'video-export-button.json'
+    $videoExportButton = Get-VideoExportButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath
+    Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
+    $videoExportButtonBounds = $videoExportButton.button.bounds
+    $videoExportClickX = [int][Math]::Round(($videoExportButtonBounds.left + $videoExportButtonBounds.right) / 2.0)
+    $videoExportClickY = [int][Math]::Round(($videoExportButtonBounds.top + $videoExportButtonBounds.bottom) / 2.0)
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($videoExportClickX, $videoExportClickY)) { throw 'Could not move to the measured Export Video control.' }
+    $videoExportPoint = New-Object PoratakeTooltipProbe+Point
+    $videoExportPoint.X = $videoExportClickX
+    $videoExportPoint.Y = $videoExportClickY
+    $videoExportHit = [PoratakeTooltipProbe]::WindowFromPoint($videoExportPoint)
+    if ($videoExportHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($videoExportHit, 2) -ne $videoEditorHandle) { throw 'Native hit testing at the measured Export Video control did not reach the video editor.' }
+    $videoDialogHandlesBefore = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($handle in [PoratakeTooltipProbe]::WindowsOwnedBy($videoEditorHandle)) { $null = $videoDialogHandlesBefore.Add($handle.ToInt64()) }
+    [PoratakeTooltipProbe]::Click($videoExportClickX, $videoExportClickY)
+    $videoSaveDialog = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::WindowsOwnedBy($videoEditorHandle)) {
+            if ($videoDialogHandlesBefore.Contains($handle.ToInt64()) -or -not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            if ([PoratakeTooltipProbe]::ClassName($handle) -eq 'tooltips_class32') { continue }
+            return $handle
+        }
+        return $null
+    } 10000 'Activating Export Video did not open a new native Save dialog owned by the video editor.'
+    if ([PoratakeTooltipProbe]::GetWindow($videoSaveDialog, 4) -ne $videoEditorHandle) { throw 'The native video export dialog is not directly owned by the video editor.' }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($videoSaveDialog)) { throw 'Could not foreground the video export dialog owned by the editor.' }
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $videoSaveDialog -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $videoSaveDialog
+    } 3000 'The video export dialog did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::PressAltS()
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($videoSaveDialog) } 10000 'The native video export dialog did not close after Save.' | Out-Null
+    $script:previousVideoExportLength = [int64]-1
+    $videoExportFileReady = Wait-Until {
+        if (-not [System.IO.File]::Exists($videoExportPath)) { return $null }
+        try {
+            $stream = [System.IO.File]::Open($videoExportPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+            try { $length = $stream.Length } finally { $stream.Dispose() }
+            if ($length -le 0 -or $length -ne $script:previousVideoExportLength) {
+                $script:previousVideoExportLength = $length
+                return $null
+            }
+            return $true
+        } catch {
+            return $null
+        }
+    } 30000 'The exported video did not close with a stable, readable file.'
+    if (-not $videoExportFileReady) { throw 'The exported video never reached a closed, stable file state.' }
+    $videoExportProof = $videoProof.Clone()
+    $videoExportProof.videoPath = $videoExportPath
+    $videoExportProofPath = Join-Path $evidenceRoot 'tooltip-video-export-proof.json'
+    [System.IO.File]::WriteAllText($videoExportProofPath, ($videoExportProof | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
+    $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoExportProofPath
+    Push-Location (Join-Path $root 'src/main')
+    try {
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
+        if ($LASTEXITCODE -ne 0) { throw "The UI-exported tooltip video did not decode or preserve the expected pixels: exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "Real video editor export dialog and decoded output passed: $videoExportPath."
 } catch {
     $testFailure = $true
     if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath | Write-Host }
@@ -2163,7 +2457,9 @@ try {
         @{ Source = $workflowStdoutPath; Name = 'capture-workflow-stdout.log' },
         @{ Source = $workflowStderrPath; Name = 'capture-workflow-stderr.log' },
         @{ Source = (Join-Path $workflowProfileRoot 'reopen-stdout.log'); Name = 'capture-reopen-stdout.log' },
-        @{ Source = (Join-Path $workflowProfileRoot 'reopen-stderr.log'); Name = 'capture-reopen-stderr.log' }
+        @{ Source = (Join-Path $workflowProfileRoot 'reopen-stderr.log'); Name = 'capture-reopen-stderr.log' },
+        @{ Source = $videoStdoutPath; Name = 'video-editor-stdout.log' },
+        @{ Source = $videoStderrPath; Name = 'video-editor-stderr.log' }
     )) {
         if (Test-Path -LiteralPath $log.Source) {
             try { Copy-Item -LiteralPath $log.Source -Destination (Join-Path $evidenceRoot $log.Name) -Force } catch { Write-Host "Could not preserve $($log.Name): $_" }
@@ -2201,7 +2497,8 @@ try {
     Capture-OwnedDaemonChildren $previewApplication
     Capture-OwnedDaemonChildren $workflowApplication
     Capture-OwnedDaemonChildren $reopenApplication
-    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication)) {
+    Capture-OwnedDaemonChildren $videoApplication
+    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication)) {
         if ($ownedApplication -and -not $ownedApplication.HasExited) {
             try {
                 $ownedApplication.Kill()
@@ -2211,7 +2508,7 @@ try {
             }
         }
     }
-    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
+    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
         if (-not $process.HasExited) {
@@ -2238,7 +2535,8 @@ try {
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
     $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)
-    if (@($application, $previewApplication, $workflowApplication, $reopenApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
+    $resolvedVideoProfile = [System.IO.Path]::GetFullPath($videoProfileRoot)
+    if (@($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {
         if (-not $owned.Process.HasExited) { $safeToDeleteProfile = $false }
         $owned.Process.Dispose()
@@ -2261,6 +2559,9 @@ try {
     }
     if ($safeToDeleteProfile -and $resolvedWorkflowProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedWorkflowProfile)) {
         Remove-Item -LiteralPath $resolvedWorkflowProfile -Recurse -Force
+    }
+    if ($safeToDeleteProfile -and $resolvedVideoProfile.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Directory]::Exists($resolvedVideoProfile)) {
+        Remove-Item -LiteralPath $resolvedVideoProfile -Recurse -Force
     }
     if (-not $safeToDeleteProfile) {
         if ($testFailure) { Write-Host 'Owned GPUI or daemon process did not exit; retained its temporary profile for safe recovery.' }
