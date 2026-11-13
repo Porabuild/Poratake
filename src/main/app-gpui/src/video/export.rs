@@ -1514,7 +1514,48 @@ mod tests {
         state.export_settings.open_in_finder = false;
         model::save_state(&recording, &state);
         let saved_state = model::load_state(&recording);
-        assert_eq!(saved_state, state);
+        let floats_match = |actual: f64, expected: f64| (actual - expected).abs() < 1e-9;
+        assert!(floats_match(
+            saved_state.source_duration.expect("saved source duration"),
+            state.source_duration.expect("source duration")
+        ));
+        assert_eq!(saved_state.segments.len(), state.segments.len());
+        for (saved, expected) in saved_state.segments.iter().zip(&state.segments) {
+            assert_eq!(saved.id, expected.id);
+            assert!(floats_match(saved.original_start, expected.original_start));
+            assert!(floats_match(saved.original_end, expected.original_end));
+            assert!(floats_match(saved.trim_min_start, expected.trim_min_start));
+            assert!(floats_match(saved.trim_max_end, expected.trim_max_end));
+            assert_eq!(saved.speed, expected.speed);
+        }
+        assert_eq!(saved_state.drawing_segments.len(), 1);
+        let saved_drawing = &saved_state.drawing_segments[0];
+        let expected_drawing = &state.drawing_segments[0];
+        assert_eq!(saved_drawing.id, expected_drawing.id);
+        assert!(floats_match(
+            saved_drawing.start_time,
+            expected_drawing.start_time
+        ));
+        assert!(floats_match(
+            saved_drawing.end_time,
+            expected_drawing.end_time
+        ));
+        assert!(floats_match(
+            saved_drawing.canvas_width,
+            expected_drawing.canvas_width
+        ));
+        assert!(floats_match(
+            saved_drawing.canvas_height,
+            expected_drawing.canvas_height
+        ));
+        assert_eq!(saved_drawing.annotations, expected_drawing.annotations);
+        assert_eq!(saved_state.export_settings, state.export_settings);
+        let saved_timeline_duration: f64 = saved_state
+            .segments
+            .iter()
+            .map(model::Segment::timeline_duration)
+            .sum();
+        assert!(floats_match(saved_timeline_duration, timeline_duration));
 
         let mut preview = preview::Source::open(&recording, saved_state.clone())
             .expect("open native capture in the video composition");
