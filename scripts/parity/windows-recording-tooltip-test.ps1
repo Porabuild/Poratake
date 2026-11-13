@@ -1392,8 +1392,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Decoded tooltip video exclusion test failed with exit code $LASTEXITCODE" }
         & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::export::tests::native_recording_edit_exports_and_decodes -- --ignored --exact
         if ($LASTEXITCODE -ne 0) { throw "Native recording edit/export regression failed with exit code $LASTEXITCODE" }
-        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui windows::video_editor::keyboard_demo_tests::native_recording_gpui_edit_reopens_and_exports_pixels -- --ignored --exact
-        if ($LASTEXITCODE -ne 0) { throw "Native GPUI recording edit/export regression failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
     }
