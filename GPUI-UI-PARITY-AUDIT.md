@@ -1510,6 +1510,11 @@ A zero-padding framed attachment also matches CPU preview and export over a
 rectangle and blackout crossing the primary-image seam. A positive control checks
 the attachment pixel before the blackout is drawn.
 
+[Hosted Windows CI](https://github.com/Porabuild/Poratake/actions/runs/43387203877)
+verified the native capture-preview tooltip's text, window state and paint, then
+compared every pixel in its screenshot region while the tooltip was hidden and
+shown. That paint check does not independently prove its monitor-composited pixels.
+
 macOS scroll-overlay capture exclusion remains unverified. The preview can overlap
 the selected area when there is no room beside it, and the retained Electron
 selection overlay also draws a border and tint inside that area. The daemon captures
@@ -1529,12 +1534,16 @@ fails; that mode can leave a black rectangle in a recording. If both affinity
 methods fail, the tooltip is suppressed and the error is logged. Verify native
 hover delivery, click-through, and recorded pixels on supported Windows displays.
 
-The macOS recording path now requests exclusion of the recording control and
-registers camera and overlay windows with its ScreenCaptureKit filter. New
+The macOS GPUI recording path requests exclusion of its recording control and
+registers daemon-owned camera and overlay windows with its ScreenCaptureKit filter. New
 synthetic fixtures cover filter updates and stop coordination and passed in
 [hosted CI at `5359f58f`](https://github.com/Porabuild/Poratake/actions/runs/43307382869).
 Verify a real recording, including whether
 staged transparent windows appear in `SCShareableContent` before they are shown.
+Electron does not pass its control or retained selector-window IDs to that filter.
+Its content-protection setting does not prevent capture by newer ScreenCaptureKit
+applications, according to [Electron's documentation](https://www.electronjs.org/docs/latest/api/browser-window#winsetcontentprotectionenable).
+Verify the hidden control's exclusion across restart before changing this handoff.
 
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
