@@ -11,9 +11,9 @@ This pass covers major clipping, sizing, missing controls, stale selections,
 capture corruption and preview/export mismatches in the core Windows and macOS
 capture and recording workflows. Electron remains the reference where the same
 workflow exists. The detailed backlog below remains useful, but is not a list of
-required work for this pass. Minor antialiasing differences, exhaustive states
-for every control and Linux-only enhancements are deferred unless they expose a
-critical shared defect.
+required work for this pass. Minor antialiasing differences and Linux-only
+enhancements are deferred unless they expose a critical shared defect or have a
+small verified fix. Exhaustive states for every control remain deferred.
 
 Each gate counts once only when its stated evidence exists. As of 2026-11-13,
 six of twelve gates are complete: 50% of the gates, not an estimate of elapsed or
@@ -1586,6 +1586,11 @@ Electron does not pass its control or retained selector-window IDs to that filte
 Its content-protection setting does not prevent capture by newer ScreenCaptureKit
 applications, according to [Electron's documentation](https://www.electronjs.org/docs/latest/api/browser-window#winsetcontentprotectionenable).
 Verify the hidden control's exclusion across restart before changing this handoff.
+Electron's `getMediaSourceId()` exposes the macOS `CGWindowID`; the existing
+overlay native-handle helper returns an `NSView` pointer instead. The Swift
+recorder initially queries only on-screen windows, while Electron hides its
+control before restart. Passing that hidden control's ID directly can therefore
+make the exclusion resolver reject the restart.
 
 [The hosted macOS fixture](https://github.com/Porabuild/Poratake/actions/runs/43399120426)
 resolved a test-owned hidden window, but trapped when starting its filtered stream.

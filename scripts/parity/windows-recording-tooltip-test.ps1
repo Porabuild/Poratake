@@ -60,6 +60,7 @@ $testFailure = $false
 $previousDpiAwarenessContext = [IntPtr]::Zero
 $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerTempRoot, 'poratake-visual-tooltip-' + [guid]::NewGuid().ToString('N')))
 $captureRoot = Join-Path $evidenceRoot 'captures'
+$workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
 $previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
 if (-not $evidenceRoot.StartsWith($runnerTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing evidence outside the runner temporary directory: $evidenceRoot"
@@ -681,6 +682,28 @@ function Capture-TooltipArea([string]$id, [PoratakeTooltipProbe+Rect]$rect, [str
     } $timeoutSeconds
     if ($result.width -ne ($rect.Right - $rect.Left) -or $result.height -ne ($rect.Bottom - $rect.Top) -or -not [System.IO.File]::Exists($path)) {
         throw "Daemon capture did not match the requested rectangle: $path"
+    }
+}
+
+function Assert-QuadrantFixtureCapture([string]$path, [int]$expectedWidth, [int]$expectedHeight, [int]$dimensionTolerance, [System.Drawing.Color[]]$expectedColors, [int]$colorTolerance, [string]$label) {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::new($path)
+    try {
+        if ([Math]::Abs($bitmap.Width - $expectedWidth) -gt $dimensionTolerance -or [Math]::Abs($bitmap.Height - $expectedHeight) -gt $dimensionTolerance) {
+            throw "$label dimensions were $($bitmap.Width)x$($bitmap.Height), expected ${expectedWidth}x${expectedHeight} (tolerance $dimensionTolerance)."
+        }
+        for ($index = 0; $index -lt $expectedColors.Count; $index++) {
+            $x = if (($index % 2) -eq 0) { [int]($bitmap.Width / 4) } else { [int](3 * $bitmap.Width / 4) }
+            $y = if ($index -lt 2) { [int]($bitmap.Height / 4) } else { [int](3 * $bitmap.Height / 4) }
+            $actual = $bitmap.GetPixel($x, $y)
+            $expected = $expectedColors[$index]
+            if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt $colorTolerance -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt $colorTolerance -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt $colorTolerance) {
+                throw "$label color $index at $x,$y was $($actual.R),$($actual.G),$($actual.B), expected $($expected.R),$($expected.G),$($expected.B)."
+            }
+        }
+        return @{ Width = $bitmap.Width; Height = $bitmap.Height }
+    } finally {
+        $bitmap.Dispose()
     }
 }
 
@@ -1756,16 +1779,30 @@ try {
     if (-not [PoratakeTooltipProbe]::GetWindowRect($workflowFixtureWindow, [ref]$fixtureWindowBounds) -or $fixtureWindowBounds.Left -ne $fixtureBounds.Left -or $fixtureWindowBounds.Top -ne $fixtureBounds.Top -or $fixtureWindowBounds.Right -ne $fixtureBounds.Right -or $fixtureWindowBounds.Bottom -ne $fixtureBounds.Bottom) {
         throw 'The real-capture fixture HWND does not match its expected screen bounds.'
     }
+    $fixtureProbeCursor = New-Object PoratakeTooltipProbe+Point
+    $fixtureProbeCursor.X = $monitor.Monitor.Left + 8
+    $fixtureProbeCursor.Y = $monitor.Monitor.Top + 8
+    if ($fixtureProbeCursor.X -ge $fixtureBounds.Left -and $fixtureProbeCursor.X -lt $fixtureBounds.Right -and $fixtureProbeCursor.Y -ge $fixtureBounds.Top -and $fixtureProbeCursor.Y -lt $fixtureBounds.Bottom) {
+        throw 'The pre-launch fixture probe cursor overlaps the quadrant fixture.'
+    }
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($fixtureProbeCursor.X, $fixtureProbeCursor.Y)) { throw 'Could not move the hosted runner pointer away from the pre-launch fixture probe.' }
+    $fixturePreflightPath = Join-Path $captureRoot 'real-capture-fixture-before-app.png'
+    Capture-TooltipArea 'real-capture-fixture-preflight' $fixtureBounds $fixturePreflightPath
+    Assert-QuadrantFixtureCapture $fixturePreflightPath $fixtureWidth $fixtureHeight 0 $fixtureColors 8 'Pre-launch WGC fixture positive control'
+    Write-Host "Pre-launch WGC fixture positive control passed: $fixturePreflightPath ($fixtureWidth x $fixtureHeight, all four quadrant colors)."
 
     $workflowPreviousProfile = $env:PORATAKE_CONFIG_DIR
     $workflowPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    $workflowPreviousTracePath = $env:PORATAKE_TRACE_FILE
     try {
         $env:PORATAKE_CONFIG_DIR = $workflowProfileRoot
         $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $env:PORATAKE_TRACE_FILE = $workflowTracePath
         $workflowApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'capture-area') -WorkingDirectory $root -RedirectStandardOutput $workflowStdoutPath -RedirectStandardError $workflowStderrPath -WindowStyle Hidden -PassThru
     } finally {
         if ($null -eq $workflowPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $workflowPreviousProfile }
         if ($null -eq $workflowPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $workflowPreviousDaemonPath }
+        if ($null -eq $workflowPreviousTracePath) { Remove-Item Env:PORATAKE_TRACE_FILE -ErrorAction SilentlyContinue } else { $env:PORATAKE_TRACE_FILE = $workflowPreviousTracePath }
     }
     if (-not $workflowApplication) { throw 'Could not launch the isolated real-capture GPUI app.' }
     Capture-OwnedDaemonChildren $workflowApplication
@@ -1779,6 +1816,17 @@ try {
         if (-not [PoratakeTooltipProbe]::GetWindowRect($hit, [ref]$rect) -or $rect.Left -gt $fixtureCenter.X -or $rect.Top -gt $fixtureCenter.Y -or $rect.Right -le $fixtureCenter.X -or $rect.Bottom -le $fixtureCenter.Y) { return $null }
         return $hit
     } 30000 'The real GPUI area overlay did not receive hit testing over the fixture.'
+    $selectorDiagnosticPath = Join-Path $captureRoot 'real-area-selector-visible-diagnostic.png'
+    Capture-TooltipArea 'real-area-selector-visible-diagnostic' $fixtureBounds $selectorDiagnosticPath
+    $selectorRoot = [PoratakeTooltipProbe]::GetAncestor($overlayHit, 2)
+    if ($selectorRoot -eq [IntPtr]::Zero) { $selectorRoot = $overlayHit }
+    $selectorAffinity = [uint32]0
+    $selectorAffinityKnown = [PoratakeTooltipProbe]::GetWindowDisplayAffinity($selectorRoot, [ref]$selectorAffinity)
+    if ($selectorAffinityKnown) {
+        Write-Host "Area-selector diagnostic preserved at $selectorDiagnosticPath; root HWND affinity=$selectorAffinity. Diagnostic pixels are not asserted."
+    } else {
+        Write-Host "Area-selector diagnostic preserved at $selectorDiagnosticPath; affinity could not be read. Diagnostic pixels are not asserted."
+    }
     $selectionStart = New-Object PoratakeTooltipProbe+Point
     $selectionStart.X = $fixtureBounds.Left + 1
     $selectionStart.Y = $fixtureBounds.Top + 1
@@ -1802,26 +1850,8 @@ try {
         if ($files.Count -gt 1) { throw "Expected one test-owned screenshot, found $($files.Count)." }
         return $null
     } 10000 'The ready capture preview had no published screenshot file.'
-    $sourceCapture = [System.Drawing.Bitmap]::new($sourceCapturePath)
-    $sourceCaptureWidth = $sourceCapture.Width
-    $sourceCaptureHeight = $sourceCapture.Height
-    try {
-        if ([Math]::Abs($sourceCaptureWidth - ($fixtureWidth - 2)) -gt 1 -or [Math]::Abs($sourceCaptureHeight - ($fixtureHeight - 2)) -gt 1) {
-            throw "WGC capture dimensions did not match the dragged fixture region: ${sourceCaptureWidth}x${sourceCaptureHeight}."
-        }
-        for ($index = 0; $index -lt $fixtureColors.Count; $index++) {
-            $x = if (($index % 2) -eq 0) { [int]($sourceCaptureWidth / 4) } else { [int](3 * $sourceCaptureWidth / 4) }
-            $y = if ($index -lt 2) { [int]($sourceCaptureHeight / 4) } else { [int](3 * $sourceCaptureHeight / 4) }
-            $actual = $sourceCapture.GetPixel($x, $y)
-            $expected = $fixtureColors[$index]
-            if ([Math]::Abs([int]$actual.R - [int]$expected.R) -gt 8 -or [Math]::Abs([int]$actual.G - [int]$expected.G) -gt 8 -or [Math]::Abs([int]$actual.B - [int]$expected.B) -gt 8) {
-                throw "Real WGC source color $index at $x,$y was $($actual.R),$($actual.G),$($actual.B), expected $($expected.R),$($expected.G),$($expected.B)."
-            }
-        }
-    } finally {
-        $sourceCapture.Dispose()
-    }
-    Write-Host "Real WGC area capture passed: $sourceCapturePath ($fixtureWidth x $fixtureHeight fixture, exact quadrant colors)."
+    $sourceCaptureSize = Assert-QuadrantFixtureCapture $sourceCapturePath ($fixtureWidth - 2) ($fixtureHeight - 2) 1 $fixtureColors 8 'Real WGC area capture'
+    Write-Host "Real WGC area capture passed: $sourceCapturePath ($($sourceCaptureSize.Width)x$($sourceCaptureSize.Height), exact quadrant colors)."
 
     [void][PoratakeTooltipProbe]::SetForegroundWindow($capturePreviewHandle)
     Wait-Until {
