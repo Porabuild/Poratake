@@ -731,7 +731,7 @@ struct ScrollCapturePreviewTest {
         configuration.showsCursor = false
         let exclusionFilter = SCContentFilter(
             display: hiddenDisplay,
-            includingApplications: [hiddenApplication],
+            including: [hiddenApplication],
             exceptingWindows: [hiddenControl]
         )
         let exclusionOutput = CaptureFrameOutput()
@@ -784,7 +784,7 @@ struct ScrollCapturePreviewTest {
 
         let visibleControlFilter = SCContentFilter(
             display: hiddenDisplay,
-            includingApplications: [hiddenApplication],
+            including: [hiddenApplication],
             exceptingWindows: []
         )
         let visibleControlOutput = CaptureFrameOutput()
