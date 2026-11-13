@@ -1818,12 +1818,7 @@ impl Render for RecordingControl {
                 .px(px(4.0))
                 .text_size(px(12.0))
                 .child(name.clone())
-                .focus(|style| {
-                    style.shadow(crate::ui::primitives::focus_ring(
-                        &theme,
-                        crate::ui::primitives::FOCUS_RING_OFFSET,
-                    ))
-                });
+                .map(|label| crate::ui::primitives::keyboard_focus_ring(label, &theme, cx));
             bar = bar
                 .child(Self::tooltip(
                     "recording-target-tip",
