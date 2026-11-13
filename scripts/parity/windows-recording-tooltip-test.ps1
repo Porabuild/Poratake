@@ -1,8 +1,11 @@
 param(
-    [ValidateSet('inspect')]
+    [ValidateSet('inspect', 'select-file')]
     [string]$VideoExportButtonAction,
     [long]$VideoEditorWindowHandle,
     [string]$VideoExportButtonResultPath,
+    [string]$VideoEditorButtonName = 'Export Video',
+    [long]$NativeDialogHandle,
+    [string]$SelectedFilePath,
     [int]$VideoExportButtonTimeoutMilliseconds = 12000
 )
 
@@ -36,37 +39,75 @@ public static class PoratakeVideoExportDpi {
         }
         Add-Type -AssemblyName UIAutomationClient
         Add-Type -AssemblyName UIAutomationTypes
-        $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($VideoEditorWindowHandle))
-        $condition = [System.Windows.Automation.PropertyCondition]::new(
-            [System.Windows.Automation.AutomationElement]::NameProperty,
-            'Export Video'
-        )
-        $timer = [System.Diagnostics.Stopwatch]::StartNew()
-        $result = @{ found = $false; ready = $false; buttons = @(); dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware }
-        do {
-            $buttons = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-            foreach ($button in $buttons) {
-                $current = $button.Current
-                if ($current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
-                $bounds = $current.BoundingRectangle
-                $buttonResult = @{
-                    name = $current.Name
-                    controlType = $current.ControlType.ProgrammaticName
-                    isEnabled = $current.IsEnabled
-                    isOffscreen = $current.IsOffscreen
-                    bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
+        if ($VideoExportButtonAction -eq 'inspect') {
+            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($VideoEditorWindowHandle))
+            $condition = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::NameProperty,
+                $VideoEditorButtonName
+            )
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            $result = @{ found = $false; ready = $false; buttons = @(); dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware }
+            do {
+                $buttons = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+                foreach ($button in $buttons) {
+                    $current = $button.Current
+                    if ($current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+                    $bounds = $current.BoundingRectangle
+                    $buttonResult = @{
+                        name = $current.Name
+                        controlType = $current.ControlType.ProgrammaticName
+                        isEnabled = $current.IsEnabled
+                        isOffscreen = $current.IsOffscreen
+                        bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
+                    }
+                    $result.buttons = @($buttonResult)
+                    if ($bounds.IsEmpty -or $bounds.Width -le 0 -or $bounds.Height -le 0) { continue }
+                    if (-not $current.IsEnabled -or $current.IsOffscreen) { continue }
+                    $result.found = $true
+                    $result.ready = $true
+                    $result.button = $buttonResult
+                    break
                 }
-                $result.buttons = @($buttonResult)
-                if ($bounds.IsEmpty -or $bounds.Width -le 0 -or $bounds.Height -le 0) { continue }
-                if (-not $current.IsEnabled -or $current.IsOffscreen) { continue }
-                $result.found = $true
-                $result.ready = $true
-                $result.button = $buttonResult
-                break
+                if ($result.ready) { break }
+                [System.Threading.Thread]::Sleep(100)
+            } while ($timer.ElapsedMilliseconds -lt $VideoExportButtonTimeoutMilliseconds)
+        } else {
+            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($NativeDialogHandle))
+            $editCondition = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Edit
+            )
+            $openCondition = [System.Windows.Automation.AndCondition]::new(
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Button
+                ),
+                [System.Windows.Automation.PropertyCondition]::new(
+                    [System.Windows.Automation.AutomationElement]::NameProperty,
+                    'Open'
+                )
+            )
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            do {
+                $edits = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+                $namedEdits = @($edits | Where-Object { $_.Current.Name -match 'File name' })
+                $fileNameEdit = $null
+                if ($namedEdits.Count -eq 1) {
+                    $fileNameEdit = $namedEdits[0]
+                } elseif ($namedEdits.Count -eq 0 -and $edits.Count -eq 1) {
+                    $fileNameEdit = $edits[0]
+                }
+                $openButton = $rootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $openCondition)
+                if ($null -ne $fileNameEdit -and $null -ne $openButton -and $openButton.Current.IsEnabled) { break }
+                [System.Threading.Thread]::Sleep(100)
+            } while ($timer.ElapsedMilliseconds -lt 8000)
+            if ($null -eq $fileNameEdit -or $null -eq $openButton -or -not $openButton.Current.IsEnabled) {
+                throw "The native dialog did not expose a file-name edit and enabled Open button: edits=$($edits.Count), named=$($namedEdits.Count)."
             }
-            if ($result.ready) { break }
-            [System.Threading.Thread]::Sleep(100)
-        } while ($timer.ElapsedMilliseconds -lt $VideoExportButtonTimeoutMilliseconds)
+            $fileNameEdit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($SelectedFilePath)
+            $openButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $result = @{ selected = $true; path = $SelectedFilePath; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware }
+        }
         [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 4), [System.Text.UTF8Encoding]::new($false))
         exit 0
     } finally {
@@ -476,7 +517,67 @@ function Wait-Until([scriptblock]$condition, [int]$timeoutMilliseconds, [string]
     return $null
 }
 
-function Get-VideoExportButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, [string]$resultPath) {
+function Open-EditorOwnedDialog([IntPtr]$editorHandle, $buttonBounds, [string]$title) {
+    $knownHandles = [System.Collections.Generic.HashSet[long]]::new()
+    foreach ($handle in [PoratakeTooltipProbe]::WindowsOwnedBy($editorHandle)) { $null = $knownHandles.Add($handle.ToInt64()) }
+    $clickX = [int][Math]::Round(($buttonBounds.left + $buttonBounds.right) / 2.0)
+    $clickY = [int][Math]::Round(($buttonBounds.top + $buttonBounds.bottom) / 2.0)
+    $point = New-Object PoratakeTooltipProbe+Point
+    $point.X = $clickX
+    $point.Y = $clickY
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($clickX, $clickY)) { throw "Could not move onto the '$title' picker trigger." }
+    $hit = [PoratakeTooltipProbe]::WindowFromPoint($point)
+    if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $editorHandle) { throw "Native hit testing for '$title' did not reach the video editor." }
+    [PoratakeTooltipProbe]::Click($clickX, $clickY)
+    $dialog = Wait-Until {
+        foreach ($handle in [PoratakeTooltipProbe]::WindowsOwnedBy($editorHandle)) {
+            if ($knownHandles.Contains($handle.ToInt64()) -or -not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+            if ([PoratakeTooltipProbe]::ClassName($handle) -eq 'tooltips_class32' -or [PoratakeTooltipProbe]::WindowText($handle) -cne $title) { continue }
+            return $handle
+        }
+        return $null
+    } 10000 "The '$title' native dialog did not open as a new editor-owned window."
+    if ([PoratakeTooltipProbe]::GetWindow($dialog, 4) -ne $editorHandle) { throw "The '$title' native dialog is not owned by the editor." }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($dialog)) { throw "Could not foreground the '$title' dialog owned by the editor." }
+    Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        return $foreground -eq $dialog -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $dialog
+    } 3000 "The '$title' native dialog did not become the foreground input target." | Out-Null
+    return $dialog
+}
+
+function Retry-EditorOwnedDialogUntilOpened([IntPtr]$editorHandle, $buttonBounds, [string]$title) {
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastClickAt = -250
+    while ($timer.ElapsedMilliseconds -lt 12000) {
+        foreach ($handle in [PoratakeTooltipProbe]::WindowsOwnedBy($editorHandle)) {
+            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle) -or [PoratakeTooltipProbe]::WindowText($handle) -cne $title) { continue }
+            if ([PoratakeTooltipProbe]::GetWindow($handle, 4) -ne $editorHandle) { throw "The retried '$title' dialog is not owned by the editor." }
+            if (-not [PoratakeTooltipProbe]::SetForegroundWindow($handle)) { throw "Could not foreground the retried '$title' dialog." }
+            return $handle
+        }
+        if ($timer.ElapsedMilliseconds - $lastClickAt -ge 250) {
+            [void][PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)
+            if ([PoratakeTooltipProbe]::GetForegroundWindow() -ne $editorHandle) {
+                [System.Threading.Thread]::Sleep(50)
+                continue
+            }
+            $clickX = [int][Math]::Round(($buttonBounds.left + $buttonBounds.right) / 2.0)
+            $clickY = [int][Math]::Round(($buttonBounds.top + $buttonBounds.bottom) / 2.0)
+            $point = New-Object PoratakeTooltipProbe+Point
+            $point.X = $clickX
+            $point.Y = $clickY
+            $hit = [PoratakeTooltipProbe]::WindowFromPoint($point)
+            if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $editorHandle) { throw "Native hit testing for the retried '$title' picker did not reach the video editor." }
+            [PoratakeTooltipProbe]::Click($clickX, $clickY)
+            $lastClickAt = $timer.ElapsedMilliseconds
+        }
+        [System.Threading.Thread]::Sleep(50)
+    }
+    throw "The retried '$title' picker did not open after the asynchronous cancellation completed."
+}
+
+function Get-VideoEditorButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, [string]$resultPath, [string]$buttonName) {
     if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
     $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
     $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
@@ -488,6 +589,8 @@ function Get-VideoExportButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
         'inspect',
         '-VideoEditorWindowHandle',
         [string]$editorHandle.ToInt64(),
+        '-VideoEditorButtonName',
+        "`"$buttonName`"",
         '-VideoExportButtonResultPath',
         "`"$resultPath`"",
         '-VideoExportButtonTimeoutMilliseconds',
@@ -498,21 +601,65 @@ function Get-VideoExportButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
         if (-not $helper.WaitForExit(15000)) {
             $helper.Kill()
             if (-not $helper.WaitForExit(3000)) { throw 'The owned UI Automation helper did not exit after its bounded timeout.' }
-            throw 'The owned UI Automation helper timed out while finding or invoking Export Video.'
+            throw "The owned UI Automation helper timed out while finding '$buttonName'."
         }
         if ($helper.ExitCode -ne 0) {
             $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
             throw "The owned UI Automation helper failed with exit code $($helper.ExitCode): $detail"
         }
-        if (-not [System.IO.File]::Exists($resultPath)) { throw 'The UI Automation helper produced no Export Video readiness evidence.' }
+        if (-not [System.IO.File]::Exists($resultPath)) { throw "The UI Automation helper produced no '$buttonName' readiness evidence." }
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
         if (-not $result.dpiAware) { throw 'The UI Automation helper did not report per-monitor-aware V2 coordinates.' }
-        if (-not $result.ready -or $result.button.name -cne 'Export Video' -or $result.button.controlType -cne 'ControlType.Button' -or -not $result.button.isEnabled -or $result.button.isOffscreen) { throw 'The visible, enabled Export Video control did not become ready before the bounded helper deadline.' }
+        if (-not $result.ready -or $result.button.name -cne $buttonName -or $result.button.controlType -cne 'ControlType.Button' -or -not $result.button.isEnabled -or $result.button.isOffscreen) { throw "The visible, enabled '$buttonName' control did not become ready before the bounded helper deadline." }
         if ($result.button.bounds.left -lt $editorBounds.Left -or $result.button.bounds.top -lt $editorBounds.Top -or $result.button.bounds.right -gt $editorBounds.Right -or $result.button.bounds.bottom -gt $editorBounds.Bottom) {
-            throw 'The Export Video accessibility bounds fall outside the video editor window.'
+            throw "The '$buttonName' accessibility bounds fall outside the video editor window."
         }
-        Write-Host "Visible Export Video control ready at $($result.button.bounds.left),$($result.button.bounds.top)-$($result.button.bounds.right),$($result.button.bounds.bottom)."
+        Write-Host "Visible '$buttonName' control ready at $($result.button.bounds.left),$($result.button.bounds.top)-$($result.button.bounds.right),$($result.button.bounds.bottom)."
         return $result
+    } finally {
+        if (-not $helper.HasExited) {
+            try {
+                $helper.Kill()
+                if (-not $helper.WaitForExit(3000)) { $script:safeToDeleteProfile = $false }
+            } catch {
+                if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
+            }
+        }
+        $helper.Dispose()
+    }
+}
+
+function Select-OpenDialogFile([IntPtr]$dialog, [string]$path, [string]$resultPath) {
+    if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
+    $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
+    $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
+    $argumentList = @(
+        '-NoProfile',
+        '-File',
+        "`"$PSCommandPath`"",
+        '-VideoExportButtonAction',
+        'select-file',
+        '-NativeDialogHandle',
+        [string]$dialog.ToInt64(),
+        '-SelectedFilePath',
+        "`"$path`"",
+        '-VideoExportButtonResultPath',
+        "`"$resultPath`""
+    )
+    $helper = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $argumentList -WorkingDirectory $root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+    try {
+        if (-not $helper.WaitForExit(15000)) {
+            $helper.Kill()
+            if (-not $helper.WaitForExit(3000)) { throw 'The bounded native-dialog UI Automation helper did not exit after its timeout.' }
+            throw 'The bounded native-dialog UI Automation helper timed out while selecting the fixture.'
+        }
+        if ($helper.ExitCode -ne 0) {
+            $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+            throw "The native-dialog UI Automation helper failed with exit code $($helper.ExitCode): $detail"
+        }
+        if (-not [System.IO.File]::Exists($resultPath)) { throw 'The native-dialog UI Automation helper produced no selection evidence.' }
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not $result.dpiAware -or -not $result.selected -or $result.path -cne $path) { throw 'The native file dialog did not report the requested fixture as selected.' }
     } finally {
         if (-not $helper.HasExited) {
             try {
@@ -2424,7 +2571,7 @@ try {
     $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     [PoratakeTooltipProbe]::PressControlS()
     $videoExportButtonProofPath = Join-Path $evidenceRoot 'video-export-button.json'
-    $videoExportButton = Get-VideoExportButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath
+    $videoExportButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath 'Export Video'
     $videoExportButtonBounds = $videoExportButton.button.bounds
     if ($videoExportButtonBounds.left -lt $videoMonitor.Work.Left -or $videoExportButtonBounds.top -lt $videoMonitor.Work.Top -or $videoExportButtonBounds.right -gt $videoMonitor.Work.Right -or $videoExportButtonBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export Video control exceeds the monitor work area.' }
     Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
@@ -2484,6 +2631,45 @@ try {
     } finally {
         Pop-Location
     }
+    $cursorFixturePath = Join-Path $videoProfileRoot 'cursor-picker-fixture.json'
+    $cursorFixture = @{
+        recordingArea = @{ width = 640; height = 360 }
+        events = @(
+            @{ timestamp = 0.0; x = 0.25; y = 0.25; type = 'move'; cursor = 'default' },
+            @{ timestamp = 0.5; x = 0.75; y = 0.75; type = 'move'; cursor = 'default' }
+        )
+        meta = @{ startTime = '2026-01-01T00:00:00.000Z'; duration = 1.0; sampleRate = 2.0 }
+    } | ConvertTo-Json -Compress -Depth 5
+    [System.IO.File]::WriteAllText($cursorFixturePath, $cursorFixture, [System.Text.UTF8Encoding]::new($false))
+    $cursorSidecarPath = [System.IO.Path]::ChangeExtension($recordingPath, 'cursor.json')
+    if ([System.IO.File]::Exists($cursorSidecarPath)) { throw "The cursor picker test sidecar already exists: $cursorSidecarPath" }
+    [void][PoratakeTooltipProbe]::SetForegroundWindow($videoEditorHandle)
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $videoEditorHandle } 3000 'The video editor did not regain input focus for its cursor picker.' | Out-Null
+    [PoratakeTooltipProbe]::PressKey(0x51)
+    $cursorImportButtonProofPath = Join-Path $evidenceRoot 'cursor-import-button.json'
+    $cursorImportButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $cursorImportButtonProofPath 'Import from File'
+    $cursorImportButtonBounds = $cursorImportButton.button.bounds
+    $cancelCursorDialog = Open-EditorOwnedDialog $videoEditorHandle $cursorImportButtonBounds 'Import Cursor Data'
+    [PoratakeTooltipProbe]::PressKey(0x1B)
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($cancelCursorDialog) } 10000 'Escape did not cancel the editor-owned cursor file dialog.' | Out-Null
+    if ([System.IO.File]::Exists($cursorSidecarPath)) { throw 'Cancelling the cursor picker unexpectedly created a sidecar.' }
+    $acceptCursorDialog = Retry-EditorOwnedDialogUntilOpened $videoEditorHandle $cursorImportButtonBounds 'Import Cursor Data'
+    $cursorSelectionResultPath = Join-Path $evidenceRoot 'cursor-picker-selection.json'
+    Select-OpenDialogFile $acceptCursorDialog $cursorFixturePath $cursorSelectionResultPath
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($acceptCursorDialog) } 10000 'The cursor file dialog did not close after selecting the fixture.' | Out-Null
+    $expectedCursorHash = (Get-FileHash -LiteralPath $cursorFixturePath -Algorithm SHA256).Hash
+    $cursorImportReady = Wait-Until {
+        try {
+            if (-not [System.IO.File]::Exists($cursorSidecarPath)) { return $null }
+            $actualHash = (Get-FileHash -LiteralPath $cursorSidecarPath -Algorithm SHA256).Hash
+            if ($actualHash -cne $expectedCursorHash) { return $null }
+            return $true
+        } catch {
+            return $null
+        }
+    } 10000 'Accepting the cursor picker did not copy its selected fixture into the recording sidecar.'
+    if (-not $cursorImportReady) { throw 'The imported cursor sidecar did not match the selected fixture.' }
+    Write-Host "Hosted cursor picker cancel/retry/accept passed with an editor-owned dialog: $cursorSidecarPath."
     Write-Host "Real video editor export dialog and decoded output passed: $videoExportPath."
 } catch {
     $testFailure = $true
