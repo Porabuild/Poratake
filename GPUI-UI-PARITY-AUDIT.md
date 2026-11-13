@@ -29,7 +29,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
 | Final-head CI                        | Open   | All required hosted jobs and the Windows visual matrix must pass on the final pushed commit.                                                                                |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
-| Windows recording and export         | Open   | Hosted recording and export checks passed; verify editing through the UI and system audio if available without prompting.                                                   |
+| Windows recording and export         | Open   | A real recording was trimmed through the UI and exported; compare its native preview with output and check system audio if available without prompting.                     |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
 | macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.          |
 | Final review and audit               | Open   | Review the final changes, resolve critical regressions and update the draft PR and this checklist with exact evidence.                                                      |
@@ -94,6 +94,11 @@ reopened; its acceptance check stopped because UI Automation exposed nine edit
 controls without the expected name. Native file acceptance still needs verification.
 The macOS build and test job passed in that run; real macOS screen-capture exclusion
 remains unverified.
+[Windows CI at `847ab547`](https://github.com/Porabuild/Poratake/actions/runs/43473164699)
+passed screenshot reopen and overlay reuse, but did not reach the picker: the
+Export tab was not active when its button was queried. The harness now waits for
+and clicks the actual sidebar tab before checking Export Video. The macOS CI
+build and test job passed on that run.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -1565,8 +1570,13 @@ order; it does not exercise the complete editor workflow.
 
 A 1024px-wide Windows/Linux scroll fixture stops after the first frame when a
 21×16px footer block changes. A wider structural footer candidate recovered that
-case but stopped a valid periodic page early, so it was not adopted. Resolving
-that ambiguity with a later frame would require changes to the capture lifecycle.
+case but stopped a valid periodic page early, so it was not adopted. Rounding the
+2% tolerance up recovered the fixture but introduced 33 early stops in the
+5,412-case periodic corpus. A narrower contiguous-band fallback avoided those
+stops but misclassified a no-footer page and shifted an animated block by 16px,
+changing 672 pixels relative to the baseline stitch. Neither candidate was applied.
+Resolving that ambiguity with a later frame would require changes to the capture
+lifecycle.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -3029,8 +3029,25 @@ try {
     if ($videoEditorScreenBounds.Left -lt $videoMonitor.Work.Left -or $videoEditorScreenBounds.Top -lt $videoMonitor.Work.Top -or $videoEditorScreenBounds.Right -gt $videoMonitor.Work.Right -or $videoEditorScreenBounds.Bottom -gt $videoMonitor.Work.Bottom) {
         throw "The video editor client exceeds its work area: client=$($videoEditorScreenBounds.Left),$($videoEditorScreenBounds.Top)-$($videoEditorScreenBounds.Right),$($videoEditorScreenBounds.Bottom); work=$($videoMonitor.Work.Left),$($videoMonitor.Work.Top)-$($videoMonitor.Work.Right),$($videoMonitor.Work.Bottom)."
     }
-    $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
-    [PoratakeTooltipProbe]::PressControlS()
+    $videoEditorInitialCapture = Join-Path $captureRoot 'real-video-editor-initial.png'
+    Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+    Capture-TooltipArea 'real-video-editor-initial' $videoEditorScreenBounds $videoEditorInitialCapture
+    $videoExportTabProof = Join-Path $evidenceRoot 'video-export-tab-button.json'
+    $videoExportTabButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportTabProof 'Export'
+    $videoExportTabBounds = $videoExportTabButton.button.bounds
+    if ($videoExportTabBounds.left -lt $videoMonitor.Work.Left -or $videoExportTabBounds.top -lt $videoMonitor.Work.Top -or $videoExportTabBounds.right -gt $videoMonitor.Work.Right -or $videoExportTabBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export sidebar tab exceeds the monitor work area.' }
+    $videoExportTabX = [int][Math]::Round(($videoExportTabBounds.left + $videoExportTabBounds.right) / 2.0)
+    $videoExportTabY = [int][Math]::Round(($videoExportTabBounds.top + $videoExportTabBounds.bottom) / 2.0)
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($videoExportTabX, $videoExportTabY)) { throw 'Could not move to the measured Export sidebar tab.' }
+    $videoExportTabPoint = New-Object PoratakeTooltipProbe+Point
+    $videoExportTabPoint.X = $videoExportTabX
+    $videoExportTabPoint.Y = $videoExportTabY
+    $videoExportTabHit = [PoratakeTooltipProbe]::WindowFromPoint($videoExportTabPoint)
+    if ($videoExportTabHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($videoExportTabHit, 2) -ne $videoEditorHandle) { throw 'Native hit testing at the measured Export tab did not reach the video editor.' }
+    [PoratakeTooltipProbe]::Click($videoExportTabX, $videoExportTabY)
+    Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+    $videoEditorInitialExportCapture = Join-Path $captureRoot 'real-video-editor-export-tab-initial.png'
+    Capture-TooltipArea 'real-video-editor-export-tab-initial' $videoEditorScreenBounds $videoEditorInitialExportCapture
     $preTrimButtonProof = Join-Path $evidenceRoot 'video-export-before-trim-button.json'
     [void](Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $preTrimButtonProof 'Export Video')
     $videoBeforeTrimCapture = Join-Path $captureRoot 'real-video-editor-before-trim.png'
@@ -3100,6 +3117,7 @@ try {
     $videoExportButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportButtonProofPath 'Export Video'
     $videoExportButtonBounds = $videoExportButton.button.bounds
     if ($videoExportButtonBounds.left -lt $videoMonitor.Work.Left -or $videoExportButtonBounds.top -lt $videoMonitor.Work.Top -or $videoExportButtonBounds.right -gt $videoMonitor.Work.Right -or $videoExportButtonBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export Video control exceeds the monitor work area.' }
+    $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
     $videoExportClickX = [int][Math]::Round(($videoExportButtonBounds.left + $videoExportButtonBounds.right) / 2.0)
     $videoExportClickY = [int][Math]::Round(($videoExportButtonBounds.top + $videoExportButtonBounds.bottom) / 2.0)
