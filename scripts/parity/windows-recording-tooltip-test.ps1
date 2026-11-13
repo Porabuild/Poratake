@@ -1,15 +1,3 @@
-param([long]$TooltipHwnd = 0)
-
-if ($TooltipHwnd -ne 0) {
-    $ErrorActionPreference = 'Stop'
-    Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
-    Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
-    $accessible = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$TooltipHwnd)
-    if (-not $accessible -or $accessible.Current.ControlType -ne [System.Windows.Automation.ControlType]::ToolTip) { exit 1 }
-    [Console]::Out.Write($accessible.Current.Name)
-    exit 0
-}
-
 $ErrorActionPreference = 'Stop'
 
 if ($env:GITHUB_ACTIONS -ne 'true') {
@@ -33,7 +21,6 @@ $application = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
-$ownedHelpers = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $safeToDeleteProfile = $true
 
 function Capture-OwnedDaemonChildren {
@@ -88,6 +75,19 @@ public static class PoratakeTooltipProbe {
         public uint Flags;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct ToolInfo {
+        public uint Size;
+        public uint Flags;
+        public IntPtr Owner;
+        public UIntPtr Id;
+        public Rect Bounds;
+        public IntPtr Instance;
+        public IntPtr Text;
+        public IntPtr Parameter;
+        public IntPtr Reserved;
+    }
+
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder name, int capacity);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int capacity);
@@ -97,10 +97,24 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+    [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr VirtualAllocEx(IntPtr process, IntPtr address, UIntPtr size, uint allocationType, uint protection);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool VirtualFreeEx(IntPtr process, IntPtr address, UIntPtr size, uint freeType);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool WriteProcessMemory(IntPtr process, IntPtr address, IntPtr buffer, UIntPtr size, out UIntPtr written);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ReadProcessMemory(IntPtr process, IntPtr address, IntPtr buffer, UIntPtr size, out UIntPtr read);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] public static extern void SetLastError(uint error);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     public static uint MonitorInfoSize() { return (uint)Marshal.SizeOf(typeof(MonitorInfo)); }
+
+    public static void FreeRemote(IntPtr process, IntPtr address) {
+        if (address != IntPtr.Zero && !VirtualFreeEx(process, address, UIntPtr.Zero, 0x8000)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "VirtualFreeEx failed.");
+        }
+    }
 
     public static List<IntPtr> Windows(uint processId) {
         var result = new List<IntPtr>();
@@ -125,46 +139,64 @@ public static class PoratakeTooltipProbe {
         return text.ToString();
     }
 
+    public static string TooltipText(IntPtr tooltip, IntPtr owner, uint processId) {
+        if (IntPtr.Size != 8) throw new InvalidOperationException("The hosted tooltip probe requires a 64-bit process.");
+        var process = OpenProcess(0x0008 | 0x0010 | 0x0020, false, processId);
+        if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "OpenProcess failed.");
+        var localInfo = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(ToolInfo)));
+        var localText = Marshal.AllocHGlobal(2048);
+        var remoteInfo = VirtualAllocEx(process, IntPtr.Zero, new UIntPtr((uint)Marshal.SizeOf(typeof(ToolInfo))), 0x3000, 0x04);
+        var remoteText = VirtualAllocEx(process, IntPtr.Zero, new UIntPtr(2048), 0x3000, 0x04);
+        var canFreeRemote = true;
+        try {
+            if (remoteInfo == IntPtr.Zero || remoteText == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "VirtualAllocEx failed.");
+            var info = new ToolInfo {
+                Size = (uint)Marshal.SizeOf(typeof(ToolInfo)),
+                Flags = 0x00A0,
+                Owner = owner,
+                Id = new UIntPtr(1),
+                Text = remoteText
+            };
+            Marshal.StructureToPtr(info, localInfo, false);
+            UIntPtr transferred;
+            if (!WriteProcessMemory(process, remoteInfo, localInfo, new UIntPtr((uint)Marshal.SizeOf(typeof(ToolInfo))), out transferred) || transferred.ToUInt64() != (ulong)Marshal.SizeOf(typeof(ToolInfo))) {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "WriteProcessMemory for TOOLINFO failed.");
+            }
+            IntPtr result;
+            SetLastError(0);
+            var sent = SendMessageTimeout(tooltip, 1080, new UIntPtr(1024), remoteInfo, 0x0001 | 0x0002, 1000, out result);
+            if (sent == IntPtr.Zero) {
+                canFreeRemote = false;
+                var error = Marshal.GetLastWin32Error();
+                throw new System.ComponentModel.Win32Exception(error == 0 ? 31 : error, "SendMessageTimeoutW for TTM_GETTEXTW failed or timed out.");
+            }
+            if (!ReadProcessMemory(process, remoteText, localText, new UIntPtr(2048), out transferred) || transferred.ToUInt64() != 2048) {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "ReadProcessMemory for tooltip text failed.");
+            }
+            return Marshal.PtrToStringUni(localText) ?? String.Empty;
+        } finally {
+            Marshal.FreeHGlobal(localInfo);
+            Marshal.FreeHGlobal(localText);
+            try {
+                if (canFreeRemote) FreeRemote(process, remoteInfo);
+            } finally {
+                try {
+                    if (canFreeRemote) FreeRemote(process, remoteText);
+                } finally {
+                    if (!CloseHandle(process)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle failed.");
+                }
+            }
+        }
+    }
+
 }
 '@
 
-function Read-TooltipNameBounded([IntPtr]$handle) {
-    $outputPath = Join-Path $profileRoot ('uia-' + [guid]::NewGuid().ToString('N') + '.out')
-    $errorPath = Join-Path $profileRoot ('uia-' + [guid]::NewGuid().ToString('N') + '.err')
-    $helper = $null
-    try {
-        $arguments = "-NoLogo -NoProfile -NonInteractive -File `"$PSCommandPath`" -TooltipHwnd $($handle.ToInt64())"
-        $helper = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath -WindowStyle Hidden -PassThru
-        $script:ownedHelpers.Add($helper)
-        if (-not $helper.WaitForExit(2500)) {
-            $helper.Kill()
-            if (-not $helper.WaitForExit(5000)) { $script:safeToDeleteProfile = $false }
-            throw 'The Windows UI Automation tooltip query exceeded 2.5 seconds.'
-        }
-        if ($helper.ExitCode -ne 0) {
-            $details = if (Test-Path -LiteralPath $errorPath) { Get-Content -LiteralPath $errorPath -Raw } else { '' }
-            throw "The Windows UI Automation tooltip query failed: $details"
-        }
-        return (Get-Content -LiteralPath $outputPath -Raw).Trim()
-    } finally {
-        if ($helper) {
-            if (-not $helper.HasExited) {
-                try {
-                    $helper.Kill()
-                    if (-not $helper.WaitForExit(5000)) { $script:safeToDeleteProfile = $false }
-                } catch {
-                    if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
-                }
-            }
-            if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
-        }
-    }
-}
-
-function Get-VisibleTooltipWindow([int]$processId) {
+function Get-VisibleTooltipWindow([int]$processId, [IntPtr]$owner) {
     foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$processId)) {
         if ([PoratakeTooltipProbe]::ClassName($handle) -ne 'tooltips_class32') { continue }
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+        if ([PoratakeTooltipProbe]::GetWindow($handle, 4) -ne $owner) { continue }
         return $handle
     }
     return $null
@@ -220,10 +252,15 @@ try {
     $visibleTooltip = $null
     for ($x = $bounds.Left + 4; $x -lt $bounds.Right - 4 -and -not $visibleTooltip; $x += 8) {
         if (-not [PoratakeTooltipProbe]::SetCursorPos($x, $hoverY)) { throw "Could not move the runner pointer to $x,$hoverY" }
-        $tooltipHandle = Wait-Until { Get-VisibleTooltipWindow $application.Id } 350 ''
-        if ($tooltipHandle) {
-            $tooltipText = Read-TooltipNameBounded $tooltipHandle
-            if ($tooltipText) { $visibleTooltip = @{ Handle = $tooltipHandle; Text = $tooltipText } }
+        $tooltip = Wait-Until {
+            $tooltipHandle = Get-VisibleTooltipWindow $application.Id $owner
+            if (-not $tooltipHandle) { return $null }
+            $tooltipText = [PoratakeTooltipProbe]::TooltipText($tooltipHandle, $owner, [uint32]$application.Id)
+            if (-not $tooltipText) { return $null }
+            return @{ Handle = $tooltipHandle; Text = $tooltipText }
+        } 350 ''
+        if ($tooltip) {
+            $visibleTooltip = $tooltip
         }
     }
     if (-not $visibleTooltip) { throw 'No tooltip appeared while scanning the recording toolbar.' }
@@ -258,18 +295,6 @@ try {
     if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath | Write-Host }
     throw
 } finally {
-    foreach ($helper in $ownedHelpers) {
-        if (-not $helper.HasExited) {
-            try {
-                $helper.Kill()
-                if (-not $helper.WaitForExit(5000)) { $safeToDeleteProfile = $false }
-            } catch {
-                if (-not $helper.HasExited) { $safeToDeleteProfile = $false }
-            }
-        }
-        if (-not $helper.HasExited) { $safeToDeleteProfile = $false }
-        $helper.Dispose()
-    }
     Capture-OwnedDaemonChildren
     if ($application -and -not $application.HasExited) {
         try {
