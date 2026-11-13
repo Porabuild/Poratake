@@ -1157,7 +1157,6 @@ try {
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($shownTooltip.Handle) } 2000 'Tooltip stayed visible after screenshot capture.' | Out-Null
     [PoratakeTooltipProbe]::DestroyOwnedWindow($backdropWindow, [uint32]$PID)
     $backdropWindow = [IntPtr]::Zero
-    Stop-CaptureDaemon
     try { $captureTrace = Get-Content -LiteralPath $tracePath } catch { $captureTrace = @() }
     if ($captureTrace -match 'GDI fallback starting') {
         Write-Host 'Production screenshot used GDI fallback; the pixel assertion covers that capture path.'
