@@ -109,7 +109,7 @@ impl WindowsWindowInner {
             WM_CLOSE => self.handle_close_msg(),
             WM_DESTROY => self.handle_destroy_msg(handle),
             WM_MOUSEMOVE => self.handle_mouse_move_msg(handle, lparam, wparam),
-            WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(),
+            WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(handle),
             WM_NCMOUSEMOVE => self.handle_nc_mouse_move_msg(handle, lparam),
             // Treat double click as a second single click, since we track the double clicks ourselves.
             // If you don't interact with any elements, this will fall through to the windows default
@@ -392,7 +392,48 @@ impl WindowsWindowInner {
         if handled { Some(0) } else { Some(1) }
     }
 
-    fn handle_mouse_leave_msg(&self) -> Option<isize> {
+    fn handle_mouse_leave_msg(&self, handle: HWND) -> Option<isize> {
+        let mut cursor_point = POINT::default();
+        let got_cursor = unsafe { GetCursorPos(&mut cursor_point) }.log_err().is_some();
+        let point_window = if got_cursor {
+            unsafe { WindowFromPoint(cursor_point) }
+        } else {
+            HWND::default()
+        };
+        let pointer_over_window = point_window == handle
+            || unsafe { IsChild(handle, point_window) }.as_bool();
+        let mut client_point = cursor_point;
+        let got_client_point = got_cursor
+            && unsafe { ScreenToClient(handle, &mut client_point).ok() }
+                .log_err()
+                .is_some();
+        let mut client_bounds = RECT::default();
+        let got_client_bounds = unsafe { GetClientRect(handle, &mut client_bounds) }
+            .log_err()
+            .is_some();
+        let position_inside_client = got_client_point
+            && got_client_bounds
+            && client_point.x >= client_bounds.left
+            && client_point.x < client_bounds.right
+            && client_point.y >= client_bounds.top
+            && client_point.y < client_bounds.bottom;
+        let scale_factor = self.state.scale_factor.get();
+        let position = if got_client_point {
+            logical_point(client_point.x as f32, client_point.y as f32, scale_factor)
+        } else {
+            self.state.mouse_position.get()
+        };
+        let move_position = if !got_client_point
+            || !got_client_bounds
+            || (!pointer_over_window && position_inside_client)
+        {
+            logical_point(-1.0, -1.0, scale_factor)
+        } else {
+            position
+        };
+        self.state.mouse_position.set(move_position);
+        let pressed_button = current_pressed_button();
+        let modifiers = current_modifiers();
         self.state.hovered.set(false);
         // The next window's `WM_SETCURSOR` picks its own cursor, so we just clear
         // the flag for tight `is_cursor_visible()` semantics.
@@ -403,6 +444,22 @@ impl WindowsWindowInner {
                 .callbacks
                 .hovered_status_change
                 .set(Some(callback));
+        }
+
+        if let Some(mut callback) = self.state.callbacks.input.take() {
+            callback(PlatformInput::MouseMove(MouseMoveEvent {
+                position: move_position,
+                pressed_button,
+                modifiers,
+            }));
+            if !pointer_over_window {
+                callback(PlatformInput::MouseExited(MouseExitEvent {
+                    position,
+                    pressed_button,
+                    modifiers,
+                }));
+            }
+            self.state.callbacks.input.set(Some(callback));
         }
 
         Some(0)
@@ -1777,6 +1834,23 @@ fn should_use_ime_cursor_position(ctx: HIMC, cursor_pos: usize) -> bool {
 #[inline]
 fn is_virtual_key_pressed(vkey: VIRTUAL_KEY) -> bool {
     unsafe { GetKeyState(vkey.0 as i32) < 0 }
+}
+
+#[inline]
+fn current_pressed_button() -> Option<MouseButton> {
+    if is_virtual_key_pressed(VK_LBUTTON) {
+        Some(MouseButton::Left)
+    } else if is_virtual_key_pressed(VK_RBUTTON) {
+        Some(MouseButton::Right)
+    } else if is_virtual_key_pressed(VK_MBUTTON) {
+        Some(MouseButton::Middle)
+    } else if is_virtual_key_pressed(VK_XBUTTON1) {
+        Some(MouseButton::Navigate(NavigationDirection::Back))
+    } else if is_virtual_key_pressed(VK_XBUTTON2) {
+        Some(MouseButton::Navigate(NavigationDirection::Forward))
+    } else {
+        None
+    }
 }
 
 #[inline]

@@ -22,6 +22,7 @@ $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
+$overlapWindow = [IntPtr]::Zero
 
 function Capture-OwnedDaemonChildren {
     if (-not $script:application) { return }
@@ -67,6 +68,9 @@ public static class PoratakeTooltipProbe {
     [StructLayout(LayoutKind.Sequential)]
     public struct Rect { public int Left, Top, Right, Bottom; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Point { public int X, Y; }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct MonitorInfo {
         public uint Size;
@@ -92,10 +96,17 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, StringBuilder name, int capacity);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int capacity);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref Point point);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+    [DllImport("user32.dll", EntryPoint="WindowFromPoint")] public static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll", EntryPoint="CreateWindowExW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool DestroyWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
     [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", SetLastError = true)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
@@ -109,6 +120,31 @@ public static class PoratakeTooltipProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     public static uint MonitorInfoSize() { return (uint)Marshal.SizeOf(typeof(MonitorInfo)); }
+
+    public static IntPtr CreateCoverWindow(int x, int y) {
+        var hwnd = CreateWindowEx(0x08000008, "BUTTON", "", 0x90000000, x, y, 4, 4, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not create tooltip overlap window.");
+        if (!SetWindowPos(hwnd, new IntPtr(-1), x, y, 4, 4, 0x0050) || !IsWindowVisible(hwnd)) {
+            var error = Marshal.GetLastWin32Error();
+            DestroyWindow(hwnd);
+            throw new System.ComponentModel.Win32Exception(error, "Could not show tooltip overlap window.");
+        }
+        return hwnd;
+    }
+
+    public static bool IsPointInsideClient(IntPtr hwnd, int x, int y) {
+        var point = new Point { X = x, Y = y };
+        Rect rect;
+        return ScreenToClient(hwnd, ref point) && GetClientRect(hwnd, out rect) &&
+            point.X >= rect.Left && point.X < rect.Right && point.Y >= rect.Top && point.Y < rect.Bottom;
+    }
+
+    public static void DestroyOwnedWindow(IntPtr hwnd, uint processId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to destroy a window outside the test process.");
+        if (!DestroyWindow(hwnd)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not destroy tooltip overlap window.");
+    }
 
     public static void FreeRemote(IntPtr process, IntPtr address) {
         if (address != IntPtr.Zero && !VirtualFreeEx(process, address, UIntPtr.Zero, 0x8000)) {
@@ -250,6 +286,7 @@ try {
     $bounds = $control.Bounds
     $hoverY = [int](($bounds.Top + $bounds.Bottom) / 2)
     $visibleTooltip = $null
+    $hoverX = $null
     for ($x = $bounds.Left + 4; $x -lt $bounds.Right - 4 -and -not $visibleTooltip; $x += 8) {
         if (-not [PoratakeTooltipProbe]::SetCursorPos($x, $hoverY)) { throw "Could not move the runner pointer to $x,$hoverY" }
         $tooltip = Wait-Until {
@@ -261,6 +298,7 @@ try {
         } 350 ''
         if ($tooltip) {
             $visibleTooltip = $tooltip
+            $hoverX = $x
         }
     }
     if (-not $visibleTooltip) { throw 'No tooltip appeared while scanning the recording toolbar.' }
@@ -288,13 +326,67 @@ try {
     Write-Host "Visible native GPUI tooltip '$($visibleTooltip.Text)' at $($tooltipBounds.Left),$($tooltipBounds.Top), ${tooltipWidth}x${tooltipHeight}, outside owner bounds, affinity=$affinity"
 
     if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move the runner pointer away from the recording controls.' }
+    $exitPoint = New-Object PoratakeTooltipProbe+Point
+    if (-not [PoratakeTooltipProbe]::GetCursorPos([ref]$exitPoint)) { throw 'Could not read the runner pointer after pointer exit.' }
+    if ($exitPoint.X -ge $bounds.Left -and $exitPoint.X -lt $bounds.Right -and $exitPoint.Y -ge $bounds.Top -and $exitPoint.Y -lt $bounds.Bottom) {
+        throw "Runner pointer did not leave the recording controls: $($exitPoint.X),$($exitPoint.Y)"
+    }
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($visibleTooltip.Handle) } 2000 'The native recording tooltip stayed visible after pointer exit.' | Out-Null
     Write-Host 'Native GPUI tooltip hid after pointer exit.'
+
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw "Could not move the runner pointer back to the tooltip trigger at $hoverX,$hoverY" }
+    $reenteredTooltip = Wait-Until {
+        $tooltipHandle = Get-VisibleTooltipWindow $application.Id $owner
+        if (-not $tooltipHandle) { return $null }
+        $tooltipText = [PoratakeTooltipProbe]::TooltipText($tooltipHandle, $owner, [uint32]$application.Id)
+        if ($tooltipText -ne $visibleTooltip.Text) { return $null }
+        return @{ Handle = $tooltipHandle; Text = $tooltipText }
+    } 2000 'The native GPUI tooltip did not return on pointer re-entry.'
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move the runner pointer away after tooltip re-entry.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($reenteredTooltip.Handle) } 2000 'The native GPUI tooltip stayed visible after its second pointer exit.' | Out-Null
+    Write-Host "Native GPUI tooltip '$($reenteredTooltip.Text)' hid and reappeared on exit/re-entry."
+
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not move the runner pointer back to the tooltip trigger before overlap testing.' }
+    $beforeOverlap = Wait-Until {
+        $tooltipHandle = Get-VisibleTooltipWindow $application.Id $owner
+        if (-not $tooltipHandle) { return $null }
+        $tooltipText = [PoratakeTooltipProbe]::TooltipText($tooltipHandle, $owner, [uint32]$application.Id)
+        if ($tooltipText -ne $visibleTooltip.Text) { return $null }
+        return @{ Handle = $tooltipHandle; Text = $tooltipText }
+    } 2000 'The native GPUI tooltip did not return before overlap testing.'
+    $coverX = $hoverX + 1
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($owner, $coverX, $hoverY)) { throw 'The overlap test point is outside the recording controls client area.' }
+    $overlapWindow = [PoratakeTooltipProbe]::CreateCoverWindow($coverX, $hoverY)
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($coverX, $hoverY)) { throw 'Could not move the runner pointer onto the owned overlap window.' }
+    $coveredPoint = New-Object PoratakeTooltipProbe+Point
+    $coveredPoint.X = $coverX
+    $coveredPoint.Y = $hoverY
+    if ([PoratakeTooltipProbe]::WindowFromPoint($coveredPoint) -ne $overlapWindow) { throw 'The overlap window did not receive native hit testing at the covered point.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($beforeOverlap.Handle) } 2000 'The native GPUI tooltip stayed visible when another HWND covered its trigger.' | Out-Null
+    [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID)
+    $overlapWindow = [IntPtr]::Zero
+    Write-Host 'Native GPUI tooltip hid when a test-owned HWND covered its trigger.'
+
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move the runner pointer away after overlap testing.' }
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($hoverX, $hoverY)) { throw 'Could not move the runner pointer back after removing the overlap window.' }
+    $afterOverlap = Wait-Until {
+        $tooltipHandle = Get-VisibleTooltipWindow $application.Id $owner
+        if (-not $tooltipHandle) { return $null }
+        $tooltipText = [PoratakeTooltipProbe]::TooltipText($tooltipHandle, $owner, [uint32]$application.Id)
+        if ($tooltipText -ne $visibleTooltip.Text) { return $null }
+        return @{ Handle = $tooltipHandle; Text = $tooltipText }
+    } 2000 'The native GPUI tooltip did not return after removing the overlap window.'
+    if (-not [PoratakeTooltipProbe]::SetCursorPos($bounds.Left - 20, $bounds.Top - 20)) { throw 'Could not move the runner pointer away after overlap re-entry.' }
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($afterOverlap.Handle) } 2000 'The native GPUI tooltip stayed visible after overlap re-entry.' | Out-Null
+    Write-Host 'Native GPUI tooltip returned after the overlap window closed.'
 } catch {
     if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath | Write-Host }
     if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath | Write-Host }
     throw
 } finally {
+    if ($overlapWindow -ne [IntPtr]::Zero) {
+        try { [PoratakeTooltipProbe]::DestroyOwnedWindow($overlapWindow, [uint32]$PID) } catch { $safeToDeleteProfile = $false }
+    }
     Capture-OwnedDaemonChildren
     if ($application -and -not $application.HasExited) {
         try {

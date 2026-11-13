@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-12 for Poratake 0.9.6.
+Refreshed 2026-11-13 for Poratake 0.9.6.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -28,8 +28,8 @@ and broad surface-level “Match” claims have been removed from this audit.
 
 The existing GPUI 0.3.11 Windows backend is patched from
 `vendor/gpui-pre-windows`, with provenance and the retained Apache-2.0 license in
-`THIRD_PARTY_NOTICES.md`. Its image shader and clipboard handling differ from the
-published archive; all dependency versions remain unchanged.
+`THIRD_PARTY_NOTICES.md`. Its image shader, clipboard and pointer-exit handling
+differ from the published archive; all dependency versions remain unchanged.
 
 HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. The patched
 `src/select.rs` preserves focus-ring gutters and handles accessibility expansion;
@@ -47,6 +47,14 @@ profile, a deterministic 640×360 capture and the real Windows renderer, embedde
 Geist fonts and DirectWrite. Hidden native render targets provide GPU readback;
 input and frame scheduling use GPUI's headless harness. This is not installed-app
 or physical-monitor DPI verification.
+
+At `bca57fb0`, a local NVIDIA dark 1280px/100% profile passed all 193
+reviewed visual baselines and the capture, annotation, save/reopen and
+preview/output fixture checks. [Hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43338500286)
+passed Linux, macOS, typecheck, lint and formatting. Its Windows probe found
+the real recording tooltip with the expected text outside its owner and capture
+affinity set, but the tooltip did not disappear after pointer exit; the Windows
+visual matrix did not run on that commit.
 
 Each profile has a ten-minute watchdog; the first timeout stops the matrix and
 preserves that profile's partial evidence. On Windows, process-tree termination
@@ -1372,9 +1380,11 @@ Bugs fixed in this pass:
   on Windows and macOS to let their labels extend beyond the small window.
   An isolated Windows tooltip painted readable text outside a 52px owner window;
   focused Windows headless tests exercise GPUI pointer hit-testing, the 150 ms
-  presenter request, leave cancellation and keyboard dismissal. They do not
-  prove a GPUI-owned native tooltip is displayed. Real Windows hover delivery
-  and macOS tooltip appearance still need native verification.
+  presenter request, leave cancellation and keyboard dismissal. A hosted
+  real-app probe displayed and measured the Windows recording tooltip, but it
+  did not hide on pointer exit. The Windows backend now dispatches pointer-exit
+  input; the native probe must verify dismissal and re-entry. macOS tooltip
+  appearance still needs native verification.
 - A keyboard-opened all-in-one target menu could leave its trigger pressed after
   focus moved. The shared keyboard release now runs in the capture phase; the
   vendored control test reproduces the focus transfer and stopped propagation.
@@ -1446,8 +1456,8 @@ order; it does not exercise the complete editor workflow.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | Windows tests separately verify GPUI hover requests and a native tooltip on a synthetic owner. A hosted real-app probe found a visible tooltip-class window but its UI Automation text query failed before owner or geometry checks. Verify the revised native query, capture exclusion in saved pixels, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                     |
-| P2       | Linux recording tooltips                                 | Short labels use inward side placement in the fixed-height recording window. [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43334262506) passed the corrected mock geometry test at simulated 200% scale. Long titles can still outgrow the available width. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                                                                       |
+| P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, owner, outside-window bounds and capture-affinity property, but it stayed visible after pointer exit. Verify dismissal and re-entry, capture exclusion in saved pixels, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                                                                                 |
+| P2       | Linux recording tooltips                                 | Short labels use inward side placement in the fixed-height recording window. [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43334262506) passed the corrected mock geometry test at simulated 200% scale. Long titles can still outgrow the available width; the title trigger is not keyboard-focusable and full-title screen-reader access is unverified. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                        |
 | P1       | Linux recording control capture exclusion                | The X11 recorder reads the root drawable and the Wayland recorder requests no window exclusions. A private Xvfb probe captured an override-redirect popup while it was mapped and the underlying pixel after unmapping it. Verify the actual recording toolbar on supported X11 compositors and Wayland; the probe does not establish their behavior.                                                                                                                                                                                                               |
 | P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                           |
