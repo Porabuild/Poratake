@@ -54,7 +54,9 @@ preview/output fixture checks. [Hosted CI](https://github.com/Porabuild/Poratake
 passed Linux, macOS, typecheck, lint and formatting. Its Windows probe found
 the real recording tooltip with the expected text outside its owner and capture
 affinity set, but the tooltip did not disappear after pointer exit; the Windows
-visual matrix did not run on that commit.
+visual matrix did not run on that commit. The [follow-up Windows probe](https://github.com/Porabuild/Poratake/actions/runs/43343136797)
+passed after the pointer-exit fix, including same-point re-entry and an
+overlapping window; its visual matrix is still running.
 
 Each profile has a ten-minute watchdog; the first timeout stops the matrix and
 preserves that profile's partial evidence. On Windows, process-tree termination
@@ -1381,10 +1383,9 @@ Bugs fixed in this pass:
   An isolated Windows tooltip painted readable text outside a 52px owner window;
   focused Windows headless tests exercise GPUI pointer hit-testing, the 150 ms
   presenter request, leave cancellation and keyboard dismissal. A hosted
-  real-app probe displayed and measured the Windows recording tooltip, but it
-  did not hide on pointer exit. The Windows backend now dispatches pointer-exit
-  input; the native probe must verify dismissal and re-entry. macOS tooltip
-  appearance still needs native verification.
+  real-app probe displayed and measured the Windows recording tooltip, then
+  verified dismissal and re-entry after the Windows backend began dispatching
+  pointer-exit input. macOS tooltip appearance still needs native verification.
 - A keyboard-opened all-in-one target menu could leave its trigger pressed after
   focus moved. The shared keyboard release now runs in the capture phase; the
   vendored control test reproduces the focus transfer and stopped propagation.
@@ -1461,7 +1462,7 @@ that ambiguity with a later frame would require changes to the capture lifecycle
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, owner, outside-window bounds and capture-affinity property, but it stayed visible after pointer exit. Verify dismissal and re-entry, capture exclusion in saved pixels, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                                                                                 |
+| P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, owner, outside-window bounds, capture-affinity property, dismissal and re-entry, including when another window covers the trigger. Verify capture exclusion in saved pixels, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                                                                            |
 | P2       | Linux recording tooltips                                 | Short labels use inward side placement in the fixed-height recording window. [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43334262506) passed the corrected mock geometry test at simulated 200% scale. Long titles can still outgrow the available width; the title trigger is not keyboard-focusable and full-title screen-reader access is unverified. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                        |
 | P1       | Linux recording control capture exclusion                | The X11 recorder reads the root drawable and the Wayland recorder requests no window exclusions. A private Xvfb probe captured an override-redirect popup while it was mapped and the underlying pixel after unmapping it. Verify the actual recording toolbar on supported X11 compositors and Wayland; the probe does not establish their behavior.                                                                                                                                                                                                               |
 | P1       | Linux window recording                                   | GPUI exposes Record Window in the tray and X11 all-in-one, but the daemon rejects a selected window ID. Implement and verify X11 window movement, resize, cursor mapping and close-then-stop; gate Wayland until its window capture path is supported. Electron's Linux capability helper disables recording actions.                                                                                                                                                                                                                                               |
