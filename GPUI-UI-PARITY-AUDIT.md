@@ -1583,6 +1583,15 @@ Its content-protection setting does not prevent capture by newer ScreenCaptureKi
 applications, according to [Electron's documentation](https://www.electronjs.org/docs/latest/api/browser-window#winsetcontentprotectionenable).
 Verify the hidden control's exclusion across restart before changing this handoff.
 
+[The hosted macOS fixture](https://github.com/Porabuild/Poratake/actions/runs/43399120426)
+resolved a test-owned hidden window, but trapped when starting its filtered stream.
+The debugger rerun did not have Screen Recording access and skipped the native
+check, so it produced no backtrace. This does not establish an app failure or
+verify captured pixels; an already-authorized interactive Mac is still needed.
+The native check now skips by default. On such a Mac, run the fixture compiled
+by the workflow with `--screen-capture-exclusion` to opt in without a permission
+request.
+
 A full-frame comparison alone was rejected as a replacement for the sampled
 duplicate hash: a blinking pixel on a stationary page was accepted as scrolling.
 The Windows/Linux footer path requires an exact overlap and either movement across

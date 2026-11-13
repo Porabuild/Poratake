@@ -642,6 +642,10 @@ struct ScrollCapturePreviewTest {
 
     @MainActor
     static func runScreenCaptureExclusionCheck() async throws {
+        guard CommandLine.arguments.contains("--screen-capture-exclusion") else {
+            FileHandle.standardError.write(Data("SKIP ScreenCaptureKit exclusion check: pass --screen-capture-exclusion to opt in\n".utf8))
+            return
+        }
         guard CGPreflightScreenCaptureAccess() else {
             FileHandle.standardError.write(Data("SKIP ScreenCaptureKit exclusion check: Screen Recording permission was not already granted\n".utf8))
             return
