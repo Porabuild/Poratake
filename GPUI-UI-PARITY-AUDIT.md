@@ -1721,6 +1721,13 @@ page and an animated no-footer page can produce the same four captured frames
 even though their first-frame-preserving stitched outputs differ. This is synthetic
 evidence; real pages and broader animation patterns remain unverified.
 
+A 1024×400 two-frame fixture with an 8px fixed header and 40px fixed footer
+also produced a false overlap: the stitch was 408px tall instead of 680px,
+with 49,152 mismatched pixels. The equivalent footer-only fixture matched
+exactly. A hosted Windows test now exercises the footer-only case through native
+wheel input, capture and pixel-by-pixel PNG verification; its first CI result is
+pending. Native fixed-header stitching remains open.
+
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, outside-window placement, dismissal, re-entry and exclusion from a WGC screenshot and three decoded full-monitor recording frames, with painted-foreground, backdrop and known-visible controls. Verify other capture targets, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                          |

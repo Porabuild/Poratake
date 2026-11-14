@@ -251,6 +251,11 @@ jobs:
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
 
+      - name: Test native Windows scroll capture stitching
+        env:
+          PORATAKE_RUN_WINDOWS_SCROLL_CAPTURE_TEST: '1'
+        run: pwsh -NoProfile -File scripts/parity/windows-scroll-capture-test.ps1
+
       - name: Test GPUI accessibility actions
         run: bun scripts/parity/gpui-accessibility-test.mjs
 
@@ -283,6 +288,7 @@ jobs:
             ${{ runner.temp }}/poratake-visual-*/*.json
             ${{ runner.temp }}/poratake-visual-*/*.log
             ${{ runner.temp }}/poratake-visual-tooltip-*/recording/*.mp4
+            ${{ runner.temp }}/poratake-scroll-capture-*/**
           if-no-files-found: ignore
 
       - name: Test native Windows clipboard roundtrip
