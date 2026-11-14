@@ -208,10 +208,10 @@ fn write_sync(config: &SettingsConfig, path: &Path) -> bool {
 
 #[cfg(windows)]
 fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    use windows::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
     use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
 
     unsafe {
         MoveFileExW(
@@ -294,22 +294,22 @@ mod replacefile_sacl_probe_tests {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError, HANDLE, LUID,
-        SetLastError,
+        CloseHandle, GetLastError, SetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, HANDLE,
+        LUID,
     };
     use windows::Win32::Security::{
-        ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AddAuditAccessAceEx, AdjustTokenPrivileges,
-        CreateWellKnownSid, GetAce, GetAclInformation, GetFileSecurityW, GetLengthSid,
-        GetSecurityDescriptorControl, GetSecurityDescriptorSacl, InitializeAcl,
-        LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PROTECTED_SACL_SECURITY_INFORMATION,
-        SACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED, SE_SACL_PROTECTED, SE_SECURITY_NAME,
-        SetFileSecurityW, SetSecurityDescriptorControl, SetSecurityDescriptorSacl,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, WinWorldSid,
+        AddAuditAccessAceEx, AdjustTokenPrivileges, CreateWellKnownSid, GetAce, GetAclInformation,
+        GetFileSecurityW, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorSacl,
+        InitializeAcl, LookupPrivilegeValueW, SetFileSecurityW, SetSecurityDescriptorControl,
+        SetSecurityDescriptorSacl, WinWorldSid, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
+        LUID_AND_ATTRIBUTES, PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
+        SE_PRIVILEGE_ENABLED, SE_SACL_PROTECTED, SE_SECURITY_NAME, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
-    use windows::Win32::Storage::FileSystem::{FILE_EXECUTE, ReplaceFileW};
+    use windows::Win32::Storage::FileSystem::{ReplaceFileW, FILE_EXECUTE};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    use windows::core::PCWSTR;
 
     struct PrivilegeGuard {
         token: HANDLE,
