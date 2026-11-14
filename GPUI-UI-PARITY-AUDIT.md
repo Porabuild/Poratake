@@ -157,8 +157,13 @@ its identity was not recorded and no reopened-editor pixels were captured. The
 harness now retries activation within the existing deadline and records the
 competing window's identity, while retaining the hit-test and pixel checks.
 The following [run at `b31ecf11`](https://github.com/Porabuild/Poratake/actions/runs/43543409414)
-failed Linux GPUI lint because the new preview reveal helper and entity import
-were compiled where unused. They are now gated to the platforms that use them.
+failed Linux and macOS GPUI lint because the new preview reveal helper and entity
+import were compiled where unused. They are now gated to the platforms that use
+them. Its Windows native capture, reopen, recording and audio-sidecar checks passed,
+but all 16 visual cases stopped at the preview's initial animation position:
+the headless window had no HWND and was removed by the new native reveal guard.
+The parity workflow now treats that expected headless case separately; the strict
+geometry assertion and native failure handling remain.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -1590,6 +1595,11 @@ Bugs fixed in this pass:
 
 Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
+
+Screenshot Save As writes directly to the selected destination. A write failure
+after truncation can damage an existing file. Replacing through a temporary file
+requires preserving destination permissions and handling hostile directory races
+across supported platforms; that change remains open.
 
 In an isolated native Windows editor, the inset slider responded to a pointer
 click. Two control-tool set-value attempts left its value unchanged, but that

@@ -2,6 +2,8 @@
 //! and `main/capture/capture-preview/index.ts`. A 200×140 thumbnail docks in
 //! the configured corner, stacks up to four deep, and reveals hover chrome.
 
+#[cfg(feature = "parity")]
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,6 +39,33 @@ const PREVIEW_MOVE_MS: u64 = 120;
 /// Video previews autoplay the recording muted and looped, like the Electron
 /// `<video>` tag. 8fps keeps the thumbnail alive without decoding full rate.
 const VIDEO_PLAYBACK_TICK: Duration = Duration::from_millis(125);
+
+#[cfg(feature = "parity")]
+thread_local! {
+    static SIMULATE_HEADLESS_PREVIEW_REVEAL: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "parity")]
+pub(crate) struct HeadlessPreviewRevealGuard(bool);
+
+#[cfg(feature = "parity")]
+impl HeadlessPreviewRevealGuard {
+    pub(crate) fn enter() -> Self {
+        Self(SIMULATE_HEADLESS_PREVIEW_REVEAL.with(|active| active.replace(true)))
+    }
+}
+
+#[cfg(feature = "parity")]
+impl Drop for HeadlessPreviewRevealGuard {
+    fn drop(&mut self) {
+        SIMULATE_HEADLESS_PREVIEW_REVEAL.with(|active| active.set(self.0));
+    }
+}
+
+#[cfg(feature = "parity")]
+fn simulate_headless_preview_reveal() -> bool {
+    SIMULATE_HEADLESS_PREVIEW_REVEAL.with(Cell::get)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PreviewKind {
@@ -473,16 +502,23 @@ fn reveal_preview_when_ready(
     cx: &mut App,
 ) {
     let (bounds, display_id) = preview_stack_placement(cx);
-    let Some(hwnd) = crate::windows::window_hwnd(window) else {
+    let native_window = crate::windows::window_hwnd(window);
+    #[cfg(feature = "parity")]
+    let simulate_headless = native_window.is_none() && simulate_headless_preview_reveal();
+    #[cfg(not(feature = "parity"))]
+    let simulate_headless = false;
+    if native_window.is_none() && !simulate_headless {
         fail_preview_reveal(window, view, cx);
         return;
-    };
+    }
     let display = display_id.and_then(|id| cx.find_display(id));
     let scale = display
         .as_ref()
         .map(|display| crate::system::work_area::capture_scale_factor(display.as_ref(), cx))
         .unwrap_or_else(|| window.scale_factor());
-    crate::system::window_composition::apply_window_bounds(hwnd, bounds, scale);
+    if let Some(hwnd) = native_window {
+        crate::system::window_composition::apply_window_bounds(hwnd, bounds, scale);
+    }
     if !preview_viewport_ready(window.viewport_size(), bounds) {
         sync_preview_viewport(window, bounds);
         window.on_next_frame(move |window, cx| {
@@ -502,12 +538,14 @@ fn reveal_preview_when_ready(
         });
         return;
     }
-    crate::system::window_composition::reveal_window(hwnd, false, 0);
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() } {
-        reveal_preview_stack_view(handle, view, cx);
-    } else {
-        fail_preview_reveal(window, view, cx);
+    if let Some(hwnd) = native_window {
+        crate::system::window_composition::reveal_window(hwnd, false, 0);
+        if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() } {
+            fail_preview_reveal(window, view, cx);
+            return;
+        }
     }
+    reveal_preview_stack_view(handle, view, cx);
 }
 
 #[cfg(windows)]
@@ -2469,6 +2507,64 @@ mod tests {
             .is_none());
         assert_eq!(cx.update(|cx| cx.windows().len()), 0);
         assert!(recording_path.exists());
+    }
+
+    #[cfg(feature = "parity")]
+    #[test]
+    fn parity_headless_reveal_retains_preview_and_revealed_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let capture_path = directory.path().join("capture.png");
+        image::RgbaImage::new(32, 24).save(&capture_path).unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        let _reveal_guard = HeadlessPreviewRevealGuard::enter();
+        cx.update(|cx| CapturePreviewWindow::open(cx, capture_path));
+        let handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .expect("headless preview window stays registered");
+        let view = handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("capture preview window")
+            .root(&mut cx)
+            .expect("capture preview root");
+        let state = view.update(&mut cx, |view, _| {
+            view.revealed = false;
+            (
+                view.active_preview_count(),
+                view.previews[0].layout_animation.is_some(),
+            )
+        });
+        assert_eq!(state.0, 1);
+        assert!(state.1);
+        assert!(simulate_headless_preview_reveal());
+
+        cx.update(|cx| reveal_preview_stack_view(handle, view, cx));
+
+        assert_eq!(
+            cx.update(|cx| registry::handle(WindowKind::CapturePreview, cx)),
+            Some(handle)
+        );
+        let state = handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("capture preview window")
+            .update(&mut cx, |view, _, _| {
+                (
+                    view.revealed,
+                    view.active_preview_count(),
+                    view.previews[0].layout_animation.is_some(),
+                )
+            })
+            .unwrap();
+        assert_eq!(state, (true, 1, true));
     }
 
     #[test]
