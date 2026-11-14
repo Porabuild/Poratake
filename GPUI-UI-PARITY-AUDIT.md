@@ -1736,6 +1736,9 @@ pixels; it was not adopted either.
 Another scratch pair produced byte-identical 1024×400 captured frames for a
 fixed-footer page and a changing-body page, but their expected 680px stitches
 differed in 40,960 pixels. Pixel matching alone cannot distinguish that pair.
+A proposed guard stopped the corrupt header fixture, but also stopped a valid
+8px scroll whose naturally repeated top and bottom rows looked like fixed UI;
+that guard was not adopted.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
