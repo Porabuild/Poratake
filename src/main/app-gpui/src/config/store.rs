@@ -299,10 +299,12 @@ mod replacefile_sacl_probe_tests {
     };
     use windows::Win32::Security::{
         AddAuditAccessAceEx, AdjustTokenPrivileges, CreateWellKnownSid, GetAclInformation,
-        GetFileSecurityW, GetSecurityDescriptorSacl, InitializeAcl, LookupPrivilegeValueW,
-        SetFileSecurityW, SetSecurityDescriptorSacl, WinWorldSid, ACL, ACL_REVISION,
-        ACL_SIZE_INFORMATION, LUID_AND_ATTRIBUTES, SACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED,
-        SE_SECURITY_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        GetFileSecurityW, GetSecurityDescriptorControl, GetSecurityDescriptorSacl, InitializeAcl,
+        LookupPrivilegeValueW, SetFileSecurityW, SetSecurityDescriptorControl,
+        SetSecurityDescriptorSacl, WinWorldSid, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
+        LUID_AND_ATTRIBUTES, PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
+        SE_PRIVILEGE_ENABLED, SE_SACL_PROTECTED, SE_SECURITY_NAME, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
     };
     use windows::Win32::Storage::FileSystem::{ReplaceFileW, FILE_EXECUTE};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -423,7 +425,12 @@ mod replacefile_sacl_probe_tests {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
 
-    fn write_audit_sacl(path: &Path) -> std::io::Result<()> {
+    struct SaclSnapshot {
+        bytes: Vec<u8>,
+        protected: bool,
+    }
+
+    fn write_audit_sacl(path: &Path) -> std::io::Result<Vec<u8>> {
         let mut sid_storage = [0usize; 16];
         let mut sid_size = (sid_storage.len() * std::mem::size_of::<usize>()) as u32;
         unsafe {
@@ -473,19 +480,42 @@ mod replacefile_sacl_probe_tests {
                 Some(acl),
                 false,
             )?;
+            SetSecurityDescriptorControl(
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(
+                    (&mut descriptor as *mut windows::Win32::Security::SECURITY_DESCRIPTOR).cast(),
+                ),
+                SE_SACL_PROTECTED,
+                SE_SACL_PROTECTED,
+            )?;
             SetFileSecurityW(
                 PCWSTR(wide(path).as_ptr()),
-                windows::Win32::Security::OBJECT_SECURITY_INFORMATION(SACL_SECURITY_INFORMATION.0),
+                windows::Win32::Security::OBJECT_SECURITY_INFORMATION(
+                    SACL_SECURITY_INFORMATION.0 | PROTECTED_SACL_SECURITY_INFORMATION.0,
+                ),
                 windows::Win32::Security::PSECURITY_DESCRIPTOR(
                     (&mut descriptor as *mut windows::Win32::Security::SECURITY_DESCRIPTOR).cast(),
                 ),
             )
             .ok()?;
+            acl_bytes(acl)
         }
-        Ok(())
     }
 
-    fn read_sacl(path: &Path) -> std::io::Result<Vec<u8>> {
+    fn acl_bytes(acl: *mut ACL) -> std::io::Result<Vec<u8>> {
+        let mut info = ACL_SIZE_INFORMATION::default();
+        unsafe {
+            GetAclInformation(
+                acl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                windows::Win32::Security::AclSizeInformation,
+            )
+            .map_err(std::io::Error::other)?;
+            Ok(std::slice::from_raw_parts(acl.cast::<u8>(), info.AclBytesInUse as usize).to_vec())
+        }
+    }
+
+    fn read_sacl(path: &Path) -> std::io::Result<SaclSnapshot> {
         let path = wide(path);
         let mut required = 0;
         let first = unsafe {
@@ -513,38 +543,48 @@ mod replacefile_sacl_probe_tests {
                 &mut required,
             )
             .ok()?;
+            let security_descriptor =
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast());
+            let mut control = 0u16;
+            let mut revision = 0u32;
+            GetSecurityDescriptorControl(security_descriptor, &mut control, &mut revision)?;
             let mut present = false.into();
             let mut defaulted = false.into();
             let mut acl = std::ptr::null_mut();
-            GetSecurityDescriptorSacl(
-                windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
-                &mut present,
-                &mut acl,
-                &mut defaulted,
-            )?;
-            if !present.as_bool() || acl.is_null() {
-                return Ok(Vec::new());
-            }
-            let mut info = ACL_SIZE_INFORMATION::default();
-            GetAclInformation(
-                acl,
-                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
-                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-                windows::Win32::Security::AclSizeInformation,
-            )?;
-            Ok(std::slice::from_raw_parts(acl.cast::<u8>(), info.AclBytesInUse as usize).to_vec())
+            GetSecurityDescriptorSacl(security_descriptor, &mut present, &mut acl, &mut defaulted)?;
+            let bytes = if !present.as_bool() || acl.is_null() {
+                Vec::new()
+            } else {
+                acl_bytes(acl)?
+            };
+            Ok(SaclSnapshot {
+                bytes,
+                protected: control & SE_SACL_PROTECTED.0 != 0,
+            })
         }
     }
 
-    fn write_probe(path: &Path, status: &str, reason: Option<&str>, sacl_bytes: Option<usize>) {
-        let proof =
-            serde_json::json!({ "status": status, "reason": reason, "saclBytes": sacl_bytes });
+    fn write_probe(
+        path: &Path,
+        status: &str,
+        reason: Option<&str>,
+        before: Option<&SaclSnapshot>,
+        after: Option<&SaclSnapshot>,
+    ) {
+        let proof = serde_json::json!({
+            "status": status,
+            "reason": reason,
+            "saclBytesBefore": before.map(|sacl| sacl.bytes.len()),
+            "saclBytesAfter": after.map(|sacl| sacl.bytes.len()),
+            "saclProtectedBefore": before.map(|sacl| sacl.protected),
+            "saclProtectedAfter": after.map(|sacl| sacl.protected),
+        });
         std::fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
     }
 
     #[test]
     #[ignore = "scratch-only hosted ReplaceFileW audit-SACL probe"]
-    fn replacefile_preserves_audit_sacl_when_privilege_is_available() {
+    fn replacefile_reports_audit_sacl_behavior_when_privilege_is_available() {
         assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
         let runner_temp = std::fs::canonicalize(
             std::env::var_os("RUNNER_TEMP")
@@ -571,6 +611,7 @@ mod replacefile_sacl_probe_tests {
                     "unavailable",
                     Some("SeSecurityPrivilege is not assigned to the process token"),
                     None,
+                    None,
                 );
                 eprintln!("ReplaceFileW audit-SACL probe unavailable: privilege not assigned.");
                 return;
@@ -586,8 +627,16 @@ mod replacefile_sacl_probe_tests {
         let backup = directory.path().join("backup.png");
         std::fs::write(&target, b"original scratch file").unwrap();
         std::fs::write(&replacement, b"replacement scratch file").unwrap();
-        write_audit_sacl(&target).expect("apply audit ACE to scratch target");
+        let expected_sacl = write_audit_sacl(&target).expect("apply audit ACE to scratch target");
         let original_sacl = read_sacl(&target).expect("read scratch target SACL");
+        assert_eq!(
+            original_sacl.bytes, expected_sacl,
+            "audit SACL fixture setup failed"
+        );
+        assert!(
+            original_sacl.protected,
+            "audit SACL fixture is not protected"
+        );
         let mut privilege = privilege;
         privilege
             .set_enabled(false)
@@ -611,10 +660,37 @@ mod replacefile_sacl_probe_tests {
             .set_enabled(true)
             .expect("enable SeSecurityPrivilege to verify SACL");
         let replaced_sacl = read_sacl(&target).expect("read replaced target SACL");
-        assert_eq!(replaced_sacl, original_sacl);
+        let acl_preserved = replaced_sacl.bytes == original_sacl.bytes;
+        let protection_preserved = replaced_sacl.protected == original_sacl.protected;
+        let preserved = acl_preserved && protection_preserved;
         privilege
             .restore()
             .expect("restore original process privilege state");
-        write_probe(&proof_path, "verified", None, Some(replaced_sacl.len()));
+        let status = if preserved {
+            "verified"
+        } else {
+            "not-preserved"
+        };
+        let reason = (!preserved).then_some(if !acl_preserved {
+            "ReplaceFileW changed the scratch audit SACL"
+        } else {
+            "ReplaceFileW changed the scratch SACL protection bit"
+        });
+        write_probe(
+            &proof_path,
+            status,
+            reason,
+            Some(&original_sacl),
+            Some(&replaced_sacl),
+        );
+        if !preserved {
+            eprintln!(
+                "ReplaceFileW did not preserve the scratch audit SACL: bytes {} -> {}, protected {} -> {}.",
+                original_sacl.bytes.len(),
+                replaced_sacl.bytes.len(),
+                original_sacl.protected,
+                replaced_sacl.protected
+            );
+        }
     }
 }

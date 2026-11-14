@@ -1618,7 +1618,9 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 Screenshot Save As writes directly to the selected destination. A write failure
 after truncation can damage an existing file. Replacing through a temporary file
 requires preserving destination permissions and handling hostile directory races
-across supported platforms; that change remains open.
+across supported platforms; that change remains open. A hosted Windows scratch
+probe found that unprivileged `ReplaceFileW` removed a seeded audit ACE; the local
+Windows prototype therefore must not be shipped as a metadata-preserving fix.
 
 In an isolated native Windows editor, the inset slider responded to a pointer
 click. Two control-tool set-value attempts left its value unchanged, but that

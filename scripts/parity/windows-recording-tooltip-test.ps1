@@ -3425,7 +3425,7 @@ try {
         $env:PORATAKE_REPLACEFILE_SACL_PROOF = $replaceFileSaclProofPath
         Push-Location (Join-Path $root 'src/main')
         try {
-            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui config::store::replacefile_sacl_probe_tests::replacefile_preserves_audit_sacl_when_privilege_is_available -- --ignored --exact
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui config::store::replacefile_sacl_probe_tests::replacefile_reports_audit_sacl_behavior_when_privilege_is_available -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw "ReplaceFileW audit-SACL probe failed with exit code $LASTEXITCODE" }
         } finally {
             Pop-Location
@@ -3436,8 +3436,13 @@ try {
     if (-not [System.IO.File]::Exists($replaceFileSaclProofPath)) { throw 'The ReplaceFileW audit-SACL probe did not publish a status proof.' }
     $replaceFileSaclProof = Get-Content -LiteralPath $replaceFileSaclProofPath -Raw | ConvertFrom-Json -ErrorAction Stop
     if ($replaceFileSaclProof.status -eq 'verified') {
-        Write-Host "ReplaceFileW preserved the scratch audit SACL: ACE bytes=$($replaceFileSaclProof.saclBytes)."
+        if ($null -eq $replaceFileSaclProof.saclBytesBefore -or $null -eq $replaceFileSaclProof.saclBytesAfter -or $replaceFileSaclProof.saclBytesBefore -ne $replaceFileSaclProof.saclBytesAfter -or $replaceFileSaclProof.saclProtectedBefore -ne $true -or $replaceFileSaclProof.saclProtectedAfter -ne $true) { throw 'The verified ReplaceFileW audit-SACL proof is malformed.' }
+        Write-Host "ReplaceFileW preserved the scratch audit SACL: ACE bytes=$($replaceFileSaclProof.saclBytesBefore), protected=$($replaceFileSaclProof.saclProtectedBefore)->$($replaceFileSaclProof.saclProtectedAfter)."
+    } elseif ($replaceFileSaclProof.status -eq 'not-preserved') {
+        if ($null -eq $replaceFileSaclProof.saclBytesBefore -or $null -eq $replaceFileSaclProof.saclBytesAfter -or $null -eq $replaceFileSaclProof.saclProtectedBefore -or $null -eq $replaceFileSaclProof.saclProtectedAfter -or [string]::IsNullOrWhiteSpace([string]$replaceFileSaclProof.reason)) { throw 'The not-preserved ReplaceFileW audit-SACL proof is malformed.' }
+        Write-Warning "ReplaceFileW did not preserve the scratch audit SACL: $($replaceFileSaclProof.reason); bytes $($replaceFileSaclProof.saclBytesBefore) -> $($replaceFileSaclProof.saclBytesAfter), protected $($replaceFileSaclProof.saclProtectedBefore) -> $($replaceFileSaclProof.saclProtectedAfter)."
     } elseif ($replaceFileSaclProof.status -eq 'unavailable') {
+        if ([string]::IsNullOrWhiteSpace([string]$replaceFileSaclProof.reason)) { throw 'The unavailable ReplaceFileW audit-SACL proof has no reason.' }
         Write-Host "AUDIT SACL PRESERVATION UNAVAILABLE: $($replaceFileSaclProof.reason)"
     } else {
         throw "The ReplaceFileW audit-SACL probe returned an invalid status: $($replaceFileSaclProof.status)"
