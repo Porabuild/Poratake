@@ -1727,7 +1727,9 @@ with 49,152 mismatched pixels. The equivalent footer-only fixture matched
 exactly. A hosted Windows test now exercises the footer-only case through native
 wheel input, capture and pixel-by-pixel PNG verification; its first CI step
 passed in [run `43586226485`](https://github.com/Porabuild/Poratake/actions/runs/43586226485).
-The fixture now checks four frames; hosted verification of that extension is pending.
+The four-frame extension passed its native step in
+[run `43590070286`](https://github.com/Porabuild/Poratake/actions/runs/43590070286);
+the remaining hosted checks are still running.
 A candidate header fix corrected that fixture but corrupted 256 pixels
 when an animated body block touched the footer, so it was not adopted. Native
 fixed-header stitching remains open. A stricter scratch variant also inferred a
