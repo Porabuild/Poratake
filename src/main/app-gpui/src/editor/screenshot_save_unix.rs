@@ -482,7 +482,7 @@ fn verify_macos_parent_acl(parent: &File) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn clear_macos_acl(file: &File) -> io::Result<()> {
-    let acl = unsafe { macos_acl::acl_from_text(b"!#acl 1\0".as_ptr().cast()) };
+    let acl = unsafe { macos_acl::acl_from_text(c"!#acl 1".as_ptr()) };
     if acl.is_null() {
         return Err(io::Error::last_os_error());
     }

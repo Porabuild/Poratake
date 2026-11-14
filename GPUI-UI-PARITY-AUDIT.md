@@ -1652,9 +1652,14 @@ security descriptor; encrypted originals require an encrypted backup. Compatible
 readers can see an incomplete write, and a process or power failure can still
 leave a partial destination with an undiscovered temporary backup. macOS and
 Linux use same-file recovery for returned write failures as well; 13 standalone
-Linux filesystem tests passed in WSL. The macOS ACL tests and integrated Linux
-and macOS builds still need hosted verification. Unix recovery is not crash-atomic,
-and it refuses overwrites where a private backup cannot be secured.
+Linux filesystem tests passed in WSL, and the integrated Linux job passed in
+[hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43605856597). The
+macOS ACL tests still need hosted verification: the macOS build passed in that
+run, but Clippy stopped on a C-string literal before tests. The literal has been
+corrected and needs another hosted run. Unix recovery is not crash-atomic,
+and it refuses overwrites where a private backup cannot be secured. This includes
+some writable ACL-managed directories owned by another user; write-only existing
+files also fail before modification because they cannot be backed up.
 A hosted Windows scratch probe found that unprivileged `ReplaceFileW` removed a
 seeded audit ACE, so it is not used for this save path.
 
