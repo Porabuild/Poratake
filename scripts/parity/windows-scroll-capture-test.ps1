@@ -39,6 +39,7 @@ public sealed class PoratakeScrollFixture : Form
     string fixtureError;
     int targetMovement;
     int wheelDetents;
+    int scrollFrameTransitions;
     Bitmap bodyBitmap;
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -176,11 +177,11 @@ public sealed class PoratakeScrollFixture : Form
         return true;
     }
 
-    public void ConfigureScroll(int movement, int detents)
+    public void ConfigureScroll(int movement, int detents, int frameTransitions)
     {
-        if (WheelCount != 0 || movement <= 0 || detents <= 0)
+        if (WheelCount != 0 || movement <= 0 || detents <= 0 || frameTransitions <= 0)
             throw new InvalidOperationException("Scroll fixture cannot accept this scroll plan.");
-        var bitmap = new Bitmap(Width, Height - FooterHeight + movement, PixelFormat.Format32bppArgb);
+        var bitmap = new Bitmap(Width, Height - FooterHeight + movement * frameTransitions, PixelFormat.Format32bppArgb);
         var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
         var data = bitmap.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
         try
@@ -207,6 +208,7 @@ public sealed class PoratakeScrollFixture : Form
         var painted = new ManualResetEventSlim(false);
         targetMovement = movement;
         wheelDetents = detents;
+        scrollFrameTransitions = frameTransitions;
         BeginInvoke(new Action(() =>
         {
             bodyBitmap = bitmap;
@@ -268,9 +270,10 @@ public sealed class PoratakeScrollFixture : Form
             int count = Interlocked.Increment(ref wheelCount);
             int detents = Volatile.Read(ref wheelDetents);
             int movement = Volatile.Read(ref targetMovement);
-            if (detents <= 0 || count > detents)
+            int transitions = Volatile.Read(ref scrollFrameTransitions);
+            if (detents <= 0 || count > detents * transitions)
             {
-                SetFixtureError($"Received wheel detent {count} with a {detents}-detent plan.");
+                SetFixtureError($"Received wheel detent {count} with a {detents}-detent, {transitions}-transition plan.");
                 wheelChanged.Set();
                 message.Result = IntPtr.Zero;
                 return;
@@ -299,11 +302,18 @@ public sealed class PoratakeScrollFixture : Form
         using var footer = new SolidBrush(Color.FromArgb(64, 64, 64));
         e.Graphics.FillRectangle(footer, 0, Height - FooterHeight, Width, FooterHeight);
         int detents = Volatile.Read(ref wheelDetents);
-        if (detents > 0 && WheelCount >= detents)
+        int markerFrame = detents > 0 ? WheelCount / detents : 0;
+        if (markerFrame > 0)
         {
-            using var marker = new SolidBrush(Color.FromArgb(239, 61, 203));
+            using var marker = new SolidBrush(FooterMarkerColor(markerFrame));
             e.Graphics.FillRectangle(marker, 1, Height - FooterHeight, FooterMarkerWidth, FooterMarkerHeight);
         }
+    }
+
+    static Color FooterMarkerColor(int frame)
+    {
+        int red = 64 ^ ((frame * 64) & 255);
+        return Color.FromArgb(red, 64, 64);
     }
 
     static Color BodyColor(int row, int column)
@@ -312,11 +322,12 @@ public sealed class PoratakeScrollFixture : Form
         return Color.FromArgb((int)(value & 255), (int)((value >> 8) & 255), (int)((value >> 16) & 255));
     }
 
-    public static void AssertStitchedPng(string path, int bodyRows, int expectedWheelCount)
+    public static void AssertStitchedPng(string path, int bodyRows, int expectedWheelCount, int wheelDetents)
     {
         using var image = new Bitmap(path);
         int expectedWidth = 1024;
         int expectedHeight = bodyRows + FooterHeight;
+        int markerFrame = wheelDetents > 0 ? expectedWheelCount / wheelDetents : 0;
         if (image.Width != expectedWidth || image.Height != expectedHeight)
             throw new InvalidOperationException($"Stitched dimensions were {image.Width}x{image.Height}; expected {expectedWidth}x{expectedHeight}.");
         for (int y = 0; y < expectedHeight; y++)
@@ -326,9 +337,9 @@ public sealed class PoratakeScrollFixture : Form
                 Color expected;
                 if (y < bodyRows)
                     expected = BodyColor(y, x / 16);
-                else if (y - bodyRows < FooterMarkerHeight && expectedWheelCount > 0 &&
+                else if (y - bodyRows < FooterMarkerHeight && markerFrame > 0 &&
                          x >= 1 && x <= FooterMarkerWidth)
-                    expected = Color.FromArgb(239, 61, 203);
+                    expected = FooterMarkerColor(markerFrame);
                 else
                     expected = Color.FromArgb(64, 64, 64);
                 Color actual = image.GetPixel(x, y);
@@ -380,6 +391,7 @@ $width = 1024
 $height = 400
 $footerHeight = 40
 $bodyViewportHeight = $height - $footerHeight
+$scrollFrameTransitions = 3
 $x = $screen.Left + [int](($screen.Width - $width) / 2)
 $y = $screen.Top + [int](($screen.Height - $height - 72) / 2)
 $fixture = $null
@@ -410,13 +422,16 @@ try {
     $targetLogicalMovement = [int][Math]::Max(1, [Math]::Round($height / $scaleFactor * 0.7, [MidpointRounding]::AwayFromZero))
     $targetMovement = [int][Math]::Round($targetLogicalMovement * $scaleFactor, [MidpointRounding]::AwayFromZero)
     $wheelDetents = [int][Math]::Ceiling($targetLogicalMovement / 48.0)
-    $fixture.ConfigureScroll($targetMovement, $wheelDetents)
+    $fixture.ConfigureScroll($targetMovement, $wheelDetents, $scrollFrameTransitions)
     if (-not $fixture.IsOwnedVisibleTopmostAtCenter()) {
         throw 'The painted scroll fixture no longer owns the full capture ROI.'
     }
     [PoratakeScrollFixture]::AssertInitialFixturePixels($fixture.FixtureLeft, $fixture.FixtureTop, $width, $height)
-    $bodyRows = $bodyViewportHeight + $targetMovement
-    $expectedHeight = $height + $targetMovement
+    $totalWheelDetents = $wheelDetents * $scrollFrameTransitions
+    $totalMovement = $targetMovement * $scrollFrameTransitions
+    $expectedFrameCount = $scrollFrameTransitions + 1
+    $bodyRows = $bodyViewportHeight + $totalMovement
+    $expectedHeight = $height + $totalMovement
     $expectedLogicalHeight = [int][Math]::Ceiling($expectedHeight / $scaleFactor)
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -492,22 +507,26 @@ try {
     }
     if (-not $startResult.started) { throw 'Scroll capture did not start.' }
     $null = Invoke-DaemonRpc 'scroll-capture' 'startAutoScroll' @{}
-    if (-not $fixture.WaitForWheelCount($wheelDetents, 10000)) {
-        throw "Fixture acknowledged $($fixture.WheelCount) wheel detents; expected $wheelDetents."
+    if (-not $fixture.WaitForWheelCount($totalWheelDetents, 10000)) {
+        throw "Fixture acknowledged $($fixture.WheelCount) wheel detents; expected $totalWheelDetents."
     }
     $end = Wait-ScrollEnd
     if ($fixture.FixtureError) { throw $fixture.FixtureError }
-    if ($end.reason -ne 'max-height' -or $end.frameCount -ne 2 -or $end.estimatedHeight -ne $expectedLogicalHeight) {
+    if ($end.reason -ne 'max-height' -or $end.frameCount -ne $expectedFrameCount -or $end.estimatedHeight -ne $expectedLogicalHeight) {
         throw "Unexpected native scroll stop: $($end | ConvertTo-Json -Compress)."
     }
-    if ($fixture.WheelCount -ne $wheelDetents -or $fixture.ScrollOffset -ne $targetMovement) {
-        throw "Fixture ended at wheelCount=$($fixture.WheelCount), offset=$($fixture.ScrollOffset); expected $wheelDetents and $targetMovement."
+    $observedFrameCounts = @($observedEvents | Where-Object event -eq 'scroll-capture:frame-captured' | ForEach-Object { $_.data.frameCount })
+    if ($observedFrameCounts -notcontains 2 -or $observedFrameCounts -notcontains 3) {
+        throw "Expected intermediate frame events for counts 2 and 3; observed $($observedFrameCounts -join ',')."
+    }
+    if ($fixture.WheelCount -ne $totalWheelDetents -or $fixture.ScrollOffset -ne $totalMovement) {
+        throw "Fixture ended at wheelCount=$($fixture.WheelCount), offset=$($fixture.ScrollOffset); expected $totalWheelDetents and $totalMovement."
     }
     $finish = Invoke-DaemonRpc 'scroll-capture' 'finish' @{ outputPath = $outputPath }
-    if (-not $finish.success -or $finish.frameCount -ne 2 -or $finish.width -ne $width -or $finish.height -ne $expectedHeight) {
+    if (-not $finish.success -or $finish.frameCount -ne $expectedFrameCount -or $finish.width -ne $width -or $finish.height -ne $expectedHeight) {
         throw "Unexpected stitched result: $($finish | ConvertTo-Json -Compress)."
     }
-    [PoratakeScrollFixture]::AssertStitchedPng($outputPath, $bodyRows, $fixture.WheelCount)
+    [PoratakeScrollFixture]::AssertStitchedPng($outputPath, $bodyRows, $fixture.WheelCount, $wheelDetents)
     Copy-Item -LiteralPath $outputPath -Destination $verifiedOutputPath
     Write-Output "Hosted Windows native scroll capture passed; evidence: $evidenceRoot"
 } finally {
@@ -531,7 +550,7 @@ try {
             scaleFactor = $fixture.ScaleFactor
             stop = $end
             result = $finish
-            expected = @{ width = $width; height = $expectedHeight; fixedHeaderIncluded = $false; bodyRows = $bodyRows; footerHeight = $footerHeight; wheelDetents = $wheelDetents }
+            expected = @{ width = $width; height = $expectedHeight; frameCount = $expectedFrameCount; fixedHeaderIncluded = $false; bodyRows = $bodyRows; footerHeight = $footerHeight; wheelDetents = $wheelDetents; totalWheelDetents = $totalWheelDetents }
             events = @($observedEvents)
         }
     }
