@@ -169,6 +169,10 @@ passed Linux, macOS and the native Windows workflows, but all visual cases stopp
 at auto-dismiss: the headless workflow advanced the clock without delivering the
 reveal frame that now starts the timer. It now settles the preview before timing;
 a focused test also checks that the full dismissal delay follows reveal.
+The [run at `9e284e21`](https://github.com/Porabuild/Poratake/actions/runs/43574423088)
+passed 14 of 16 visual profiles; two framed-attachment cases tried to drag the
+empty center of an unfilled rectangle. The fixture now drags the visible edge and
+retains its exact movement assertions. The native Windows workflow passed.
 The [run at `1ddf5017`](https://github.com/Porabuild/Poratake/actions/runs/43553564358)
 passed Linux, macOS and the native Windows workflows. The visual cases passed the
 preview timing check but later closed previews in other headless capture workflows,

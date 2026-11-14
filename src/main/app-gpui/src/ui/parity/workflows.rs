@@ -4209,7 +4209,7 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         settle(cx, window);
         let selection_origin = (
             ((tool_start.0 + tool_end.0) / 2.0 * f64::from(zoom)) as f32,
-            ((tool_start.1 + tool_end.1) / 2.0 * f64::from(zoom)) as f32,
+            (tool_start.1 * f64::from(zoom)) as f32,
         );
         drag_rectangle(
             cx,
