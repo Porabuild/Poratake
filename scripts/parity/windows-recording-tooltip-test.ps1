@@ -3598,11 +3598,52 @@ try {
     $videoEditorReadyCapture = Join-Path $captureRoot 'real-video-editor-export-tab.png'
     Capture-TooltipArea 'real-video-editor-export-tab' $videoEditorScreenBounds $videoEditorReadyCapture
     Assert-VideoPreviewChangeDetector
+    $videoPreviewBaselineTime = [Math]::Max(0.0, [Math]::Floor(($markerMovedAtSeconds - 0.2) * 10.0) / 10.0)
+    if ($videoPreviewBaselineTime -ge ($markerMovedAtSeconds - 0.1) -or $videoPreviewBaselineTime -ge $videoExportDuration) {
+        throw "No pre-marker timeline ruler time remains: marker=$markerMovedAtSeconds, baseline=$videoPreviewBaselineTime, trimmed duration=$videoExportDuration."
+    }
+    $timelinePixelsPerSecond = $videoClipBefore.Width / $videoSourceDuration
+    $baselineRulerPoint = New-Object PoratakeTooltipProbe+Point
+    $baselineRulerPoint.X = $videoEditorClientOrigin.X + [int][Math]::Round($videoClipBefore.Left + $videoPreviewBaselineTime * $timelinePixelsPerSecond)
+    $baselineRulerPoint.Y = $videoEditorClientOrigin.Y + $videoClipBefore.Top - 14
+    if (-not [PoratakeTooltipProbe]::IsPointInsideClient($videoEditorHandle, $baselineRulerPoint.X, $baselineRulerPoint.Y)) { throw 'The measured pre-marker point falls outside the editor client.' }
+    $baselineRulerHit = [PoratakeTooltipProbe]::WindowFromPoint($baselineRulerPoint)
+    if ($baselineRulerHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($baselineRulerHit, 2) -ne $videoEditorHandle) { throw 'Native hit testing at the measured pre-marker ruler point did not reach the video editor.' }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($videoEditorHandle)) { throw 'Could not foreground the video editor before establishing its pre-marker preview.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $videoEditorHandle } 3000 'The video editor did not regain focus before establishing the pre-marker preview.' | Out-Null
+    [PoratakeTooltipProbe]::Click($baselineRulerPoint.X, $baselineRulerPoint.Y)
+    $videoEditorPreMarkerCapture = Join-Path $captureRoot 'real-video-editor-pre-marker.png'
+    $script:videoBaselineCaptureAttempt = 0
+    $videoBaselineReadiness = Wait-Until {
+        $first = $null
+        $second = $null
+        try {
+            Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
+            $script:videoBaselineCaptureAttempt++
+            $first = Join-Path $captureRoot ("video-editor-pre-marker-{0:D2}-a.png" -f $script:videoBaselineCaptureAttempt)
+            $second = Join-Path $captureRoot ("video-editor-pre-marker-{0:D2}-b.png" -f $script:videoBaselineCaptureAttempt)
+            Capture-TooltipArea "video-editor-pre-marker-$script:videoBaselineCaptureAttempt-a" $videoEditorScreenBounds $first 5
+            $firstCounts = Get-VideoTimelinePlayheadCounts $first ($baselineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
+            if ($firstCounts.Target -lt 8 -or $firstCounts.Start -gt 6) { return $null }
+            $firstPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $first $videoClipBefore.Top 3
+            if ($firstPreview.Changed -gt [Math]::Ceiling($firstPreview.Checked * 0.005)) { return $null }
+            Capture-TooltipArea "video-editor-pre-marker-$script:videoBaselineCaptureAttempt-b" $videoEditorScreenBounds $second 5
+            $secondCounts = Get-VideoTimelinePlayheadCounts $second ($baselineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
+            $stablePreview = Get-VideoPreviewPixelComparison $first $second $videoClipBefore.Top 3
+            $secondPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $second $videoClipBefore.Top 3
+            if ($secondCounts.Target -lt 8 -or $secondCounts.Start -gt 6 -or $stablePreview.Changed -gt [Math]::Ceiling($stablePreview.Checked * 0.005) -or $secondPreview.Changed -gt [Math]::Ceiling($secondPreview.Checked * 0.005)) { return $null }
+            Copy-Item -LiteralPath $second -Destination $videoEditorPreMarkerCapture -Force -ErrorAction Stop
+            Write-Host "Timeline ruler seek to ${videoPreviewBaselineTime}s is visible, stable and matches the pre-marker preview: target playhead pixels=$($secondCounts.Target)."
+            return $true
+        } catch {
+            return $null
+        }
+    } 15000 'The video editor preview did not settle at the pre-marker timeline ruler position.'
+    if (-not $videoBaselineReadiness -or -not [System.IO.File]::Exists($videoEditorPreMarkerCapture)) { throw 'The pre-marker video preview screenshot is not ready.' }
     $videoPreviewSeekTime = [Math]::Ceiling(($markerMovedAtSeconds + 0.3) * 10.0) / 10.0
     if ($videoPreviewSeekTime -le ($markerMovedAtSeconds + 0.2) -or $videoPreviewSeekTime -ge ($videoExportDuration - 0.25)) {
         throw "No interior timeline ruler time remains after the marker move: marker=$markerMovedAtSeconds, seek=$videoPreviewSeekTime, trimmed duration=$videoExportDuration."
     }
-    $timelinePixelsPerSecond = $videoClipBefore.Width / $videoSourceDuration
     $timelineRulerPoint = New-Object PoratakeTooltipProbe+Point
     $timelineRulerPoint.X = $videoEditorClientOrigin.X + [int][Math]::Round($videoClipBefore.Left + $videoPreviewSeekTime * $timelinePixelsPerSecond)
     $timelineRulerPoint.Y = $videoEditorClientOrigin.Y + $videoClipBefore.Top - 14
@@ -3625,13 +3666,13 @@ try {
             Capture-TooltipArea "video-editor-seek-$script:videoSeekCaptureAttempt-a" $videoEditorScreenBounds $first 5
             $firstCounts = Get-VideoTimelinePlayheadCounts $first ($timelineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
             if ($firstCounts.Target -lt 8 -or $firstCounts.Start -gt 6) { return $null }
-            $firstPreview = Get-VideoPreviewPixelComparison $videoEditorReadyCapture $first $videoClipBefore.Top
+            $firstPreview = Get-VideoPreviewPixelComparison $videoEditorPreMarkerCapture $first $videoClipBefore.Top
             if ($firstPreview.Changed -lt 24) { return $null }
             Capture-TooltipArea "video-editor-seek-$script:videoSeekCaptureAttempt-b" $videoEditorScreenBounds $second 5
             $secondCounts = Get-VideoTimelinePlayheadCounts $second ($timelineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
             $stablePreview = Get-VideoPreviewPixelComparison $first $second $videoClipBefore.Top 3
             if ($secondCounts.Target -lt 8 -or $secondCounts.Start -gt 6 -or $stablePreview.Changed -gt [Math]::Ceiling($stablePreview.Checked * 0.005)) { return $null }
-            $secondPreview = Get-VideoPreviewPixelComparison $videoEditorReadyCapture $second $videoClipBefore.Top
+            $secondPreview = Get-VideoPreviewPixelComparison $videoEditorPreMarkerCapture $second $videoClipBefore.Top
             if ($secondPreview.Changed -lt 24) { return $null }
             Copy-Item -LiteralPath $second -Destination $seekPreviewCapturePath -Force -ErrorAction Stop
             Write-Host "Timeline ruler seek to ${videoPreviewSeekTime}s is visible and stable: preview changed pixels=$($secondPreview.Changed), target playhead pixels=$($secondCounts.Target), start-position pixels=$($secondCounts.Start)."
@@ -3687,7 +3728,7 @@ try {
     $videoExportProof = $videoProof.Clone()
     $videoExportProof.videoPath = $videoExportPath
     $videoExportProof.expectedDuration = $videoExportDuration
-    $videoExportProof.editorPreviewPath = $videoEditorReadyCapture
+    $videoExportProof.editorPreviewPath = $videoEditorPreMarkerCapture
     $videoExportProof.editorPreviewSeekPath = $seekPreviewCapturePath
     $videoExportProof.editorPreviewSeekTime = $videoPreviewSeekTime
     $videoExportProofPath = Join-Path $evidenceRoot 'tooltip-video-export-proof.json'
