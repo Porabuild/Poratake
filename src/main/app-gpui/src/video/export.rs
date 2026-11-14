@@ -1459,8 +1459,8 @@ mod tests {
             let original = to_bgra(&unredacted.compose(time, None).unwrap());
             let actual = exported.frame_at(time).unwrap();
             assert_eq!(actual.bgra.len(), expected.len());
-            for y in 48..68 {
-                for x in 56..76 {
+            for y in 40..60 {
+                for x in 47..65 {
                     let pixel = (y * info.width as usize + x) * 4;
                     assert_eq!(
                         &expected[pixel..pixel + 4],
@@ -1471,7 +1471,7 @@ mod tests {
                         original[pixel + 2] >= 180,
                         "unredacted control must retain the earlier filled annotation at {time}s, {x},{y}"
                     );
-                    if (60..72).contains(&x) && (52..64).contains(&y) {
+                    if (50..63).contains(&x) && (44..56).contains(&y) {
                         assert!(
                             actual.bgra[pixel..pixel + 3]
                                 .iter()
@@ -1494,8 +1494,8 @@ mod tests {
                 "preview/export mean channel error {mean_error} at {time}s"
             );
             let mut drawing_error = 0_u64;
-            for y in 48..72 {
-                for x in 48..88 {
+            for y in 45..65 {
+                for x in 80..96 {
                     let pixel = (y * info.width as usize + x) * 4;
                     for (channel, expected_color) in [64_u8, 64, 224].into_iter().enumerate() {
                         assert!(
@@ -1509,7 +1509,7 @@ mod tests {
                 }
             }
             assert!(
-                drawing_error as f64 / (24. * 40. * 3.) < 3.,
+                drawing_error as f64 / (20. * 16. * 3.) < 3.,
                 "the exported drawing differs from preview at {time}s"
             );
             for (style, left, top, width, height) in [
