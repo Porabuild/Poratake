@@ -4197,11 +4197,9 @@ impl EditorWindow {
                 .spawn(async move {
                     #[cfg(windows)]
                     let cleanup_warning = crate::editor::screenshot_save::write(&path, &bytes)?;
-                    #[cfg(not(windows))]
-                    let cleanup_warning = {
-                        std::fs::write(&path, &bytes)?;
-                        None::<String>
-                    };
+                    #[cfg(unix)]
+                    let cleanup_warning =
+                        crate::editor::screenshot_save_unix::write(&path, &bytes)?;
                     Ok::<_, std::io::Error>((path, cleanup_warning))
                 })
                 .await;

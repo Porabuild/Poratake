@@ -4,6 +4,8 @@ Refreshed 2026-11-14 for Poratake 0.9.6.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
+The intended destination is a GPUI-only app after the required workflows and
+platform behavior have been verified.
 
 ## Current critical scope
 
@@ -1649,7 +1651,10 @@ and its path reported if restoration fails. The handle preserves the original
 security descriptor; encrypted originals require an encrypted backup. Compatible
 readers can see an incomplete write, and a process or power failure can still
 leave a partial destination with an undiscovered temporary backup. macOS and
-Linux still write directly and can damage an existing file on write failure.
+Linux use same-file recovery for returned write failures as well; 13 standalone
+Linux filesystem tests passed in WSL. The macOS ACL tests and integrated Linux
+and macOS builds still need hosted verification. Unix recovery is not crash-atomic,
+and it refuses overwrites where a private backup cannot be secured.
 A hosted Windows scratch probe found that unprivileged `ReplaceFileW` removed a
 seeded audit ACE, so it is not used for this save path.
 
