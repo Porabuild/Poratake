@@ -286,3 +286,335 @@ mod dir_tests {
         assert!(!saved.general.start_on_login);
     }
 }
+
+#[cfg(all(test, windows))]
+mod replacefile_sacl_probe_tests {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, SetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, HANDLE,
+        LUID,
+    };
+    use windows::Win32::Security::{
+        AddAuditAccessAceEx, AdjustTokenPrivileges, CreateWellKnownSid, GetAclInformation,
+        GetFileSecurityW, GetSecurityDescriptorSacl, InitializeAcl, LookupPrivilegeValueW,
+        SetFileSecurityW, SetSecurityDescriptorSacl, WinWorldSid, ACL, ACL_REVISION,
+        ACL_SIZE_INFORMATION, LUID_AND_ATTRIBUTES, SACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED,
+        SE_SECURITY_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows::Win32::Storage::FileSystem::{ReplaceFileW, FILE_EXECUTE};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    struct PrivilegeGuard {
+        token: HANDLE,
+        luid: LUID,
+        previous: TOKEN_PRIVILEGES,
+        restored: bool,
+    }
+
+    impl PrivilegeGuard {
+        fn set_enabled(&self, enabled: bool) -> std::io::Result<()> {
+            let requested = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: self.luid,
+                    Attributes: if enabled {
+                        SE_PRIVILEGE_ENABLED
+                    } else {
+                        Default::default()
+                    },
+                }],
+            };
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            unsafe { AdjustTokenPrivileges(self.token, false, Some(&requested), 0, None, None) }
+                .map_err(std::io::Error::other)?;
+            let status = unsafe { GetLastError() };
+            if status != ERROR_SUCCESS {
+                return Err(std::io::Error::from_raw_os_error(status.0 as i32));
+            }
+            Ok(())
+        }
+
+        fn restore(&mut self) -> std::io::Result<()> {
+            if self.restored {
+                return Ok(());
+            }
+            unsafe { SetLastError(ERROR_SUCCESS) };
+            unsafe {
+                AdjustTokenPrivileges(
+                    self.token,
+                    false,
+                    Some(&self.previous),
+                    std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                    None,
+                    None,
+                )
+            }
+            .map_err(std::io::Error::other)?;
+            let status = unsafe { GetLastError() };
+            if status != ERROR_SUCCESS {
+                return Err(std::io::Error::from_raw_os_error(status.0 as i32));
+            }
+            self.restored = true;
+            Ok(())
+        }
+    }
+
+    impl Drop for PrivilegeGuard {
+        fn drop(&mut self) {
+            let _ = self.restore();
+            let _ = unsafe { CloseHandle(self.token) };
+        }
+    }
+
+    fn enable_sacl_privilege() -> std::io::Result<Option<PrivilegeGuard>> {
+        let mut token = HANDLE::default();
+        unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                &mut token,
+            )
+        }?;
+        let mut luid = LUID::default();
+        if let Err(error) = unsafe { LookupPrivilegeValueW(None, SE_SECURITY_NAME, &mut luid) } {
+            let _ = unsafe { CloseHandle(token) };
+            return Err(std::io::Error::other(error));
+        }
+
+        let requested = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let mut previous = TOKEN_PRIVILEGES::default();
+        let mut returned = 0;
+        unsafe { SetLastError(ERROR_SUCCESS) };
+        if let Err(error) = unsafe {
+            AdjustTokenPrivileges(
+                token,
+                false,
+                Some(&requested),
+                std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                Some(&mut previous),
+                Some(&mut returned),
+            )
+        } {
+            let _ = unsafe { CloseHandle(token) };
+            return Err(std::io::Error::other(error));
+        }
+        if unsafe { GetLastError() } == ERROR_NOT_ALL_ASSIGNED {
+            let _ = unsafe { CloseHandle(token) };
+            return Ok(None);
+        }
+        Ok(Some(PrivilegeGuard {
+            token,
+            luid,
+            previous,
+            restored: false,
+        }))
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    fn write_audit_sacl(path: &Path) -> std::io::Result<()> {
+        let mut sid_storage = [0usize; 16];
+        let mut sid_size = (sid_storage.len() * std::mem::size_of::<usize>()) as u32;
+        unsafe {
+            CreateWellKnownSid(
+                WinWorldSid,
+                None,
+                Some(windows::Win32::Security::PSID(
+                    sid_storage.as_mut_ptr().cast(),
+                )),
+                &mut sid_size,
+            )
+        }
+        .map_err(std::io::Error::other)?;
+
+        let mut acl_storage = [0usize; 32];
+        let acl = acl_storage.as_mut_ptr().cast::<ACL>();
+        unsafe {
+            InitializeAcl(
+                acl,
+                std::mem::size_of_val(&acl_storage) as u32,
+                ACL_REVISION,
+            )?;
+            AddAuditAccessAceEx(
+                acl,
+                ACL_REVISION,
+                Default::default(),
+                FILE_EXECUTE.0,
+                windows::Win32::Security::PSID(sid_storage.as_mut_ptr().cast()),
+                true,
+                true,
+            )?;
+        }
+
+        let mut descriptor = windows::Win32::Security::SECURITY_DESCRIPTOR::default();
+        unsafe {
+            windows::Win32::Security::InitializeSecurityDescriptor(
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(
+                    (&mut descriptor as *mut windows::Win32::Security::SECURITY_DESCRIPTOR).cast(),
+                ),
+                1,
+            )?;
+            SetSecurityDescriptorSacl(
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(
+                    (&mut descriptor as *mut windows::Win32::Security::SECURITY_DESCRIPTOR).cast(),
+                ),
+                true,
+                Some(acl),
+                false,
+            )?;
+            SetFileSecurityW(
+                PCWSTR(wide(path).as_ptr()),
+                windows::Win32::Security::OBJECT_SECURITY_INFORMATION(SACL_SECURITY_INFORMATION.0),
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(
+                    (&mut descriptor as *mut windows::Win32::Security::SECURITY_DESCRIPTOR).cast(),
+                ),
+            )
+            .ok()?;
+        }
+        Ok(())
+    }
+
+    fn read_sacl(path: &Path) -> std::io::Result<Vec<u8>> {
+        let path = wide(path);
+        let mut required = 0;
+        let first = unsafe {
+            GetFileSecurityW(
+                PCWSTR(path.as_ptr()),
+                SACL_SECURITY_INFORMATION.0,
+                None,
+                0,
+                &mut required,
+            )
+        };
+        if first.as_bool() || required == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut descriptor =
+            vec![0usize; required.div_ceil(std::mem::size_of::<usize>() as u32) as usize];
+        unsafe {
+            GetFileSecurityW(
+                PCWSTR(path.as_ptr()),
+                SACL_SECURITY_INFORMATION.0,
+                Some(windows::Win32::Security::PSECURITY_DESCRIPTOR(
+                    descriptor.as_mut_ptr().cast(),
+                )),
+                (descriptor.len() * std::mem::size_of::<usize>()) as u32,
+                &mut required,
+            )
+            .ok()?;
+            let mut present = false.into();
+            let mut defaulted = false.into();
+            let mut acl = std::ptr::null_mut();
+            GetSecurityDescriptorSacl(
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                &mut present,
+                &mut acl,
+                &mut defaulted,
+            )?;
+            if !present.as_bool() || acl.is_null() {
+                return Ok(Vec::new());
+            }
+            let mut info = ACL_SIZE_INFORMATION::default();
+            GetAclInformation(
+                acl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                windows::Win32::Security::AclSizeInformation,
+            )?;
+            Ok(std::slice::from_raw_parts(acl.cast::<u8>(), info.AclBytesInUse as usize).to_vec())
+        }
+    }
+
+    fn write_probe(path: &Path, status: &str, reason: Option<&str>, sacl_bytes: Option<usize>) {
+        let proof =
+            serde_json::json!({ "status": status, "reason": reason, "saclBytes": sacl_bytes });
+        std::fs::write(path, serde_json::to_vec(&proof).unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "scratch-only hosted ReplaceFileW audit-SACL probe"]
+    fn replacefile_preserves_audit_sacl_when_privilege_is_available() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let runner_temp = std::fs::canonicalize(
+            std::env::var_os("RUNNER_TEMP")
+                .map(PathBuf::from)
+                .expect("hosted runner temporary directory"),
+        )
+        .expect("resolve runner temp");
+        let proof_path = std::env::var_os("PORATAKE_REPLACEFILE_SACL_PROOF")
+            .map(PathBuf::from)
+            .expect("hosted ReplaceFile SACL proof path");
+        let proof_parent = std::fs::canonicalize(proof_path.parent().expect("proof parent"))
+            .expect("resolve proof parent");
+        assert!(proof_parent.starts_with(&runner_temp));
+        assert!(
+            !proof_path.exists(),
+            "refusing to replace an existing proof"
+        );
+
+        let privilege = match enable_sacl_privilege().expect("probe process privilege") {
+            Some(privilege) => privilege,
+            None => {
+                write_probe(
+                    &proof_path,
+                    "unavailable",
+                    Some("SeSecurityPrivilege is not assigned to the process token"),
+                    None,
+                );
+                eprintln!("ReplaceFileW audit-SACL probe unavailable: privilege not assigned.");
+                return;
+            }
+        };
+
+        let directory = tempfile::Builder::new()
+            .prefix("poratake-replacefile-sacl-")
+            .tempdir_in(&runner_temp)
+            .expect("scratch directory in runner temp");
+        let target = directory.path().join("target.png");
+        let replacement = directory.path().join("replacement.png");
+        let backup = directory.path().join("backup.png");
+        std::fs::write(&target, b"original scratch file").unwrap();
+        std::fs::write(&replacement, b"replacement scratch file").unwrap();
+        write_audit_sacl(&target).expect("apply audit ACE to scratch target");
+        let original_sacl = read_sacl(&target).expect("read scratch target SACL");
+        let mut privilege = privilege;
+        privilege
+            .set_enabled(false)
+            .expect("disable SeSecurityPrivilege during ReplaceFileW");
+
+        unsafe {
+            ReplaceFileW(
+                PCWSTR(wide(&target).as_ptr()),
+                PCWSTR(wide(&replacement).as_ptr()),
+                PCWSTR(wide(&backup).as_ptr()),
+                Default::default(),
+                None,
+                None,
+            )
+        }
+        .expect("replace scratch file");
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement scratch file");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"original scratch file");
+
+        privilege
+            .set_enabled(true)
+            .expect("enable SeSecurityPrivilege to verify SACL");
+        let replaced_sacl = read_sacl(&target).expect("read replaced target SACL");
+        assert_eq!(replaced_sacl, original_sacl);
+        privilege
+            .restore()
+            .expect("restore original process privilege state");
+        write_probe(&proof_path, "verified", None, Some(replaced_sacl.len()));
+    }
+}

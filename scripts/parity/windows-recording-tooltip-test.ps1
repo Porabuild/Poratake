@@ -358,6 +358,7 @@ $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
 $previousTooltipVideoProof = $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF
 $previousSystemAudioFixture = $env:PORATAKE_SYSTEM_AUDIO_FIXTURE
 $previousSystemAudioProof = $env:PORATAKE_SYSTEM_AUDIO_PROOF
+$previousReplaceFileSaclProof = $env:PORATAKE_REPLACEFILE_SACL_PROOF
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
 $overlapWindow = [IntPtr]::Zero
@@ -388,6 +389,7 @@ $workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
 $previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
 $systemAudioFixturePath = Join-Path $evidenceRoot 'native-system-audio-fixture.m4a'
 $systemAudioProofPath = Join-Path $evidenceRoot 'native-system-audio-preview-export.json'
+$replaceFileSaclProofPath = Join-Path $evidenceRoot 'replacefile-audit-sacl-proof.json'
 if (-not $evidenceRoot.StartsWith($runnerTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing evidence outside the runner temporary directory: $evidenceRoot"
 }
@@ -3036,12 +3038,51 @@ try {
     $reopenedScreenBounds.Right = $reopenedClientOrigin.X + $reopenedClient.Right
     $reopenedScreenBounds.Bottom = $reopenedClientOrigin.Y + $reopenedClient.Bottom
     $reopenedEditorCapturePath = Join-Path $captureRoot 'real-editor-reopened.png'
-    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)) { throw 'Could not foreground the reopened screenshot editor.' }
+    $script:reopenForegroundWaitClock = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:reopenForegroundWaitLastRequestAt = -250
+    $script:reopenForegroundWaitDiagnostic = [ordered]@{
+        expectedEditorHwnd = $reopenedEditor.Handle.ToInt64()
+        initialRequestSucceeded = [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)
+        foregroundHwnd = $null
+        foregroundRootHwnd = $null
+        recoveryRequests = 0
+        lastRecoverySucceeded = $null
+        competingWindow = $null
+        failure = $null
+    }
     $reopenForegroundReady = Wait-Until {
+        $script:reopenForegroundWaitDiagnostic.failure = $null
         $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
-        return $foreground -eq $reopenedEditor.Handle -or [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -eq $reopenedEditor.Handle
-    } 5000 'The reopened screenshot editor did not become the foreground window.'
-    if (-not $reopenForegroundReady) { throw 'The reopened screenshot editor was not foreground-ready for pixel verification.' }
+        $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+        $script:reopenForegroundWaitDiagnostic.foregroundHwnd = $foreground.ToInt64()
+        $script:reopenForegroundWaitDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+        if ($foreground -eq $reopenedEditor.Handle -or $foregroundRoot -eq $reopenedEditor.Handle) { return $true }
+        $script:reopenForegroundWaitDiagnostic.failure = 'foreground-not-editor-or-owned-child'
+        if ($script:reopenForegroundWaitClock.ElapsedMilliseconds - $script:reopenForegroundWaitLastRequestAt -lt 250) { return $null }
+        $script:reopenForegroundWaitLastRequestAt = $script:reopenForegroundWaitClock.ElapsedMilliseconds
+        $script:reopenForegroundWaitDiagnostic.recoveryRequests++
+        $script:reopenForegroundWaitDiagnostic.competingWindow = Get-WindowIdentity $foreground
+        $script:reopenForegroundWaitDiagnostic.lastRecoverySucceeded = [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+        $script:reopenForegroundWaitDiagnostic.foregroundHwnd = $foreground.ToInt64()
+        $script:reopenForegroundWaitDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+        if ($foreground -eq $reopenedEditor.Handle -or $foregroundRoot -eq $reopenedEditor.Handle) {
+            $script:reopenForegroundWaitDiagnostic.failure = $null
+            return $true
+        }
+        $script:reopenForegroundWaitDiagnostic.competingWindow = Get-WindowIdentity $foreground
+        return $null
+    } 5000 $null
+    if (-not $reopenForegroundReady) {
+        $script:reopenForegroundWaitDiagnostic.failure = 'foreground-timeout'
+        $reopenReadinessDiagnosticPath = Join-Path $evidenceRoot 'reopened-editor-readiness-diagnostic.json'
+        [System.IO.File]::WriteAllText($reopenReadinessDiagnosticPath, ($script:reopenForegroundWaitDiagnostic | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        throw "The reopened screenshot editor was not foreground-ready for pixel verification: $($script:reopenForegroundWaitDiagnostic | ConvertTo-Json -Compress -Depth 8); diagnostic=$reopenReadinessDiagnosticPath"
+    }
+    if ($script:reopenForegroundWaitDiagnostic.recoveryRequests -gt 0) {
+        Write-Host "Reopened editor foreground accepted after $($script:reopenForegroundWaitDiagnostic.recoveryRequests) bounded re-requests."
+    }
     $reopenHitPoint = New-Object PoratakeTooltipProbe+Point
     $reopenHitPoint.X = [int][Math]::Round(($reopenedScreenBounds.Left + $reopenedScreenBounds.Right) / 2.0)
     $reopenHitPoint.Y = [int][Math]::Round(($reopenedScreenBounds.Top + $reopenedScreenBounds.Bottom) / 2.0)
@@ -3055,6 +3096,7 @@ try {
         foregroundRecoveryAttempts = 0
         lastForegroundRecoverySucceeded = $null
         competingWindow = $null
+        initialForegroundWait = $script:reopenForegroundWaitDiagnostic
         hitPoint = @{ x = $reopenHitPoint.X; y = $reopenHitPoint.Y }
         hitHwnd = $null
         hitRootHwnd = $null
@@ -3378,6 +3420,28 @@ try {
     $systemAudioProof = Get-Content -LiteralPath $systemAudioProofPath -Raw | ConvertFrom-Json -ErrorAction Stop
     if (-not $systemAudioProof.sidecarSelected -or [double]$systemAudioProof.previewExportMeanError -ge 500.0) { throw 'The system-audio sidecar proof did not verify the production preview/export path.' }
     Write-Host "Native audio-only M4A sidecar tones survived preview and export; MAE=$($systemAudioProof.previewExportMeanError), strengths=$($systemAudioProof.toneStrengths | ConvertTo-Json -Compress)."
+
+    try {
+        $env:PORATAKE_REPLACEFILE_SACL_PROOF = $replaceFileSaclProofPath
+        Push-Location (Join-Path $root 'src/main')
+        try {
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui config::store::replacefile_sacl_probe_tests::replacefile_preserves_audit_sacl_when_privilege_is_available -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw "ReplaceFileW audit-SACL probe failed with exit code $LASTEXITCODE" }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        if ($null -eq $previousReplaceFileSaclProof) { Remove-Item Env:PORATAKE_REPLACEFILE_SACL_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_REPLACEFILE_SACL_PROOF = $previousReplaceFileSaclProof }
+    }
+    if (-not [System.IO.File]::Exists($replaceFileSaclProofPath)) { throw 'The ReplaceFileW audit-SACL probe did not publish a status proof.' }
+    $replaceFileSaclProof = Get-Content -LiteralPath $replaceFileSaclProofPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    if ($replaceFileSaclProof.status -eq 'verified') {
+        Write-Host "ReplaceFileW preserved the scratch audit SACL: ACE bytes=$($replaceFileSaclProof.saclBytes)."
+    } elseif ($replaceFileSaclProof.status -eq 'unavailable') {
+        Write-Host "AUDIT SACL PRESERVATION UNAVAILABLE: $($replaceFileSaclProof.reason)"
+    } else {
+        throw "The ReplaceFileW audit-SACL probe returned an invalid status: $($replaceFileSaclProof.status)"
+    }
 
     New-Item -ItemType Directory -Path $videoProfileRoot -Force | Out-Null
     $videoConfig = @{
@@ -3765,6 +3829,7 @@ try {
     if ($null -eq $previousTooltipVideoProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $previousTooltipVideoProof }
     if ($null -eq $previousSystemAudioFixture) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_FIXTURE -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_FIXTURE = $previousSystemAudioFixture }
     if ($null -eq $previousSystemAudioProof) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_PROOF = $previousSystemAudioProof }
+    if ($null -eq $previousReplaceFileSaclProof) { Remove-Item Env:PORATAKE_REPLACEFILE_SACL_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_REPLACEFILE_SACL_PROOF = $previousReplaceFileSaclProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
     $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)

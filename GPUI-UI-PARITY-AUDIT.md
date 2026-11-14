@@ -178,6 +178,11 @@ headless parity context; native windows retain their reveal checks.
 passed all active jobs, including native Windows capture and recording workflows,
 the audio-only sidecar proof, and 16 visual profiles with 2,912 baseline
 comparisons. Windows packaging was skipped. Verify the final PR head separately.
+The documentation-only [follow-up at `d354d0b1`](https://github.com/Porabuild/Poratake/actions/runs/43559683718)
+passed Linux, macOS and the other non-Windows jobs, but the Windows workflow lost
+foreground during the initial reopened-editor wait, before its later recovery
+loop or pixel checks. The initial wait now retries activation within its existing
+deadline and records the competing window on failure.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
