@@ -1627,13 +1627,18 @@ heads. Pen and highlight hits follow their rendered outlines within a per-click
 work budget. Over-budget marks fall back to their old bounds when no confirmed
 hit exists; a confirmed lower hit takes priority over an uncertain upper mark.
 This can still select empty bounds or let a lower mark win over a visible upper
-stroke. A release-mode scratch estimate measured a near-budget 2,339-point
-serpentine hit test at 1.97 ms median and 3.68 MB allocated; the earlier unbounded
-100,000-point probe took 107 ms and about 309 MB.
+stroke. The outline builder now stops at the actual vertex budget instead of a
+worst-case estimate, allowing tested 4,096-point smooth strokes. A release-mode
+scratch probe measured the capped builder at 0.15 ms median for that smooth
+stroke and 0.85 ms before rejecting a 4,096-point serpentine; the earlier
+unbounded 100,000-point probe took 107 ms and about 309 MB.
 An editor pointer-event test also drags a filled shape through a U-shaped pen
 gap and then selects the visible pen stroke, without moving the wrong annotation.
 A decoded-video regression also checks that a blackout covers an earlier filled
 annotation in both preview and export at four timeline positions.
+[Hosted CI at `45f1adbf`](https://github.com/Porabuild/Poratake/actions/runs/43578561127)
+passed all active jobs, including 16 Windows visual profiles and 2,912 baseline
+comparisons. Windows packaging was skipped.
 
 Windows screenshot Save As now backs up an existing file before writing through
 its original handle and restores it on a returned write error. The backup is kept

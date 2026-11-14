@@ -238,13 +238,6 @@ fn hit_test_pen(
     budget: &mut HitTestBudget,
 ) -> AnnotationHit {
     let samples = points.len() / 2;
-    let stroke_points = if samples == 0 { 0 } else { samples.max(4) };
-    let Some(outline_bound) = stroke_points
-        .checked_mul(28)
-        .and_then(|count| count.checked_add(44))
-    else {
-        return legacy_pen_bounds_hit(points, point);
-    };
     if !budget.charge(samples, 0) {
         return legacy_pen_bounds_hit(points, point);
     }
@@ -272,13 +265,19 @@ fn hit_test_pen(
     {
         return AnnotationHit::Miss;
     }
-    if !budget.charge(0, outline_bound) {
+    let remaining_outline = HIT_TEST_OUTLINE_VERTEX_BUDGET - budget.outline_vertices;
+    if remaining_outline == 0 {
         return legacy_pen_bounds_hit(points, point);
     }
-    let outline = crate::render::annotations::pen_outline(points, stroke_width);
-    if outline.len() > outline_bound {
+    let Some(outline) = freehand::stroke_outline_limited(
+        points,
+        &freehand::Options::for_pen(stroke_width),
+        remaining_outline,
+    ) else {
+        budget.outline_vertices = HIT_TEST_OUTLINE_VERTEX_BUDGET;
         return legacy_pen_bounds_hit(points, point);
-    }
+    };
+    budget.outline_vertices += outline.len();
     match pen_outline_hit(&outline, point, slop, zoom, budget) {
         Some(true) => AnnotationHit::Hit,
         Some(false) => AnnotationHit::Miss,
@@ -2135,10 +2134,11 @@ mod tests {
         for step in 0..250 {
             points.extend([10.0, 90.0 - step as f64 * 80.0 / 249.0]);
         }
+        let outline_vertices = crate::render::annotations::pen_outline(&points, 8.0).len();
         let annotations = [pen("fallback", points.clone()), pen("exact", points)];
         let mut budget = HitTestBudget {
             raw_points: 0,
-            outline_vertices: HIT_TEST_OUTLINE_VERTEX_BUDGET - 40_000,
+            outline_vertices: HIT_TEST_OUTLINE_VERTEX_BUDGET - outline_vertices - 1,
             curve_steps: 0,
         };
 
@@ -2148,10 +2148,7 @@ mod tests {
             Some("fallback")
         );
         assert_eq!(budget.raw_points, 2_000);
-        assert_eq!(
-            budget.outline_vertices,
-            HIT_TEST_OUTLINE_VERTEX_BUDGET - 40_000 + 28_044
-        );
+        assert_eq!(budget.outline_vertices, HIT_TEST_OUTLINE_VERTEX_BUDGET);
     }
 
     #[test]
