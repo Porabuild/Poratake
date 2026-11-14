@@ -16,7 +16,7 @@ enhancements are deferred unless they expose a critical shared defect or have a
 small verified fix. Exhaustive states for every control remain deferred.
 
 Each gate counts once only when its stated evidence exists. As of 2026-11-14,
-eight of twelve gates are complete: 67% of the gates, not an estimate of elapsed or
+seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
@@ -27,7 +27,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Done   | All active jobs passed at `e3e5775f`; Windows packaging was skipped. The final review must also check the actual PR head.                                                   |
+| Hosted code-and-baseline CI          | Open   | All active jobs passed at `e3e5775f`; later audio and preview-failure changes need hosted checks. The final review must check the actual PR head.                           |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
@@ -785,11 +785,20 @@ a listening test or a full editor/export test. These are synthetic fixtures, not
 live speech or music. A scheduler test
 covers undoing an edit while its audio rebuild is in flight. The local native gate
 passes 984 tests with one skip after the audio, attachment, QR and monitor fixes.
+Electron's multi-track export previously normalized the summed inputs, making
+them quieter than the independently mixed preview and GPUI export. Its FFmpeg
+mix now retains the source levels. A headless 440/880 Hz regression checks overlap,
+mute and track-end behavior when FFmpeg is available; a local AAC encode/decode
+probe also preserved both tones. This does not verify live system-audio capture.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
 Most GPUI surfaces use HeroGPUI tooltips and shared helpers. The tray icon,
 macOS scroll controls, and Windows and macOS recording and capture-preview
 hover controls use native tooltips.
+If a screenshot or recording preview window cannot be created, GPUI now sends
+a notification that the capture was saved and leaves the editor closed. Two
+Windows headless tests exercise the failed window creation and retained files;
+actual operating-system notification delivery remains unverified.
 The earlier camera/zoom export expansion passed the native gate with 960 tests and one
 skip, plus typecheck, lint, formatting and parity-feature Clippy. The seven decoded
 samples verify camera visibility and source-frame changes across a cut; an
@@ -1625,6 +1634,14 @@ Separate periodic-content models with 16px and 24px scroll steps produced identi
 three-frame pixels but different expected heights. Additional frames alone cannot
 resolve every sequence; a safe lookahead would require lifecycle changes and must
 retain the accepted prefix when evidence remains ambiguous.
+
+A separate 64×240, 8px-step fixture with a fixed 8px footer accepts four frames
+without trimming that footer, producing 1,536 incorrect pixels. An aligned
+stationary-suffix conflict guard avoided that output but stopped a valid
+full-width animated no-footer control early, so it was not adopted. A fixed-footer
+page and an animated no-footer page can produce the same four captured frames
+even though their first-frame-preserving stitched outputs differ. This is synthetic
+evidence; real pages and broader animation patterns remain unverified.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
