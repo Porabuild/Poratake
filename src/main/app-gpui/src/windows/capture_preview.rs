@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(any(windows, test))]
+use gpui::Entity;
 use gpui::{
-    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Entity, MouseButton,
-    Render, Styled, Window,
+    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
+    Styled, Window,
 };
 use herogpui::components::TooltipPlacement;
 use herogpui::gpui;
@@ -540,6 +542,7 @@ fn reveal_preview_stack_view(
     }
 }
 
+#[cfg(windows)]
 fn preview_open_failure_body(previews: &[CapturePreview]) -> &'static str {
     match previews {
         [preview] => match preview.kind {

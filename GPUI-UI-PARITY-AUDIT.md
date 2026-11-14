@@ -156,6 +156,9 @@ showed that another top-level window had foreground during the readiness timeout
 its identity was not recorded and no reopened-editor pixels were captured. The
 harness now retries activation within the existing deadline and records the
 competing window's identity, while retaining the hit-test and pixel checks.
+The following [run at `b31ecf11`](https://github.com/Porabuild/Poratake/actions/runs/43543409414)
+failed Linux GPUI lint because the new preview reveal helper and entity import
+were compiled where unused. They are now gated to the platforms that use them.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -803,7 +806,7 @@ mix now retains the source levels. A headless 440/880 Hz regression checks overl
 mute and track-end behavior when FFmpeg is available; a local AAC encode/decode
 probe also preserved both tones. Overloaded mixes and live system-audio capture
 remain unverified. A separate local headless test generated a genuine two-second
-audio-only M4A with the Windows daemon encoder, then verified sidecar selection,
+audio-only M4A with the Windows daemon audio processor and encoder, then verified sidecar selection,
 both tone frequencies, duration and preview/export audio in GPUI. This does not
 exercise a live audio endpoint.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
