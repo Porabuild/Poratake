@@ -1732,6 +1732,9 @@ when an animated body block touched the footer, so it was not adopted. Native
 fixed-header stitching remains open. A stricter scratch variant also inferred a
 footer on a no-footer page with a one-pixel animated marker, producing 40 wrong
 pixels; it was not adopted either.
+Another scratch pair produced byte-identical 1024×400 captured frames for a
+fixed-footer page and a changing-body page, but their expected 680px stitches
+differed in 40,960 pixels. Pixel matching alone cannot distinguish that pair.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
