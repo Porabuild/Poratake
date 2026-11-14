@@ -2,7 +2,7 @@ use gpui::{AppContext, Context, Entity, Render, Window};
 use herogpui::gpui;
 
 use crate::editor::window::EditorWindow;
-use crate::windows::capture_preview::{CapturePreviewWindow, HeadlessPreviewRevealGuard};
+use crate::windows::capture_preview::CapturePreviewWindow;
 use crate::windows::registry::{self, WindowKind};
 
 use super::{
@@ -41,7 +41,6 @@ impl Render for MultiDisplayPreview {
 }
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
-    let _headless_preview_reveal = HeadlessPreviewRevealGuard::enter();
     let native_tooltips = cfg!(any(windows, target_os = "macos"));
     let config = cx.update(|cx| crate::state::state(cx).config.get().preview);
     let wallpaper = cx.update(|cx| crate::state::state(cx).config.get().wallpaper);

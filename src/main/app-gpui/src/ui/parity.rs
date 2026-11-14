@@ -846,6 +846,9 @@ pub fn capture_editor_interaction_states() {
             herogpui::platform::current_headless_renderer()
         },
     );
+    #[cfg(windows)]
+    let _headless_preview_reveal =
+        crate::windows::capture_preview::HeadlessPreviewRevealGuard::enter();
     cx.update(|cx| {
         crate::state::set_test_state(cx, store);
         crate::editor::actions::init_bindings(cx);

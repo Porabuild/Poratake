@@ -169,6 +169,11 @@ passed Linux, macOS and the native Windows workflows, but all visual cases stopp
 at auto-dismiss: the headless workflow advanced the clock without delivering the
 reveal frame that now starts the timer. It now settles the preview before timing;
 a focused test also checks that the full dismissal delay follows reveal.
+The [run at `1ddf5017`](https://github.com/Porabuild/Poratake/actions/runs/43553564358)
+passed Linux, macOS and the native Windows workflows. The visual cases passed the
+preview timing check but later closed previews in other headless capture workflows,
+which were outside the parity-only reveal guard. The guard now covers the whole
+headless parity context; native windows retain their reveal checks.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
