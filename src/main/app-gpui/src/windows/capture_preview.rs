@@ -2511,7 +2511,7 @@ mod tests {
 
     #[cfg(feature = "parity")]
     #[test]
-    fn parity_headless_reveal_retains_preview_and_revealed_state() {
+    fn parity_headless_reveal_retains_preview_for_its_full_dismiss_delay() {
         let directory = tempfile::tempdir().unwrap();
         let capture_path = directory.path().join("capture.png");
         image::RgbaImage::new(32, 24).save(&capture_path).unwrap();
@@ -2519,6 +2519,10 @@ mod tests {
             crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
                 .unwrap(),
         );
+        config.update(|settings| {
+            settings.preview.auto_dismiss = true;
+            settings.preview.auto_dismiss_seconds = 1.0;
+        });
         let mut cx = gpui::HeadlessAppContext::with_platform(
             Arc::new(gpui::NoopTextSystem),
             Arc::new(()),
@@ -2527,7 +2531,7 @@ mod tests {
         cx.update(|cx| crate::state::set_test_state(cx, config));
 
         let _reveal_guard = HeadlessPreviewRevealGuard::enter();
-        cx.update(|cx| CapturePreviewWindow::open(cx, capture_path));
+        cx.update(|cx| CapturePreviewWindow::open(cx, capture_path.clone()));
         let handle = cx
             .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
             .expect("headless preview window stays registered");
@@ -2538,6 +2542,9 @@ mod tests {
             .expect("capture preview root");
         let state = view.update(&mut cx, |view, _| {
             view.revealed = false;
+            for preview in &view.previews {
+                preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+            }
             (
                 view.active_preview_count(),
                 view.previews[0].layout_animation.is_some(),
@@ -2553,6 +2560,7 @@ mod tests {
             cx.update(|cx| registry::handle(WindowKind::CapturePreview, cx)),
             Some(handle)
         );
+        cx.run_until_parked();
         let state = handle
             .downcast::<CapturePreviewWindow>()
             .expect("capture preview window")
@@ -2565,6 +2573,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(state, (true, 1, true));
+        cx.advance_clock(Duration::from_millis(999));
+        cx.run_until_parked();
+        assert!(cx.update(|cx| registry::is_open(WindowKind::CapturePreview, cx)));
+        cx.advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        cx.advance_clock(Duration::from_millis(PREVIEW_EXIT_MS));
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| registry::is_open(WindowKind::CapturePreview, cx)));
+        assert!(capture_path.exists());
     }
 
     #[test]

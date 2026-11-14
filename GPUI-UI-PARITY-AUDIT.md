@@ -164,6 +164,11 @@ but all 16 visual cases stopped at the preview's initial animation position:
 the headless window had no HWND and was removed by the new native reveal guard.
 The parity workflow now treats that expected headless case separately; the strict
 geometry assertion and native failure handling remain.
+The [next run at `442a94f4`](https://github.com/Porabuild/Poratake/actions/runs/43548284322)
+passed Linux, macOS and the native Windows workflows, but all visual cases stopped
+at auto-dismiss: the headless workflow advanced the clock without delivering the
+reveal frame that now starts the timer. It now settles the preview before timing;
+a focused test also checks that the full dismissal delay follows reveal.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.

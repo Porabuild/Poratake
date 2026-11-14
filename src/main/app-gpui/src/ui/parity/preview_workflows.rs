@@ -706,6 +706,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         });
         CapturePreviewWindow::open(cx, paths[0].clone());
     });
+    let preview = cx
+        .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+        .expect("auto-dismiss preview window opened");
+    settle(cx, preview);
     cx.run_until_parked();
     cx.advance_clock(Duration::from_secs(1));
     cx.run_until_parked();
