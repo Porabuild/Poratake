@@ -2,6 +2,7 @@
 //! together, and hosts the color palette popover.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -25,6 +26,19 @@ use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::icon_button;
 use herogpui::components::{Button, InputState, TextField, Variant};
+
+fn report_screenshot_save_failure(
+    cx: &mut App,
+    path: Option<&Path>,
+    error: &dyn std::fmt::Display,
+) {
+    let message = match path {
+        Some(path) => format!("{}: {error}", path.display()),
+        None => error.to_string(),
+    };
+    eprintln!("[editor] screenshot save failed: {message}");
+    crate::windows::toast::Toast::show(cx, "Screenshot Save Failed", message);
+}
 
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4134,7 +4148,7 @@ impl EditorWindow {
         let png = match self.export_png() {
             Ok(png) => png,
             Err(error) => {
-                eprintln!("[editor] export failed: {error}");
+                report_screenshot_save_failure(cx, None, &error);
                 return;
             }
         };
@@ -4146,14 +4160,14 @@ impl EditorWindow {
             let decoded = match image::load_from_memory(&png) {
                 Ok(image) => image.to_rgb8(),
                 Err(error) => {
-                    eprintln!("[editor] jpeg conversion failed: {error}");
+                    report_screenshot_save_failure(cx, None, &error);
                     return;
                 }
             };
             let mut bytes = Vec::new();
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92);
             if let Err(error) = encoder.encode_image(&decoded) {
-                eprintln!("[editor] jpeg encoding failed: {error}");
+                report_screenshot_save_failure(cx, None, &error);
                 return;
             }
             bytes
@@ -4184,6 +4198,7 @@ impl EditorWindow {
                 return;
             };
             let path = file.path().to_path_buf();
+            let failure_path = path.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move { std::fs::write(&path, bytes).map(|()| path) })
@@ -4204,7 +4219,10 @@ impl EditorWindow {
                     }
                 }
                 Err(error) => {
-                    eprintln!("[editor] save failed: {error}");
+                    let message = error.to_string();
+                    cx.update(|cx| {
+                        report_screenshot_save_failure(cx, Some(&failure_path), &message)
+                    });
                     let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
                 }
             }
@@ -4217,6 +4235,17 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn screenshot_save_failure_is_visible_to_the_user(cx: &mut gpui::TestAppContext) {
+        let notifications = crate::system::notification::capture_for_test();
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected failure");
+        cx.update(|cx| {
+            report_screenshot_save_failure(cx, Some(Path::new("capture.png")), &error);
+        });
+        assert_eq!(&*notifications.borrow(), &["Screenshot Save Failed"]);
+    }
 
     #[herogpui::test]
     fn reset_zoom_button_accepts_a_pointer_press(cx: &mut gpui::TestAppContext) {
