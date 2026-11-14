@@ -4201,11 +4201,20 @@ impl EditorWindow {
             let failure_path = path.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { std::fs::write(&path, bytes).map(|()| path) })
+                .spawn(async move {
+                    #[cfg(windows)]
+                    let cleanup_warning = crate::editor::screenshot_save::write(&path, &bytes)?;
+                    #[cfg(not(windows))]
+                    let cleanup_warning = {
+                        std::fs::write(&path, &bytes)?;
+                        None
+                    };
+                    Ok::<_, std::io::Error>((path, cleanup_warning))
+                })
                 .await;
 
             match result {
-                Ok(path) => {
+                Ok((path, cleanup_warning)) => {
                     if let Some(parent) = path.parent() {
                         let parent = parent.to_string_lossy().to_string();
                         config.update(move |config| config.save_locations.screenshot = parent);
@@ -4216,6 +4225,11 @@ impl EditorWindow {
                     });
                     if close_on_save {
                         let _ = window_handle.update(cx, |_, window, _| window.remove_window());
+                    }
+                    if let Some(warning) = cleanup_warning {
+                        cx.update(|cx| {
+                            crate::windows::toast::Toast::show(cx, "Screenshot saved", warning)
+                        });
                     }
                 }
                 Err(error) => {
