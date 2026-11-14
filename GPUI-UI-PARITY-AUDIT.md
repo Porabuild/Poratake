@@ -1619,7 +1619,11 @@ Selecting through the empty interior of an outlined rectangle or circle now
 reaches the visible annotation underneath; line hit testing follows its stroke
 rather than its bounding box. Headless tests cover overlaps, rounded corners and
 zoom-aware tolerance. Straight and curved arrows also hit their rendered shafts
-and heads; freehand marks still use bounding boxes.
+and heads; freehand marks still use bounding boxes. A local release-mode scratch
+probe of the existing pen outline and a candidate contour scan measured a 100,000-
+sample serpentine stroke at 107 ms median and about 309 MB of allocations, so
+per-click outline regeneration was not adopted. A bounded cached or indexed
+approach remains to be verified.
 A decoded-video regression also checks that a blackout covers an earlier filled
 annotation in both preview and export at four timeline positions.
 
