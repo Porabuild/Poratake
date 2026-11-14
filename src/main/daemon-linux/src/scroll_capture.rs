@@ -15,7 +15,7 @@ use poratake_daemon_common::contract::{
     SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT, SCROLL_CAPTURE_FRAME_EVENT,
     SCROLL_CAPTURE_MODULE, SCROLL_CAPTURE_SCROLL_ENDED_EVENT, ScrollCaptureAutoScrollRequest,
     ScrollCaptureFinishRequest, ScrollCaptureFinishResult, ScrollCaptureMethod,
-    ScrollCaptureStartRequest,
+    ScrollCaptureStartRequest, scroll_capture_start_error_payload,
 };
 use poratake_daemon_common::geometry::CaptureRect;
 use poratake_daemon_common::platform::LinuxBackend;
@@ -539,11 +539,11 @@ fn show_ui(state: &Rc<RefCell<ScrollState>>) -> Result<(), String> {
     auto.connect_clicked(move |_| {
         if auto_state.borrow().source.is_some() {
             auto_state.borrow_mut().stop_auto();
-        } else if let Err((_, error)) = start_auto(&auto_state) {
-            send_event(
-                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
-                Some(json!({ "reason": "capture-error", "message": error })),
-            );
+        } else if let Err((code, error)) = start_auto(&auto_state) {
+            let frame_count = auto_state.borrow().accumulator.frames().len();
+            if let Some(payload) = scroll_capture_start_error_payload(&code, &error, frame_count) {
+                send_event(SCROLL_CAPTURE_SCROLL_ENDED_EVENT, Some(payload));
+            }
         }
     });
     let done_state = state.clone();
@@ -603,29 +603,18 @@ fn start_auto(state: &Rc<RefCell<ScrollState>>) -> Result<(), (String, String)> 
                 ));
             }
         }
-        if let Some(button) = state.auto_button.as_ref() {
-            button.set_label("Stop");
-        }
         (request.capture.rect, plan.interval_millis)
     };
     state
         .borrow()
         .input
         .move_to(
-            i16::try_from(rect.x + rect.width / 2).map_err(|_| {
-                (
-                    "CAPTURE_FAILED".into(),
-                    "capture center is outside X11".into(),
-                )
-            })?,
-            i16::try_from(rect.y + rect.height / 2).map_err(|_| {
-                (
-                    "CAPTURE_FAILED".into(),
-                    "capture center is outside X11".into(),
-                )
-            })?,
+            i16::try_from(rect.x + rect.width / 2)
+                .map_err(|_| ("INPUT_ERROR".into(), "capture center is outside X11".into()))?,
+            i16::try_from(rect.y + rect.height / 2)
+                .map_err(|_| ("INPUT_ERROR".into(), "capture center is outside X11".into()))?,
         )
-        .map_err(|error| ("CAPTURE_FAILED".into(), error))?;
+        .map_err(|error| ("INPUT_ERROR".into(), error))?;
 
     let tick_state = state.clone();
     let source = glib::timeout_add_local(Duration::from_millis(interval), move || {
@@ -700,7 +689,11 @@ fn start_auto(state: &Rc<RefCell<ScrollState>>) -> Result<(), (String, String)> 
         }
         ControlFlow::Continue
     });
-    state.borrow_mut().source = Some(source);
+    let mut state = state.borrow_mut();
+    state.source = Some(source);
+    if let Some(button) = state.auto_button.as_ref() {
+        button.set_label("Stop");
+    }
     Ok(())
 }
 
@@ -783,7 +776,14 @@ fn handle_command(state: &Rc<RefCell<ScrollState>>, command: ScrollCommand) {
                     &id,
                     Some(json!({ "autoScrolling": true })),
                 )),
-                Err((code, error)) => send_response(Response::error(&id, &code, &error)),
+                Err((code, error)) => {
+                    let code = if code == "INPUT_ERROR" {
+                        "CAPTURE_FAILED"
+                    } else {
+                        &code
+                    };
+                    send_response(Response::error(&id, code, &error));
+                }
             }
         }
         ScrollCommand::StopAuto { id } => {

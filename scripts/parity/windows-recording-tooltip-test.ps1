@@ -3017,28 +3017,75 @@ try {
     $reopenHitPoint.X = [int][Math]::Round(($reopenedScreenBounds.Left + $reopenedScreenBounds.Right) / 2.0)
     $reopenHitPoint.Y = [int][Math]::Round(($reopenedScreenBounds.Top + $reopenedScreenBounds.Bottom) / 2.0)
     $script:reopenReadinessAttempt = 0
+    $script:reopenReadinessDiagnostic = [ordered]@{
+        attempts = 0
+        stage = 'not-started'
+        expectedEditorHwnd = $reopenedEditor.Handle.ToInt64()
+        foregroundHwnd = $null
+        foregroundRootHwnd = $null
+        hitPoint = @{ x = $reopenHitPoint.X; y = $reopenHitPoint.Y }
+        hitHwnd = $null
+        hitRootHwnd = $null
+        candidateCapture = $null
+        colorPixelCounts = @()
+        failure = $null
+        exception = $null
+    }
     $reopenedPaintReady = Wait-Until {
+        $script:reopenReadinessAttempt++
+        $script:reopenReadinessDiagnostic.attempts = $script:reopenReadinessAttempt
+        $script:reopenReadinessDiagnostic.failure = $null
+        $script:reopenReadinessDiagnostic.exception = $null
         try {
+            $script:reopenReadinessDiagnostic.stage = 'foreground-check'
             $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
-            if ($foreground -ne $reopenedEditor.Handle -and [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -ne $reopenedEditor.Handle) { return $null }
+            $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+            $script:reopenReadinessDiagnostic.foregroundHwnd = $foreground.ToInt64()
+            $script:reopenReadinessDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+            if ($foreground -ne $reopenedEditor.Handle -and $foregroundRoot -ne $reopenedEditor.Handle) {
+                $script:reopenReadinessDiagnostic.failure = 'foreground-not-editor-or-owned-child'
+                return $null
+            }
+            $script:reopenReadinessDiagnostic.stage = 'native-hit-test'
             $hit = [PoratakeTooltipProbe]::WindowFromPoint($reopenHitPoint)
-            if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $reopenedEditor.Handle) { return $null }
-            $script:reopenReadinessAttempt++
+            $hitRoot = if ($hit -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($hit, 2) }
+            $script:reopenReadinessDiagnostic.hitHwnd = $hit.ToInt64()
+            $script:reopenReadinessDiagnostic.hitRootHwnd = $hitRoot.ToInt64()
+            if ($hit -eq [IntPtr]::Zero -or $hitRoot -ne $reopenedEditor.Handle) {
+                $script:reopenReadinessDiagnostic.failure = 'center-hit-test-not-editor-or-owned-child'
+                return $null
+            }
             $candidate = Join-Path $captureRoot ("real-editor-reopened-readiness-{0:D2}.png" -f $script:reopenReadinessAttempt)
+            $script:reopenReadinessDiagnostic.candidateCapture = $candidate
+            $script:reopenReadinessDiagnostic.stage = 'capture-and-saved-color-check'
             Capture-TooltipArea "real-editor-reopened-$($script:reopenReadinessAttempt)" $reopenedScreenBounds $candidate 5
             $quadrants = @()
+            $pixelCounts = @()
             foreach ($color in $fixtureColors) {
                 $colorBounds = Get-WorkflowColorBounds $candidate $color
-                if ($colorBounds.PixelCount -lt 1000) { return $null }
+                $pixelCounts += [int]$colorBounds.PixelCount
+                $script:reopenReadinessDiagnostic.colorPixelCounts = $pixelCounts
+                if ($colorBounds.PixelCount -lt 1000) {
+                    $script:reopenReadinessDiagnostic.failure = 'saved-color-below-minimum-pixels'
+                    return $null
+                }
                 $quadrants += $colorBounds
             }
             Copy-Item -LiteralPath $candidate -Destination $reopenedEditorCapturePath -Force -ErrorAction Stop
+            $script:reopenReadinessDiagnostic.stage = 'ready'
             return $quadrants
         } catch {
+            $script:reopenReadinessDiagnostic.stage = 'exception'
+            $script:reopenReadinessDiagnostic.exception = $_.Exception.Message
             return $null
         }
-    } 15000 'The reopened editor did not foreground, receive native hit testing, and render all saved screenshot colors.'
-    if (-not $reopenedPaintReady) { throw 'The reopened editor pixels were not ready for comparison.' }
+    } 15000 ''
+    if (-not $reopenedPaintReady) {
+        $script:reopenReadinessDiagnostic.stage = 'timed-out'
+        $reopenReadinessDiagnosticPath = Join-Path $evidenceRoot 'reopened-editor-readiness-diagnostic.json'
+        [System.IO.File]::WriteAllText($reopenReadinessDiagnosticPath, ($script:reopenReadinessDiagnostic | ConvertTo-Json -Compress -Depth 6), [System.Text.UTF8Encoding]::new($false))
+        throw "The reopened editor did not foreground, receive native hit testing, and render all saved screenshot colors. Last retry=$($script:reopenReadinessDiagnostic | ConvertTo-Json -Compress -Depth 6); diagnostic=$reopenReadinessDiagnosticPath"
+    }
     $reopenedQuadrantBounds = @($reopenedPaintReady)
     $savedBitmap = [System.Drawing.Bitmap]::new($savedExportPath)
     $reopenedBitmap = [System.Drawing.Bitmap]::new($reopenedEditorCapturePath)

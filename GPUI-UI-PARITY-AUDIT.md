@@ -27,7 +27,7 @@ remaining effort. Partial work does not count as a completed gate.
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Open   | All active jobs passed at `e3e5775f`; later audio and preview-failure changes need hosted checks. The final review must check the actual PR head.                           |
+| Hosted code-and-baseline CI          | Open   | All active jobs passed at `e3e5775f`. A later Windows run timed out on reopened-editor readiness before the visual matrix; the final review must check the actual PR head.  |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
@@ -144,6 +144,13 @@ were reviewed and all 2,912 images matched their updated references offline.
 then passed all active jobs, including the native seek workflow and all 16
 Windows visual profiles. Windows packaging was skipped. The affected NVIDIA
 references are stale and have not been regenerated or verified.
+
+The later [Windows run at `2ecfc778`](https://github.com/Porabuild/Poratake/actions/runs/43536628201)
+passed the native Rust tests and saved the annotated capture, but timed out
+before capturing reopened-editor readiness pixels. The initial foreground and
+size checks passed; the retained evidence cannot distinguish a later foreground
+change, failed center-point hit testing, or an exception before capture. The
+harness now records these details on timeout.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -789,7 +796,8 @@ Electron's multi-track export previously normalized the summed inputs, making
 them quieter than the independently mixed preview and GPUI export. Its FFmpeg
 mix now retains the source levels. A headless 440/880 Hz regression checks overlap,
 mute and track-end behavior when FFmpeg is available; a local AAC encode/decode
-probe also preserved both tones. This does not verify live system-audio capture.
+probe also preserved both tones. Overloaded mixes and live system-audio capture
+remain unverified.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
 Most GPUI surfaces use HeroGPUI tooltips and shared helpers. The tray icon,

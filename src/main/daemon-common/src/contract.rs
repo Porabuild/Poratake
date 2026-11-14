@@ -17,6 +17,24 @@ pub const TIMER_CONTROL_HEIGHT: i32 = 52;
 pub const TIMER_CONTROL_TOP_MARGIN: i32 = 20;
 pub const TIMER_CONTROL_WIDTH: i32 = 140;
 
+pub fn scroll_capture_start_error_payload(
+    code: &str,
+    message: &str,
+    frame_count: usize,
+) -> Option<serde_json::Value> {
+    let reason = match code {
+        "SCROLL_ENDED" => return None,
+        "NO_OVERLAP" => "no-overlap",
+        "INPUT_ERROR" | "UI_ERROR" | "INTERNAL_ERROR" => "input-error",
+        _ => "capture-error",
+    };
+    Some(serde_json::json!({
+        "reason": reason,
+        "message": message,
+        "frameCount": frame_count,
+    }))
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TimerShowRequest {
@@ -364,6 +382,46 @@ impl TimerShowRequest {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn native_scroll_start_failures_use_shared_stop_events() {
+        assert_eq!(
+            scroll_capture_start_error_payload("NO_OVERLAP", "Could not align", 3),
+            Some(serde_json::json!({
+                "reason": "no-overlap",
+                "message": "Could not align",
+                "frameCount": 3,
+            }))
+        );
+        assert_eq!(
+            scroll_capture_start_error_payload("CAPTURE_FAILED", "Capture failed", 2),
+            Some(serde_json::json!({
+                "reason": "capture-error",
+                "message": "Capture failed",
+                "frameCount": 2,
+            }))
+        );
+        assert_eq!(
+            scroll_capture_start_error_payload("INPUT_ERROR", "Could not move pointer", 2),
+            Some(serde_json::json!({
+                "reason": "input-error",
+                "message": "Could not move pointer",
+                "frameCount": 2,
+            }))
+        );
+        assert_eq!(
+            scroll_capture_start_error_payload("UI_ERROR", "Timer failed", 1),
+            Some(serde_json::json!({
+                "reason": "input-error",
+                "message": "Timer failed",
+                "frameCount": 1,
+            }))
+        );
+        assert_eq!(
+            scroll_capture_start_error_payload("SCROLL_ENDED", "At end of content", 4),
+            None
+        );
+    }
 
     fn shared_methods(module: &str) -> Vec<String> {
         let contract: Value =

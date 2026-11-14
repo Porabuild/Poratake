@@ -16,7 +16,7 @@ use poratake_daemon_common::contract::{
     SCROLL_CAPTURE_CANCELLED_EVENT, SCROLL_CAPTURE_DONE_EVENT, SCROLL_CAPTURE_FRAME_EVENT,
     SCROLL_CAPTURE_MODULE, SCROLL_CAPTURE_SCROLL_ENDED_EVENT, ScrollCaptureAutoScrollRequest,
     ScrollCaptureFinishRequest, ScrollCaptureFinishResult, ScrollCaptureMethod,
-    ScrollCaptureStartRequest, ScrollSpeed,
+    ScrollCaptureStartRequest, ScrollSpeed, scroll_capture_start_error_payload,
 };
 use poratake_daemon_common::scroll::{
     CaptureOutcome, CapturedFrame, FRAME_OVERLAP_PERCENT, FrameAccumulator, PngWriteError,
@@ -754,7 +754,15 @@ fn toggle_auto_scroll_from_ui() {
         return;
     }
 
-    let _ = start_auto_scroll_ui(&state);
+    if let Err((code, message)) = start_auto_scroll_ui(&state) {
+        let frame_count = state
+            .lock()
+            .map(|state| state.accumulator.frames().len())
+            .unwrap_or(0);
+        if let Some(payload) = scroll_capture_start_error_payload(&code, &message, frame_count) {
+            send_event(SCROLL_CAPTURE_SCROLL_ENDED_EVENT, Some(payload));
+        }
+    }
 }
 
 fn done_from_ui() {
