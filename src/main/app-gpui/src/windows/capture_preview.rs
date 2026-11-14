@@ -365,6 +365,17 @@ impl CapturePreviewWindow {
             .unwrap_or(bounds);
         #[cfg(windows)]
         let bottom_aligned = preview_bottom_aligned(cx);
+        let failure_body = match previews.as_slice() {
+            [preview] => match preview.kind {
+                PreviewKind::Screenshot => {
+                    "The screenshot was saved, but its preview could not be opened."
+                }
+                PreviewKind::Video => {
+                    "The recording was saved, but its preview could not be opened."
+                }
+            },
+            _ => "The saved previews could not be opened.",
+        };
         let opened = cx.open_window(
             super::popup_window_options(
                 window_bounds,
@@ -435,6 +446,8 @@ impl CapturePreviewWindow {
             for (id, dismiss_token) in timers {
                 schedule_auto_dismiss(handle, id, cx, dismiss_token);
             }
+        } else {
+            crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
         }
     }
 }
@@ -2300,6 +2313,76 @@ impl CapturePreviewWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn preview_open_failure_context(
+    ) -> (gpui::HeadlessAppContext, Arc<std::sync::atomic::AtomicU32>) {
+        let attempts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let factory_attempts = attempts.clone();
+        let cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            move || {
+                if factory_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("injected preview window creation failure")
+                }
+                Ok(None)
+            },
+        );
+        (cx, attempts)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn screenshot_preview_window_failure_notifies_without_opening_an_editor() {
+        let directory = tempfile::tempdir().unwrap();
+        let capture_path = directory.path().join("capture.png");
+        image::RgbaImage::new(32, 24).save(&capture_path).unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let notifications = crate::system::notification::capture_for_test();
+        let (mut cx, attempts) = preview_open_failure_context();
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        cx.update(|cx| CapturePreviewWindow::open(cx, capture_path.clone()));
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(&*notifications.borrow(), &["Preview unavailable"]);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_none());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+        assert!(capture_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn video_preview_window_failure_notifies_without_opening_an_editor() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Recording.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording_path = crate::video::project::recording_video_path(&project);
+        std::fs::write(&recording_path, b"test recording").unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let notifications = crate::system::notification::capture_for_test();
+        let (mut cx, attempts) = preview_open_failure_context();
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(&*notifications.borrow(), &["Preview unavailable"]);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_none());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+        assert!(recording_path.exists());
+    }
 
     #[test]
     fn preview_tooltip_switch_ignores_late_leave_from_previous_trigger() {
