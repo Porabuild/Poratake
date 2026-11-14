@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('inspect', 'select-item')]
+    [ValidateSet('inspect', 'select-item', 'set-save-name')]
     [string]$VideoExportButtonAction,
     [long]$VideoEditorWindowHandle,
     [string]$VideoExportButtonResultPath,
@@ -7,6 +7,7 @@ param(
     [long]$NativeDialogHandle,
     [string]$ExpectedFixtureBaseName,
     [string]$ExpectedStateBaseName,
+    [string]$SaveDialogFileName,
     [int]$VideoExportButtonTimeoutMilliseconds = 12000
 )
 
@@ -72,7 +73,7 @@ public static class PoratakeVideoExportDpi {
                 if ($result.ready) { break }
                 [System.Threading.Thread]::Sleep(100)
             } while ($timer.ElapsedMilliseconds -lt $VideoExportButtonTimeoutMilliseconds)
-        } else {
+        } elseif ($VideoExportButtonAction -eq 'select-item') {
             $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($NativeDialogHandle))
             $listItemCondition = [System.Windows.Automation.PropertyCondition]::new(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
@@ -297,6 +298,50 @@ public static class PoratakeVideoExportDpi {
                 dpiContext = $helperContext.ToInt64()
                 dpiAware = $dpiAware
             }
+        } else {
+            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($NativeDialogHandle))
+            $editCondition = [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Edit
+            )
+            $edits = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+            $inventory = [System.Collections.Generic.List[object]]::new()
+            $candidates = [System.Collections.Generic.List[object]]::new()
+            foreach ($edit in $edits) {
+                try { $current = $edit.Current } catch { continue }
+                $bounds = $current.BoundingRectangle
+                $valuePattern = $null
+                try { $valuePattern = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern) } catch { }
+                $metadata = @{
+                    name = $current.Name
+                    automationId = $current.AutomationId
+                    className = $current.ClassName
+                    isEnabled = $current.IsEnabled
+                    isOffscreen = $current.IsOffscreen
+                    supportsValuePattern = $null -ne $valuePattern
+                    value = if ($null -ne $valuePattern) { $valuePattern.Current.Value } else { $null }
+                    bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
+                }
+                [void]$inventory.Add($metadata)
+                $isFileName = $current.AutomationId -ceq '1001' -or $current.Name -match '^File name:?$'
+                if ($isFileName -and $current.IsEnabled -and -not $current.IsOffscreen -and $null -ne $valuePattern) {
+                    [void]$candidates.Add(@{ element = $edit; pattern = $valuePattern; metadata = $metadata })
+                }
+            }
+            if ($candidates.Count -ne 1) {
+                $result = @{ set = $false; requestedName = $SaveDialogFileName; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
+                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+                throw "The Save Screenshot dialog did not expose exactly one writable file-name Edit control. Matches=$($candidates.Count)."
+            }
+            $candidate = $candidates[0]
+            $candidate.pattern.SetValue($SaveDialogFileName)
+            $readBack = $candidate.pattern.Current.Value
+            if ($readBack -cne $SaveDialogFileName) {
+                $result = @{ set = $false; requestedName = $SaveDialogFileName; actualName = $readBack; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
+                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+                throw "The Save Screenshot dialog file-name value did not read back exactly: $readBack"
+            }
+            $result = @{ set = $true; requestedName = $SaveDialogFileName; actualName = $readBack; automationId = $candidate.metadata.automationId; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
         }
         [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 4), [System.Text.UTF8Encoding]::new($false))
         exit 0
@@ -889,6 +934,51 @@ function Get-VideoEditorButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
     }
 }
 
+function Set-EditorSaveDialogFileName([IntPtr]$dialog, [string]$fileName, [string]$resultPath) {
+    if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
+    $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
+    $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
+    $arguments = @(
+        '-NoProfile',
+        '-File',
+        "`"$PSCommandPath`"",
+        '-VideoExportButtonAction',
+        'set-save-name',
+        '-NativeDialogHandle',
+        [string]$dialog.ToInt64(),
+        '-SaveDialogFileName',
+        "`"$fileName`"",
+        '-VideoExportButtonResultPath',
+        "`"$resultPath`""
+    )
+    $helper = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -WorkingDirectory $root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+    try {
+        if (-not $helper.WaitForExit(15000)) {
+            $helper.Kill()
+            if (-not $helper.WaitForExit(3000)) { throw 'The owned UI Automation helper did not exit after its bounded timeout.' }
+            throw 'The owned UI Automation helper timed out while setting the Save Screenshot file name.'
+        }
+        if ($helper.ExitCode -ne 0) {
+            $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+            throw "The owned UI Automation helper could not set the Save Screenshot file name: $detail"
+        }
+        if (-not [System.IO.File]::Exists($resultPath)) { throw 'The UI Automation helper produced no Save Screenshot file-name evidence.' }
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not $result.dpiAware -or -not $result.set -or $result.actualName -cne $fileName) { throw 'The Save Screenshot file name did not pass UI Automation readback.' }
+        Write-Host "Save Screenshot file name set and verified as $fileName."
+    } finally {
+        if (-not $helper.HasExited) {
+            try {
+                $helper.Kill()
+                if (-not $helper.WaitForExit(3000)) { $script:safeToDeleteProfile = $false }
+            } catch {
+                if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
+            }
+        }
+        $helper.Dispose()
+    }
+}
+
 function Select-OpenDialogItem([IntPtr]$dialog, [string]$fixtureBaseName, [string]$stateBaseName, [string]$resultPath) {
     if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
     $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
@@ -952,6 +1042,9 @@ public static class PoratakeTooltipFixture {
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+    [DllImport("gdi32.dll")] static extern uint GetPixel(IntPtr hdc, int x, int y);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", EntryPoint="SendMessageW")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
@@ -969,7 +1062,22 @@ public static class PoratakeTooltipFixture {
         uint ownerProcessId;
         GetWindowThreadProcessId(hwnd, out ownerProcessId);
         if (ownerProcessId != processId) throw new InvalidOperationException("Refusing to set a bitmap on a fixture outside the test process.");
-        return SendMessage(hwnd, 0x0172, IntPtr.Zero, bitmap);
+        var previous = SendMessage(hwnd, 0x0172, IntPtr.Zero, bitmap);
+        UpdateWindow(hwnd);
+        return previous;
+    }
+
+    public static uint ScreenshotPixel(IntPtr hwnd, int x, int y, uint processId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        if (hwnd == IntPtr.Zero || ownerProcessId != processId) throw new InvalidOperationException("Refusing to inspect a fixture outside the test process.");
+        var dc = GetDC(hwnd);
+        if (dc == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not inspect the screenshot fixture pixels.");
+        try {
+            return GetPixel(dc, x, y);
+        } finally {
+            if (ReleaseDC(hwnd, dc) == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not release the screenshot fixture device context.");
+        }
     }
 
     public static IntPtr DetachScreenshotBitmap(IntPtr hwnd, uint processId) {
@@ -991,6 +1099,22 @@ public static class PoratakeTooltipFixture {
         Rect actual;
         if (!GetWindowRect(hwnd, out actual) || actual.Left != rect.Left || actual.Top != rect.Top || actual.Right != rect.Right || actual.Bottom != rect.Bottom) {
             throw new InvalidOperationException("The screenshot fixture window did not reach its expected bounds.");
+        }
+    }
+
+    public static void ShowScreenshotWindowBehind(IntPtr hwnd, Rect rect, IntPtr behindWindow, uint processId, uint behindProcessId) {
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        uint actualBehindProcessId;
+        GetWindowThreadProcessId(behindWindow, out actualBehindProcessId);
+        if (ownerProcessId != processId || actualBehindProcessId != behindProcessId) throw new InvalidOperationException("Refusing to position an attachment fixture outside the test-owned windows.");
+        if (!SetWindowPos(hwnd, behindWindow, rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top, 0x0050) ||
+            !IsWindowVisible(hwnd) || !UpdateWindow(hwnd)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not show the attachment fixture behind the screenshot editor.");
+        }
+        Rect actual;
+        if (!GetWindowRect(hwnd, out actual) || actual.Left != rect.Left || actual.Top != rect.Top || actual.Right != rect.Right || actual.Bottom != rect.Bottom) {
+            throw new InvalidOperationException("The attachment fixture did not reach its expected bounds.");
         }
     }
 
@@ -1158,6 +1282,41 @@ function Get-WorkflowColorBounds([string]$path, [System.Drawing.Color]$target) {
             }
         }
         return @{ Left = $left; Top = $top; Right = $right; Bottom = $bottom; PixelCount = $count }
+    } finally {
+        $image.Dispose()
+    }
+}
+
+function Get-WorkflowAttachmentColorAnalysis([string]$path, [System.Drawing.Color[]]$colors, [int]$left = 0, [int]$top = 0, [int]$right = -1, [int]$bottom = -1) {
+    $image = [System.Drawing.Bitmap]::new($path)
+    try {
+        if ($right -lt 0) { $right = $image.Width }
+        if ($bottom -lt 0) { $bottom = $image.Height }
+        if ($left -lt 0 -or $top -lt 0 -or $right -gt $image.Width -or $bottom -gt $image.Height -or $right -le $left -or $bottom -le $top) {
+            throw 'The attachment pixel-analysis region falls outside its captured image.'
+        }
+        $metrics = @{}
+        foreach ($color in $colors) {
+            $key = '{0},{1},{2}' -f $color.R, $color.G, $color.B
+            $metrics[$key] = @{ Left = $right; Top = $bottom; Right = $left - 1; Bottom = $top - 1; PixelCount = 0 }
+        }
+        for ($y = $top; $y -lt $bottom; $y++) {
+            for ($x = $left; $x -lt $right; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                foreach ($color in $colors) {
+                    if ([Math]::Abs([int]$pixel.R - [int]$color.R) -gt 8 -or [Math]::Abs([int]$pixel.G - [int]$color.G) -gt 8 -or [Math]::Abs([int]$pixel.B - [int]$color.B) -gt 8) { continue }
+                    $key = '{0},{1},{2}' -f $color.R, $color.G, $color.B
+                    $bound = $metrics[$key]
+                    $bound.Left = [Math]::Min($bound.Left, $x)
+                    $bound.Top = [Math]::Min($bound.Top, $y)
+                    $bound.Right = [Math]::Max($bound.Right, $x + 1)
+                    $bound.Bottom = [Math]::Max($bound.Bottom, $y + 1)
+                    $bound.PixelCount++
+                    break
+                }
+            }
+        }
+        return @{ Width = $image.Width; Height = $image.Height; Colors = $metrics }
     } finally {
         $image.Dispose()
     }
@@ -1545,6 +1704,277 @@ function Assert-PreviewPixelsCaptured([string]$path, [PoratakeTooltipProbe+Rect]
         }
         if (-not $Quiet) { Write-Host "Daemon screenshot positively captured the preview image: magenta=$magenta/$checked pixels." }
     } finally { $image.Dispose() }
+}
+
+function New-WorkflowFixtureBitmapHandle([System.Drawing.Color[]]$colors) {
+    if ($colors.Count -ne 4) { throw 'An attachment fixture requires four quadrant colors.' }
+    $bitmap = [System.Drawing.Bitmap]::new($fixtureWidth, $fixtureHeight, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        for ($index = 0; $index -lt $colors.Count; $index++) {
+            $brush = [System.Drawing.SolidBrush]::new($colors[$index])
+            try {
+                $x = if (($index % 2) -eq 0) { 0 } else { $fixtureWidth / 2 }
+                $y = if ($index -lt 2) { 0 } else { $fixtureHeight / 2 }
+                $graphics.FillRectangle($brush, $x, $y, $fixtureWidth / 2, $fixtureHeight / 2)
+            } finally {
+                $brush.Dispose()
+            }
+        }
+        $handle = $bitmap.GetHbitmap()
+        if ($handle -eq [IntPtr]::Zero) { throw 'Could not create the attachment fixture bitmap.' }
+        return $handle
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function Set-WorkflowFixtureColors([System.Drawing.Color[]]$colors, [IntPtr]$behindWindow, [uint32]$behindProcessId) {
+    Release-ScreenshotFixture
+    $script:workflowFixtureBitmapHandle = New-WorkflowFixtureBitmapHandle $colors
+    $script:workflowFixtureWindow = [PoratakeTooltipFixture]::CreateScreenshotWindow((ConvertTo-FixtureRect $fixtureBounds))
+    $script:workflowFixturePreviousBitmapHandle = [PoratakeTooltipFixture]::SetScreenshotBitmap($script:workflowFixtureWindow, $script:workflowFixtureBitmapHandle, [uint32]$PID)
+    if ($script:workflowFixturePreviousBitmapHandle -ne [IntPtr]::Zero) { throw 'The attachment fixture window already had an attached bitmap.' }
+    [PoratakeTooltipFixture]::ShowScreenshotWindowBehind($script:workflowFixtureWindow, (ConvertTo-FixtureRect $fixtureBounds), $behindWindow, [uint32]$PID, $behindProcessId)
+    $center = New-Object PoratakeTooltipProbe+Point
+    $center.X = [int](($fixtureBounds.Left + $fixtureBounds.Right) / 2)
+    $center.Y = [int](($fixtureBounds.Top + $fixtureBounds.Bottom) / 2)
+    $hit = [PoratakeTooltipProbe]::WindowFromPoint($center)
+    if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $behindWindow) { throw 'The test editor does not occlude the attachment fixture at its center.' }
+    Wait-WorkflowFixtureColors $colors 'The attachment fixture bitmap did not repaint.'
+}
+
+function Update-WorkflowFixtureColors([System.Drawing.Color[]]$colors) {
+    $newBitmap = New-WorkflowFixtureBitmapHandle $colors
+    $script:workflowFixturePreviousBitmapHandle = [PoratakeTooltipFixture]::SetScreenshotBitmap($script:workflowFixtureWindow, $newBitmap, [uint32]$PID)
+    $script:workflowFixtureBitmapHandle = $newBitmap
+    Wait-WorkflowFixtureColors $colors 'The live attachment fixture did not repaint before selection.'
+}
+
+function Wait-WorkflowFixtureColors([System.Drawing.Color[]]$colors, [string]$failure) {
+    Wait-Until {
+        for ($index = 0; $index -lt $colors.Count; $index++) {
+            $x = if (($index % 2) -eq 0) { [int]($fixtureWidth / 4) } else { [int](3 * $fixtureWidth / 4) }
+            $y = if ($index -lt 2) { [int]($fixtureHeight / 4) } else { [int](3 * $fixtureHeight / 4) }
+            $pixel = [PoratakeTooltipFixture]::ScreenshotPixel($script:workflowFixtureWindow, $x, $y, [uint32]$PID)
+            if ($pixel -eq 0xFFFFFFFF) { return $null }
+            if ([Math]::Abs([int]($pixel -band 255) - [int]$colors[$index].R) -gt 3 -or
+                [Math]::Abs([int](($pixel -shr 8) -band 255) - [int]$colors[$index].G) -gt 3 -or
+                [Math]::Abs([int](($pixel -shr 16) -band 255) - [int]$colors[$index].B) -gt 3) { return $null }
+        }
+        return $true
+    } 3000 $failure | Out-Null
+}
+
+function Get-WorkflowAttachmentColorKey([System.Drawing.Color]$color) {
+    return '{0},{1},{2}' -f $color.R, $color.G, $color.B
+}
+
+function Assert-WorkflowAttachmentColors([string]$path, [System.Drawing.Color[]]$colors, [string]$label, [int]$layerIndex, [int]$layerCount, $analysis = $null) {
+    if ($null -eq $analysis) { $analysis = Get-WorkflowAttachmentColorAnalysis $path $colors }
+    $layout = $script:workflowAttachmentLayout
+    $expectedWidth = $layout.PrimaryWidth + $layerCount * ($layout.LayerWidth + $layout.Spacing)
+    $expectedHeight = [Math]::Max($layout.PrimaryHeight, $layout.LayerHeight)
+    if ($analysis.Width -ne $expectedWidth -or $analysis.Height -ne $expectedHeight) {
+        throw "$label dimensions were $($analysis.Width)x$($analysis.Height), expected ${expectedWidth}x${expectedHeight} from the selected ROI and layer scale."
+    }
+    $regionLeft = $layout.PrimaryWidth + $layout.Spacing + $layerIndex * ($layout.LayerWidth + $layout.Spacing)
+    $region = @{ Left = $regionLeft; Top = 0; Right = $regionLeft + $layout.LayerWidth; Bottom = $layout.LayerHeight }
+    foreach ($color in $colors) {
+        $key = Get-WorkflowAttachmentColorKey $color
+        $actual = $analysis.Colors[$key]
+        $source = $script:workflowAttachmentSourceColors[$key]
+        if ($null -eq $actual -or $null -eq $source -or $actual.PixelCount -ne $source.PixelCount) {
+            $actualCount = if ($null -eq $actual) { 0 } else { $actual.PixelCount }
+            $expectedCount = if ($null -eq $source) { 0 } else { $source.PixelCount }
+            throw "$label color $key coverage was $actualCount pixels, expected $expectedCount from the selected source ROI."
+        }
+        $expectedBounds = @{
+            Left = $region.Left + [int][Math]::Round(($source.Left - $layout.RoiLeft) * $layout.ScaleX)
+            Top = $region.Top + [int][Math]::Round(($source.Top - $layout.RoiTop) * $layout.ScaleY)
+            Right = $region.Left + [int][Math]::Round(($source.Right - $layout.RoiLeft) * $layout.ScaleX)
+            Bottom = $region.Top + [int][Math]::Round(($source.Bottom - $layout.RoiTop) * $layout.ScaleY)
+        }
+        if ($actual.Left -ne $expectedBounds.Left -or $actual.Top -ne $expectedBounds.Top -or $actual.Right -ne $expectedBounds.Right -or $actual.Bottom -ne $expectedBounds.Bottom) {
+            throw "$label color $key bounds were $($actual.Left),$($actual.Top)-$($actual.Right),$($actual.Bottom), expected $($expectedBounds.Left),$($expectedBounds.Top)-$($expectedBounds.Right),$($expectedBounds.Bottom)."
+        }
+    }
+    Write-Host "$label saved at $($analysis.Width)x$($analysis.Height), exact attachment bounds=$($region.Left),$($region.Top)-$($region.Right),$($region.Bottom)."
+    return @{ Width = $analysis.Width; Height = $analysis.Height; Bounds = $region; Analysis = $analysis }
+}
+
+function Assert-WorkflowColorsAbsent([string]$path, [System.Drawing.Color[]]$colors, [string]$label, $analysis = $null) {
+    if ($null -eq $analysis) { $analysis = Get-WorkflowAttachmentColorAnalysis $path $colors }
+    foreach ($color in $colors) {
+        $key = Get-WorkflowAttachmentColorKey $color
+        if ($analysis.Colors[$key].PixelCount -gt 0) { throw "$label unexpectedly contains pre-attachment pixels $key." }
+    }
+}
+
+function Save-WorkflowEditorOutput([IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, [string]$proofPath, [string]$label) {
+    $fileName = "poratake-editor-attach-$([guid]::NewGuid().ToString('N')).png"
+    $expectedPath = Join-Path $workflowExportDirectory $fileName
+    if ([System.IO.File]::Exists($expectedPath)) { throw "$label unique output path already exists." }
+    $button = Get-VideoEditorButtonReadiness $editorHandle $editorBounds $proofPath 'Save'
+    $dialog = Open-EditorOwnedDialog $editorHandle $button.button.bounds 'Save Screenshot'
+    Set-EditorSaveDialogFileName $dialog $fileName ([System.IO.Path]::ChangeExtension($proofPath, '.filename.json'))
+    [PoratakeTooltipProbe]::PressKey(0x0D)
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($dialog) } 10000 "$label save dialog did not close after accepting the test-owned output path." | Out-Null
+    Wait-Until {
+        if (-not [System.IO.File]::Exists($expectedPath)) { return $null }
+        try {
+            $image = [System.Drawing.Bitmap]::new($expectedPath)
+            $readable = $image.Width -gt 0 -and $image.Height -gt 0
+            $image.Dispose()
+            return $readable
+        } catch { return $null }
+    } 15000 "$label did not publish its exact unique PNG path in the isolated export directory." | Out-Null
+    return $expectedPath
+}
+
+function Get-WorkflowAttachmentTempFiles {
+    $files = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'poratake-editor-*.png' -File -ErrorAction SilentlyContinue) {
+        $null = $files.Add([System.IO.Path]::GetFullPath($file.FullName))
+    }
+    return ,$files
+}
+
+function Assert-WorkflowAttachmentTempFilesClean([System.Collections.Generic.HashSet[string]]$baseline, [string]$label) {
+    foreach ($file in Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'poratake-editor-*.png' -File -ErrorAction SilentlyContinue) {
+        $path = [System.IO.Path]::GetFullPath($file.FullName)
+        if (-not $baseline.Contains($path)) { throw "$label left a new temporary attachment image behind: $path" }
+    }
+}
+
+function Get-WorkflowAttachmentSelection {
+    $startX = $fixtureBounds.Left + 1
+    $startY = $fixtureBounds.Top + 1
+    $endX = $fixtureBounds.Right - 1
+    $endY = $fixtureBounds.Bottom - 1
+    return @{
+        StartX = $startX
+        StartY = $startY
+        EndX = $endX
+        EndY = $endY
+        Width = $endX - $startX
+        Height = $endY - $startY
+        RoiLeft = $startX - $fixtureBounds.Left
+        RoiTop = $startY - $fixtureBounds.Top
+        RoiRight = $endX - $fixtureBounds.Left
+        RoiBottom = $endY - $fixtureBounds.Top
+    }
+}
+
+function Open-WorkflowEditorAttachSelector([System.Diagnostics.Process]$app, [IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, [string]$proofPrefix, [System.Drawing.Color[]]$beforeColors, [System.Drawing.Color[]]$liveColors) {
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)) { throw 'Could not foreground the screenshot editor before Capture & Attach.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $editorHandle } 3000 'The screenshot editor did not become foreground before Capture & Attach.' | Out-Null
+    $captureButton = Get-VideoEditorButtonReadiness $editorHandle $editorBounds (Join-Path $captureRoot "$proofPrefix-capture-button.json") 'Capture & Attach'
+    $capturePoint = New-Object PoratakeTooltipProbe+Point
+    $capturePoint.X = [int][Math]::Round(($captureButton.button.bounds.left + $captureButton.button.bounds.right) / 2.0)
+    $capturePoint.Y = [int][Math]::Round(($captureButton.button.bounds.top + $captureButton.button.bounds.bottom) / 2.0)
+    $captureHit = [PoratakeTooltipProbe]::WindowFromPoint($capturePoint)
+    if ($captureHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($captureHit, 2) -ne $editorHandle) { throw 'Native hit testing for Capture & Attach did not reach the screenshot editor.' }
+    [PoratakeTooltipProbe]::Click($capturePoint.X, $capturePoint.Y)
+    $edgeButton = Get-VideoEditorButtonReadiness $editorHandle $editorBounds (Join-Path $captureRoot "$proofPrefix-right-edge-button.json") 'Capture and attach at the right edge'
+    $edgePoint = New-Object PoratakeTooltipProbe+Point
+    $edgePoint.X = [int][Math]::Round(($edgeButton.button.bounds.left + $edgeButton.button.bounds.right) / 2.0)
+    $edgePoint.Y = [int][Math]::Round(($edgeButton.button.bounds.top + $edgeButton.button.bounds.bottom) / 2.0)
+    $edgeHit = [PoratakeTooltipProbe]::WindowFromPoint($edgePoint)
+    if ($edgeHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($edgeHit, 2) -ne $editorHandle) { throw 'Native hit testing for the right-edge attachment control did not reach the screenshot editor.' }
+    [PoratakeTooltipProbe]::Click($edgePoint.X, $edgePoint.Y)
+    Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($editorHandle) } 5000 'The screenshot editor did not hide while its attachment selector opened.' | Out-Null
+    $selectorHit = Wait-Until {
+        if ($app.HasExited) { throw 'The screenshot editor app exited before the attachment selector appeared.' }
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        $process = [uint32]0
+        [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$process)
+        if ($process -ne [uint32]$app.Id) { return $null }
+        $rect = New-Object PoratakeTooltipProbe+Rect
+        if (-not [PoratakeTooltipProbe]::GetWindowRect($hit, [ref]$rect) -or $rect.Left -gt $fixtureCenter.X -or $rect.Top -gt $fixtureCenter.Y -or $rect.Right -le $fixtureCenter.X -or $rect.Bottom -le $fixtureCenter.Y) { return $null }
+        return $hit
+    } 10000 'The native attachment selector did not receive hit testing over the test fixture.'
+    $selectorRoot = [PoratakeTooltipProbe]::GetAncestor($selectorHit, 2)
+    if ($selectorRoot -eq [IntPtr]::Zero) { $selectorRoot = $selectorHit }
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($selectorRoot)) { throw 'Could not foreground the native attachment selector.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $selectorRoot } 3000 'The native attachment selector did not become the foreground input target.' | Out-Null
+    $selection = Get-WorkflowAttachmentSelection
+    if ($beforeColors -and $beforeColors.Count -eq 4) {
+        $path = Join-Path $captureRoot "$proofPrefix-before-live-update.png"
+        Capture-TooltipArea "$proofPrefix-before-live-update" $fixtureBounds $path
+        Assert-QuadrantFixtureCapture $path $fixtureWidth $fixtureHeight 0 $beforeColors 8 "$proofPrefix selector underlying pixels" | Out-Null
+    }
+    if ($liveColors -and $liveColors.Count -eq 4) {
+        Update-WorkflowFixtureColors $liveColors
+        $path = Join-Path $captureRoot "$proofPrefix-after-live-update.png"
+        Capture-TooltipArea "$proofPrefix-after-live-update" $fixtureBounds $path
+        Assert-QuadrantFixtureCapture $path $fixtureWidth $fixtureHeight 0 $liveColors 8 "$proofPrefix selector live pixels" | Out-Null
+        $source = Get-WorkflowAttachmentColorAnalysis $path $liveColors $selection.RoiLeft $selection.RoiTop $selection.RoiRight $selection.RoiBottom
+        $splitX = [int]($fixtureWidth / 2)
+        $splitY = [int]($fixtureHeight / 2)
+        $sourceQuadrants = @(
+            @{ Left = $selection.RoiLeft; Top = $selection.RoiTop; Right = $splitX; Bottom = $splitY },
+            @{ Left = $splitX; Top = $selection.RoiTop; Right = $selection.RoiRight; Bottom = $splitY },
+            @{ Left = $selection.RoiLeft; Top = $splitY; Right = $splitX; Bottom = $selection.RoiBottom },
+            @{ Left = $splitX; Top = $splitY; Right = $selection.RoiRight; Bottom = $selection.RoiBottom }
+        )
+        foreach ($color in $liveColors) {
+            $index = [array]::IndexOf($liveColors, $color)
+            $key = Get-WorkflowAttachmentColorKey $color
+            $bounds = $source.Colors[$key]
+            $quadrant = $sourceQuadrants[$index]
+            $expectedCount = ($quadrant.Right - $quadrant.Left) * ($quadrant.Bottom - $quadrant.Top)
+            if ($bounds.PixelCount -ne $expectedCount -or $bounds.Left -ne $quadrant.Left -or $bounds.Top -ne $quadrant.Top -or $bounds.Right -ne $quadrant.Right -or $bounds.Bottom -ne $quadrant.Bottom) {
+                throw "$proofPrefix selected source quadrant $index was $($bounds.PixelCount) pixels at $($bounds.Left),$($bounds.Top)-$($bounds.Right),$($bounds.Bottom), expected $expectedCount pixels at $($quadrant.Left),$($quadrant.Top)-$($quadrant.Right),$($quadrant.Bottom)."
+            }
+            $script:workflowAttachmentSourceColors[$key] = $source.Colors[$key]
+        }
+        $scaleY = $sourceCaptureHeight / [double]$selection.Height
+        $layerWidth = [int][Math]::Round($selection.Width * $scaleY)
+        $layerHeight = $sourceCaptureHeight
+        $scaleX = $layerWidth / [double]$selection.Width
+        $scaleY = $layerHeight / [double]$selection.Height
+        if ($scaleX -ne 1.0 -or $scaleY -ne 1.0) { throw "$proofPrefix selection requires resampling ($scaleX x $scaleY), which invalidates exact source-pixel parity." }
+        $script:workflowAttachmentLayout = @{
+            PrimaryWidth = $sourceCaptureWidth
+            PrimaryHeight = $sourceCaptureHeight
+            LayerWidth = $layerWidth
+            LayerHeight = $layerHeight
+            Spacing = 0
+            ScaleX = $scaleX
+            ScaleY = $scaleY
+            RoiLeft = $selection.RoiLeft
+            RoiTop = $selection.RoiTop
+            SelectionWidth = $selection.Width
+            SelectionHeight = $selection.Height
+        }
+        Write-Host "$proofPrefix live capture verified: ROI=$($selection.Width)x$($selection.Height), scaled layer=$($layerWidth)x$($layerHeight), spacing=$($script:workflowAttachmentLayout.Spacing)."
+    }
+    return $selectorRoot
+}
+
+function Select-WorkflowEditorAttachArea([System.Diagnostics.Process]$app, [IntPtr]$editorHandle) {
+    $selection = Get-WorkflowAttachmentSelection
+    $start = New-Object PoratakeTooltipProbe+Point
+    $start.X = $selection.StartX
+    $start.Y = $selection.StartY
+    $end = New-Object PoratakeTooltipProbe+Point
+    $end.X = $selection.EndX
+    $end.Y = $selection.EndY
+    $hit = [PoratakeTooltipProbe]::WindowFromPoint($start)
+    if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -eq $editorHandle) { throw 'The attachment selection start did not reach the native selector while the editor was hidden.' }
+    $hitProcess = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($hit, [ref]$hitProcess)
+    if ($hitProcess -ne [uint32]$app.Id) { throw 'Native hit testing at the attachment selection start did not reach the GPUI selector.' }
+    [PoratakeTooltipProbe]::Drag($start.X, $start.Y, $end.X, $end.Y)
+    Wait-Until {
+        if ($app.HasExited) { throw 'The screenshot editor app exited before the attachment restored its editor.' }
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        return [PoratakeTooltipProbe]::IsWindowVisible($editorHandle) -and $script:workflowFixtureWindow -ne [IntPtr]::Zero -and [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -and [PoratakeTooltipProbe]::GetAncestor($hit, 2) -eq $editorHandle
+    } 15000 'The editor did not return after the attachment selection.' | Out-Null
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)) { throw 'Could not foreground the screenshot editor after attachment.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $editorHandle } 3000 'The screenshot editor did not regain foreground input after attachment.' | Out-Null
 }
 
 function Test-RectIntersects([PoratakeTooltipProbe+Rect]$first, [PoratakeTooltipProbe+Rect]$second) {
@@ -2602,6 +3032,7 @@ try {
             captureToClipboard = $false
             hideDesktopIcons = $false
             freezeScreen = $false
+            closeOnSave = $false
             format = 'png'
         }
         storage = @{ screenshotsPath = $workflowCaptureDirectory }
@@ -3004,13 +3435,17 @@ try {
     if (-not $workflowApplication.WaitForExit(5000)) { throw 'The capture/editor app did not exit before reopen verification.' }
     $reopenPreviousProfile = $env:PORATAKE_CONFIG_DIR
     $reopenPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    $reopenPreviousTracePath = $env:PORATAKE_TRACE_FILE
+    $attachmentTraceBaselineCount = if (Test-Path -LiteralPath $workflowTracePath) { @(Get-Content -LiteralPath $workflowTracePath).Count } else { 0 }
     try {
         $env:PORATAKE_CONFIG_DIR = $workflowProfileRoot
         $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $env:PORATAKE_TRACE_FILE = $workflowTracePath
         $reopenApplication = Start-Process -FilePath $executable -ArgumentList @("`"$savedExportPath`"") -WorkingDirectory $root -RedirectStandardOutput (Join-Path $workflowProfileRoot 'reopen-stdout.log') -RedirectStandardError (Join-Path $workflowProfileRoot 'reopen-stderr.log') -WindowStyle Hidden -PassThru
     } finally {
         if ($null -eq $reopenPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $reopenPreviousProfile }
         if ($null -eq $reopenPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $reopenPreviousDaemonPath }
+        if ($null -eq $reopenPreviousTracePath) { Remove-Item Env:PORATAKE_TRACE_FILE -ErrorAction SilentlyContinue } else { $env:PORATAKE_TRACE_FILE = $reopenPreviousTracePath }
     }
     if (-not $reopenApplication) { throw 'Could not launch the saved-image reopen app.' }
     Capture-OwnedDaemonChildren $reopenApplication
@@ -3217,6 +3652,88 @@ try {
         $reopenedBitmap.Dispose()
     }
     Write-Host "Saved flattened screenshot reopened and rendered with matching pixels at $($reopenedBounds.Right - $reopenedBounds.Left)x$($reopenedBounds.Bottom - $reopenedBounds.Top)."
+
+    $attachmentBeforeFirst = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(12, 80, 220),
+        [System.Drawing.Color]::FromArgb(240, 50, 100),
+        [System.Drawing.Color]::FromArgb(10, 190, 140),
+        [System.Drawing.Color]::FromArgb(220, 170, 20)
+    )
+    $attachmentLiveFirst = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(40, 200, 230),
+        [System.Drawing.Color]::FromArgb(200, 30, 220),
+        [System.Drawing.Color]::FromArgb(70, 220, 30),
+        [System.Drawing.Color]::FromArgb(240, 100, 20)
+    )
+    $attachmentBeforeSecond = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(20, 30, 90),
+        [System.Drawing.Color]::FromArgb(180, 200, 10),
+        [System.Drawing.Color]::FromArgb(240, 40, 70),
+        [System.Drawing.Color]::FromArgb(10, 150, 210)
+    )
+    $attachmentLiveSecond = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(100, 240, 5),
+        [System.Drawing.Color]::FromArgb(190, 10, 130),
+        [System.Drawing.Color]::FromArgb(15, 240, 80),
+        [System.Drawing.Color]::FromArgb(230, 60, 30)
+    )
+    $allAttachmentFixtureColors = @($attachmentBeforeFirst) + @($attachmentLiveFirst) + @($attachmentBeforeSecond) + @($attachmentLiveSecond)
+    $script:workflowAttachmentSourceColors = @{}
+    Assert-WorkflowColorsAbsent $savedExportPath $allAttachmentFixtureColors 'The original editor image'
+    $attachmentTempBaseline = Get-WorkflowAttachmentTempFiles
+
+    Set-WorkflowFixtureColors $attachmentBeforeFirst $reopenedEditor.Handle ([uint32]$reopenApplication.Id)
+    $null = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-first' $attachmentBeforeFirst $attachmentLiveFirst
+    Select-WorkflowEditorAttachArea $reopenApplication $reopenedEditor.Handle
+    $firstAttachmentOutput = Save-WorkflowEditorOutput $reopenedEditor.Handle $reopenedBounds (Join-Path $captureRoot 'editor-attach-first-save-button.json') 'First attachment'
+    $firstAttachmentAnalysis = Get-WorkflowAttachmentColorAnalysis $firstAttachmentOutput ($attachmentBeforeFirst + $attachmentLiveFirst)
+    $firstAttachmentBounds = Assert-WorkflowAttachmentColors $firstAttachmentOutput $attachmentLiveFirst 'First live attachment' 0 1 $firstAttachmentAnalysis
+    Assert-WorkflowColorsAbsent $firstAttachmentOutput $attachmentBeforeFirst 'First live attachment' $firstAttachmentAnalysis
+    if ($firstAttachmentBounds.Bounds.Left -ne ($sourceCaptureWidth + $script:workflowAttachmentLayout.Spacing)) { throw 'The first attachment pixels did not start at the expected right edge of the primary image.' }
+    Assert-WorkflowAttachmentTempFilesClean $attachmentTempBaseline 'First attachment'
+
+    Set-WorkflowFixtureColors $attachmentBeforeSecond $reopenedEditor.Handle ([uint32]$reopenApplication.Id)
+    $null = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-second' $attachmentBeforeSecond $attachmentLiveSecond
+    Select-WorkflowEditorAttachArea $reopenApplication $reopenedEditor.Handle
+    $secondAttachmentOutput = Save-WorkflowEditorOutput $reopenedEditor.Handle $reopenedBounds (Join-Path $captureRoot 'editor-attach-second-save-button.json') 'Repeated attachment'
+    $repeatAttachmentAnalysis = Get-WorkflowAttachmentColorAnalysis $secondAttachmentOutput ($allAttachmentFixtureColors)
+    $firstAttachmentBoundsInRepeat = Assert-WorkflowAttachmentColors $secondAttachmentOutput $attachmentLiveFirst 'First attachment after repeat' 0 2 $repeatAttachmentAnalysis
+    $secondAttachmentBounds = Assert-WorkflowAttachmentColors $secondAttachmentOutput $attachmentLiveSecond 'Second live attachment' 1 2 $repeatAttachmentAnalysis
+    Assert-WorkflowColorsAbsent $secondAttachmentOutput ($attachmentBeforeFirst + $attachmentBeforeSecond) 'Repeated live attachments' $repeatAttachmentAnalysis
+    if ($secondAttachmentBounds.Bounds.Left -ne ($firstAttachmentBoundsInRepeat.Bounds.Right + $script:workflowAttachmentLayout.Spacing)) { throw 'The repeated attachment bounds did not continue from the first right-edge attachment.' }
+    if ($secondAttachmentBounds.Width -le $firstAttachmentBounds.Width) { throw 'The repeated attachment did not expand the saved output dimensions.' }
+    Assert-WorkflowAttachmentTempFilesClean $attachmentTempBaseline 'Repeated attachment'
+
+    $captureCountBeforeCancel = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' }).Count
+    $null = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-cancel' $null $null
+    [PoratakeTooltipProbe]::PressKey(0x1B)
+    Wait-Until {
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+        return [PoratakeTooltipProbe]::IsWindowVisible($reopenedEditor.Handle) -and [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -and [PoratakeTooltipProbe]::GetAncestor($hit, 2) -eq $reopenedEditor.Handle
+    } 10000 'Cancelling the editor attachment did not restore the original editor window.' | Out-Null
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)) { throw 'Could not foreground the screenshot editor after cancelling attachment.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $reopenedEditor.Handle } 3000 'The screenshot editor did not regain foreground input after attachment cancellation.' | Out-Null
+    $captureCountAfterCancel = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' }).Count
+    if ($captureCountAfterCancel -ne $captureCountBeforeCancel) { throw 'Cancelling the editor attachment changed the screenshot library output.' }
+    $cancelledAttachmentOutput = Save-WorkflowEditorOutput $reopenedEditor.Handle $reopenedBounds (Join-Path $captureRoot 'editor-attach-cancel-save-button.json') 'Post-cancellation attachment state'
+    $savedBeforeCancelHash = (Get-FileHash -LiteralPath $secondAttachmentOutput -Algorithm SHA256).Hash
+    $savedAfterCancelHash = (Get-FileHash -LiteralPath $cancelledAttachmentOutput -Algorithm SHA256).Hash
+    if ($savedAfterCancelHash -cne $savedBeforeCancelHash) { throw 'Cancelling the editor attachment changed the saved composition.' }
+    Assert-WorkflowAttachmentTempFilesClean $attachmentTempBaseline 'Attachment cancellation'
+    $attachmentCaptureTrace = Wait-Until {
+        if (-not (Test-Path -LiteralPath $workflowTracePath)) { return $null }
+        $lines = @(Get-Content -LiteralPath $workflowTracePath)
+        if ($lines.Count -le $attachmentTraceBaselineCount) { return $null }
+        $entries = @($lines | Select-Object -Skip $attachmentTraceBaselineCount | Where-Object { $_ -match 'capture-area entered cached=' })
+        if ($entries.Count -lt 2) { return $null }
+        return $entries
+    } 5000 'The native attachment capture calls did not reach the daemon trace.'
+    if ($attachmentCaptureTrace.Count -ne 2 -or @($attachmentCaptureTrace | Where-Object { $_ -notmatch 'capture-area entered cached=false$' }).Count -ne 0) {
+        throw "Expected exactly two live uncached attachment captures, trace=$($attachmentCaptureTrace -join '; ')."
+    }
+    Release-ScreenshotFixture
+    if ($workflowFixtureWindow -ne [IntPtr]::Zero) { throw 'Could not close the attachment fixture before the isolated video editor workflow.' }
+    Write-Host "Hosted native editor attachment passed with freeze off: two daemon captures used cached=false, live selector repaint pixels replaced pre-open colors, exact repeated attachment bounds advanced from $($firstAttachmentBounds.Bounds.Left),$($firstAttachmentBounds.Bounds.Top)-$($firstAttachmentBounds.Bounds.Right),$($firstAttachmentBounds.Bounds.Bottom) to $($secondAttachmentBounds.Bounds.Left),$($secondAttachmentBounds.Bounds.Top)-$($secondAttachmentBounds.Bounds.Right),$($secondAttachmentBounds.Bounds.Bottom), temporary layers were removed, and Escape preserved the saved composition."
 
     Capture-OwnedDaemonChildren $reopenApplication
     if (-not $reopenApplication.HasExited) {
