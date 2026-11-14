@@ -4841,6 +4841,106 @@ mod tests {
         });
     }
 
+    #[herogpui::test]
+    fn selecting_through_a_pen_gap_moves_the_visible_lower_annotation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::new(160, 120).save(&source).unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor.tool = Tool::Select;
+            editor.history = annotations::AnnotationHistory::new(vec![
+                Annotation::Rectangle {
+                    id: "lower-fill".into(),
+                    x: 40.0,
+                    y: 40.0,
+                    width: 20.0,
+                    height: 20.0,
+                    stroke: "#ff0000".into(),
+                    stroke_width: 2.0,
+                    fill: Some("#ff0000".into()),
+                },
+                Annotation::Pen {
+                    id: "top-u-stroke".into(),
+                    points: vec![10.0, 10.0, 110.0, 10.0, 110.0, 110.0, 10.0, 110.0],
+                    stroke: "#000000".into(),
+                    stroke_width: 8.0,
+                },
+            ]);
+            editor.sync_snapshot(cx);
+            editor
+        });
+        cx.settle();
+
+        let screen_point = |cx: &mut gpui::VisualTestContext, image_x: f32, image_y: f32| {
+            cx.update(|_, app| {
+                let editor = editor.read(app);
+                let bounds = editor.bounds.borrow().unwrap();
+                gpui::point(
+                    bounds.origin.x + px(image_x * editor.zoom),
+                    bounds.origin.y + px(image_y * editor.zoom),
+                )
+            })
+        };
+        let start = screen_point(cx, 50.0, 50.0);
+        let end = screen_point(cx, 60.0, 55.0);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+
+        let (selected, lower_position, top_points) = cx.update(|_, app| {
+            let editor = editor.read(app);
+            let lower = editor
+                .history
+                .current()
+                .iter()
+                .find(|annotation| annotation.id() == "lower-fill")
+                .unwrap();
+            let top = editor
+                .history
+                .current()
+                .iter()
+                .find(|annotation| annotation.id() == "top-u-stroke")
+                .unwrap();
+            let Annotation::Rectangle { x, y, .. } = lower else {
+                panic!("lower annotation changed type")
+            };
+            let Annotation::Pen { points, .. } = top else {
+                panic!("top annotation changed type")
+            };
+            (
+                editor.selected_annotations.clone(),
+                (*x, *y),
+                points.clone(),
+            )
+        });
+        assert_eq!(selected, ["lower-fill"]);
+        assert_eq!(lower_position, (50.0, 45.0));
+        assert_eq!(
+            top_points,
+            [10.0, 10.0, 110.0, 10.0, 110.0, 110.0, 10.0, 110.0]
+        );
+
+        let top_stroke = screen_point(cx, 60.0, 10.0);
+        cx.simulate_mouse_move(top_stroke, None, gpui::Modifiers::none());
+        cx.simulate_click(top_stroke, gpui::Modifiers::none());
+        cx.settle();
+        assert_eq!(
+            cx.update(|_, app| editor.read(app).selected_annotations.clone()),
+            ["top-u-stroke"]
+        );
+    }
+
     fn point(x: f32, y: f32) -> Point {
         Point { x, y }
     }

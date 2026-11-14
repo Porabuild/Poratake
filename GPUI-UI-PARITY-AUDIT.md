@@ -1626,6 +1626,8 @@ This can still select empty bounds or let a lower mark win over a visible upper
 stroke. A release-mode scratch estimate measured a near-budget 2,339-point
 serpentine hit test at 1.97 ms median and 3.68 MB allocated; the earlier unbounded
 100,000-point probe took 107 ms and about 309 MB.
+An editor pointer-event test also drags a filled shape through a U-shaped pen
+gap and then selects the visible pen stroke, without moving the wrong annotation.
 A decoded-video regression also checks that a blackout covers an earlier filled
 annotation in both preview and export at four timeline positions.
 
