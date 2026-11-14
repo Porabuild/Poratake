@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
-    Styled, Window,
+    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Entity, MouseButton,
+    Render, Styled, Window,
 };
 use herogpui::components::TooltipPlacement;
 use herogpui::gpui;
@@ -167,6 +167,7 @@ struct CapturePreview {
 
 pub struct CapturePreviewWindow {
     previews: Vec<CapturePreview>,
+    revealed: bool,
     layout_generation: u64,
     display_menu: crate::ui::menu::MenuHandle,
     native_tooltip_status: NativeTooltipStatus,
@@ -256,11 +257,11 @@ impl CapturePreviewWindow {
         if let Some(handle) = existing {
             let updated = handle
                 .downcast::<CapturePreviewWindow>()
-                .is_some_and(|handle| {
+                .and_then(|handle| {
                     handle
                         .update(cx, |view, window, cx| {
                             let Some(preview) = preview.take() else {
-                                return;
+                                return false;
                             };
                             if view.active_preview_count() >= PREVIEW_MAX_STACK {
                                 if let Some(oldest) = view
@@ -281,11 +282,14 @@ impl CapturePreviewWindow {
                             view.previews.push(preview);
                             configure_stack_window(window, cx, view.active_preview_count());
                             cx.notify();
+                            view.revealed
                         })
-                        .is_ok()
+                        .ok()
                 });
-            if updated {
-                schedule_auto_dismiss(handle, id, cx, dismiss_token);
+            if let Some(revealed) = updated {
+                if revealed {
+                    schedule_auto_dismiss(handle, id, cx, dismiss_token);
+                }
                 return;
             }
             registry::forget(WindowKind::CapturePreview, cx);
@@ -352,19 +356,11 @@ impl CapturePreviewWindow {
     }
 
     fn open_stack_window(cx: &mut App, previews: Vec<CapturePreview>) {
-        let timers: Vec<(u64, Arc<AtomicU64>)> = previews
-            .iter()
-            .map(|preview| (preview.id, preview.dismiss_token.clone()))
-            .collect();
-        #[cfg(windows)]
-        let count = previews.len();
         let (bounds, display_id) = preview_stack_placement(cx);
         let window_bounds = display_id
             .and_then(|id| cx.find_display(id))
             .map(|display| crate::system::work_area::local_window_bounds(bounds, display.as_ref()))
             .unwrap_or(bounds);
-        #[cfg(windows)]
-        let bottom_aligned = preview_bottom_aligned(cx);
         let failure_body = match previews.as_slice() {
             [preview] => match preview.kind {
                 PreviewKind::Screenshot => {
@@ -424,6 +420,7 @@ impl CapturePreviewWindow {
                 });
                 let view = cx.new(|_| Self {
                     previews,
+                    revealed: !cfg!(windows) || cfg!(test),
                     layout_generation: 0,
                     display_menu: crate::ui::menu::MenuHandle::new(),
                     native_tooltip_status: NativeTooltipStatus::default(),
@@ -433,8 +430,10 @@ impl CapturePreviewWindow {
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
-                    window.on_next_frame(move |window, _cx| {
-                        reveal_preview_when_ready(window, bounds, count, bottom_aligned);
+                    let reveal_handle = window.window_handle();
+                    let reveal_view = view.clone();
+                    window.on_next_frame(move |window, cx| {
+                        reveal_preview_when_ready(window, reveal_handle, reveal_view, false, cx);
                     });
                 }
                 view
@@ -443,9 +442,7 @@ impl CapturePreviewWindow {
         if let Ok(handle) = opened {
             let handle: AnyWindowHandle = handle.into();
             registry::remember(WindowKind::CapturePreview, handle, cx);
-            for (id, dismiss_token) in timers {
-                schedule_auto_dismiss(handle, id, cx, dismiss_token);
-            }
+            schedule_revealed_previews(handle, cx);
         } else {
             crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
         }
@@ -468,26 +465,113 @@ fn preview_viewport_ready(
 #[cfg(windows)]
 fn reveal_preview_when_ready(
     window: &mut Window,
-    bounds: Bounds<gpui::Pixels>,
-    count: usize,
-    bottom_aligned: bool,
+    handle: AnyWindowHandle,
+    view: Entity<CapturePreviewWindow>,
+    configured: bool,
+    cx: &mut App,
 ) {
+    let (bounds, display_id) = preview_stack_placement(cx);
+    let Some(hwnd) = crate::windows::window_hwnd(window) else {
+        fail_preview_reveal(window, view, cx);
+        return;
+    };
+    let display = display_id.and_then(|id| cx.find_display(id));
+    let scale = display
+        .as_ref()
+        .map(|display| crate::system::work_area::capture_scale_factor(display.as_ref(), cx))
+        .unwrap_or_else(|| window.scale_factor());
+    crate::system::window_composition::apply_window_bounds(hwnd, bounds, scale);
     if !preview_viewport_ready(window.viewport_size(), bounds) {
         sync_preview_viewport(window, bounds);
-        window.on_next_frame(move |window, _cx| {
-            reveal_preview_when_ready(window, bounds, count, bottom_aligned)
+        window.on_next_frame(move |window, cx| {
+            reveal_preview_when_ready(window, handle, view, false, cx)
         });
         return;
     }
-    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-        crate::system::window_composition::apply_window_bounds(hwnd, bounds, window.scale_factor());
+    let count = view.update(cx, |view, _| view.active_preview_count());
+    if count == 0 {
+        fail_preview_reveal(window, view, cx);
+        return;
     }
-    configure_preview_stack_window(window, count, bottom_aligned);
-    window.on_next_frame(move |window, _cx| {
-        if let Some(hwnd) = crate::windows::window_hwnd(window) {
-            crate::system::window_composition::reveal_window(hwnd, false, 0);
+    configure_preview_stack_window(window, count, preview_bottom_aligned(cx));
+    if !configured {
+        window.on_next_frame(move |window, cx| {
+            reveal_preview_when_ready(window, handle, view, true, cx)
+        });
+        return;
+    }
+    crate::system::window_composition::reveal_window(hwnd, false, 0);
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool() } {
+        reveal_preview_stack_view(handle, view, cx);
+    } else {
+        fail_preview_reveal(window, view, cx);
+    }
+}
+
+#[cfg(windows)]
+fn fail_preview_reveal(window: &mut Window, view: Entity<CapturePreviewWindow>, cx: &mut App) {
+    let failure_body = view.update(cx, |view, _| preview_open_failure_body(&view.previews));
+    registry::forget(WindowKind::CapturePreview, cx);
+    window.remove_window();
+    crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
+}
+
+#[cfg(any(windows, test))]
+fn reveal_preview_stack_view(
+    handle: AnyWindowHandle,
+    view: Entity<CapturePreviewWindow>,
+    cx: &mut App,
+) {
+    let timers = view.update(cx, |view, _| {
+        if view.revealed {
+            return None;
         }
+        view.revealed = true;
+        Some(
+            view.previews
+                .iter()
+                .map(|preview| (preview.id, preview.dismiss_token.clone()))
+                .collect::<Vec<_>>(),
+        )
     });
+    let Some(timers) = timers else { return };
+    for (id, dismiss_token) in timers {
+        schedule_auto_dismiss(handle, id, cx, dismiss_token);
+    }
+}
+
+fn preview_open_failure_body(previews: &[CapturePreview]) -> &'static str {
+    match previews {
+        [preview] => match preview.kind {
+            PreviewKind::Screenshot => {
+                "The screenshot was saved, but its preview could not be opened."
+            }
+            PreviewKind::Video => "The recording was saved, but its preview could not be opened.",
+        },
+        _ => "The saved previews could not be opened.",
+    }
+}
+
+fn schedule_revealed_previews(handle: AnyWindowHandle, cx: &mut App) {
+    let timers = handle
+        .downcast::<CapturePreviewWindow>()
+        .and_then(|handle| {
+            handle
+                .update(cx, |view, _, _| {
+                    view.revealed.then(|| {
+                        view.previews
+                            .iter()
+                            .map(|preview| (preview.id, preview.dismiss_token.clone()))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .ok()
+        })
+        .flatten();
+    let Some(timers) = timers else { return };
+    for (id, dismiss_token) in timers {
+        schedule_auto_dismiss(handle, id, cx, dismiss_token);
+    }
 }
 
 const DISMISS_RETRY: Duration = Duration::from_millis(250);
@@ -3122,6 +3206,7 @@ mod tests {
     fn newer_layout_invalidates_an_older_region_completion() {
         let mut view = CapturePreviewWindow {
             previews: Vec::new(),
+            revealed: false,
             layout_generation: 0,
             display_menu: crate::ui::menu::MenuHandle::new(),
             native_tooltip_status: NativeTooltipStatus::default(),
@@ -3380,6 +3465,65 @@ mod tests {
         assert!(
             handle.update(cx, |_, _, _| ()).is_err(),
             "the preview must dismiss after the configured delay"
+        );
+    }
+
+    #[herogpui::test]
+    fn hidden_preview_starts_its_dismiss_delay_after_reveal(cx: &mut gpui::TestAppContext) {
+        use crate::config::store::ConfigStore;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = std::sync::Arc::new(
+            ConfigStore::load_at(dir.path().join("config.json")).expect("load config"),
+        );
+        store.update(|config| {
+            config.preview.auto_dismiss = true;
+            config.preview.auto_dismiss_seconds = 3.0;
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(60, 40, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .expect("write capture");
+        cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+        cx.run_until_parked();
+        let handle = stack_handle(cx)
+            .expect("the preview opened the shared stack window")
+            .downcast::<CapturePreviewWindow>()
+            .expect("preview stack");
+        handle
+            .update(cx, |view, _, _| {
+                view.revealed = false;
+                for preview in &view.previews {
+                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .expect("delay preview reveal");
+
+        cx.update(|cx| CapturePreviewWindow::open(cx, path));
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        assert_eq!(
+            handle
+                .update(cx, |view, _, _| view.active_preview_count())
+                .unwrap(),
+            2,
+            "hidden previews must not consume their dismiss delay"
+        );
+
+        let view = handle.root(cx).expect("preview stack root");
+        let any_handle: AnyWindowHandle = handle.into();
+        cx.update(|cx| reveal_preview_stack_view(any_handle, view, cx));
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS));
+        cx.run_until_parked();
+        assert!(
+            handle.update(cx, |_, _, _| ()).is_err(),
+            "both hidden previews must start their full dismiss delay after reveal"
         );
     }
 

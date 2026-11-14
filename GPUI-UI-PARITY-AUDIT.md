@@ -151,6 +151,11 @@ before capturing reopened-editor readiness pixels. The initial foreground and
 size checks passed; the retained evidence cannot distinguish a later foreground
 change, failed center-point hit testing, or an exception before capture. The
 harness now records these details on timeout.
+The [next Windows run at `f29632a1`](https://github.com/Porabuild/Poratake/actions/runs/43539748747)
+showed that another top-level window had foreground during the readiness timeout;
+its identity was not recorded and no reopened-editor pixels were captured. The
+harness now retries activation within the existing deadline and records the
+competing window's identity, while retaining the hit-test and pixel checks.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
@@ -797,7 +802,10 @@ them quieter than the independently mixed preview and GPUI export. Its FFmpeg
 mix now retains the source levels. A headless 440/880 Hz regression checks overlap,
 mute and track-end behavior when FFmpeg is available; a local AAC encode/decode
 probe also preserved both tones. Overloaded mixes and live system-audio capture
-remain unverified.
+remain unverified. A separate local headless test generated a genuine two-second
+audio-only M4A with the Windows daemon encoder, then verified sidecar selection,
+both tone frequencies, duration and preview/export audio in GPUI. This does not
+exercise a live audio endpoint.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
 Most GPUI surfaces use HeroGPUI tooltips and shared helpers. The tray icon,

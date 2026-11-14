@@ -356,6 +356,8 @@ $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
 $previousTooltipProof = $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF
 $previousTooltipVideoProof = $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF
+$previousSystemAudioFixture = $env:PORATAKE_SYSTEM_AUDIO_FIXTURE
+$previousSystemAudioProof = $env:PORATAKE_SYSTEM_AUDIO_PROOF
 $ownedDaemons = [System.Collections.Generic.List[object]]::new()
 $safeToDeleteProfile = $true
 $overlapWindow = [IntPtr]::Zero
@@ -384,6 +386,8 @@ $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerT
 $captureRoot = Join-Path $evidenceRoot 'captures'
 $workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
 $previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
+$systemAudioFixturePath = Join-Path $evidenceRoot 'native-system-audio-fixture.m4a'
+$systemAudioProofPath = Join-Path $evidenceRoot 'native-system-audio-preview-export.json'
 if (-not $evidenceRoot.StartsWith($runnerTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing evidence outside the runner temporary directory: $evidenceRoot"
 }
@@ -744,6 +748,31 @@ function Wait-Until([scriptblock]$condition, [int]$timeoutMilliseconds, [string]
     }
     if ($failure) { throw $failure }
     return $null
+}
+
+function Get-WindowIdentity([IntPtr]$handle) {
+    if ($handle -eq [IntPtr]::Zero) { return @{ hwnd = 0; title = ''; className = ''; processId = 0; threadId = 0; ownerHwnd = 0; rootHwnd = 0; visible = $false } }
+    try {
+        $processId = [uint32]0
+        $threadId = [PoratakeTooltipProbe]::GetWindowThreadProcessId($handle, [ref]$processId)
+        $owner = [PoratakeTooltipProbe]::GetWindow($handle, 4)
+        $root = [PoratakeTooltipProbe]::GetAncestor($handle, 2)
+        $processName = ''
+        try { $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch { }
+        return @{
+            hwnd = $handle.ToInt64()
+            title = [PoratakeTooltipProbe]::WindowText($handle)
+            className = [PoratakeTooltipProbe]::ClassName($handle)
+            processId = $processId
+            processName = $processName
+            threadId = $threadId
+            ownerHwnd = $owner.ToInt64()
+            rootHwnd = $root.ToInt64()
+            visible = [PoratakeTooltipProbe]::IsWindowVisible($handle)
+        }
+    } catch {
+        return @{ hwnd = $handle.ToInt64(); identityError = $_.Exception.Message }
+    }
 }
 
 function Open-EditorOwnedDialog([IntPtr]$editorHandle, $buttonBounds, [string]$title) {
@@ -3023,6 +3052,9 @@ try {
         expectedEditorHwnd = $reopenedEditor.Handle.ToInt64()
         foregroundHwnd = $null
         foregroundRootHwnd = $null
+        foregroundRecoveryAttempts = 0
+        lastForegroundRecoverySucceeded = $null
+        competingWindow = $null
         hitPoint = @{ x = $reopenHitPoint.X; y = $reopenHitPoint.Y }
         hitHwnd = $null
         hitRootHwnd = $null
@@ -3031,6 +3063,8 @@ try {
         failure = $null
         exception = $null
     }
+    $script:reopenForegroundRecoveryClock = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:reopenLastForegroundRecoveryAt = -250
     $reopenedPaintReady = Wait-Until {
         $script:reopenReadinessAttempt++
         $script:reopenReadinessDiagnostic.attempts = $script:reopenReadinessAttempt
@@ -3044,7 +3078,21 @@ try {
             $script:reopenReadinessDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
             if ($foreground -ne $reopenedEditor.Handle -and $foregroundRoot -ne $reopenedEditor.Handle) {
                 $script:reopenReadinessDiagnostic.failure = 'foreground-not-editor-or-owned-child'
-                return $null
+                $script:reopenReadinessDiagnostic.competingWindow = Get-WindowIdentity $foreground
+                if ($script:reopenForegroundRecoveryClock.ElapsedMilliseconds - $script:reopenLastForegroundRecoveryAt -lt 250) { return $null }
+                $script:reopenLastForegroundRecoveryAt = $script:reopenForegroundRecoveryClock.ElapsedMilliseconds
+                $script:reopenReadinessDiagnostic.foregroundRecoveryAttempts++
+                $script:reopenReadinessDiagnostic.stage = 'foreground-recovery'
+                $script:reopenReadinessDiagnostic.lastForegroundRecoverySucceeded = [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)
+                $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+                $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+                $script:reopenReadinessDiagnostic.foregroundHwnd = $foreground.ToInt64()
+                $script:reopenReadinessDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+                if ($foreground -ne $reopenedEditor.Handle -and $foregroundRoot -ne $reopenedEditor.Handle) {
+                    $script:reopenReadinessDiagnostic.failure = 'foreground-recovery-did-not-focus-editor'
+                    $script:reopenReadinessDiagnostic.competingWindow = Get-WindowIdentity $foreground
+                    return $null
+                }
             }
             $script:reopenReadinessDiagnostic.stage = 'native-hit-test'
             $hit = [PoratakeTooltipProbe]::WindowFromPoint($reopenHitPoint)
@@ -3307,6 +3355,29 @@ try {
             throw 'The test-owned recording handoff daemon did not exit before the video export workflow.'
         }
     }
+
+    $previousSystemAudioFixture = $env:PORATAKE_SYSTEM_AUDIO_FIXTURE
+    $previousSystemAudioProof = $env:PORATAKE_SYSTEM_AUDIO_PROOF
+    try {
+        $env:PORATAKE_SYSTEM_AUDIO_FIXTURE = $systemAudioFixturePath
+        $env:PORATAKE_SYSTEM_AUDIO_PROOF = $systemAudioProofPath
+        Push-Location (Join-Path $root 'src/main')
+        try {
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-daemon --bin poratake-daemon modules::recording_audio::tests::writes_a_system_audio_m4a_fixture -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw "The native audio-only M4A fixture writer failed with exit code $LASTEXITCODE" }
+            if (-not [System.IO.File]::Exists($systemAudioFixturePath) -or (Get-Item -LiteralPath $systemAudioFixturePath).Length -le 0) { throw 'The native audio-only M4A fixture was not created.' }
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::export::tests::system_audio_sidecar_tones_match_preview_and_export -- --ignored --exact
+            if ($LASTEXITCODE -ne 0) { throw "System-audio sidecar preview/export verification failed with exit code $LASTEXITCODE" }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        if ($null -eq $previousSystemAudioFixture) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_FIXTURE -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_FIXTURE = $previousSystemAudioFixture }
+        if ($null -eq $previousSystemAudioProof) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_PROOF = $previousSystemAudioProof }
+    }
+    $systemAudioProof = Get-Content -LiteralPath $systemAudioProofPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    if (-not $systemAudioProof.sidecarSelected -or [double]$systemAudioProof.previewExportMeanError -ge 500.0) { throw 'The system-audio sidecar proof did not verify the production preview/export path.' }
+    Write-Host "Native audio-only M4A sidecar tones survived preview and export; MAE=$($systemAudioProof.previewExportMeanError), strengths=$($systemAudioProof.toneStrengths | ConvertTo-Json -Compress)."
 
     New-Item -ItemType Directory -Path $videoProfileRoot -Force | Out-Null
     $videoConfig = @{
@@ -3692,6 +3763,8 @@ try {
     if ($null -eq $previousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $previousDaemonPath }
     if ($null -eq $previousTooltipProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_PARITY_PROOF = $previousTooltipProof }
     if ($null -eq $previousTooltipVideoProof) { Remove-Item Env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $previousTooltipVideoProof }
+    if ($null -eq $previousSystemAudioFixture) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_FIXTURE -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_FIXTURE = $previousSystemAudioFixture }
+    if ($null -eq $previousSystemAudioProof) { Remove-Item Env:PORATAKE_SYSTEM_AUDIO_PROOF -ErrorAction SilentlyContinue } else { $env:PORATAKE_SYSTEM_AUDIO_PROOF = $previousSystemAudioProof }
     $resolvedProfile = [System.IO.Path]::GetFullPath($profileRoot)
     $resolvedPreviewProfile = [System.IO.Path]::GetFullPath($previewProfileRoot)
     $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)

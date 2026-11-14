@@ -1759,4 +1759,75 @@ mod tests {
     fn microphone_selection_ignores_empty_values() {
         assert_eq!(microphone_selectors(Some(" "), Some("")), [None, None]);
     }
+
+    #[test]
+    #[ignore = "requires the hosted two-stage system-audio preview/export fixture"]
+    fn writes_a_system_audio_m4a_fixture() {
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let output_path = std::env::var_os("PORATAKE_SYSTEM_AUDIO_FIXTURE")
+            .map(PathBuf::from)
+            .expect("hosted system-audio fixture path");
+        let runner_temp = std::env::var_os("RUNNER_TEMP")
+            .map(PathBuf::from)
+            .expect("hosted runner temporary directory");
+        assert_eq!(
+            output_path
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("m4a")
+        );
+        assert!(
+            !output_path.exists(),
+            "refusing to replace an existing fixture"
+        );
+        let runner_temp = std::fs::canonicalize(runner_temp).expect("resolve runner temp");
+        let output_parent = std::fs::canonicalize(output_path.parent().expect("fixture parent"))
+            .expect("resolve fixture parent");
+        assert!(
+            output_parent.starts_with(&runner_temp),
+            "refusing to write outside runner temp: {}",
+            output_path.display()
+        );
+
+        let _apartment = ComApartment::initialize().expect("initialize Media Foundation MTA");
+        let mut encoder = AudioEncoder::new(&output_path).expect("create AAC audio-only writer");
+        let duration_frames = AAC_SAMPLE_RATE * 2;
+        let chunk_frames = AAC_SAMPLE_RATE / 10;
+        for start in (0..duration_frames).step_by(chunk_frames as usize) {
+            let frames = chunk_frames.min(duration_frames - start);
+            let mut pcm = Vec::with_capacity(frames as usize * AAC_BLOCK_ALIGN as usize);
+            for frame in start..start + frames {
+                let time = frame as f64 / f64::from(AAC_SAMPLE_RATE);
+                let frequency = if (0.2..0.7).contains(&time) {
+                    Some(440.0)
+                } else if (1.0..1.5).contains(&time) {
+                    Some(880.0)
+                } else {
+                    None
+                };
+                let sample = frequency
+                    .map(|frequency| {
+                        let phase = frame as f64 * frequency * std::f64::consts::TAU
+                            / f64::from(AAC_SAMPLE_RATE);
+                        (phase.sin() * 10_000.0) as i16
+                    })
+                    .unwrap_or(0);
+                pcm.extend_from_slice(&sample.to_le_bytes());
+                pcm.extend_from_slice(&sample.to_le_bytes());
+            }
+            encoder
+                .write(&pcm, frames, frames_to_hns(start, AAC_SAMPLE_RATE))
+                .expect("write deterministic system-audio fixture tone");
+        }
+        let staged = encoder.finish().expect("finalize audio-only M4A fixture");
+        assert_eq!(staged.output_path, output_path);
+        std::fs::rename(&staged.temporary_path, &staged.output_path)
+            .expect("publish audio-only M4A fixture");
+        assert!(
+            std::fs::metadata(&output_path)
+                .expect("read fixture metadata")
+                .len()
+                > 0
+        );
+    }
 }

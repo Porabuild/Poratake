@@ -901,6 +901,182 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "requires the hosted audio-only M4A fixture"]
+    fn system_audio_sidecar_tones_match_preview_and_export() {
+        use crate::video::audio_tracks::{self, VolumeSource};
+        use crate::video::preview_audio::{self, RebuildInputs};
+        use crate::windows::video_editor::model;
+        use std::collections::HashMap;
+
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let fixture = std::env::var_os("PORATAKE_SYSTEM_AUDIO_FIXTURE")
+            .map(PathBuf::from)
+            .expect("hosted audio-only M4A fixture path");
+        let result_path = std::env::var_os("PORATAKE_SYSTEM_AUDIO_PROOF")
+            .map(PathBuf::from)
+            .expect("hosted system-audio proof path");
+        assert!(fixture.is_file(), "audio-only M4A fixture is missing");
+        assert!(result_path.parent().is_some_and(Path::is_dir));
+        let runner_temp = std::fs::canonicalize(
+            std::env::var_os("RUNNER_TEMP")
+                .map(PathBuf::from)
+                .expect("hosted runner temporary directory"),
+        )
+        .expect("resolve runner temp");
+        let fixture_path = std::fs::canonicalize(&fixture).expect("resolve M4A fixture");
+        let proof_parent =
+            std::fs::canonicalize(result_path.parent().unwrap()).expect("resolve proof parent");
+        assert!(fixture_path.starts_with(&runner_temp));
+        assert!(proof_parent.starts_with(&runner_temp));
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("System Audio Sidecar.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = project::recording_video_path(&project);
+        std::fs::write(
+            &recording,
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let source_info = VideoDecoder::open(&recording)
+            .expect("open video fixture")
+            .info();
+        assert!(source_info.duration >= 1.8);
+
+        let system_path = project::system_audio_path(&project);
+        std::fs::copy(&fixture, &system_path).expect("copy system-audio M4A sidecar");
+        let sources = audio_tracks::Sources::resolve(&project);
+        assert!(!sources.system_is_embedded);
+        assert_eq!(sources.system.as_deref(), Some(system_path.as_path()));
+
+        let state = VideoEditorState {
+            source_duration: Some(source_info.duration),
+            segments: vec![model::Segment::spanning(source_info.duration)],
+            ..VideoEditorState::default()
+        };
+        let built =
+            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        assert_eq!(built.stems.len(), 1);
+        assert_eq!(built.stems[0].volume, VolumeSource::SystemAudio);
+        let preview = built.stems[0].samples.as_ref().clone();
+        assert_eq!(
+            build_audio(&project, &state, source_info.duration, source_info.duration),
+            Some(preview.clone())
+        );
+
+        let output = directory.path().join("system-audio-export.mp4");
+        run(
+            Request {
+                project: project.clone(),
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("export the project with its system-audio sidecar");
+        let exported = audio::decode(&output).expect("decode exported AAC audio");
+        let sidecar = audio::decode(&system_path).expect("decode the AAC system-audio sidecar");
+        let strength = |samples: &[i16], time: f64, frequency: f64| {
+            let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
+            audio::tone_strength(&samples[start..end], frequency)
+        };
+        let tones = [
+            ("440Hz-0.3s", 0.3, 440.0, 880.0),
+            ("440Hz-0.5s", 0.5, 440.0, 880.0),
+            ("880Hz-1.1s", 1.1, 880.0, 440.0),
+            ("880Hz-1.3s", 1.3, 880.0, 440.0),
+        ];
+        let mut strengths = serde_json::Map::new();
+        for (name, time, frequency, rejected_frequency) in tones {
+            let sidecar_strength = strength(&sidecar, time, frequency);
+            let preview_strength = strength(&preview, time, frequency);
+            let export_strength = strength(&exported, time, frequency);
+            let sidecar_rejected = strength(&sidecar, time, rejected_frequency);
+            let preview_rejected = strength(&preview, time, rejected_frequency);
+            let export_rejected = strength(&exported, time, rejected_frequency);
+            assert!(
+                sidecar_strength > 0.6,
+                "sidecar lacks {name}: {sidecar_strength}"
+            );
+            assert!(
+                preview_strength > 0.6,
+                "preview lacks {name}: {preview_strength}"
+            );
+            assert!(
+                export_strength > 0.5,
+                "export lacks {name}: {export_strength}"
+            );
+            assert!(
+                sidecar_rejected < 0.35,
+                "sidecar has the wrong pitch at {name}: {sidecar_rejected}"
+            );
+            assert!(
+                preview_rejected < 0.35,
+                "preview has the wrong pitch at {name}: {preview_rejected}"
+            );
+            assert!(
+                export_rejected < 0.35,
+                "export has the wrong pitch at {name}: {export_rejected}"
+            );
+            strengths.insert(
+                name.into(),
+                serde_json::json!({
+                    "sidecar": sidecar_strength,
+                    "preview": preview_strength,
+                    "export": export_strength,
+                    "sidecarRejectedPitch": sidecar_rejected,
+                    "previewRejectedPitch": preview_rejected,
+                    "exportRejectedPitch": export_rejected,
+                }),
+            );
+        }
+        let audio_duration =
+            |samples: &[i16]| samples.len() as f64 / f64::from(AUDIO_SAMPLE_RATE * AUDIO_CHANNELS);
+        let sidecar_duration = audio_duration(&sidecar);
+        let preview_duration = audio_duration(&preview);
+        let export_duration = audio_duration(&exported);
+        for (name, duration) in [
+            ("sidecar", sidecar_duration),
+            ("preview", preview_duration),
+            ("export", export_duration),
+        ] {
+            assert!(
+                (duration - 2.0).abs() < 0.08,
+                "{name} audio duration {duration}s differs from the 2s fixture"
+            );
+        }
+        let count = preview.len().min(exported.len());
+        let mean_error = preview[..count]
+            .iter()
+            .zip(&exported[..count])
+            .map(|(actual, expected)| f64::from((*actual as i32 - *expected as i32).abs()))
+            .sum::<f64>()
+            / count as f64;
+        assert!(
+            mean_error < 500.0,
+            "system-audio preview/export error {mean_error}"
+        );
+        std::fs::write(
+            result_path,
+            serde_json::to_vec(&serde_json::json!({
+                "sidecarSelected": !sources.system_is_embedded,
+                "durationSeconds": {
+                    "sidecar": sidecar_duration,
+                    "preview": preview_duration,
+                    "export": export_duration,
+                },
+                "previewExportMeanError": mean_error,
+                "toneStrengths": strengths,
+            }))
+            .expect("serialize system-audio proof"),
+        )
+        .expect("write system-audio proof");
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn cursor_keyboard_and_subtitles_match_export_across_timeline_edits() {
         use crate::windows::video_editor::{model, preview};
 
