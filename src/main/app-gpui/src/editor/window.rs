@@ -4200,7 +4200,7 @@ impl EditorWindow {
                     #[cfg(not(windows))]
                     let cleanup_warning = {
                         std::fs::write(&path, &bytes)?;
-                        None
+                        None::<String>
                     };
                     Ok::<_, std::io::Error>((path, cleanup_warning))
                 })
