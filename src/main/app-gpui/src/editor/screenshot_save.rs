@@ -110,7 +110,7 @@ fn write_existing_with(
     path: &Path,
     bytes: &[u8],
     write_content: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
-    restore_content: impl FnOnce(&mut File, &Path) -> io::Result<()>,
+    restore_content: impl FnOnce(&mut File, &Path, u64) -> io::Result<()>,
 ) -> io::Result<Option<String>> {
     let expected_id = file_identity(path)?;
     let mut target = OpenOptions::new()
@@ -152,7 +152,7 @@ fn write_existing_with(
     }
 
     if let Err(error) = write_content(&mut target, bytes) {
-        return match restore_content(&mut target, &backup_path) {
+        return match restore_content(&mut target, &backup_path, expected_length) {
             Ok(()) => match fs::remove_file(&backup_path) {
                 Ok(()) => Err(cleanup_stage_error(error, &stage_dir)),
                 Err(cleanup_error) => Err(io::Error::new(
@@ -205,11 +205,31 @@ fn write_content(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-fn restore_content(file: &mut File, backup_path: &Path) -> io::Result<()> {
+fn restore_content(file: &mut File, backup_path: &Path, expected_length: u64) -> io::Result<()> {
     let mut backup = File::open(backup_path)?;
+    if backup.metadata()?.len() != expected_length {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "recovery backup length does not match the original screenshot",
+        ));
+    }
+    restore_content_from_reader(file, &mut backup, expected_length)
+}
+
+fn restore_content_from_reader(
+    file: &mut File,
+    backup: &mut impl Read,
+    expected_length: u64,
+) -> io::Result<()> {
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
-    io::copy(&mut backup, file)?;
+    copy_expected_length(backup, file, expected_length)?;
+    if file.metadata()?.len() != expected_length {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "restored screenshot length does not match the original",
+        ));
+    }
     file.sync_all()
 }
 
@@ -792,6 +812,33 @@ mod tests {
     }
 
     #[test]
+    fn short_restore_read_is_rejected_and_backup_is_retained() {
+        let directory = tempfile::tempdir().unwrap();
+        let target_path = directory.path().join("capture.png");
+        let backup_path = directory.path().join("original");
+        fs::write(&target_path, b"partial target").unwrap();
+        fs::write(&backup_path, b"original screenshot bytes").unwrap();
+        let mut target = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&target_path)
+            .unwrap();
+        let mut short_reader = Cursor::new(b"short".to_vec());
+
+        let expected_length = fs::metadata(&backup_path).unwrap().len();
+        let result = restore_content_from_reader(&mut target, &mut short_reader, expected_length);
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        drop(target);
+        assert_eq!(
+            fs::read(&backup_path).unwrap(),
+            b"original screenshot bytes"
+        );
+        assert_eq!(fs::read(&target_path).unwrap(), b"short");
+    }
+
+    #[test]
     fn mismatched_backup_dacl_is_rejected_before_reading_source() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("capture.png");
@@ -833,7 +880,7 @@ mod tests {
                 file.write_all(&bytes[..5])?;
                 Err(io::Error::other("injected write failure"))
             },
-            |_, _| Err(io::Error::other("injected restore failure")),
+            |_, _, _| Err(io::Error::other("injected restore failure")),
         );
 
         let message = result.unwrap_err().to_string();
