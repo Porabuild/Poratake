@@ -1386,6 +1386,15 @@ mod tests {
                     fill: Some("#e04040".into()),
                 },
                 Annotation::Redact {
+                    id: "blackout-over-shape".into(),
+                    x: 40.,
+                    y: 32.,
+                    width: 24.,
+                    height: 24.,
+                    style: "blackout".into(),
+                    intensity: 5.,
+                },
+                Annotation::Redact {
                     id: "pixelate".into(),
                     x: 160.,
                     y: 60.,
@@ -1450,6 +1459,29 @@ mod tests {
             let original = to_bgra(&unredacted.compose(time, None).unwrap());
             let actual = exported.frame_at(time).unwrap();
             assert_eq!(actual.bgra.len(), expected.len());
+            for y in 48..68 {
+                for x in 56..76 {
+                    let pixel = (y * info.width as usize + x) * 4;
+                    assert_eq!(
+                        &expected[pixel..pixel + 4],
+                        &[0, 0, 0, 255],
+                        "preview blackout must cover the earlier filled annotation at {time}s, {x},{y}"
+                    );
+                    assert!(
+                        original[pixel + 2] >= 180,
+                        "unredacted control must retain the earlier filled annotation at {time}s, {x},{y}"
+                    );
+                    if (60..72).contains(&x) && (52..64).contains(&y) {
+                        assert!(
+                            actual.bgra[pixel..pixel + 3]
+                                .iter()
+                                .all(|channel| *channel <= 8),
+                            "decoded export exposed the earlier filled annotation through blackout at {time}s, {x},{y}: {:?}",
+                            &actual.bgra[pixel..pixel + 3]
+                        );
+                    }
+                }
+            }
             let error: u64 = actual
                 .bgra
                 .iter()
