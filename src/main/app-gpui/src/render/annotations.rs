@@ -119,6 +119,20 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
             distance_to_segment(point, (points[0], points[1]), (points[2], points[3]))
                 <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64
         }
+        Annotation::Arrow {
+            points,
+            stroke_width,
+            arrow_style,
+            bend_offset,
+            ..
+        } => arrow_hit_test(
+            *points,
+            *stroke_width,
+            arrow_style.as_deref(),
+            *bend_offset,
+            point,
+            zoom,
+        ),
         _ => {
             const TOLERANCE: f64 = 4.0;
             let (left, top, right, bottom) = annotation.bounds();
@@ -131,8 +145,17 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
 }
 
 fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
+    if ![point.0, point.1, start.0, start.1, end.0, end.1]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return f64::INFINITY;
+    }
     let delta = (end.0 - start.0, end.1 - start.1);
     let length_squared = delta.0 * delta.0 + delta.1 * delta.1;
+    if !length_squared.is_finite() {
+        return f64::INFINITY;
+    }
     if length_squared == 0.0 {
         return (point.0 - start.0).hypot(point.1 - start.1);
     }
@@ -140,6 +163,142 @@ fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) ->
         / length_squared)
         .clamp(0.0, 1.0);
     (point.0 - (start.0 + delta.0 * progress)).hypot(point.1 - (start.1 + delta.1 * progress))
+}
+
+fn arrow_hit_test(
+    points: [f64; 4],
+    stroke_width: f64,
+    arrow_style: Option<&str>,
+    bend: Option<Offset>,
+    point: (f64, f64),
+    zoom: f32,
+) -> bool {
+    if !points.into_iter().all(f64::is_finite)
+        || !stroke_width.is_finite()
+        || !point.0.is_finite()
+        || !point.1.is_finite()
+    {
+        return false;
+    }
+    let (x1, y1, x2, y2) = (points[0], points[1], points[2], points[3]);
+    let zoom = f64::from(zoom.max(0.01));
+    let hit_radius = stroke_width.abs() / 2.0 + 4.0 / zoom;
+    if !hit_radius.is_finite() {
+        return false;
+    }
+    let control = arrow_curve_control(&points, arrow_style, bend);
+    if let Some((control_x, control_y)) = control {
+        if !control_x.is_finite() || !control_y.is_finite() {
+            return false;
+        }
+        let mut budget = 1024;
+        if quadratic_stroke_hit(
+            point,
+            (x1, y1),
+            (control_x, control_y),
+            (x2, y2),
+            hit_radius,
+            zoom,
+            16,
+            &mut budget,
+        ) {
+            return true;
+        }
+    } else if distance_to_segment(point, (x1, y1), (x2, y2)) <= hit_radius {
+        return true;
+    }
+
+    let head_size = arrow_head_size(stroke_width);
+    if !head_size.is_finite() {
+        return false;
+    }
+    let end_angle = control.map_or_else(
+        || (y2 - y1).atan2(x2 - x1),
+        |(control_x, control_y)| (y2 - control_y).atan2(x2 - control_x),
+    );
+    if arrow_head_hit(point, x2, y2, end_angle, head_size, hit_radius) {
+        return true;
+    }
+    if matches!(arrow_style, Some("double" | "double-curved")) {
+        let start_angle = control.map_or_else(
+            || (y1 - y2).atan2(x1 - x2),
+            |(control_x, control_y)| (y1 - control_y).atan2(x1 - control_x),
+        );
+        return arrow_head_hit(point, x1, y1, start_angle, head_size, hit_radius);
+    }
+    false
+}
+
+fn arrow_head_hit(
+    point: (f64, f64),
+    x: f64,
+    y: f64,
+    angle: f64,
+    head_size: f64,
+    hit_radius: f64,
+) -> bool {
+    let (left, right) = arrow_head_points(x, y, angle, head_size);
+    distance_to_segment(point, (x, y), left) <= hit_radius
+        || distance_to_segment(point, (x, y), right) <= hit_radius
+}
+
+fn quadratic_stroke_hit(
+    point: (f64, f64),
+    start: (f64, f64),
+    control: (f64, f64),
+    end: (f64, f64),
+    hit_radius: f64,
+    zoom: f64,
+    depth: u8,
+    budget: &mut usize,
+) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    if ![start.0, start.1, control.0, control.1, end.0, end.1]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return false;
+    }
+    let min_x = start.0.min(control.0).min(end.0) - hit_radius;
+    let max_x = start.0.max(control.0).max(end.0) + hit_radius;
+    let min_y = start.1.min(control.1).min(end.1) - hit_radius;
+    let max_y = start.1.max(control.1).max(end.1) + hit_radius;
+    if point.0 < min_x || point.0 > max_x || point.1 < min_y || point.1 > max_y {
+        return false;
+    }
+    let flatness = distance_to_segment(control, start, end);
+    if !flatness.is_finite() {
+        return false;
+    }
+    if depth == 0 || flatness * zoom <= 0.25 {
+        return distance_to_segment(point, start, end) <= hit_radius + flatness;
+    }
+    let midpoint = |a: (f64, f64), b: (f64, f64)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    let start_control = midpoint(start, control);
+    let control_end = midpoint(control, end);
+    let center = midpoint(start_control, control_end);
+    quadratic_stroke_hit(
+        point,
+        start,
+        start_control,
+        center,
+        hit_radius,
+        zoom,
+        depth - 1,
+        budget,
+    ) || quadratic_stroke_hit(
+        point,
+        center,
+        control_end,
+        end,
+        hit_radius,
+        zoom,
+        depth - 1,
+        budget,
+    )
 }
 
 fn rounded_rectangle_hit(
@@ -1358,6 +1517,53 @@ mod tests {
             screenshot_annotation_at(&annotations, (50.0, 50.0), 1.0).map(Annotation::id),
             Some("top")
         );
+    }
+
+    #[test]
+    fn curved_arrow_and_both_heads_hit_outside_endpoint_bounds() {
+        let curved = Annotation::Arrow {
+            id: "curved".into(),
+            points: [10.0, 10.0, 90.0, 10.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            arrow_style: Some("curved".into()),
+            bend_offset: None,
+        };
+        assert!(hit_test_annotation(&curved, (50.0, 18.0), 1.0));
+        let bounds = curved.bounds();
+        assert!(18.0 > bounds.3 + 4.0);
+
+        let double = Annotation::Arrow {
+            id: "double".into(),
+            points: [10.0, 10.0, 90.0, 10.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            arrow_style: Some("double".into()),
+            bend_offset: None,
+        };
+        assert!(hit_test_annotation(&double, (76.1436, 18.0), 1.0));
+        assert!(hit_test_annotation(&double, (23.8564, 18.0), 1.0));
+    }
+
+    #[test]
+    fn arrow_bbox_gaps_and_non_finite_paths_do_not_hit() {
+        let arrow = Annotation::Arrow {
+            id: "diagonal".into(),
+            points: [10.0, 10.0, 90.0, 90.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            arrow_style: Some("standard".into()),
+            bend_offset: None,
+        };
+        assert!(!hit_test_annotation(&arrow, (10.0, 90.0), 1.0));
+        assert!(!arrow_hit_test(
+            [f64::MAX, f64::MAX, -f64::MAX, -f64::MAX],
+            2.0,
+            Some("curved"),
+            None,
+            (0.0, 0.0),
+            1.0,
+        ));
     }
 
     fn covered(canvas: &Canvas) -> usize {

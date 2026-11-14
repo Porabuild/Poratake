@@ -1618,7 +1618,8 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 Selecting through the empty interior of an outlined rectangle or circle now
 reaches the visible annotation underneath; line hit testing follows its stroke
 rather than its bounding box. Headless tests cover overlaps, rounded corners and
-zoom-aware tolerance. Arrows and freehand marks still use bounding boxes.
+zoom-aware tolerance. Straight and curved arrows also hit their rendered shafts
+and heads; freehand marks still use bounding boxes.
 A decoded-video regression also checks that a blackout covers an earlier filled
 annotation in both preview and export at four timeline positions.
 
