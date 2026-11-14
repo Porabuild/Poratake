@@ -1618,12 +1618,14 @@ is not a demonstrated product defect; reproduce before changing its behavior.
 Selecting through the empty interior of an outlined rectangle or circle now
 reaches the visible annotation underneath; line hit testing follows its stroke
 rather than its bounding box. Headless tests cover overlaps, rounded corners and
-zoom-aware tolerance. Straight and curved arrows also hit their rendered shafts
-and heads; freehand marks still use bounding boxes. A local release-mode scratch
-probe of the existing pen outline and a candidate contour scan measured a 100,000-
-sample serpentine stroke at 107 ms median and about 309 MB of allocations, so
-per-click outline regeneration was not adopted. A bounded cached or indexed
-approach remains to be verified.
+zoom-aware tolerance. Straight and curved arrows hit their rendered shafts and
+heads. Pen and highlight hits follow their rendered outlines within a per-click
+work budget. Over-budget marks fall back to their old bounds when no confirmed
+hit exists; a confirmed lower hit takes priority over an uncertain upper mark.
+This can still select empty bounds or let a lower mark win over a visible upper
+stroke. A release-mode scratch estimate measured a near-budget 2,339-point
+serpentine hit test at 1.97 ms median and 3.68 MB allocated; the earlier unbounded
+100,000-point probe took 107 ms and about 309 MB.
 A decoded-video regression also checks that a blackout covers an earlier filled
 annotation in both preview and export at four timeline positions.
 

@@ -15,6 +15,12 @@ use crate::render::canvas::{circle_path, rounded_rect_path, Canvas};
 use crate::render::freehand::{self, Vec2};
 use crate::render::{blur, color, text};
 
+const HIT_TEST_RAW_POINT_BUDGET: usize = 4_096;
+const HIT_TEST_OUTLINE_VERTEX_BUDGET: usize = 65_536;
+const HIT_TEST_CURVE_STEP_BUDGET: usize = 262_144;
+const HIT_TEST_CURVE_FLATNESS_SCREEN_PX: f64 = 0.25;
+const HIT_TEST_CURVE_MAX_DEPTH: u8 = 16;
+
 #[derive(Clone, Copy, Debug)]
 pub enum ScreenshotPaint<'a> {
     Annotation(&'a Annotation),
@@ -60,14 +66,73 @@ pub fn screenshot_annotation_at(
     point: (f64, f64),
     zoom: f32,
 ) -> Option<&Annotation> {
-    screenshot_paints(annotations.iter())
+    screenshot_annotation_at_with_budget(annotations, point, zoom, &mut HitTestBudget::default())
+}
+
+#[derive(Default)]
+struct HitTestBudget {
+    raw_points: usize,
+    outline_vertices: usize,
+    curve_steps: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnnotationHit {
+    Hit,
+    Miss,
+    Indeterminate,
+}
+
+impl HitTestBudget {
+    fn charge(&mut self, raw_points: usize, outline_vertices: usize) -> bool {
+        if raw_points > HIT_TEST_RAW_POINT_BUDGET.saturating_sub(self.raw_points)
+            || outline_vertices
+                > HIT_TEST_OUTLINE_VERTEX_BUDGET.saturating_sub(self.outline_vertices)
+        {
+            return false;
+        }
+        self.raw_points += raw_points;
+        self.outline_vertices += outline_vertices;
+        true
+    }
+
+    fn spend_curve_step(&mut self) -> bool {
+        if self.curve_steps == HIT_TEST_CURVE_STEP_BUDGET {
+            return false;
+        }
+        self.curve_steps += 1;
+        true
+    }
+}
+
+fn screenshot_annotation_at_with_budget<'a>(
+    annotations: &'a [Annotation],
+    point: (f64, f64),
+    zoom: f32,
+    budget: &mut HitTestBudget,
+) -> Option<&'a Annotation> {
+    let mut fallback = None;
+    for annotation in screenshot_paints(annotations.iter())
         .into_iter()
         .rev()
         .map(ScreenshotPaint::annotation)
-        .find(|annotation| hit_test_annotation(annotation, point, zoom))
+    {
+        match hit_test_annotation(annotation, point, zoom, budget) {
+            AnnotationHit::Hit => return Some(annotation),
+            AnnotationHit::Miss => {}
+            AnnotationHit::Indeterminate if fallback.is_none() => fallback = Some(annotation),
+            AnnotationHit::Indeterminate => {}
+        }
+    }
+    fallback
 }
 
-fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) -> bool {
+fn hit_test_annotation(
+    annotation: &Annotation,
+    point: (f64, f64),
+    zoom: f32,
+    budget: &mut HitTestBudget,
+) -> AnnotationHit {
     match annotation {
         Annotation::Rectangle {
             x,
@@ -82,13 +147,17 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
             let fill = fill
                 .as_deref()
                 .is_some_and(|fill| !fill.eq_ignore_ascii_case("none"));
-            rounded_rectangle_hit(
+            if rounded_rectangle_hit(
                 point,
                 (left, top, width, height),
                 1.0,
                 fill,
                 stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64,
-            )
+            ) {
+                AnnotationHit::Hit
+            } else {
+                AnnotationHit::Miss
+            }
         }
         Annotation::Circle {
             x,
@@ -99,7 +168,7 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
             ..
         } => {
             if *radius <= 0.0 {
-                return false;
+                return AnnotationHit::Miss;
             }
             let distance = (point.0 - x).hypot(point.1 - y);
             if fill
@@ -107,17 +176,26 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
                 .is_some_and(|fill| !fill.eq_ignore_ascii_case("none"))
                 && distance <= *radius
             {
-                return true;
+                return AnnotationHit::Hit;
             }
-            (distance - radius).abs() <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64
+            if (distance - radius).abs() <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64 {
+                AnnotationHit::Hit
+            } else {
+                AnnotationHit::Miss
+            }
         }
         Annotation::Line {
             points,
             stroke_width,
             ..
         } => {
-            distance_to_segment(point, (points[0], points[1]), (points[2], points[3]))
+            if distance_to_segment(point, (points[0], points[1]), (points[2], points[3]))
                 <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64
+            {
+                AnnotationHit::Hit
+            } else {
+                AnnotationHit::Miss
+            }
         }
         Annotation::Arrow {
             points,
@@ -125,21 +203,330 @@ fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) ->
             arrow_style,
             bend_offset,
             ..
-        } => arrow_hit_test(
+        } => match arrow_hit_test(
             *points,
             *stroke_width,
             arrow_style.as_deref(),
             *bend_offset,
             point,
             zoom,
-        ),
-        _ => {
-            const TOLERANCE: f64 = 4.0;
-            let (left, top, right, bottom) = annotation.bounds();
-            point.0 >= left - TOLERANCE
-                && point.0 <= right + TOLERANCE
-                && point.1 >= top - TOLERANCE
-                && point.1 <= bottom + TOLERANCE
+            budget,
+        ) {
+            Some(true) => AnnotationHit::Hit,
+            Some(false) => AnnotationHit::Miss,
+            None => legacy_indeterminate_annotation_hit(annotation, point),
+        },
+        Annotation::Pen {
+            points,
+            stroke_width,
+            ..
+        } => hit_test_pen(points, *stroke_width, point, zoom, budget),
+        Annotation::Highlight {
+            points,
+            stroke_width,
+            ..
+        } => hit_test_highlight(points, *stroke_width, point, zoom, budget),
+        _ => legacy_annotation_hit(annotation, point),
+    }
+}
+
+fn hit_test_pen(
+    points: &[f64],
+    stroke_width: f64,
+    point: (f64, f64),
+    zoom: f32,
+    budget: &mut HitTestBudget,
+) -> AnnotationHit {
+    let samples = points.len() / 2;
+    let stroke_points = if samples == 0 { 0 } else { samples.max(4) };
+    let Some(outline_bound) = stroke_points
+        .checked_mul(28)
+        .and_then(|count| count.checked_add(44))
+    else {
+        return legacy_pen_bounds_hit(points, point);
+    };
+    if !budget.charge(samples, 0) {
+        return legacy_pen_bounds_hit(points, point);
+    }
+    if !stroke_width.is_finite()
+        || stroke_width <= 0.0
+        || !point.0.is_finite()
+        || !point.1.is_finite()
+        || points
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .any(|pair| !pair[0].is_finite() || !pair[1].is_finite())
+    {
+        return legacy_pen_bounds_hit(points, point);
+    }
+    let Some((left, top, right, bottom)) = point_bounds(points) else {
+        return AnnotationHit::Miss;
+    };
+    let slop = 4.0 / f64::from(zoom.max(0.01));
+    let radius = stroke_width * 1.5 + slop;
+    if point.0 < left - radius
+        || point.0 > right + radius
+        || point.1 < top - radius
+        || point.1 > bottom + radius
+    {
+        return AnnotationHit::Miss;
+    }
+    if !budget.charge(0, outline_bound) {
+        return legacy_pen_bounds_hit(points, point);
+    }
+    let outline = crate::render::annotations::pen_outline(points, stroke_width);
+    if outline.len() > outline_bound {
+        return legacy_pen_bounds_hit(points, point);
+    }
+    match pen_outline_hit(&outline, point, slop, zoom, budget) {
+        Some(true) => AnnotationHit::Hit,
+        Some(false) => AnnotationHit::Miss,
+        None => legacy_pen_bounds_hit(points, point),
+    }
+}
+
+fn hit_test_highlight(
+    points: &[f64],
+    stroke_width: f64,
+    point: (f64, f64),
+    zoom: f32,
+    budget: &mut HitTestBudget,
+) -> AnnotationHit {
+    let samples = points.len() / 2;
+    let Some(outline_bound) = samples.checked_mul(2) else {
+        return legacy_highlight_bounds_hit(points, point);
+    };
+    if !budget.charge(samples, 0) {
+        return legacy_highlight_bounds_hit(points, point);
+    }
+    if !point.0.is_finite()
+        || !point.1.is_finite()
+        || !stroke_width.is_finite()
+        || points
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .any(|pair| !pair[0].is_finite() || !pair[1].is_finite())
+    {
+        return legacy_highlight_bounds_hit(points, point);
+    }
+    let Some((left, top, right, bottom)) = point_bounds(points) else {
+        return AnnotationHit::Miss;
+    };
+    let slop = 4.0 / f64::from(zoom.max(0.01));
+    let radius = stroke_width.abs() / 2.0 + slop;
+    if point.0 < left - radius
+        || point.0 > right + radius
+        || point.1 < top - radius
+        || point.1 > bottom + radius
+    {
+        return AnnotationHit::Miss;
+    }
+    if !budget.charge(0, outline_bound) {
+        return legacy_highlight_bounds_hit(points, point);
+    }
+    let outline = crate::render::annotations::highlighter_outline(points, stroke_width);
+    if polygon_hit(&outline, point, slop) {
+        AnnotationHit::Hit
+    } else {
+        AnnotationHit::Miss
+    }
+}
+
+fn legacy_annotation_hit(annotation: &Annotation, point: (f64, f64)) -> AnnotationHit {
+    let (left, top, right, bottom) = annotation.bounds();
+    if bounds_hit(left, top, right, bottom, point) {
+        AnnotationHit::Hit
+    } else {
+        AnnotationHit::Miss
+    }
+}
+
+fn legacy_indeterminate_annotation_hit(
+    annotation: &Annotation,
+    point: (f64, f64),
+) -> AnnotationHit {
+    let (left, top, right, bottom) = annotation.bounds();
+    if bounds_hit(left, top, right, bottom, point) {
+        AnnotationHit::Indeterminate
+    } else {
+        AnnotationHit::Miss
+    }
+}
+
+fn legacy_pen_bounds_hit(points: &[f64], point: (f64, f64)) -> AnnotationHit {
+    if points.as_chunks::<2>().0.is_empty() {
+        return if bounds_hit(0.0, 0.0, 0.0, 0.0, point) {
+            AnnotationHit::Indeterminate
+        } else {
+            AnnotationHit::Miss
+        };
+    }
+    if point_bounds(points)
+        .is_some_and(|(left, top, right, bottom)| bounds_hit(left, top, right, bottom, point))
+    {
+        AnnotationHit::Indeterminate
+    } else {
+        AnnotationHit::Miss
+    }
+}
+
+fn legacy_highlight_bounds_hit(points: &[f64], point: (f64, f64)) -> AnnotationHit {
+    legacy_pen_bounds_hit(points, point)
+}
+
+fn bounds_hit(left: f64, top: f64, right: f64, bottom: f64, point: (f64, f64)) -> bool {
+    const TOLERANCE: f64 = 4.0;
+    point.0 >= left - TOLERANCE
+        && point.0 <= right + TOLERANCE
+        && point.1 >= top - TOLERANCE
+        && point.1 <= bottom + TOLERANCE
+}
+
+fn point_bounds(points: &[f64]) -> Option<(f64, f64, f64, f64)> {
+    let first = points.as_chunks::<2>().0.first()?;
+    let (mut left, mut top, mut right, mut bottom) = (first[0], first[1], first[0], first[1]);
+    for pair in points.as_chunks::<2>().0.iter().skip(1) {
+        left = left.min(pair[0]);
+        top = top.min(pair[1]);
+        right = right.max(pair[0]);
+        bottom = bottom.max(pair[1]);
+    }
+    Some((left, top, right, bottom))
+}
+
+fn pen_outline_hit(
+    outline: &[Vec2],
+    point: (f64, f64),
+    slop: f64,
+    zoom: f32,
+    budget: &mut HitTestBudget,
+) -> Option<bool> {
+    let Some(first) = outline.first().copied() else {
+        return Some(false);
+    };
+    let mut current = first;
+    let mut winding = 0i32;
+    for index in 0..outline.len() {
+        let control = outline[index];
+        let next = outline[(index + 1) % outline.len()];
+        let end = ((control.0 + next.0) / 2.0, (control.1 + next.1) / 2.0);
+        let hit = scan_quadratic_outline(
+            point,
+            current,
+            control,
+            end,
+            slop,
+            f64::from(zoom.max(0.01)),
+            HIT_TEST_CURVE_MAX_DEPTH,
+            budget,
+            &mut winding,
+        )?;
+        if hit {
+            return Some(true);
+        }
+        current = end;
+    }
+    if distance_to_segment(point, current, first) <= slop {
+        return Some(true);
+    }
+    update_winding(point, current, first, &mut winding);
+    Some(winding != 0)
+}
+
+fn scan_quadratic_outline(
+    point: (f64, f64),
+    start: Vec2,
+    control: Vec2,
+    end: Vec2,
+    slop: f64,
+    zoom: f64,
+    depth: u8,
+    budget: &mut HitTestBudget,
+    winding: &mut i32,
+) -> Option<bool> {
+    if !budget.spend_curve_step() {
+        return None;
+    }
+    if ![
+        point.0, point.1, start.0, start.1, control.0, control.1, end.0, end.1,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+    {
+        return None;
+    }
+    let flatness = distance_to_segment(control, start, end);
+    if !flatness.is_finite() {
+        return None;
+    }
+    if flatness * zoom <= HIT_TEST_CURVE_FLATNESS_SCREEN_PX {
+        let hit_radius = slop + flatness;
+        if distance_to_segment(point, start, end) <= hit_radius {
+            return Some(true);
+        }
+        update_winding(point, start, end, winding);
+        return Some(false);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let midpoint = |a: Vec2, b: Vec2| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    let start_control = midpoint(start, control);
+    let control_end = midpoint(control, end);
+    let center = midpoint(start_control, control_end);
+    if scan_quadratic_outline(
+        point,
+        start,
+        start_control,
+        center,
+        slop,
+        zoom,
+        depth - 1,
+        budget,
+        winding,
+    )? {
+        return Some(true);
+    }
+    scan_quadratic_outline(
+        point,
+        center,
+        control_end,
+        end,
+        slop,
+        zoom,
+        depth - 1,
+        budget,
+        winding,
+    )
+}
+
+fn polygon_hit(outline: &[Vec2], point: (f64, f64), slop: f64) -> bool {
+    let Some(mut previous) = outline.last().copied() else {
+        return false;
+    };
+    let mut winding = 0i32;
+    let mut near = false;
+    for current in outline.iter().copied() {
+        if distance_to_segment(point, previous, current) <= slop {
+            near = true;
+        }
+        update_winding(point, previous, current, &mut winding);
+        previous = current;
+    }
+    near || winding != 0
+}
+
+fn update_winding(point: (f64, f64), start: (f64, f64), end: (f64, f64), winding: &mut i32) {
+    if (start.1 <= point.1 && end.1 > point.1) || (start.1 > point.1 && end.1 <= point.1) {
+        let cross =
+            (end.0 - start.0) * (point.1 - start.1) - (point.0 - start.0) * (end.1 - start.1);
+        if end.1 > start.1 && cross > 0.0 {
+            *winding += 1;
+        }
+        if end.1 < start.1 && cross < 0.0 {
+            *winding -= 1;
         }
     }
 }
@@ -172,26 +559,26 @@ fn arrow_hit_test(
     bend: Option<Offset>,
     point: (f64, f64),
     zoom: f32,
-) -> bool {
+    budget: &mut HitTestBudget,
+) -> Option<bool> {
     if !points.into_iter().all(f64::is_finite)
         || !stroke_width.is_finite()
         || !point.0.is_finite()
         || !point.1.is_finite()
     {
-        return false;
+        return Some(false);
     }
     let (x1, y1, x2, y2) = (points[0], points[1], points[2], points[3]);
     let zoom = f64::from(zoom.max(0.01));
     let hit_radius = stroke_width.abs() / 2.0 + 4.0 / zoom;
     if !hit_radius.is_finite() {
-        return false;
+        return Some(false);
     }
     let control = arrow_curve_control(&points, arrow_style, bend);
     if let Some((control_x, control_y)) = control {
         if !control_x.is_finite() || !control_y.is_finite() {
-            return false;
+            return Some(false);
         }
-        let mut budget = 1024;
         if quadratic_stroke_hit(
             point,
             (x1, y1),
@@ -200,33 +587,40 @@ fn arrow_hit_test(
             hit_radius,
             zoom,
             16,
-            &mut budget,
-        ) {
-            return true;
+            budget,
+        )? {
+            return Some(true);
         }
     } else if distance_to_segment(point, (x1, y1), (x2, y2)) <= hit_radius {
-        return true;
+        return Some(true);
     }
 
     let head_size = arrow_head_size(stroke_width);
     if !head_size.is_finite() {
-        return false;
+        return Some(false);
     }
     let end_angle = control.map_or_else(
         || (y2 - y1).atan2(x2 - x1),
         |(control_x, control_y)| (y2 - control_y).atan2(x2 - control_x),
     );
     if arrow_head_hit(point, x2, y2, end_angle, head_size, hit_radius) {
-        return true;
+        return Some(true);
     }
     if matches!(arrow_style, Some("double" | "double-curved")) {
         let start_angle = control.map_or_else(
             || (y1 - y2).atan2(x1 - x2),
             |(control_x, control_y)| (y1 - control_y).atan2(x1 - control_x),
         );
-        return arrow_head_hit(point, x1, y1, start_angle, head_size, hit_radius);
+        return Some(arrow_head_hit(
+            point,
+            x1,
+            y1,
+            start_angle,
+            head_size,
+            hit_radius,
+        ));
     }
-    false
+    Some(false)
 }
 
 fn arrow_head_hit(
@@ -250,37 +644,39 @@ fn quadratic_stroke_hit(
     hit_radius: f64,
     zoom: f64,
     depth: u8,
-    budget: &mut usize,
-) -> bool {
-    if *budget == 0 {
-        return false;
+    budget: &mut HitTestBudget,
+) -> Option<bool> {
+    if !budget.spend_curve_step() {
+        return None;
     }
-    *budget -= 1;
     if ![start.0, start.1, control.0, control.1, end.0, end.1]
         .into_iter()
         .all(f64::is_finite)
     {
-        return false;
+        return Some(false);
     }
     let min_x = start.0.min(control.0).min(end.0) - hit_radius;
     let max_x = start.0.max(control.0).max(end.0) + hit_radius;
     let min_y = start.1.min(control.1).min(end.1) - hit_radius;
     let max_y = start.1.max(control.1).max(end.1) + hit_radius;
     if point.0 < min_x || point.0 > max_x || point.1 < min_y || point.1 > max_y {
-        return false;
+        return Some(false);
     }
     let flatness = distance_to_segment(control, start, end);
     if !flatness.is_finite() {
-        return false;
+        return Some(false);
     }
-    if depth == 0 || flatness * zoom <= 0.25 {
-        return distance_to_segment(point, start, end) <= hit_radius + flatness;
+    if flatness * zoom <= HIT_TEST_CURVE_FLATNESS_SCREEN_PX {
+        return Some(distance_to_segment(point, start, end) <= hit_radius + flatness);
+    }
+    if depth == 0 {
+        return None;
     }
     let midpoint = |a: (f64, f64), b: (f64, f64)| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
     let start_control = midpoint(start, control);
     let control_end = midpoint(control, end);
     let center = midpoint(start_control, control_end);
-    quadratic_stroke_hit(
+    if quadratic_stroke_hit(
         point,
         start,
         start_control,
@@ -289,7 +685,10 @@ fn quadratic_stroke_hit(
         zoom,
         depth - 1,
         budget,
-    ) || quadratic_stroke_hit(
+    )? {
+        return Some(true);
+    }
+    quadratic_stroke_hit(
         point,
         center,
         control_end,
@@ -1406,6 +1805,11 @@ pub fn scale_to_composition(annotation: &Annotation, scale_x: f64, scale_y: f64)
 mod tests {
     use super::*;
 
+    fn test_hit_test(annotation: &Annotation, point: (f64, f64), zoom: f32) -> bool {
+        hit_test_annotation(annotation, point, zoom, &mut HitTestBudget::default())
+            == AnnotationHit::Hit
+    }
+
     fn outline_rect(id: &str, fill: Option<&str>) -> Annotation {
         Annotation::Rectangle {
             id: id.into(),
@@ -1419,13 +1823,26 @@ mod tests {
         }
     }
 
+    fn u_points() -> Vec<f64> {
+        vec![10.0, 10.0, 90.0, 10.0, 90.0, 90.0, 10.0, 90.0]
+    }
+
+    fn pen(id: &str, points: Vec<f64>) -> Annotation {
+        Annotation::Pen {
+            id: id.into(),
+            points,
+            stroke: "#000000".into(),
+            stroke_width: 8.0,
+        }
+    }
+
     #[test]
     fn hollow_and_filled_shapes_hit_their_rendered_regions() {
         let hollow = outline_rect("hollow", None);
         let filled = outline_rect("filled", Some("#ff0000"));
-        assert!(!hit_test_annotation(&hollow, (50.0, 50.0), 1.0));
-        assert!(hit_test_annotation(&hollow, (10.0, 50.0), 1.0));
-        assert!(hit_test_annotation(&filled, (50.0, 50.0), 1.0));
+        assert!(!test_hit_test(&hollow, (50.0, 50.0), 1.0));
+        assert!(test_hit_test(&hollow, (10.0, 50.0), 1.0));
+        assert!(test_hit_test(&filled, (50.0, 50.0), 1.0));
 
         let hollow_circle = Annotation::Circle {
             id: "hollow-circle".into(),
@@ -1445,9 +1862,9 @@ mod tests {
             stroke_width: 2.0,
             fill: Some("#ff0000".into()),
         };
-        assert!(!hit_test_annotation(&hollow_circle, (50.0, 50.0), 1.0));
-        assert!(hit_test_annotation(&hollow_circle, (70.0, 50.0), 1.0));
-        assert!(hit_test_annotation(&filled_circle, (50.0, 50.0), 1.0));
+        assert!(!test_hit_test(&hollow_circle, (50.0, 50.0), 1.0));
+        assert!(test_hit_test(&hollow_circle, (70.0, 50.0), 1.0));
+        assert!(test_hit_test(&filled_circle, (50.0, 50.0), 1.0));
     }
 
     #[test]
@@ -1463,8 +1880,8 @@ mod tests {
             fill: Some("#ff0000".into()),
         };
         let zoom = 10_000.0;
-        assert!(!hit_test_annotation(&rectangle, (10.2, 10.2), zoom));
-        assert!(hit_test_annotation(&rectangle, (10.5, 10.5), zoom));
+        assert!(!test_hit_test(&rectangle, (10.2, 10.2), zoom));
+        assert!(test_hit_test(&rectangle, (10.5, 10.5), zoom));
 
         let mut canvas = Canvas::new(640, 640).expect("canvas");
         canvas.scale(16.0, 16.0);
@@ -1480,8 +1897,8 @@ mod tests {
     #[test]
     fn shape_selection_slop_stays_four_screen_pixels_at_each_zoom() {
         let hollow = outline_rect("hollow", None);
-        assert!(hit_test_annotation(&hollow, (5.0, 50.0), 0.5));
-        assert!(!hit_test_annotation(&hollow, (5.0, 50.0), 4.0));
+        assert!(test_hit_test(&hollow, (5.0, 50.0), 0.5));
+        assert!(!test_hit_test(&hollow, (5.0, 50.0), 4.0));
 
         let line = Annotation::Line {
             id: "line".into(),
@@ -1489,9 +1906,9 @@ mod tests {
             stroke: "#000000".into(),
             stroke_width: 2.0,
         };
-        assert!(hit_test_annotation(&line, (50.0, 45.0), 0.5));
-        assert!(!hit_test_annotation(&line, (50.0, 45.0), 4.0));
-        assert!(!hit_test_annotation(&line, (10.0, 90.0), 1.0));
+        assert!(test_hit_test(&line, (50.0, 45.0), 0.5));
+        assert!(!test_hit_test(&line, (50.0, 45.0), 4.0));
+        assert!(!test_hit_test(&line, (10.0, 90.0), 1.0));
     }
 
     #[test]
@@ -1520,6 +1937,300 @@ mod tests {
     }
 
     #[test]
+    fn pen_and_highlight_hit_tests_match_rendered_outline_and_gaps() {
+        let points = u_points();
+        let pen = pen("pen-u", points.clone());
+        let highlight = Annotation::Highlight {
+            id: "highlight-u".into(),
+            points,
+            fill: "#000000".into(),
+            opacity: 0.5,
+            stroke_width: 12.0,
+        };
+        let mut pen_canvas = Canvas::new(120, 120).expect("pen canvas");
+        draw(&mut pen_canvas, &pen);
+        let mut highlight_canvas = Canvas::new(120, 120).expect("highlight canvas");
+        highlight_canvas.fill_all(Color::WHITE);
+        draw(&mut highlight_canvas, &highlight);
+        let pixel = |canvas: &Canvas, x: usize, y: usize| {
+            let index = (y * canvas.width() as usize + x) * 4;
+            let data = &canvas.pixmap().data()[index..index + 4];
+            [data[0], data[1], data[2], data[3]]
+        };
+
+        assert!(pixel(&pen_canvas, 50, 10)[3] > 0);
+        assert_eq!(pixel(&pen_canvas, 50, 50)[3], 0);
+        assert!(test_hit_test(&pen, (50.0, 10.0), 1.0));
+        assert!(!test_hit_test(&pen, (50.0, 50.0), 1.0));
+
+        assert_ne!(pixel(&highlight_canvas, 50, 10), [255, 255, 255, 255]);
+        assert_eq!(pixel(&highlight_canvas, 50, 50), [255, 255, 255, 255]);
+        assert!(test_hit_test(&highlight, (50.0, 10.0), 1.0));
+        assert!(!test_hit_test(&highlight, (50.0, 50.0), 1.0));
+    }
+
+    #[test]
+    fn pen_and_highlight_hit_tests_follow_the_rendered_outline() {
+        let points = vec![10.0, 10.0, 90.0, 10.0, 90.0, 90.0, 10.0, 90.0];
+        let pen = Annotation::Pen {
+            id: "pen-u".into(),
+            points: points.clone(),
+            stroke: "#ff0000".into(),
+            stroke_width: 8.0,
+        };
+        let highlight = Annotation::Highlight {
+            id: "highlight-u".into(),
+            points,
+            fill: "#ff0000".into(),
+            opacity: 0.5,
+            stroke_width: 12.0,
+        };
+        let mut pen_canvas = Canvas::new(120, 120).expect("pen canvas");
+        draw(&mut pen_canvas, &pen);
+        let mut highlight_canvas = Canvas::new(120, 120).expect("highlight canvas");
+        draw(&mut highlight_canvas, &highlight);
+        let alpha_at = |canvas: &Canvas, x: usize, y: usize| {
+            canvas.pixmap().data()[(y * canvas.width() as usize + x) * 4 + 3]
+        };
+
+        assert!(alpha_at(&pen_canvas, 50, 10) > 0);
+        assert_eq!(alpha_at(&pen_canvas, 50, 50), 0);
+        assert!(test_hit_test(&pen, (50.0, 10.0), 1.0));
+        assert!(!test_hit_test(&pen, (50.0, 50.0), 1.0));
+
+        assert!(alpha_at(&highlight_canvas, 50, 10) > 0);
+        assert_eq!(alpha_at(&highlight_canvas, 50, 50), 0);
+        assert!(test_hit_test(&highlight, (50.0, 10.0), 1.0));
+        assert!(!test_hit_test(&highlight, (50.0, 50.0), 1.0));
+    }
+
+    #[test]
+    fn hit_test_budget_falls_back_to_the_legacy_bounds() {
+        let points = (0..=HIT_TEST_RAW_POINT_BUDGET)
+            .flat_map(|index| {
+                if index % 2 == 0 {
+                    [10.0, 10.0]
+                } else {
+                    [90.0, 90.0]
+                }
+            })
+            .collect::<Vec<_>>();
+        let oversized = Annotation::Pen {
+            id: "oversized".into(),
+            points: points.clone(),
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+        };
+        let mut budget = HitTestBudget::default();
+        assert_eq!(
+            screenshot_annotation_at_with_budget(&[oversized], (10.0, 90.0), 1.0, &mut budget,)
+                .map(Annotation::id),
+            Some("oversized")
+        );
+        assert_eq!(budget.raw_points, 0);
+        assert_eq!(budget.outline_vertices, 0);
+    }
+
+    #[test]
+    fn confirmed_lower_hit_beats_an_indeterminate_top_bbox() {
+        let points = (0..=HIT_TEST_RAW_POINT_BUDGET)
+            .flat_map(|index| {
+                if index % 2 == 0 {
+                    [10.0, 10.0]
+                } else {
+                    [90.0, 90.0]
+                }
+            })
+            .collect::<Vec<_>>();
+        let annotations = [
+            Annotation::Rectangle {
+                id: "lower-fill".into(),
+                x: 0.0,
+                y: 80.0,
+                width: 20.0,
+                height: 20.0,
+                stroke: "#ff0000".into(),
+                stroke_width: 2.0,
+                fill: Some("#ff0000".into()),
+            },
+            pen("over-budget-top", points),
+        ];
+
+        assert_eq!(
+            screenshot_annotation_at(&annotations, (10.0, 90.0), 1.0).map(Annotation::id),
+            Some("lower-fill")
+        );
+        assert_eq!(
+            screenshot_annotation_at(&annotations[1..], (10.0, 90.0), 1.0).map(Annotation::id),
+            Some("over-budget-top")
+        );
+    }
+
+    #[test]
+    fn unchanged_annotation_types_keep_their_bbox_hit_priority() {
+        let lower = outline_rect("lower", Some("#ff0000"));
+        let text = Annotation::Text {
+            id: "text".into(),
+            x: 30.0,
+            y: 30.0,
+            text: "MMMM".into(),
+            font_size: 20.0,
+            fill: "#000000".into(),
+            font_family: None,
+            background_color: None,
+            background_opacity: None,
+            background_padding: None,
+            background_radius: None,
+            rotation: None,
+        };
+        let (_, _, text_right, text_bottom) = text.bounds();
+        let text_point = (text_right - 0.1, text_bottom - 0.1);
+        assert_eq!(
+            screenshot_annotation_at(&[lower.clone(), text], text_point, 1.0).map(Annotation::id),
+            Some("text")
+        );
+
+        let number = Annotation::Number {
+            id: "number".into(),
+            x: 60.0,
+            y: 50.0,
+            value: 1.0,
+            display_value: "1".into(),
+            fill: "#000000".into(),
+            size: "small".into(),
+        };
+        assert_eq!(
+            screenshot_annotation_at(&[lower.clone(), number], (72.0, 62.0), 1.0)
+                .map(Annotation::id),
+            Some("number")
+        );
+
+        let redact = Annotation::Redact {
+            id: "redact".into(),
+            x: 40.0,
+            y: 40.0,
+            width: 30.0,
+            height: 30.0,
+            style: "blackout".into(),
+            intensity: 5.0,
+        };
+        assert_eq!(
+            screenshot_annotation_at(&[lower, redact], (50.0, 50.0), 1.0).map(Annotation::id),
+            Some("redact")
+        );
+    }
+
+    #[test]
+    fn hit_test_budget_falls_back_after_exact_outline_budget_is_spent() {
+        let mut points = Vec::with_capacity(2_000);
+        for step in 0..250 {
+            points.extend([10.0 + step as f64 * 80.0 / 249.0, 10.0]);
+        }
+        for step in 0..250 {
+            points.extend([90.0, 10.0 + step as f64 * 80.0 / 249.0]);
+        }
+        for step in 0..250 {
+            points.extend([90.0 - step as f64 * 80.0 / 249.0, 90.0]);
+        }
+        for step in 0..250 {
+            points.extend([10.0, 90.0 - step as f64 * 80.0 / 249.0]);
+        }
+        let annotations = [pen("fallback", points.clone()), pen("exact", points)];
+        let mut budget = HitTestBudget {
+            raw_points: 0,
+            outline_vertices: HIT_TEST_OUTLINE_VERTEX_BUDGET - 40_000,
+            curve_steps: 0,
+        };
+
+        assert_eq!(
+            screenshot_annotation_at_with_budget(&annotations, (50.0, 50.0), 1.0, &mut budget)
+                .map(Annotation::id),
+            Some("fallback")
+        );
+        assert_eq!(budget.raw_points, 2_000);
+        assert_eq!(
+            budget.outline_vertices,
+            HIT_TEST_OUTLINE_VERTEX_BUDGET - 40_000 + 28_044
+        );
+    }
+
+    #[test]
+    fn hit_test_budget_is_shared_across_overlapping_pen_annotations() {
+        let points = (0..1_500)
+            .flat_map(|index| {
+                if index % 2 == 0 {
+                    [10.0, 10.0]
+                } else {
+                    [90.0, 90.0]
+                }
+            })
+            .collect::<Vec<_>>();
+        let annotation = |id: &str| Annotation::Pen {
+            id: id.into(),
+            points: points.clone(),
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+        };
+        let annotations = [annotation("fallback"), annotation("exact")];
+        let mut budget = HitTestBudget::default();
+
+        assert_eq!(
+            screenshot_annotation_at_with_budget(&annotations, (10.0, 90.0), 1.0, &mut budget)
+                .map(Annotation::id),
+            Some("fallback")
+        );
+        assert!(budget.raw_points > 0);
+        assert!(budget.outline_vertices > 0);
+    }
+
+    #[test]
+    fn exhausted_curve_budget_falls_back_to_legacy_bounds() {
+        let annotation = pen("stroke", u_points());
+        let mut budget = HitTestBudget {
+            raw_points: 0,
+            outline_vertices: 0,
+            curve_steps: HIT_TEST_CURVE_STEP_BUDGET,
+        };
+        assert_eq!(
+            hit_test_annotation(&annotation, (50.0, 50.0), 1.0, &mut budget),
+            AnnotationHit::Indeterminate
+        );
+        assert_eq!(budget.curve_steps, HIT_TEST_CURVE_STEP_BUDGET);
+    }
+
+    #[test]
+    fn adaptive_curve_hit_tracks_an_extreme_rendered_quadratic() {
+        let start = (0.0, 0.0);
+        let control = (5_000.0, 10_000.0);
+        let end = (10_000.0, 0.0);
+        let t: f64 = 0.37;
+        let one = 1.0 - t;
+        let point = (
+            one * one * start.0 + 2.0 * one * t * control.0 + t * t * end.0,
+            one * one * start.1 + 2.0 * one * t * control.1 + t * t * end.1,
+        );
+        let mut budget = HitTestBudget::default();
+        let mut winding = 0;
+
+        assert_eq!(
+            scan_quadratic_outline(
+                point,
+                start,
+                control,
+                end,
+                1.0,
+                4.0,
+                HIT_TEST_CURVE_MAX_DEPTH,
+                &mut budget,
+                &mut winding,
+            ),
+            Some(true)
+        );
+        assert!(budget.curve_steps > 1);
+        assert!(budget.curve_steps < HIT_TEST_CURVE_STEP_BUDGET);
+    }
+
+    #[test]
     fn curved_arrow_and_both_heads_hit_outside_endpoint_bounds() {
         let curved = Annotation::Arrow {
             id: "curved".into(),
@@ -1529,7 +2240,7 @@ mod tests {
             arrow_style: Some("curved".into()),
             bend_offset: None,
         };
-        assert!(hit_test_annotation(&curved, (50.0, 18.0), 1.0));
+        assert!(test_hit_test(&curved, (50.0, 18.0), 1.0));
         let bounds = curved.bounds();
         assert!(18.0 > bounds.3 + 4.0);
 
@@ -1541,8 +2252,8 @@ mod tests {
             arrow_style: Some("double".into()),
             bend_offset: None,
         };
-        assert!(hit_test_annotation(&double, (76.1436, 18.0), 1.0));
-        assert!(hit_test_annotation(&double, (23.8564, 18.0), 1.0));
+        assert!(test_hit_test(&double, (76.1436, 18.0), 1.0));
+        assert!(test_hit_test(&double, (23.8564, 18.0), 1.0));
     }
 
     #[test]
@@ -1555,7 +2266,7 @@ mod tests {
             arrow_style: Some("standard".into()),
             bend_offset: None,
         };
-        assert!(!hit_test_annotation(&arrow, (10.0, 90.0), 1.0));
+        assert!(!test_hit_test(&arrow, (10.0, 90.0), 1.0));
         assert!(!arrow_hit_test(
             [f64::MAX, f64::MAX, -f64::MAX, -f64::MAX],
             2.0,
@@ -1563,7 +2274,9 @@ mod tests {
             None,
             (0.0, 0.0),
             1.0,
-        ));
+            &mut HitTestBudget::default(),
+        )
+        .unwrap_or(false));
     }
 
     fn covered(canvas: &Canvas) -> usize {
