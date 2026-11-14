@@ -115,35 +115,37 @@ impl ConfigStore {
         let path = self.path.clone();
         thread::Builder::new()
             .name("config-writer".into())
-            .spawn(move || loop {
-                // Wait until an update is requested; exit when the sender is
-                // dropped at process shutdown.
-                if rx.recv().is_err() {
-                    break;
-                }
-                // Debounce: keep extending while updates keep arriving so a
-                // burst collapses into one write.
+            .spawn(move || {
                 loop {
-                    thread::sleep(Duration::from_millis(CONFIG_WRITE_DEBOUNCE_MS));
-                    match rx.try_recv() {
-                        Ok(()) | Err(TryRecvError::Disconnected) => continue,
-                        Err(TryRecvError::Empty) => break,
-                    }
-                }
-                loop {
-                    let _write = write_lock.lock();
-                    let (snapshot, revision) = {
-                        let state = shared.read();
-                        if state.revision == state.persisted_revision {
-                            break;
-                        }
-                        (state.config.clone(), state.revision)
-                    };
-                    if !write_sync(&snapshot, &path) {
+                    // Wait until an update is requested; exit when the sender is
+                    // dropped at process shutdown.
+                    if rx.recv().is_err() {
                         break;
                     }
-                    let mut state = shared.write();
-                    state.persisted_revision = state.persisted_revision.max(revision);
+                    // Debounce: keep extending while updates keep arriving so a
+                    // burst collapses into one write.
+                    loop {
+                        thread::sleep(Duration::from_millis(CONFIG_WRITE_DEBOUNCE_MS));
+                        match rx.try_recv() {
+                            Ok(()) | Err(TryRecvError::Disconnected) => continue,
+                            Err(TryRecvError::Empty) => break,
+                        }
+                    }
+                    loop {
+                        let _write = write_lock.lock();
+                        let (snapshot, revision) = {
+                            let state = shared.read();
+                            if state.revision == state.persisted_revision {
+                                break;
+                            }
+                            (state.config.clone(), state.revision)
+                        };
+                        if !write_sync(&snapshot, &path) {
+                            break;
+                        }
+                        let mut state = shared.write();
+                        state.persisted_revision = state.persisted_revision.max(revision);
+                    }
                 }
             })
             .ok();
@@ -206,10 +208,10 @@ fn write_sync(config: &SettingsConfig, path: &Path) -> bool {
 
 #[cfg(windows)]
 fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
+    use windows::core::HSTRING;
 
     unsafe {
         MoveFileExW(
@@ -292,22 +294,22 @@ mod replacefile_sacl_probe_tests {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        CloseHandle, GetLastError, SetLastError, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, HANDLE,
-        LUID,
+        CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError, HANDLE, LUID,
+        SetLastError,
     };
     use windows::Win32::Security::{
-        AddAuditAccessAceEx, AdjustTokenPrivileges, CreateWellKnownSid, GetAclInformation,
-        GetFileSecurityW, GetSecurityDescriptorControl, GetSecurityDescriptorSacl, InitializeAcl,
-        LookupPrivilegeValueW, SetFileSecurityW, SetSecurityDescriptorControl,
-        SetSecurityDescriptorSacl, WinWorldSid, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
-        LUID_AND_ATTRIBUTES, PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
-        SE_PRIVILEGE_ENABLED, SE_SACL_PROTECTED, SE_SECURITY_NAME, TOKEN_ADJUST_PRIVILEGES,
-        TOKEN_PRIVILEGES, TOKEN_QUERY,
+        ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AddAuditAccessAceEx, AdjustTokenPrivileges,
+        CreateWellKnownSid, GetAce, GetAclInformation, GetFileSecurityW, GetLengthSid,
+        GetSecurityDescriptorControl, GetSecurityDescriptorSacl, InitializeAcl,
+        LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PROTECTED_SACL_SECURITY_INFORMATION,
+        SACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED, SE_SACL_PROTECTED, SE_SECURITY_NAME,
+        SetFileSecurityW, SetSecurityDescriptorControl, SetSecurityDescriptorSacl,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, WinWorldSid,
     };
-    use windows::Win32::Storage::FileSystem::{ReplaceFileW, FILE_EXECUTE};
+    use windows::Win32::Storage::FileSystem::{FILE_EXECUTE, ReplaceFileW};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::core::PCWSTR;
 
     struct PrivilegeGuard {
         token: HANDLE,
@@ -427,7 +429,22 @@ mod replacefile_sacl_probe_tests {
 
     struct SaclSnapshot {
         bytes: Vec<u8>,
+        aces: Vec<AceSnapshot>,
         protected: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum AceSnapshot {
+        Audit(AuditAce),
+        Other(Vec<u8>),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct AuditAce {
+        ace_type: u8,
+        flags: u8,
+        mask: u32,
+        sid: Vec<u8>,
     }
 
     fn write_audit_sacl(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -497,7 +514,10 @@ mod replacefile_sacl_probe_tests {
                 ),
             )
             .ok()?;
-            acl_bytes(acl)
+            Ok(
+                std::slice::from_raw_parts(sid_storage.as_ptr().cast::<u8>(), sid_size as usize)
+                    .to_vec(),
+            )
         }
     }
 
@@ -512,6 +532,53 @@ mod replacefile_sacl_probe_tests {
             )
             .map_err(std::io::Error::other)?;
             Ok(std::slice::from_raw_parts(acl.cast::<u8>(), info.AclBytesInUse as usize).to_vec())
+        }
+    }
+
+    fn ace_snapshots(acl: *mut ACL) -> std::io::Result<Vec<AceSnapshot>> {
+        let mut info = ACL_SIZE_INFORMATION::default();
+        unsafe {
+            GetAclInformation(
+                acl,
+                (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                windows::Win32::Security::AclSizeInformation,
+            )
+            .map_err(std::io::Error::other)?;
+            let mut result = Vec::with_capacity(info.AceCount as usize);
+            for index in 0..info.AceCount {
+                let mut ace = std::ptr::null_mut();
+                GetAce(acl, index, &mut ace).map_err(std::io::Error::other)?;
+                let bytes = ace.cast::<u8>();
+                let ace_type = *bytes;
+                let flags = *bytes.add(1);
+                let ace_size = std::ptr::read_unaligned(bytes.add(2).cast::<u16>()) as usize;
+                if ace_size < 4 {
+                    return Err(std::io::Error::other("invalid ACE size"));
+                }
+                if ace_type != 2 {
+                    result.push(AceSnapshot::Other(
+                        std::slice::from_raw_parts(bytes, ace_size).to_vec(),
+                    ));
+                    continue;
+                }
+                if ace_size < 8 {
+                    return Err(std::io::Error::other("invalid audit ACE size"));
+                }
+                let mask = std::ptr::read_unaligned(bytes.add(4).cast::<u32>());
+                let sid = bytes.add(8).cast();
+                let sid_len = GetLengthSid(windows::Win32::Security::PSID(sid)) as usize;
+                if sid_len == 0 || 8 + sid_len != ace_size {
+                    return Err(std::io::Error::other("invalid audit ACE SID"));
+                }
+                result.push(AceSnapshot::Audit(AuditAce {
+                    ace_type,
+                    flags,
+                    mask,
+                    sid: std::slice::from_raw_parts(sid.cast::<u8>(), sid_len).to_vec(),
+                }));
+            }
+            Ok(result)
         }
     }
 
@@ -557,8 +624,14 @@ mod replacefile_sacl_probe_tests {
             } else {
                 acl_bytes(acl)?
             };
+            let aces = if !present.as_bool() || acl.is_null() {
+                Vec::new()
+            } else {
+                ace_snapshots(acl)?
+            };
             Ok(SaclSnapshot {
                 bytes,
+                aces,
                 protected: control & SE_SACL_PROTECTED.0 != 0,
             })
         }
@@ -629,9 +702,17 @@ mod replacefile_sacl_probe_tests {
         std::fs::write(&replacement, b"replacement scratch file").unwrap();
         let expected_sacl = write_audit_sacl(&target).expect("apply audit ACE to scratch target");
         let original_sacl = read_sacl(&target).expect("read scratch target SACL");
+        let expected_sid = expected_sacl;
+        assert_eq!(original_sacl.aces.len(), 1, "audit SACL fixture ACE count");
         assert_eq!(
-            original_sacl.bytes, expected_sacl,
-            "audit SACL fixture setup failed"
+            original_sacl.aces[0],
+            AceSnapshot::Audit(AuditAce {
+                ace_type: 2,
+                flags: 0xC0,
+                mask: FILE_EXECUTE.0,
+                sid: expected_sid,
+            }),
+            "audit SACL fixture ACE fields"
         );
         assert!(
             original_sacl.protected,
@@ -660,7 +741,7 @@ mod replacefile_sacl_probe_tests {
             .set_enabled(true)
             .expect("enable SeSecurityPrivilege to verify SACL");
         let replaced_sacl = read_sacl(&target).expect("read replaced target SACL");
-        let acl_preserved = replaced_sacl.bytes == original_sacl.bytes;
+        let acl_preserved = replaced_sacl.aces == original_sacl.aces;
         let protection_preserved = replaced_sacl.protected == original_sacl.protected;
         let preserved = acl_preserved && protection_preserved;
         privilege
