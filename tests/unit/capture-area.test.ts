@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as FileSystem from 'node:fs';
+import type * as ScreenshotUtils from '@/main/capture/screenshot/utils';
 
 const mockClipboardWriteImage = vi.fn();
 const mockCreateFromBuffer = vi.fn(() => ({
@@ -8,12 +10,19 @@ const mockCreateFromBuffer = vi.fn(() => ({
 const mockGetConfig = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockGenerateScreenshotPath = vi.fn(() => '/path/Screenshot.png');
+const mockCaptureScreenshotToUniqueFile = vi.fn();
 const mockPrepareCapturePreview = vi.fn();
 const mockShowCapturePreview = vi.fn();
 const mockDisposePreparedPreview = vi.fn();
 const mockOpenScreenshotEditor = vi.fn();
 const mockFsExistsSync = vi.fn();
 const mockFsReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
+const mockFsOpenSync = vi.fn();
+const mockFsCloseSync = vi.fn();
+const mockFsLink = vi.fn();
+const mockFsUnlink = vi.fn();
+const mockFsStat = vi.fn();
+const mockNotificationShow = vi.fn();
 const mockCaptureRegionToFile = vi.fn();
 const mockCaptureFrozenWindowToFile = vi.fn();
 const mockCaptureWindowByIdToFile = vi.fn();
@@ -23,6 +32,9 @@ const mockDesktopIconsSupported = vi.fn();
 const mockCheckAccessibilityPermission = vi.fn();
 
 vi.mock('electron', () => ({
+  Notification: class {
+    show = mockNotificationShow;
+  },
   clipboard: {
     writeImage: (...a: unknown[]) => mockClipboardWriteImage(...a),
   },
@@ -51,6 +63,14 @@ vi.mock('fs', () => ({
   default: {
     existsSync: (...a: unknown[]) => mockFsExistsSync(...a),
     readFileSync: (...a: unknown[]) => mockFsReadFileSync(...a),
+    openSync: (...a: unknown[]) => mockFsOpenSync(...a),
+    closeSync: (...a: unknown[]) => mockFsCloseSync(...a),
+    constants: { COPYFILE_EXCL: 1 },
+    promises: {
+      link: (...a: unknown[]) => mockFsLink(...a),
+      unlink: (...a: unknown[]) => mockFsUnlink(...a),
+      stat: (...a: unknown[]) => mockFsStat(...a),
+    },
   },
   existsSync: (...a: unknown[]) => mockFsExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockFsReadFileSync(...a),
@@ -66,6 +86,13 @@ vi.mock('@/main/history', () => ({
 
 vi.mock('@/main/capture/screenshot/utils.ts', () => ({
   generateScreenshotPath: () => mockGenerateScreenshotPath(),
+  captureScreenshotToUniqueFile: (...a: unknown[]) =>
+    mockCaptureScreenshotToUniqueFile(...a),
+}));
+
+vi.mock('@/main/utils/paths', () => ({
+  ensureDirectoryExists: (directory: string) => directory,
+  isValidDirectory: () => true,
 }));
 
 vi.mock('@/main/capture/capture-preview', () => ({
@@ -85,6 +112,30 @@ describe('captureArea', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockCaptureScreenshotToUniqueFile.mockReset();
+    mockCaptureScreenshotToUniqueFile.mockImplementation(
+      async (
+        capture: (
+          path: () => string,
+          started: () => void,
+          failed: (completed: boolean) => void
+        ) => Promise<boolean>
+      ) => {
+        const path = mockGenerateScreenshotPath();
+        return (await capture(
+          () => path,
+          () => {},
+          () => {}
+        ))
+          ? path
+          : null;
+      }
+    );
+    mockFsOpenSync.mockReset();
+    mockFsCloseSync.mockReset();
+    mockFsLink.mockReset();
+    mockFsUnlink.mockReset();
+    mockFsStat.mockReset();
     mockGetConfig.mockReturnValue({
       general: { playSoundOnScreenshot: true },
       screenshot: {
@@ -127,11 +178,128 @@ describe('captureArea', () => {
 
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       { x: 110, y: 70, width: 300, height: 200 },
-      '/path/Screenshot.png'
+      '/path/Screenshot.png',
+      { onFailure: expect.any(Function) }
     );
     expect(result).toBe('/path/Screenshot.png');
     expect(mockOpenScreenshotEditor).toHaveBeenCalled();
   });
+
+  it.each(['success', 'failed', 'timeout'] as const)(
+    'preserves an existing screenshot for the selected area: %s',
+    async outcome => {
+      const realFs = await vi.importActual<typeof FileSystem>('node:fs');
+      const path = await import('node:path');
+      const os = await import('node:os');
+      const directory = realFs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-area-workflow-')
+      );
+      const existing = path.join(directory, 'Collision.png');
+      const events: string[] = [];
+      realFs.writeFileSync(existing, 'original');
+      mockGetConfig.mockReturnValue({
+        general: { playSoundOnScreenshot: false },
+        screenshot: {
+          captureToClipboard: false,
+          showPreview: false,
+          hideDesktopIcons: false,
+        },
+        storage: { screenshotsPath: directory, namingPattern: 'Collision' },
+      });
+      mockFsExistsSync.mockImplementation((file: string) =>
+        realFs.existsSync(file)
+      );
+      mockFsOpenSync.mockImplementation((file: string, flags: string) =>
+        realFs.openSync(file, flags)
+      );
+      mockFsCloseSync.mockImplementation((fd: number) => realFs.closeSync(fd));
+      mockFsLink.mockImplementation((from: string, to: string) => {
+        events.push('publish');
+        return realFs.promises.link(from, to);
+      });
+      mockFsUnlink.mockImplementation((file: string) =>
+        realFs.promises.unlink(file)
+      );
+      mockFsStat.mockImplementation((file: string) =>
+        realFs.promises.stat(file)
+      );
+      mockCaptureRegionToFile.mockImplementation(
+        async (
+          _rect,
+          file: string,
+          options: { onFailure: (completed: boolean) => void }
+        ) => {
+          events.push('capture');
+          if (outcome !== 'success') {
+            options.onFailure(outcome === 'failed');
+            return false;
+          }
+          realFs.writeFileSync(file, 'new image');
+          return true;
+        }
+      );
+
+      try {
+        const actualUtils = await vi.importActual<typeof ScreenshotUtils>(
+          '@/main/capture/screenshot/utils'
+        );
+        mockCaptureScreenshotToUniqueFile.mockImplementation(
+          actualUtils.captureScreenshotToUniqueFile
+        );
+        const { captureArea } =
+          await import('@/main/capture/screenshot/capture-area');
+        const result = await captureArea(
+          { status: 'confirmed', x: 0, y: 0, width: 100, height: 100 },
+          {
+            onCaptured: () => {
+              events.push('onCaptured');
+            },
+          }
+        );
+        const published = path.join(directory, 'Collision (1).png');
+        expect(result).toBe(outcome === 'success' ? published : null);
+        expect(realFs.readFileSync(existing, 'utf8')).toBe('original');
+        expect(
+          realFs.existsSync(published)
+            ? realFs.readFileSync(published, 'utf8')
+            : null
+        ).toBe(outcome === 'success' ? 'new image' : null);
+        expect(mockAddToHistory.mock.calls).toEqual(
+          outcome === 'success' ? [[published]] : []
+        );
+        expect(mockOpenScreenshotEditor.mock.calls).toEqual(
+          outcome === 'success' ? [[published, 'h1']] : []
+        );
+        expect(events.slice(0, 3)).toEqual(
+          outcome === 'success'
+            ? ['capture', 'onCaptured', 'publish']
+            : ['capture']
+        );
+        const temporary = realFs
+          .readdirSync(directory)
+          .filter(name => name.startsWith('.poratake-'));
+        expect(temporary).toHaveLength(outcome === 'timeout' ? 1 : 0);
+        expect(mockNotificationShow).toHaveBeenCalledTimes(
+          outcome === 'timeout' ? 1 : 0
+        );
+        if (outcome === 'timeout')
+          realFs.writeFileSync(
+            path.join(directory, temporary[0]),
+            'late image'
+          );
+        expect(
+          outcome === 'timeout'
+            ? realFs.readFileSync(path.join(directory, temporary[0]), 'utf8')
+            : null
+        ).toBe(outcome === 'timeout' ? 'late image' : null);
+      } finally {
+        for (const name of realFs.readdirSync(directory)) {
+          realFs.unlinkSync(path.join(directory, name));
+        }
+        realFs.rmdirSync(directory);
+      }
+    }
+  );
 
   it('captures from the retained native frame when requested', async () => {
     const onCaptured = vi.fn();
@@ -152,7 +320,7 @@ describe('captureArea', () => {
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       { x: 110, y: 70, width: 300, height: 200 },
       '/path/Screenshot.png',
-      { cached: true }
+      { cached: true, onFailure: expect.any(Function) }
     );
     expect(onCaptured).toHaveBeenCalled();
   });
@@ -168,7 +336,8 @@ describe('captureArea', () => {
 
     expect(mockCaptureWindowByIdToFile).toHaveBeenCalledWith(
       4242,
-      '/path/Screenshot.png'
+      '/path/Screenshot.png',
+      expect.any(Function)
     );
     expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
   });
@@ -185,7 +354,7 @@ describe('captureArea', () => {
     expect(mockCaptureRegionToFile).toHaveBeenCalledWith(
       { x: 110, y: 70, width: 300, height: 200 },
       '/path/Screenshot.png',
-      { cached: true, windowId: 4242 }
+      { cached: true, windowId: 4242, onFailure: expect.any(Function) }
     );
     expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();
   });
@@ -203,7 +372,8 @@ describe('captureArea', () => {
     expect(mockCaptureFrozenWindowToFile).toHaveBeenCalledWith(
       windowBounds,
       '/path/Screenshot.png',
-      4242
+      4242,
+      expect.any(Function)
     );
     expect(mockCaptureRegionToFile).not.toHaveBeenCalled();
     expect(mockCaptureWindowByIdToFile).not.toHaveBeenCalled();

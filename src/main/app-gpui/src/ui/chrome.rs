@@ -413,16 +413,21 @@ pub fn history_popover_origin(
     screen_width: f32,
     screen_height: f32,
 ) -> (f32, f32) {
+    let popover_width = HISTORY_POPOVER_WIDTH.min(screen_width);
+    let popover_height = HISTORY_POPOVER_HEIGHT.min(screen_height);
     let Some((tray_x, tray_y, tray_width, tray_height)) = tray else {
         return (
-            ((screen_width - HISTORY_POPOVER_WIDTH) / 2.0).round(),
-            ((screen_height - HISTORY_POPOVER_HEIGHT) / 2.0).round(),
+            ((screen_width - popover_width) / 2.0).round().max(0.0),
+            ((screen_height - popover_height) / 2.0).round().max(0.0),
         );
     };
-    let x = (tray_x + tray_width / 2.0 - HISTORY_POPOVER_WIDTH / 2.0).round();
+    let max_x = (screen_width - popover_width - HISTORY_POPOVER_GAP).max(0.0);
+    let x = (tray_x + tray_width / 2.0 - popover_width / 2.0)
+        .round()
+        .clamp(HISTORY_POPOVER_GAP.min(max_x), max_x);
     let y = tray_y + tray_height + HISTORY_POPOVER_GAP;
-    let max_y = screen_height - HISTORY_POPOVER_HEIGHT - HISTORY_POPOVER_GAP;
-    (x, y.min(max_y.max(0.0)))
+    let max_y = screen_height - popover_height - HISTORY_POPOVER_GAP;
+    (x, y.clamp(0.0, max_y.max(0.0)))
 }
 
 pub fn video_timeline_tracks_height(track_height: f32) -> f32 {
@@ -783,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn history_popover_origin_matches_electron() {
+    fn history_popover_stays_centered_when_it_fits() {
         assert_eq!(
             history_popover_origin(None, 1920.0, 1080.0),
             (
@@ -791,14 +796,48 @@ mod tests {
                 ((1080.0 - HISTORY_POPOVER_HEIGHT) / 2.0).round()
             )
         );
-        let from_tray = history_popover_origin(Some((100.0, 10.0, 40.0, 28.0)), 1920.0, 1080.0);
+        let from_tray = history_popover_origin(Some((300.0, 10.0, 40.0, 28.0)), 1920.0, 1080.0);
         assert_eq!(
             from_tray,
             (
-                (100.0 + 20.0 - HISTORY_POPOVER_WIDTH / 2.0).round(),
+                (300.0 + 20.0 - HISTORY_POPOVER_WIDTH / 2.0).round(),
                 10.0 + 28.0 + HISTORY_POPOVER_GAP
             )
         );
+    }
+
+    #[test]
+    fn history_popover_clamps_to_the_work_area_at_display_edges() {
+        assert_eq!(
+            history_popover_origin(Some((0.0, 10.0, 16.0, 28.0)), 1920.0, 1080.0),
+            (8.0, 46.0)
+        );
+        assert_eq!(
+            history_popover_origin(Some((1900.0, 1040.0, 20.0, 28.0)), 1920.0, 1080.0),
+            (1512.0, 572.0)
+        );
+        assert_eq!(
+            history_popover_origin(Some((-200.0, -80.0, 16.0, 20.0)), 1920.0, 1080.0),
+            (8.0, 0.0)
+        );
+        assert_eq!(history_popover_origin(None, 300.0, 400.0), (0.0, 0.0));
+        assert_eq!(
+            history_popover_origin(Some((100.0, 50.0, 20.0, 20.0)), 300.0, 400.0),
+            (0.0, 0.0)
+        );
+        for (width, height) in [(400.0, 500.0), (800.0, 600.0), (1536.0, 832.0)] {
+            for (tray_x, tray_y) in [
+                (-20.0, -20.0),
+                (0.0, 0.0),
+                (width / 2.0, height / 2.0),
+                (width - 20.0, height - 20.0),
+            ] {
+                let (x, y) =
+                    history_popover_origin(Some((tray_x, tray_y, 20.0, 20.0)), width, height);
+                assert!(x >= 0.0 && x + HISTORY_POPOVER_WIDTH <= width);
+                assert!(y >= 0.0 && y + HISTORY_POPOVER_HEIGHT <= height);
+            }
+        }
     }
 
     #[test]

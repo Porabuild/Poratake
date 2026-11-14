@@ -172,7 +172,7 @@ function DeviceDropdown({
         aria-label={label}
         aria-pressed={enabled}
         isDisabled={disabled}
-        className="inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap text-white/85 outline-none [--button-fg:rgb(255_255_255/0.85)] hover:bg-white/15 hover:text-white hover:[--button-fg:white] disabled:pointer-events-none disabled:opacity-35"
+        className="inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap text-foreground/85 outline-none [--button-fg:--alpha(var(--foreground)/85%)] hover:bg-foreground/15 hover:text-foreground hover:[--button-fg:var(--foreground)] disabled:pointer-events-none disabled:opacity-35"
       >
         {icon}
         <ChevronDown className="size-3" />
@@ -287,10 +287,10 @@ function IOSDeviceDropdown({
         aria-pressed={selectedDeviceId !== null}
         isDisabled={disabled}
         className={cn(
-          'inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap outline-none hover:bg-white/15 disabled:pointer-events-none disabled:opacity-35',
+          'inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap outline-none hover:bg-foreground/15 disabled:pointer-events-none disabled:opacity-35',
           selectedDeviceId
             ? 'text-primary hover:text-primary'
-            : 'text-white/85 hover:text-white'
+            : 'text-foreground/85 hover:text-foreground'
         )}
       >
         <Smartphone className="size-4" />

@@ -13,8 +13,14 @@ const TAB_HEIGHT: f32 = 20.0;
 const TAB_PAD_X: f32 = 6.0;
 const HEADER_ACTION_PAD_X: f32 = 8.0;
 
-pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn header(
+    has_items: bool,
+    compact: bool,
+    theme: &ThemeVars,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
     let mut actions = div()
+        .debug_selector(|| "history-header-actions".to_string())
         .flex()
         .items_center()
         .gap(px(4.0))
@@ -48,14 +54,20 @@ pub fn header(has_items: bool, theme: &ThemeVars, cx: &mut Context<HistoryWindow
 
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
-        .px(px(chrome::HISTORY_HEADER_PX))
+        .px(px(if compact {
+            4.0
+        } else {
+            chrome::HISTORY_HEADER_PX
+        }))
         .py(px(chrome::HISTORY_HEADER_PY))
         .border_b_1()
         .border_color(theme.border)
         .child(
             div()
+                .debug_selector(|| "history-title".to_string())
                 .text_size(px(chrome::HISTORY_TITLE_SIZE))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(theme.foreground)
@@ -72,7 +84,13 @@ pub fn toolbar(
     theme: &ThemeVars,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
-    let mut filters = div().flex().items_center().gap(px(2.0));
+    let mut filters = div()
+        .debug_selector(|| "history-filters".to_string())
+        .flex()
+        .flex_wrap()
+        .max_w_full()
+        .items_center()
+        .gap(px(2.0));
 
     for option in HistoryFilter::ALL {
         let foreground = theme.foreground;
@@ -102,37 +120,46 @@ pub fn toolbar(
                 )
             });
         }
-        filters = filters.child(button);
+        filters = filters.child(
+            div()
+                .debug_selector(move || format!("history-filter-{}", option.as_str()))
+                .child(button),
+        );
     }
 
     let sort_tooltip = order.tooltip();
     let layout_tooltip = layout.toggle_tooltip();
+    let actions = div()
+        .debug_selector(|| "history-toolbar-actions".to_string())
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .child(toolbar::tooltip_button(
+            icon_button::chip_icon("history-sort", "arrow-up-down", sort_tooltip),
+            sort_tooltip,
+            cx,
+            |this, _window, cx| this.toggle_sort_order(cx),
+        ))
+        .child(toolbar::tooltip_button(
+            icon_button::chip_icon("history-layout", layout.toggle_icon(), layout_tooltip),
+            layout_tooltip,
+            cx,
+            |this, _window, cx| this.toggle_layout(cx),
+        ));
+    #[cfg(feature = "parity")]
+    let actions = actions.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("history-actions", bounds);
+    });
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
         .gap(px(chrome::TITLE_BAR_GAP))
         .px(px(chrome::HISTORY_TOOLBAR_PX))
         .py(px(chrome::HISTORY_TOOLBAR_PY))
         .child(filters)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-sort", "arrow-up-down", sort_tooltip),
-                    sort_tooltip,
-                    cx,
-                    |this, _window, cx| this.toggle_sort_order(cx),
-                ))
-                .child(toolbar::tooltip_button(
-                    icon_button::chip_icon("history-layout", layout.toggle_icon(), layout_tooltip),
-                    layout_tooltip,
-                    cx,
-                    |this, _window, cx| this.toggle_layout(cx),
-                )),
-        )
+        .child(actions)
         .into_any_element()
 }
 

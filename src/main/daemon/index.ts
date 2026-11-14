@@ -8,7 +8,11 @@ import type {
   PendingRequest,
   DaemonCallArguments,
 } from '@/types/daemon';
-import { isDaemonEvent, isDaemonResponse } from '@/types/daemon';
+import {
+  DAEMON_UNAVAILABLE,
+  isDaemonEvent,
+  isDaemonResponse,
+} from '@/types/daemon';
 import { getNativeBinaryPath } from '@/main/utils/paths';
 import { isMac, isWindows } from '@/main/utils/platform';
 
@@ -65,23 +69,29 @@ class NativeDaemon extends EventEmitter {
   async call<T = unknown>(...args: DaemonCallArguments): Promise<T> {
     const [module, method, params, timeout = REQUEST_TIMEOUT] = args;
     if (!this.isSupported) {
-      throw new Error(
-        `Daemon not supported on this platform: ${module}.${method}`
+      throw Object.assign(
+        new Error(`Daemon not supported on this platform: ${module}.${method}`),
+        { code: DAEMON_UNAVAILABLE }
       );
     }
 
     if (!this.process) {
-      throw new Error('Daemon not running');
+      throw Object.assign(new Error('Daemon not running'), {
+        code: DAEMON_UNAVAILABLE,
+      });
     }
 
     const id = crypto.randomUUID();
     const request: DaemonRequest = { id, module, method, params };
 
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error(`Request timeout: ${module}.${method}`));
-      }, timeout);
+      const timeoutId =
+        timeout === null
+          ? undefined
+          : setTimeout(() => {
+              this.pendingRequests.delete(id);
+              reject(new Error(`Request timeout: ${module}.${method}`));
+            }, timeout);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (result: unknown) => void,
@@ -296,7 +306,9 @@ class NativeDaemon extends EventEmitter {
     this.process = null;
     this.buffer = '';
     this.rejectAllPending(
-      new Error(`Daemon exited: code=${code} signal=${signal}`)
+      Object.assign(new Error(`Daemon exited: code=${code} signal=${signal}`), {
+        code: DAEMON_UNAVAILABLE,
+      })
     );
 
     if (this.isShuttingDown) return;
@@ -344,7 +356,9 @@ class NativeDaemon extends EventEmitter {
 
   private send(request: DaemonRequest): void {
     if (!this.process?.stdin?.writable) {
-      throw new Error('Daemon stdin not writable');
+      throw Object.assign(new Error('Daemon stdin not writable'), {
+        code: DAEMON_UNAVAILABLE,
+      });
     }
     if (!this.sendRaw(request)) {
       throw new Error('Daemon stdin write failed');

@@ -18,7 +18,7 @@ pub(crate) fn command_output(
     command: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
-    let output = command_stdout(command, timeout, |mut stdout| {
+    let output = command_stdout(command, timeout, &|| false, |mut stdout| {
         use std::io::Read as _;
 
         let mut bytes = Vec::new();
@@ -42,6 +42,7 @@ pub(crate) struct CommandOutput<T> {
 pub(crate) fn command_stdout<T, F>(
     command: &mut std::process::Command,
     timeout: std::time::Duration,
+    should_cancel: &dyn Fn() -> bool,
     read_stdout: F,
 ) -> std::io::Result<CommandOutput<T>>
 where
@@ -90,6 +91,15 @@ where
     };
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
+        if should_cancel() {
+            terminate(&mut child);
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "the export was cancelled",
+            ));
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}

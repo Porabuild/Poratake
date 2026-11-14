@@ -76,14 +76,14 @@ fn cursor_panel(
                 "You can add cursor data manually by importing a JSON file or creating it in the editor.",
                 theme,
             ),
-            kit::tertiary_button(
+            kit::tertiary_window_button(
                 "cursor-import-data",
                 "Import from File",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_cursor_data(cx),
+                |this, window, cx| this.import_cursor_data(window, cx),
             ),
             kit::tertiary_button(
                 "cursor-edit-data",
@@ -165,14 +165,14 @@ fn cursor_panel(
     } else {
         children.push(kit::field(
             "Custom Cursor",
-            kit::tertiary_button(
+            kit::tertiary_window_button(
                 "cursor-upload-custom",
                 "Upload Custom Cursor",
                 "upload",
                 false,
                 theme,
                 cx,
-                |this, cx| this.pick_custom_cursor(cx),
+                |this, window, cx| this.pick_custom_cursor(window, cx),
             ),
             theme,
         ));
@@ -311,14 +311,14 @@ fn cursor_panel(
                 cx,
                 |this, cx| this.open_data_editor(data_editor::DataKind::Cursor, cx),
             ))
-            .child(kit::tertiary_button(
+            .child(kit::tertiary_window_button(
                 "cursor-import-data-panel",
                 "Import",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_cursor_data(cx),
+                |this, window, cx| this.import_cursor_data(window, cx),
             ))
             .into_any_element(),
         Some(cursor_data_summary),
@@ -770,26 +770,30 @@ fn drawing_tool_grid(
                     let selected = tool.id() == active;
                     let id = tool.id();
                     let label = tool.label();
-                    div().flex_1().min_w_0().child(
-                        herogpui::components::Tooltip::new(label).child(
-                            Button::new(SharedString::from(format!("drawing-tool-{id}")))
-                                .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
-                                .variant(if selected {
-                                    Variant::Tertiary
-                                } else {
-                                    Variant::Ghost
-                                })
-                                .size(Size::Sm)
-                                .is_icon_only(true)
-                                .aria_label(label)
-                                .full_width(true)
-                                .on_press(cx.listener(move |this, _event, _window, cx| {
-                                    this.update_drawing_tools(cx, |tools| {
-                                        tools.active_tool = id.to_string()
-                                    });
-                                })),
-                        ),
-                    )
+                    let selector = format!("drawing-tool-{id}-cell");
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .debug_selector(move || selector.clone())
+                        .child(
+                            herogpui::components::Tooltip::new(label).child(
+                                Button::new(SharedString::from(format!("drawing-tool-{id}")))
+                                    .child(crate::ui::icon::icon_element(tool.icon(), px(16.0)))
+                                    .variant(if selected {
+                                        Variant::Tertiary
+                                    } else {
+                                        Variant::Ghost
+                                    })
+                                    .size(Size::Sm)
+                                    .is_icon_only(true)
+                                    .aria_label(label)
+                                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                                        this.update_drawing_tools(cx, |tools| {
+                                            tools.active_tool = id.to_string()
+                                        });
+                                    })),
+                            ),
+                        )
                 }))
                 .into_any_element()
         })
@@ -1321,7 +1325,7 @@ fn audio_panel(
                 icon_button::compact_sm("audio-add-music", "plus", add_music_name),
                 add_music_name,
                 cx,
-                |this, _window, cx| this.add_music_track(cx),
+                |this, window, cx| this.add_music_track(window, cx),
             )
         })
         .into_any_element()];
@@ -1927,21 +1931,24 @@ fn video_backgrounds(
                 .child(icon_button::with_tooltip(
                     add_name,
                     icon_button::compact_sm_muted("video-wallpaper-add", "plus", add_name)
-                        .on_press(move |_event, _window, cx| {
-                            if let Some(entity) = add.upgrade() {
-                                entity.update(cx, |this, cx| {
-                                    if let Some(path) = crate::editor::background::pick_image() {
-                                        this.update_wallpaper(cx, |wallpaper| {
-                                            wallpaper.enabled = true;
-                                            wallpaper.background_image = Some(path);
-                                            wallpaper.gradient = None;
-                                            if wallpaper.padding == 0.0 {
-                                                wallpaper.padding = 50.0;
-                                            }
-                                        });
-                                    }
+                        .on_press(move |_event, window, cx| {
+                            let Some(entity) = add.upgrade() else {
+                                return;
+                            };
+                            let dialog = crate::editor::background::image_picker(window);
+                            entity.update(cx, move |this, cx| {
+                                this.choose_file(dialog, cx, |this, path, cx| {
+                                    let path = path.to_string_lossy().to_string();
+                                    this.update_wallpaper(cx, move |wallpaper| {
+                                        wallpaper.enabled = true;
+                                        wallpaper.background_image = Some(path);
+                                        wallpaper.gradient = None;
+                                        if wallpaper.padding == 0.0 {
+                                            wallpaper.padding = 50.0;
+                                        }
+                                    });
                                 });
-                            }
+                            });
                         }),
                 )),
         )
@@ -2105,14 +2112,14 @@ fn subtitle_panel(
             },
             theme,
         ));
-        children.push(kit::tertiary_button(
+        children.push(kit::tertiary_window_button(
             "subtitle-import",
             "Import from File",
             "file-up",
             false,
             theme,
             cx,
-            |this, cx| this.import_subtitles(cx),
+            |this, window, cx| this.import_subtitles(window, cx),
         ));
         children.push(kit::tertiary_button(
             "subtitle-create",
@@ -2198,14 +2205,14 @@ fn subtitle_panel(
                 cx,
                 |this, cx| this.open_data_editor(data_editor::DataKind::Subtitle, cx),
             ))
-            .child(kit::tertiary_button(
+            .child(kit::tertiary_window_button(
                 "subtitle-import-data",
                 "Import",
                 "file-up",
                 false,
                 theme,
                 cx,
-                |this, cx| this.import_subtitles(cx),
+                |this, window, cx| this.import_subtitles(window, cx),
             ))
             .into_any_element(),
         Some(
@@ -2289,14 +2296,14 @@ fn first_frame_panel(
 
     match settings.image_data.as_deref() {
         None => {
-            children.push(kit::tertiary_button(
+            children.push(kit::tertiary_window_button(
                 "first-frame-upload",
                 "Upload Image",
                 "frame",
                 false,
                 theme,
                 cx,
-                |this, cx| this.pick_first_frame(cx),
+                |this, window, cx| this.pick_first_frame(window, cx),
             ));
         }
         Some(path) => {
@@ -2321,14 +2328,14 @@ fn first_frame_panel(
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
-                    .child(kit::tertiary_button(
+                    .child(kit::tertiary_window_button(
                         "first-frame-replace",
                         "Replace",
                         "frame",
                         false,
                         theme,
                         cx,
-                        |this, cx| this.pick_first_frame(cx),
+                        |this, window, cx| this.pick_first_frame(window, cx),
                     ))
                     .child(
                         icon_button::compact_sm(
@@ -2473,7 +2480,7 @@ fn export_panel(
     let cloud_configured = crate::cloud::is_configured(&crate::state::state(cx).config.get().cloud);
     let mut footer = vec![kit::switch_row(
         "export-open-in-finder",
-        "Reveal in Finder after export",
+        "Show in folder after export",
         None,
         settings.open_in_finder,
         theme,
@@ -2587,7 +2594,22 @@ fn export_panel(
         crate::cloud::UploadState::Idle => {}
     }
 
-    if is_exporting {
+    if is_exporting
+        && view
+            .export_cancelled
+            .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let status = div().child(kit::progress_label("Canceling...", theme));
+        #[cfg(feature = "parity")]
+        let status = status.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-export-canceling", bounds);
+        });
+        footer.push(
+            status
+                .debug_selector(|| "video-export-canceling".to_string())
+                .into_any_element(),
+        );
+    } else if is_exporting {
         footer.push(
             div()
                 .flex()
@@ -2644,21 +2666,36 @@ fn export_panel(
             |this, cx| this.cancel_export(cx),
         ));
     } else {
-        footer.push(kit::tertiary_text_button(
-            "export-start",
-            if is_gif { "Export GIF" } else { "Export Video" },
-            false,
-            false,
-            cx,
-            |this, cx| this.start_export(cx),
-        ));
+        footer.push(
+            div()
+                .w_full()
+                .debug_selector(|| "video-export-start".to_string())
+                .child(
+                    Button::new("export-start")
+                        .variant(Variant::Tertiary)
+                        .recipe("compact")
+                        .label(if is_gif { "Export GIF" } else { "Export Video" })
+                        .full_width(true)
+                        .on_press(
+                            cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
+                        ),
+                )
+                .into_any_element(),
+        );
     }
     if let Some(error) = view.export_error() {
         footer.push(kit::error(error, theme));
     }
 
-    div()
-        .id("video-export-panel")
+    let footer = div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+        .border_t_1()
+        .border_color(theme.border)
+        .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
+        .children(footer);
+    let panel = div()
         .flex()
         .flex_col()
         .size_full()
@@ -2686,15 +2723,13 @@ fn export_panel(
                     &view.export_scroll,
                 )),
         )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .border_t_1()
-                .border_color(theme.border)
-                .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
-                .children(footer),
-        )
+        .child(footer);
+    #[cfg(feature = "parity")]
+    let panel = panel.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("video-export-panel", bounds);
+    });
+    panel
+        .id("video-export-panel")
+        .debug_selector(|| "video-export-panel".to_string())
         .into_any_element()
 }

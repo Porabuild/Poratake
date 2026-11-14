@@ -59,6 +59,14 @@ fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
 }
 
 pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
+    open_editor_with_state(cx, path, None)
+}
+
+pub(crate) fn open_editor_with_state(
+    cx: &mut App,
+    path: &str,
+    editor_state: Option<editor::window::PersistedEditorState>,
+) -> bool {
     let (image_width, image_height) = match image::open(std::path::Path::new(path)) {
         Ok(image) => (image.width() as f32, image.height() as f32),
         Err(error) => {
@@ -90,7 +98,12 @@ pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
                 px(chrome::EDITOR_MIN_HEIGHT),
             )),
         ),
-        |window, cx| cx.new(|cx| editor::EditorWindow::from_file(path, window, cx)),
+        |window, cx| {
+            cx.new(|cx| match editor_state {
+                Some(state) => editor::EditorWindow::from_file_with_state(path, state, window, cx),
+                None => editor::EditorWindow::from_file(path, window, cx),
+            })
+        },
     );
     if let Err(error) = opened {
         windows::toast::Toast::show(
@@ -100,10 +113,20 @@ pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
         );
         return false;
     }
+    crate::config::window_state::set(
+        crate::config::window_state::SCREENSHOT_EDITOR,
+        width,
+        height,
+    );
     true
 }
 
 fn main() {
+    #[cfg(feature = "parity")]
+    if std::env::var_os(ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+        ui::parity::daemon_fixture::run();
+        return;
+    }
     #[cfg(feature = "parity")]
     if std::env::args().nth(1).as_deref() == Some("--parity") {
         ui::parity::capture_editor_interaction_states();
@@ -302,6 +325,7 @@ fn main() {
                             None,
                             None,
                             None,
+                            windows::recording_control::PreferenceScope::Global,
                         );
                     }
                     other => eprintln!("[cli] unknown --preview-window target: {other:?}"),

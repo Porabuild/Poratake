@@ -2,9 +2,9 @@
 //! themes in `renderer/utils/window-frame.ts` — the macOS and Windows window
 //! chrome the editor can wrap a screenshot in.
 
-use tiny_skia::{Color, FillRule, LineCap, PixmapRef, Rect, Stroke};
+use tiny_skia::{Color, FillRule, LineCap, Paint, Pixmap, PixmapRef, Rect, Stroke, Transform};
 
-use crate::render::canvas::{circle_path, rounded_rect_path, Canvas, Shadow};
+use crate::render::canvas::{circle_path, paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
 use crate::render::color;
 
 pub const TITLE_BAR_HEIGHT: f64 = 28.0;
@@ -93,6 +93,8 @@ pub fn render(
     style: &str,
     shadow: Option<Shadow>,
     scale: f64,
+    inset: f64,
+    inset_color: Option<&str>,
 ) {
     render_chrome(
         canvas,
@@ -103,7 +105,10 @@ pub fn render(
         style,
         shadow,
         scale,
+        inset,
+        inset_color,
         Some(image),
+        true,
     );
 }
 
@@ -119,15 +124,18 @@ pub fn render_chrome(
     style: &str,
     shadow: Option<Shadow>,
     scale: f64,
+    inset: f64,
+    inset_color: Option<&str>,
     image: Option<PixmapRef<'_>>,
+    paint_outline: bool,
 ) {
     let Some(theme) = theme(style) else {
         return;
     };
     let bar_height = (TITLE_BAR_HEIGHT * scale).round();
     let radius = corner_radius(style) * scale;
-    let frame_width = content_width;
-    let frame_height = content_height + bar_height;
+    let frame_width = content_width + inset * 2.0;
+    let frame_height = content_height + bar_height + inset * 2.0;
 
     let Some(outline) = rounded_rect_path(
         x as f32,
@@ -142,12 +150,21 @@ pub fn render_chrome(
     canvas.save();
     // The shadow needs something opaque to cast from, which is the frame's own
     // content colour.
-    canvas.set_shadow(shadow);
-    canvas.fill_path(
-        &outline,
-        color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255)),
-        FillRule::Winding,
-    );
+    if let Some(shadow) = shadow {
+        let fill = color::parse_or(theme.content, Color::from_rgba8(255, 255, 255, 255));
+        if paint_rounded_shadow(
+            canvas,
+            (x as f32, y as f32, frame_width as f32, frame_height as f32),
+            radius as f32,
+            shadow,
+            fill,
+        )
+        .is_none()
+        {
+            canvas.set_shadow(Some(shadow));
+            canvas.fill_path(&outline, fill, FillRule::Winding);
+        }
+    }
     canvas.set_shadow(None);
     canvas.clip_path(&outline, FillRule::Winding);
 
@@ -180,20 +197,37 @@ pub fn render_chrome(
         );
     }
 
+    if let Some(inset_color) = inset_color.filter(|_| inset > 0.0) {
+        if let Some(band) = Rect::from_xywh(
+            x as f32,
+            (y + bar_height) as f32,
+            frame_width as f32,
+            (frame_height - bar_height) as f32,
+        ) {
+            canvas.fill_rect(band, color::parse_or(inset_color, Color::TRANSPARENT));
+        }
+    }
+
     if let Some(image) = image {
         canvas.draw_pixmap(
             image,
-            x as f32,
-            (y + bar_height) as f32,
+            (x + inset) as f32,
+            (y + bar_height + inset) as f32,
             content_width as f32,
             content_height as f32,
         );
     }
     canvas.restore();
 
+    if paint_outline {
+        stroke_outline(canvas, &outline, theme, scale);
+    }
+}
+
+fn stroke_outline(canvas: &mut Canvas, outline: &tiny_skia::Path, theme: Theme, scale: f64) {
     canvas.save();
     canvas.stroke_path(
-        &outline,
+        outline,
         color::parse_or(theme.frame_border, Color::TRANSPARENT),
         &Stroke {
             width: scale as f32,
@@ -201,6 +235,55 @@ pub fn render_chrome(
         },
     );
     canvas.restore();
+}
+
+pub fn render_outline(
+    canvas: &mut Canvas,
+    x: f64,
+    y: f64,
+    content_width: f64,
+    content_height: f64,
+    style: &str,
+    scale: f64,
+) {
+    let Some(theme) = theme(style) else {
+        return;
+    };
+    let Some(outline) = rounded_rect_path(
+        x as f32,
+        y as f32,
+        content_width as f32,
+        (content_height + title_bar_height(style, scale)) as f32,
+        (corner_radius(style) * scale) as f32,
+    ) else {
+        return;
+    };
+    stroke_outline(canvas, &outline, theme, scale);
+}
+
+pub fn preview_edges(
+    backdrop: &tiny_skia::Pixmap,
+    x: f64,
+    y: f64,
+    content_width: f64,
+    content_height: f64,
+    style: &str,
+    scale: f64,
+) -> Option<Vec<crate::render::canvas::PreviewEdge>> {
+    let theme = theme(style)?;
+    crate::render::canvas::preview_clip_edges(
+        backdrop,
+        x,
+        y,
+        content_width,
+        content_height,
+        title_bar_height(style, scale),
+        corner_radius(style) * scale,
+        Some((
+            scale,
+            color::parse_or(theme.frame_border, Color::TRANSPARENT),
+        )),
+    )
 }
 
 fn draw_traffic_lights(canvas: &mut Canvas, x: f64, y: f64, scale: f64) {
@@ -261,7 +344,9 @@ fn draw_windows_controls(
         let mut builder = tiny_skia::PathBuilder::new();
         builder.push_rect(rect);
         if let Some(path) = builder.finish() {
-            canvas.stroke_path(&path, paint, &pen);
+            if stroke_maximize(canvas, &path, rect, paint, &pen).is_none() {
+                canvas.stroke_path(&path, paint, &pen);
+            }
         }
     }
 
@@ -273,6 +358,65 @@ fn draw_windows_controls(
     if let Some(path) = builder.finish() {
         canvas.stroke_path(&path, paint, &pen);
     }
+}
+
+fn stroke_maximize(
+    canvas: &mut Canvas,
+    path: &tiny_skia::Path,
+    rect: Rect,
+    color: Color,
+    stroke: &Stroke,
+) -> Option<()> {
+    if !canvas.transform().is_identity() {
+        return None;
+    }
+    let margin = stroke.width / 2.0 + 1.0;
+    let left = (rect.left() - margin).floor().max(0.0) as u32;
+    let top = (rect.top() - margin).floor().max(0.0) as u32;
+    let right = (rect.right() + margin).ceil().min(canvas.width() as f32) as u32;
+    let bottom = (rect.bottom() + margin).ceil().min(canvas.height() as f32) as u32;
+    if left >= right || top >= bottom {
+        return Some(());
+    }
+    let (width, height) = (right - left, bottom - top);
+    let mut high = Pixmap::new(width.checked_mul(4)?, height.checked_mul(4)?)?;
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    high.stroke_path(
+        path,
+        &paint,
+        stroke,
+        Transform::from_scale(4.0, 4.0).pre_translate(-(left as f32), -(top as f32)),
+        None,
+    );
+    let mut tile = Pixmap::new(width, height)?;
+    let stride = width as usize * 4;
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0_u32; 4];
+            for sub_y in 0..4 {
+                for sub_x in 0..4 {
+                    let index = ((y as usize * 4 + sub_y) * stride + x as usize * 4 + sub_x) * 4;
+                    for (sum, value) in sum.iter_mut().zip(&high.data()[index..index + 4]) {
+                        *sum += u32::from(*value);
+                    }
+                }
+            }
+            let index = (y as usize * width as usize + x as usize) * 4;
+            for (target, sum) in tile.data_mut()[index..index + 4].iter_mut().zip(sum) {
+                *target = ((sum + 8) / 16) as u8;
+            }
+        }
+    }
+    canvas.draw_pixmap(
+        tile.as_ref(),
+        left as f32,
+        top as f32,
+        width as f32,
+        height as f32,
+    );
+    Some(())
 }
 
 #[cfg(test)]
@@ -317,6 +461,8 @@ mod tests {
             "macos-light",
             None,
             1.0,
+            0.0,
+            None,
         );
 
         let pixel = |x: u32, y: u32| {
@@ -327,6 +473,316 @@ mod tests {
         // The title bar is the theme's grey, the content below it is the image.
         assert_ne!(pixel(100, 20), [255, 0, 0]);
         assert_eq!(pixel(100, 60), [255, 0, 0]);
+    }
+
+    #[test]
+    fn windows_maximize_matches_electron_at_fractional_positions() {
+        let baseline = image::load_from_memory(include_bytes!(
+            "../ui/parity/fixtures/window-controls-electron.png"
+        ))
+        .unwrap()
+        .to_rgba8();
+        for (theme_index, style) in ["windows-dark", "windows-light"].into_iter().enumerate() {
+            for (scale_index, scale) in [1.0, 1.125, 1.25, 1.5, 1.75, 2.0, 2.5]
+                .into_iter()
+                .enumerate()
+            {
+                for (offset_index, offset) in [0.0, 0.25, 0.5, 0.75].into_iter().enumerate() {
+                    let mut canvas = Canvas::new(450, 240).unwrap();
+                    canvas.fill_all(Color::from_rgba8(66, 98, 130, 255));
+                    render_chrome(
+                        &mut canvas,
+                        30.0 + offset,
+                        30.0 + offset,
+                        320.0,
+                        100.0,
+                        style,
+                        None,
+                        scale,
+                        0.0,
+                        None,
+                        None,
+                        true,
+                    );
+                    let center_x = 350.0 + offset - 51.0 * scale;
+                    let center_y = 30.0 + offset + 14.0 * scale;
+                    let half = 4.5 * scale + 1.0;
+                    let left = (center_x - half).floor() as u32;
+                    let top = (center_y - half).floor() as u32;
+                    let right = (center_x + half).ceil() as u32;
+                    let bottom = (center_y + half).ceil() as u32;
+                    for y in top..bottom {
+                        for x in left..right {
+                            let expected = baseline.get_pixel(
+                                scale_index as u32 * 32 + x - left,
+                                (theme_index * 4 + offset_index) as u32 * 32 + y - top,
+                            );
+                            let index = ((y * canvas.width() + x) * 4) as usize;
+                            let actual = &canvas.pixmap().data()[index..index + 4];
+                            assert!(
+                                actual
+                                    .iter()
+                                    .zip(expected.0)
+                                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                                "{style}, scale {scale}, offset {offset}, pixel {x},{y}: {actual:?} != {expected:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_controls_respect_clip_and_alpha() {
+        let mut full = Canvas::new(180, 60).unwrap();
+        let mut clipped = Canvas::new(180, 60).unwrap();
+        for canvas in [&mut full, &mut clipped] {
+            canvas.set_global_alpha(0.5);
+        }
+        clipped.clip_rect(Rect::from_xywh(0.0, 0.0, 96.0, 60.0).unwrap());
+        draw_windows_controls(&mut full, 0.0, 0.0, 160.0, "#FFFFFF", 1.25);
+        draw_windows_controls(&mut clipped, 0.0, 0.0, 160.0, "#FFFFFF", 1.25);
+        for y in 0..60 {
+            for x in 0..180 {
+                let index = ((y * 180 + x) * 4) as usize;
+                let expected = if x < 96 {
+                    &full.pixmap().data()[index..index + 4]
+                } else {
+                    &[0, 0, 0, 0]
+                };
+                assert_eq!(&clipped.pixmap().data()[index..index + 4], expected);
+            }
+        }
+        assert!(full
+            .pixmap()
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 128));
+        assert!(clipped
+            .pixmap()
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn windows_controls_remain_visible_at_the_canvas_edge() {
+        let mut small = Canvas::new(80, 60).unwrap();
+        let mut large = Canvas::new(130, 60).unwrap();
+        draw_windows_controls(&mut small, 0.0, 0.0, 66.0, "#FFFFFF", 1.25);
+        draw_windows_controls(&mut large, 50.0, 0.0, 66.0, "#FFFFFF", 1.25);
+        for y in 0..60 {
+            for x in 0..80 {
+                let small_index = ((y * 80 + x) * 4) as usize;
+                let large_index = ((y * 130 + x + 50) * 4) as usize;
+                assert_eq!(
+                    &small.pixmap().data()[small_index..small_index + 4],
+                    &large.pixmap().data()[large_index..large_index + 4]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn translucent_content_uses_the_backdrop_without_a_shadow() {
+        let mut image = Pixmap::new(60, 60).expect("image");
+        image.fill(Color::from_rgba8(240, 80, 64, 128));
+        let shadow = Shadow {
+            color: Color::from_rgba8(0, 0, 0, 128),
+            blur: 4.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        for (shadow, background) in [(None, [36_u8, 104, 172]), (Some(shadow), [255, 255, 255])] {
+            let mut canvas = Canvas::new(100, 120).expect("canvas");
+            canvas.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            render(
+                &mut canvas,
+                image.as_ref(),
+                10.0,
+                10.0,
+                60.0,
+                60.0,
+                "windows-light",
+                shadow,
+                1.0,
+                0.0,
+                None,
+            );
+            let index = ((68 * canvas.width() + 40) * 4) as usize;
+            let pixel = &canvas.pixmap().data()[index..index + 4];
+            for (actual, (foreground, background)) in pixel[..3]
+                .iter()
+                .zip([240_u8, 80, 64].into_iter().zip(background))
+            {
+                let expected = (u16::from(foreground) * 128 + u16::from(background) * 127) / 255;
+                assert!(actual.abs_diff(expected as u8) <= 2, "{pixel:?}");
+            }
+            assert_eq!(pixel[3], 255);
+        }
+
+        let mut canvas = Canvas::new(100, 120).expect("canvas");
+        render(
+            &mut canvas,
+            image.as_ref(),
+            10.0,
+            10.0,
+            60.0,
+            60.0,
+            "windows-light",
+            None,
+            1.0,
+            0.0,
+            None,
+        );
+        let index = ((68 * canvas.width() + 40) * 4) as usize;
+        assert_eq!(canvas.pixmap().data()[index + 3], 128);
+    }
+
+    #[test]
+    fn preview_edge_tiles_composite_like_export() {
+        let shadow = Shadow {
+            color: Color::from_rgba8(0, 0, 0, 128),
+            blur: 4.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        for (width, height) in [(64, 40), (10, 10), (1, 1)] {
+            let source = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    (x * 3) as u8,
+                    (y * 5) as u8,
+                    160,
+                    if (x + y) % 3 == 0 { 128 } else { 255 },
+                ])
+            });
+            let image = crate::editor::export::from_rgba(&source).unwrap();
+            for style in ["macos-light", "macos-dark", "windows-light", "windows-dark"] {
+                for scale in [1.0, 1.25, 2.0] {
+                    for shadow in [None, Some(shadow)] {
+                        let mut expected = Canvas::new(96, 140).unwrap();
+                        expected.fill_all(Color::from_rgba8(36, 104, 172, 255));
+                        render(
+                            &mut expected,
+                            image.as_ref(),
+                            15.0,
+                            10.0,
+                            f64::from(width),
+                            f64::from(height),
+                            style,
+                            shadow,
+                            scale,
+                            0.0,
+                            None,
+                        );
+                        let mut backdrop = Canvas::new(96, 140).unwrap();
+                        backdrop.fill_all(Color::from_rgba8(36, 104, 172, 255));
+                        render_chrome(
+                            &mut backdrop,
+                            15.0,
+                            10.0,
+                            f64::from(width),
+                            f64::from(height),
+                            style,
+                            shadow,
+                            scale,
+                            0.0,
+                            None,
+                            None,
+                            false,
+                        );
+                        let edges = preview_edges(
+                            backdrop.pixmap(),
+                            15.0,
+                            10.0,
+                            f64::from(width),
+                            f64::from(height),
+                            style,
+                            scale,
+                        )
+                        .unwrap();
+                        backdrop.draw_pixmap(
+                            image.as_ref(),
+                            15.0,
+                            (10.0 + title_bar_height(style, scale)) as f32,
+                            width as f32,
+                            height as f32,
+                        );
+                        for edge in edges {
+                            backdrop.draw_pixmap(
+                                edge.pixels.as_ref(),
+                                edge.x as f32,
+                                edge.y as f32,
+                                edge.pixels.width() as f32,
+                                edge.pixels.height() as f32,
+                            );
+                        }
+                        let different = backdrop
+                            .pixmap()
+                            .data()
+                            .iter()
+                            .zip(expected.pixmap().data())
+                            .filter(|(actual, expected)| actual.abs_diff(**expected) > 2)
+                            .count();
+                        assert_eq!(
+                            different, 0,
+                            "{width}x{height}, {style}, {scale}, shadow={shadow:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transparent_backdrop_falls_back_to_the_original_outline() {
+        let mut fallback = Canvas::new(96, 140).unwrap();
+        render_chrome(
+            &mut fallback,
+            15.0,
+            10.0,
+            64.0,
+            40.0,
+            "windows-dark",
+            None,
+            1.25,
+            0.0,
+            None,
+            None,
+            false,
+        );
+        assert!(preview_edges(
+            fallback.pixmap(),
+            15.0,
+            10.0,
+            64.0,
+            40.0,
+            "windows-dark",
+            1.25
+        )
+        .is_none());
+        render_outline(&mut fallback, 15.0, 10.0, 64.0, 40.0, "windows-dark", 1.25);
+        let mut original = Canvas::new(96, 140).unwrap();
+        render_chrome(
+            &mut original,
+            15.0,
+            10.0,
+            64.0,
+            40.0,
+            "windows-dark",
+            None,
+            1.25,
+            0.0,
+            None,
+            None,
+            true,
+        );
+        assert_eq!(fallback.pixmap().data(), original.pixmap().data());
     }
 
     #[test]
@@ -343,6 +799,8 @@ mod tests {
             "none",
             None,
             1.0,
+            0.0,
+            None,
         );
         assert!(canvas
             .pixmap()

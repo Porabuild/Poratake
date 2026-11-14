@@ -488,6 +488,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
               editingTextId={editingTextId}
               zoom={zoom}
               activeTool={activeTool}
+              showBlackoutFill
             />
 
             {}

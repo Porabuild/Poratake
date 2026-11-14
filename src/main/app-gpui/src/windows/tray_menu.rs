@@ -6,8 +6,8 @@ use gpui::AnyWindowHandle;
 #[cfg(windows)]
 use gpui::Global;
 use gpui::{
-    prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Render, Subscription,
-    WeakEntity, Window, WindowHandle,
+    prelude::*, px, size, App, Bounds, Context, DisplayId, Entity, Pixels, Point, Render, Size,
+    Subscription, WeakEntity, Window, WindowHandle,
 };
 use herogpui::gpui;
 
@@ -124,6 +124,8 @@ pub struct TrayMenuWindow {
     visibility: TrayMenuVisibility,
     #[cfg(windows)]
     reveal_generation: u64,
+    #[cfg(windows)]
+    tray_rect: Option<TrayRect>,
     #[cfg(not(windows))]
     window_handle: AnyWindowHandle,
 }
@@ -133,11 +135,12 @@ impl TrayMenuWindow {
         menu: Entity<MenuView>,
         dismiss: DismissHandler,
         visible: bool,
+        tray_rect: Option<TrayRect>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         #[cfg(not(windows))]
-        let _ = &dismiss;
+        let _ = (&dismiss, tray_rect);
         let mut view = Self {
             menu,
             #[cfg(windows)]
@@ -146,6 +149,8 @@ impl TrayMenuWindow {
             visibility: TrayMenuVisibility::new(visible),
             #[cfg(windows)]
             reveal_generation: u64::from(visible),
+            #[cfg(windows)]
+            tray_rect,
             #[cfg(not(windows))]
             window_handle: window.window_handle(),
         };
@@ -202,6 +207,25 @@ impl TrayMenuWindow {
         tray_menu_cache(cx).handle = opened;
     }
 
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn cached_handle_for_parity(cx: &mut App) -> Option<WindowHandle<Self>> {
+        tray_menu_cache(cx).handle
+    }
+
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn is_shown_for_parity(handle: WindowHandle<Self>, cx: &mut App) -> bool {
+        handle
+            .update(cx, |this, _, _| this.visibility.is_shown())
+            .unwrap_or(false)
+    }
+
+    #[cfg(all(windows, feature = "parity"))]
+    pub(crate) fn remove_cached_for_parity(cx: &mut App) {
+        if let Some(handle) = tray_menu_cache(cx).handle.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         if recently_closed_on_deactivation(cx) {
             return;
@@ -237,7 +261,7 @@ impl TrayMenuWindow {
         });
     }
 
-    fn open(
+    pub(crate) fn open(
         tray_rect: Option<TrayRect>,
         visible: bool,
         cx: &mut App,
@@ -245,7 +269,7 @@ impl TrayMenuWindow {
         let config = crate::state::state(cx).config.get();
         let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
-        let geometry = menu_geometry(tray_rect, &entries, cx);
+        let geometry = menu_geometry(tray_rect, estimated_menu_height(&entries), cx);
         let max_height = geometry.bounds.size.height;
         let window_bounds = geometry
             .display_id
@@ -273,6 +297,7 @@ impl TrayMenuWindow {
                 },
             ),
             |window, cx| {
+                window.set_window_title("Poratake tray menu");
                 configure_tray_menu_window(window);
                 #[cfg(windows)]
                 if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -298,7 +323,7 @@ impl TrayMenuWindow {
                 if visible {
                     window.focus(&menu.read(cx).focus_handle(), cx);
                 }
-                let view = cx.new(|cx| Self::new(menu, dismiss, visible, window, cx));
+                let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
                 *owner.borrow_mut() = Some(view.downgrade());
                 #[cfg(windows)]
                 if visible {
@@ -317,7 +342,7 @@ impl TrayMenuWindow {
         let config = crate::state::state(cx).config.get();
         let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
-        let geometry = menu_geometry(tray_rect, &entries, cx);
+        let geometry = menu_geometry(tray_rect, estimated_menu_height(&entries), cx);
         let max_height = geometry.bounds.size.height;
         if let Some(hwnd) = crate::windows::window_hwnd(window) {
             crate::system::window_composition::stage_window(
@@ -330,6 +355,7 @@ impl TrayMenuWindow {
             );
         }
         self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), max_height, cx));
+        self.tray_rect = tray_rect;
         self.visibility = TrayMenuVisibility::Revealing;
         self.reveal_generation = self.reveal_generation.wrapping_add(1);
         let generation = self.reveal_generation;
@@ -398,11 +424,46 @@ fn build_menu(
 
 impl Render for TrayMenuWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let surface = crate::ui::window_root::focus_root(
-            crate::ui::font::root().size_full().child(self.menu.clone()),
-            window,
-            cx,
-        );
+        let content = crate::ui::font::root().w_full().child(self.menu.clone());
+        #[cfg(windows)]
+        let content = {
+            let weak = cx.entity().downgrade();
+            let generation = self.reveal_generation;
+            content.on_children_prepainted(move |bounds, window, _| {
+                let height = bounds[0].size.height;
+                if ((height - window.viewport_size().height) * window.scale_factor()).abs()
+                    < px(0.01)
+                {
+                    return;
+                }
+                let weak = weak.clone();
+                window.on_next_frame(move |window, cx| {
+                    weak.update(cx, |this, cx| {
+                        if this.reveal_generation != generation {
+                            return;
+                        }
+                        let geometry = menu_geometry(this.tray_rect, f32::from(height), cx);
+                        let mut bounds = geometry.bounds;
+                        if this.visibility == TrayMenuVisibility::Hidden {
+                            bounds.origin = gpui::point(px(-32000.), px(-32000.));
+                        }
+                        window.resize(bounds.size);
+                        if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                            crate::system::window_composition::apply_window_bounds(
+                                hwnd,
+                                bounds,
+                                geometry
+                                    .scale_factor
+                                    .unwrap_or_else(|| window.scale_factor()),
+                            );
+                        }
+                        configure_tray_menu_window(window);
+                    })
+                    .ok();
+                });
+            })
+        };
+        let surface = crate::ui::window_root::focus_root(content, window, cx);
 
         #[cfg(windows)]
         return surface.into_any_element();
@@ -445,9 +506,9 @@ fn configure_tray_menu_window(window: &Window) {
     let _ = window;
 }
 
-fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut App) -> MenuGeometry {
+fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> MenuGeometry {
     let Some(display) = menu_display(tray_rect, cx) else {
-        let window_size = size(px(MENU_WIDTH), px(menu_height(entries)));
+        let window_size = size(px(MENU_WIDTH), px(height));
         return MenuGeometry {
             bounds: Bounds::centered(None, window_size, cx),
             display_id: None,
@@ -456,7 +517,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
         };
     };
     let max_content_height = f32::from(display.work_area.size.height) - SCREEN_GAP * 2.0;
-    let content_height = menu_height(entries).min(max_content_height);
+    let content_height = height.min(max_content_height);
     let window_width = MENU_WIDTH;
     let window_height = content_height;
     let window_size = size(px(window_width), px(window_height));
@@ -468,28 +529,38 @@ fn menu_geometry(tray_rect: Option<TrayRect>, entries: &[MenuEntry], cx: &mut Ap
             scale_factor: display.scale_factor,
         };
     };
-    let min_x = f32::from(display.work_area.left()) + SCREEN_GAP;
-    let max_x = f32::from(display.work_area.right()) - window_width - SCREEN_GAP;
-    let x = (rect.x + rect.width / 2.0 - window_width / 2.0).clamp(min_x, max_x);
-    let space_above = rect.y - f32::from(display.work_area.top());
-    let y = if space_above >= window_height + SCREEN_GAP {
-        rect.y - window_height - SCREEN_GAP
-    } else {
-        rect.y + rect.height + SCREEN_GAP
-    }
-    .clamp(
-        f32::from(display.work_area.top()) + SCREEN_GAP,
-        f32::from(display.work_area.bottom()) - window_height - SCREEN_GAP,
-    );
     MenuGeometry {
         bounds: Bounds {
-            origin: gpui::point(px(x), px(y)),
+            origin: tray_menu_origin(display.work_area, rect, window_size),
             size: window_size,
         },
         display_id: Some(display.id),
         #[cfg(windows)]
         scale_factor: display.scale_factor,
     }
+}
+
+fn tray_menu_origin(
+    work_area: Bounds<Pixels>,
+    rect: TrayRect,
+    window_size: Size<Pixels>,
+) -> Point<Pixels> {
+    let window_width = f32::from(window_size.width);
+    let window_height = f32::from(window_size.height);
+    let min_x = f32::from(work_area.left()) + SCREEN_GAP;
+    let max_x = f32::from(work_area.right()) - window_width - SCREEN_GAP;
+    let x = (rect.x + rect.width / 2.0 - window_width / 2.0).clamp(min_x, max_x);
+    let space_above = rect.y - f32::from(work_area.top());
+    let y = if space_above >= window_height + SCREEN_GAP {
+        rect.y - window_height - SCREEN_GAP
+    } else {
+        rect.y + rect.height + SCREEN_GAP
+    }
+    .clamp(
+        f32::from(work_area.top()) + SCREEN_GAP,
+        f32::from(work_area.bottom()) - window_height - SCREEN_GAP,
+    );
+    gpui::point(px(x), px(y))
 }
 
 #[cfg(windows)]
@@ -504,7 +575,7 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
     let Some(rect) = tray_rect else {
         let display = displays.first()?;
         return Some(MenuDisplay {
-            work_area: crate::system::work_area::work_area(display.bounds()),
+            work_area: crate::system::work_area::work_area(display.as_ref()),
             tray_rect: None,
             id: display.id(),
             #[cfg(windows)]
@@ -597,15 +668,14 @@ pub(crate) fn menu_display(tray_rect: Option<TrayRect>, cx: &mut App) -> Option<
             })
         })
         .or_else(|| displays.first())?;
-    let bounds = crate::system::work_area::display_bounds(display.as_ref());
     Some(MenuDisplay {
-        work_area: crate::system::work_area::work_area(bounds),
+        work_area: crate::system::work_area::work_area(display.as_ref()),
         tray_rect,
         id: display.id(),
     })
 }
 
-fn menu_height(entries: &[MenuEntry]) -> f32 {
+fn estimated_menu_height(entries: &[MenuEntry]) -> f32 {
     entries
         .iter()
         .map(|entry| match entry {
@@ -660,13 +730,187 @@ mod tests {
     }
 
     #[test]
-    fn menu_height_counts_items_and_separators() {
+    fn estimated_menu_height_counts_items_and_separators() {
         let entries = vec![
             MenuEntry::Item(crate::ui::menu::MenuItem::new("One")),
             MenuEntry::Separator,
             MenuEntry::Item(crate::ui::menu::MenuItem::new("Two")),
         ];
-        assert_eq!(menu_height(&entries), 73.0);
+        assert_eq!(estimated_menu_height(&entries), 73.0);
+    }
+
+    #[test]
+    fn measured_height_keeps_the_tray_menu_anchored_to_the_taskbar() {
+        let work_area = Bounds {
+            origin: gpui::point(px(0.), px(0.)),
+            size: size(px(3440.), px(1392.)),
+        };
+        let tray = TrayRect {
+            x: 3000.,
+            y: 1404.,
+            width: 24.,
+            height: 24.,
+        };
+        let estimated = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(632.)));
+        let measured = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(564.)));
+        assert_eq!(estimated.x, px(2860.));
+        assert_eq!(measured.x, estimated.x);
+        assert_eq!(estimated.y, px(752.));
+        assert_eq!(measured.y, px(820.));
+        assert_eq!(estimated.y + px(632.), work_area.bottom() - px(SCREEN_GAP));
+        assert_eq!(measured.y + px(564.), work_area.bottom() - px(SCREEN_GAP));
+    }
+
+    #[test]
+    fn tray_menu_stays_within_the_work_area_at_top_and_side_edges() {
+        let work_area = Bounds {
+            origin: gpui::point(px(-1920.), px(48.)),
+            size: size(px(1920.), px(1032.)),
+        };
+        let tray = TrayRect {
+            x: -1910.,
+            y: 8.,
+            width: 24.,
+            height: 24.,
+        };
+        let origin = tray_menu_origin(work_area, tray, size(px(MENU_WIDTH), px(564.)));
+        assert_eq!(origin.x, work_area.left() + px(SCREEN_GAP));
+        assert_eq!(origin.y, work_area.top() + px(SCREEN_GAP));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn tray_window_fits_the_painted_menu_at_each_scale(cx: &mut gpui::TestAppContext) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.appearance.mode = "dark".into());
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let handle = cx.update(|cx| TrayMenuWindow::open(None, false, cx).unwrap());
+        let handle: gpui::AnyWindowHandle = handle.into();
+        for scale in [1., 1.25, 1.5, 2.] {
+            handle
+                .update(cx, |_, window, _| window.set_scale_factor(scale))
+                .unwrap();
+            for _ in 0..4 {
+                handle
+                    .update(cx, |_, window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.bounds_changed(cx);
+                        window.set_scale_factor(scale);
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+            }
+            handle.update(cx, |_, window, _| {
+                let panel = window.painted_quads().into_iter().filter(|quad| {
+                    (quad.bounds.size.width.0 / scale - MENU_WIDTH).abs() < 0.01
+                }).max_by(|left, right| left.bounds.size.height.partial_cmp(&right.bounds.size.height).unwrap()).unwrap();
+                let reserved = f32::from(window.viewport_size().height) * scale;
+                assert!((reserved - panel.bounds.size.height.0).abs() < 0.01,
+                    "tray window reserved {reserved}px but its menu paints {:?} at scale {scale}", panel.bounds.size.height);
+            }).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn prewarmed_tray_menu_reuses_measured_geometry_at_each_scale(cx: &mut gpui::TestAppContext) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.appearance.mode = "dark".into());
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        for scale in [1., 1.25, 1.5, 2.] {
+            cx.update(TrayMenuWindow::prewarm);
+            let handle = cx
+                .update(|cx| tray_menu_cache(cx).handle)
+                .expect("the tray menu must be prewarmed");
+            let window: gpui::AnyWindowHandle = handle.into();
+            handle
+                .update(cx, |_, window, _| window.set_scale_factor(scale))
+                .unwrap();
+
+            for reopen in 0..2 {
+                cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+                for _ in 0..8 {
+                    window
+                        .update(cx, |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            window.bounds_changed(cx);
+                            window.set_scale_factor(scale);
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        })
+                        .unwrap();
+                    cx.run_until_parked();
+                }
+
+                window
+                    .update(cx, |_, window, _| {
+                        let viewport = window.viewport_size();
+                        let bounds = window.bounds();
+                        let quads = window.painted_quads();
+                        let panel = quads
+                            .iter()
+                            .filter(|quad| {
+                                (quad.bounds.size.width.0 / scale - MENU_WIDTH).abs() < 0.01
+                            })
+                            .max_by(|left, right| {
+                                left.bounds
+                                    .size
+                                    .height
+                                    .partial_cmp(&right.bounds.size.height)
+                                    .unwrap()
+                            })
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "prewarmed tray panel missing at scale {scale} on reopen {reopen}: viewport={viewport:?}, bounds={bounds:?}, painted quads={:?}",
+                                    quads.iter().map(|quad| quad.bounds).collect::<Vec<_>>()
+                                )
+                            });
+                        assert!(
+                            (f32::from(viewport.width) * scale - panel.bounds.size.width.0).abs()
+                                < 0.01
+                                && (f32::from(viewport.height) * scale
+                                    - panel.bounds.size.height.0)
+                                    .abs()
+                                    < 0.01,
+                            "prewarmed tray viewport differs from its painted menu at scale {scale} on reopen {reopen}: viewport={viewport:?}, panel={:?}",
+                            panel.bounds
+                        );
+                        assert!(
+                            (f32::from(bounds.size.width) * scale - panel.bounds.size.width.0)
+                                .abs()
+                                < 0.01
+                                && (f32::from(bounds.size.height) * scale
+                                    - panel.bounds.size.height.0)
+                                    .abs()
+                                    < 0.01,
+                            "prewarmed tray bounds differ from its painted menu at scale {scale} on reopen {reopen}: bounds={bounds:?}, panel={:?}",
+                            panel.bounds
+                        );
+                    })
+                    .unwrap();
+                assert!(handle
+                    .update(cx, |this, _, _| this.visibility.is_shown())
+                    .unwrap());
+                cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+                assert!(!handle
+                    .update(cx, |this, _, _| this.visibility.is_shown())
+                    .unwrap());
+            }
+
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+        }
     }
 
     #[test]

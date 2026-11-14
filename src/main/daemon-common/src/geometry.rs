@@ -2,6 +2,63 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PixelFitRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn fit_rect(source: (u32, u32), target: (u32, u32)) -> FitRect {
+    let empty = FitRect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
+    if source.0 == 0 || source.1 == 0 || target.0 == 0 || target.1 == 0 {
+        return empty;
+    }
+
+    let scale = f64::min(
+        f64::from(target.0) / f64::from(source.0),
+        f64::from(target.1) / f64::from(source.1),
+    );
+    let width = f64::from(source.0) * scale;
+    let height = f64::from(source.1) * scale;
+
+    FitRect {
+        x: (f64::from(target.0) - width) / 2.0,
+        y: (f64::from(target.1) - height) / 2.0,
+        width,
+        height,
+    }
+}
+
+pub fn fit_rect_pixels(source: (u32, u32), target: (u32, u32)) -> PixelFitRect {
+    let fit = fit_rect(source, target);
+    if fit.width == 0.0 || fit.height == 0.0 {
+        return PixelFitRect::default();
+    }
+    let width = (fit.width.round() as u32).clamp(1, target.0);
+    let height = (fit.height.round() as u32).clamp(1, target.1);
+    PixelFitRect {
+        x: (target.0 - width) / 2,
+        y: (target.1 - height) / 2,
+        width,
+        height,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CaptureRect {
     pub x: i32,
@@ -247,5 +304,50 @@ mod tests {
 
         assert_eq!(value["windowId"], 42);
         assert_eq!(value["ownerName"], "Editor");
+    }
+
+    #[test]
+    fn fit_rect_preserves_centered_aspect_fit_geometry() {
+        assert_eq!(
+            fit_rect((800, 200), (400, 400)),
+            FitRect {
+                x: 0.0,
+                y: 150.0,
+                width: 400.0,
+                height: 100.0,
+            }
+        );
+    }
+
+    #[test]
+    fn pixel_fit_rounds_size_and_centers_the_exact_destination_rect() {
+        assert_eq!(
+            fit_rect_pixels((5, 2), (8, 7)),
+            PixelFitRect {
+                x: 0,
+                y: 2,
+                width: 8,
+                height: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn pixel_fit_returns_an_empty_rect_for_empty_dimensions() {
+        assert_eq!(fit_rect_pixels((0, 2), (8, 7)), PixelFitRect::default());
+        assert_eq!(fit_rect_pixels((5, 2), (0, 7)), PixelFitRect::default());
+    }
+
+    #[test]
+    fn pixel_fit_keeps_extreme_nonempty_aspects_visible() {
+        assert_eq!(
+            fit_rect_pixels((1_920, 1), (10, 10)),
+            PixelFitRect {
+                x: 0,
+                y: 4,
+                width: 10,
+                height: 1,
+            }
+        );
     }
 }

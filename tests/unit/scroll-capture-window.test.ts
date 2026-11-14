@@ -99,6 +99,7 @@ describe('scroll capture window', () => {
     vi.resetModules();
     windows.splice(0);
     Object.keys(ipcOn).forEach(key => delete ipcOn[key]);
+    display.bounds.x = 0;
     borrowedOverlay = new MockBrowserWindow({});
     borrowedOverlay.visible = true;
     windows.splice(0);
@@ -170,6 +171,37 @@ describe('scroll capture window', () => {
     expect(borrowedOverlay.setOpacity).toHaveBeenLastCalledWith(1);
     expect(windows[0].setOpacity).toHaveBeenLastCalledWith(1);
   });
+
+  it.each([
+    { displayX: 0, x: 0, expectedX: 0 },
+    { displayX: 0, x: 1910, expectedX: 1752 },
+    { displayX: -1920, x: -1920, expectedX: -1920 },
+    { displayX: -1920, x: -10, expectedX: -168 },
+  ])(
+    'keeps the controls on screen for a narrow selection at $x',
+    async ({ displayX, x, expectedX }) => {
+      const captureWindow =
+        await import('@/main/capture/scroll-capture/scroll-capture-window');
+      display.bounds.x = displayX;
+      captureWindow.prewarmScrollCaptureControl();
+      windows.forEach(finishLoading);
+
+      captureWindow.showScrollCaptureOverlay(
+        {
+          displayId: 7,
+          area: { x, y: 100, width: 10, height: 300, displayId: 7 },
+        },
+        vi.fn()
+      );
+
+      expect(windows[0].setBounds).toHaveBeenLastCalledWith({
+        x: expectedX,
+        y: 416,
+        width: 168,
+        height: 52,
+      });
+    }
+  );
 
   it('parks the windows for reuse when capture ends', async () => {
     const captureWindow =

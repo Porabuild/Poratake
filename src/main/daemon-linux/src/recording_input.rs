@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
+use poratake_daemon_common::geometry::fit_rect_pixels;
 use serde::Serialize;
 use xcb::Connection;
 use xcb::x;
@@ -194,7 +195,12 @@ impl InputRecorder {
     /// Starts the passive listener, or returns `None` when the display has
     /// no XInput2 or keymap — a session where input recording genuinely
     /// cannot work.
-    pub fn start(grab: CaptureRect, keyboard_enabled: bool) -> Option<Self> {
+    pub fn start(
+        source_area: CaptureRect,
+        frame: CaptureRect,
+        keyboard_enabled: bool,
+        window_bounds: Option<Arc<Mutex<CaptureRect>>>,
+    ) -> Option<Self> {
         let Ok((control, screen_number)) =
             Connection::connect_with_extensions(None, &[xcb::Extension::Input], &[])
         else {
@@ -206,28 +212,6 @@ impl InputRecorder {
         let keymap = Arc::new(keymap::load(&control)?);
 
         let wake_window = wake_window(&control, root)?;
-        // Raw key/button events are selected on all devices; absolute motion
-        // comes from the master pointer, which the raw variant lacks.
-        let masks = [
-            xinput::EventMaskBuf::new(
-                xinput::Device::All,
-                &[xinput::XiEventMask::RAW_KEY_PRESS
-                    | xinput::XiEventMask::RAW_KEY_RELEASE
-                    | xinput::XiEventMask::RAW_BUTTON_PRESS
-                    | xinput::XiEventMask::RAW_BUTTON_RELEASE],
-            ),
-            xinput::EventMaskBuf::new(xinput::Device::AllMaster, &[xinput::XiEventMask::MOTION]),
-        ];
-        if control
-            .send_and_check_request(&xinput::XiSelectEvents {
-                window: root,
-                masks: &masks,
-            })
-            .is_err()
-        {
-            return None;
-        }
-
         let shared = Arc::new(Shared {
             keyboard_enabled,
             stop: AtomicBool::new(false),
@@ -249,8 +233,55 @@ impl InputRecorder {
                 else {
                     return None;
                 };
-                let _ = listener_screen;
-                move || listen(connection, wake_window, grab, keymap, shared)
+                let listener_root = connection
+                    .get_setup()
+                    .roots()
+                    .nth(listener_screen as usize)?
+                    .root();
+                let xi_version = connection
+                    .wait_for_reply(connection.send_request(&xinput::XiQueryVersion {
+                        major_version: 2,
+                        minor_version: 1,
+                    }))
+                    .ok()?;
+                if xi_version.major_version() < 2 {
+                    return None;
+                }
+                let masks = [xinput::EventMaskBuf::new(
+                    xinput::Device::All,
+                    &[xinput::XiEventMask::RAW_KEY_PRESS
+                        | xinput::XiEventMask::RAW_KEY_RELEASE
+                        | xinput::XiEventMask::RAW_BUTTON_PRESS
+                        | xinput::XiEventMask::RAW_BUTTON_RELEASE
+                        | xinput::XiEventMask::RAW_MOTION],
+                )];
+                if connection
+                    .send_and_check_request(&xinput::XiSelectEvents {
+                        window: listener_root,
+                        masks: &masks,
+                    })
+                    .is_err()
+                    || connection
+                        .send_and_check_request(&x::ChangeWindowAttributes {
+                            window: wake_window,
+                            value_list: &[x::Cw::EventMask(x::EventMask::STRUCTURE_NOTIFY)],
+                        })
+                        .is_err()
+                {
+                    return None;
+                }
+                move || {
+                    listen(
+                        connection,
+                        listener_root,
+                        wake_window,
+                        source_area,
+                        frame,
+                        window_bounds,
+                        keymap,
+                        shared,
+                    )
+                }
             })
             .ok()?;
 
@@ -259,7 +290,7 @@ impl InputRecorder {
             control,
             wake_window,
             listener: Some(listener),
-            grab,
+            grab: frame,
             stopped: false,
         })
     }
@@ -388,8 +419,11 @@ impl InputRecorder {
 /// destruction; there is no polling anywhere on this path.
 fn listen(
     connection: Connection,
+    root: x::Window,
     wake_window: x::Window,
-    grab: CaptureRect,
+    source_area: CaptureRect,
+    frame: CaptureRect,
+    window_bounds: Option<Arc<Mutex<CaptureRect>>>,
     keymap: Arc<keymap::Keymap>,
     shared: Arc<Shared>,
 ) {
@@ -428,11 +462,20 @@ fn listen(
             }
             xcb::Event::Input(xinput::Event::RawButtonPress(event)) => {
                 let detail = event.detail();
-                let (x, y) = pointer_position(&connection);
+                let (x, y) = pointer_position(&connection, root);
+                let point = (f64::from(x), f64::from(y));
+                let Some((x, y)) = (match &window_bounds {
+                    Some(bounds) => {
+                        window_cursor_position_in_bounds(point, *bounds.lock().unwrap(), frame)
+                    }
+                    None => area_cursor_position(point, source_area, frame),
+                }) else {
+                    continue;
+                };
                 shared.push_cursor(RawCursorEvent {
                     wall_time: Instant::now(),
-                    x: f64::from(x - grab.x),
-                    y: f64::from(y - grab.y),
+                    x,
+                    y,
                     event_type: "down",
                     button: button_name(detail),
                     scroll_delta: wheel_delta(detail),
@@ -440,21 +483,40 @@ fn listen(
             }
             xcb::Event::Input(xinput::Event::RawButtonRelease(event)) => {
                 let detail = event.detail();
-                let (x, y) = pointer_position(&connection);
+                let (x, y) = pointer_position(&connection, root);
+                let point = (f64::from(x), f64::from(y));
+                let Some((x, y)) = (match &window_bounds {
+                    Some(bounds) => {
+                        window_cursor_position_in_bounds(point, *bounds.lock().unwrap(), frame)
+                    }
+                    None => area_cursor_position(point, source_area, frame),
+                }) else {
+                    continue;
+                };
                 shared.push_cursor(RawCursorEvent {
                     wall_time: Instant::now(),
-                    x: f64::from(x - grab.x),
-                    y: f64::from(y - grab.y),
+                    x,
+                    y,
                     event_type: "up",
                     button: button_name(detail),
                     scroll_delta: None,
                 });
             }
-            xcb::Event::Input(xinput::Event::Motion(event)) => {
+            xcb::Event::Input(xinput::Event::RawMotion(_)) => {
+                let (x, y) = pointer_position(&connection, root);
+                let point = (f64::from(x), f64::from(y));
+                let Some((x, y)) = (match &window_bounds {
+                    Some(bounds) => {
+                        window_cursor_position_in_bounds(point, *bounds.lock().unwrap(), frame)
+                    }
+                    None => area_cursor_position(point, source_area, frame),
+                }) else {
+                    continue;
+                };
                 shared.push_cursor(RawCursorEvent {
                     wall_time: Instant::now(),
-                    x: f64::from(event.root_x()),
-                    y: f64::from(event.root_y()),
+                    x,
+                    y,
                     event_type: "move",
                     button: None,
                     scroll_delta: None,
@@ -465,6 +527,290 @@ fn listen(
             }
             _ => {}
         }
+    }
+}
+
+fn pointer_position(connection: &Connection, root: x::Window) -> (i32, i32) {
+    let Ok(reply) =
+        connection.wait_for_reply(connection.send_request(&x::QueryPointer { window: root }))
+    else {
+        return (0, 0);
+    };
+    (i32::from(reply.root_x()), i32::from(reply.root_y()))
+}
+
+fn area_cursor_position(
+    point: (f64, f64),
+    source: CaptureRect,
+    frame: CaptureRect,
+) -> Option<(f64, f64)> {
+    if source.width <= 0 || source.height <= 0 || frame.width <= 0 || frame.height <= 0 {
+        return None;
+    }
+    let x = point.0 - f64::from(source.x);
+    let y = point.1 - f64::from(source.y);
+    let coordinate = |value: f64, source_size: i32, frame_size: i32| {
+        if value < 0.0 {
+            0.0
+        } else if value >= f64::from(source_size) {
+            1.0
+        } else {
+            value / f64::from(frame_size)
+        }
+    };
+    Some((
+        coordinate(x, source.width, frame.width),
+        coordinate(y, source.height, frame.height),
+    ))
+}
+
+fn window_cursor_position_in_bounds(
+    point: (f64, f64),
+    bounds: CaptureRect,
+    frame: CaptureRect,
+) -> Option<(f64, f64)> {
+    if bounds.width <= 0 || bounds.height <= 0 || frame.width <= 0 || frame.height <= 0 {
+        return None;
+    }
+    let relative = (
+        ((point.0 - f64::from(bounds.x)) / f64::from(bounds.width)).clamp(0.0, 1.0),
+        ((point.1 - f64::from(bounds.y)) / f64::from(bounds.height)).clamp(0.0, 1.0),
+    );
+    let fit = fit_rect_pixels(
+        (bounds.width as u32, bounds.height as u32),
+        (frame.width as u32, frame.height as u32),
+    );
+    if fit.width == 0 || fit.height == 0 {
+        return None;
+    }
+    Some((
+        (f64::from(fit.x) + relative.0 * f64::from(fit.width)) / f64::from(frame.width),
+        (f64::from(fit.y) + relative.1 * f64::from(fit.height)) / f64::from(frame.height),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xcb::Xid;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> CaptureRect {
+        CaptureRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn odd_area_cursor_keeps_the_last_real_pixel_and_places_outside_at_the_video_edge() {
+        let source = rect(100, 50, 101, 99);
+        let frame = rect(100, 50, 102, 100);
+
+        let last_real_pixel = area_cursor_position((200.0, 148.0), source, frame).expect("inside");
+        let outside = area_cursor_position((201.0, 149.0), source, frame).expect("edge");
+
+        assert_eq!(last_real_pixel.0 * f64::from(frame.width), 100.0);
+        assert_eq!(last_real_pixel.1 * f64::from(frame.height), 98.0);
+        assert_eq!(outside, (1.0, 1.0));
+    }
+
+    #[test]
+    fn moved_window_keeps_the_cursor_at_the_same_position_in_the_letterboxed_frame() {
+        let frame = rect(0, 0, 800, 600);
+        let before_bounds = rect(100, 100, 400, 600);
+        let after_bounds = rect(500, 300, 400, 600);
+
+        let before = window_cursor_position_in_bounds((300.0, 400.0), before_bounds, frame)
+            .expect("before move");
+        let after = window_cursor_position_in_bounds((700.0, 600.0), after_bounds, frame)
+            .expect("after move");
+
+        assert_eq!(before, after);
+        assert_eq!(before, (0.5, 0.5));
+    }
+
+    #[test]
+    fn resized_window_cursor_uses_the_effective_pixel_fit_rectangle() {
+        let bounds = rect(0, 0, 400, 600);
+        let frame = rect(0, 0, 800, 600);
+
+        let center =
+            window_cursor_position_in_bounds((200.0, 300.0), bounds, frame).expect("window center");
+        let left_edge =
+            window_cursor_position_in_bounds((0.0, 0.0), bounds, frame).expect("window edge");
+
+        assert_eq!(center, (0.5, 0.5));
+        assert_eq!(left_edge, (0.25, 0.0));
+    }
+
+    #[test]
+    #[ignore = "requires an X11 display"]
+    fn records_global_raw_input_when_a_child_selects_xi2_events() {
+        let (connection, screen_number) = Connection::connect_with_extensions(
+            None,
+            &[xcb::Extension::Input, xcb::Extension::Test],
+            &[],
+        )
+        .expect("connect to X11");
+        let root = connection
+            .get_setup()
+            .roots()
+            .nth(screen_number as usize)
+            .expect("X11 screen")
+            .root();
+        let child: x::Window = connection.generate_id();
+        connection
+            .check_request(connection.send_request_checked(&x::CreateWindow {
+                depth: x::COPY_FROM_PARENT as u8,
+                wid: child,
+                parent: root,
+                x: 40,
+                y: 50,
+                width: 101,
+                height: 99,
+                border_width: 0,
+                class: x::WindowClass::InputOutput,
+                visual: x::COPY_FROM_PARENT,
+                value_list: &[x::Cw::BackPixel(0x00ff_0000)],
+            }))
+            .expect("create child window");
+        connection.send_request(&x::MapWindow { window: child });
+        connection
+            .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+            .expect("synchronize child window");
+        let (consumer, _) =
+            Connection::connect_with_extensions(None, &[xcb::Extension::Input], &[])
+                .expect("connect XI2 child client");
+        let xi_version = consumer
+            .wait_for_reply(consumer.send_request(&xcb::xinput::XiQueryVersion {
+                major_version: 2,
+                minor_version: 1,
+            }))
+            .expect("query XI2 version");
+        let supports_grabbed_raw_input = xi_version.major_version() > 2
+            || xi_version.major_version() == 2 && xi_version.minor_version() >= 1;
+        let child_masks = [xcb::xinput::EventMaskBuf::new(
+            xcb::xinput::Device::All,
+            &[xcb::xinput::XiEventMask::BUTTON_PRESS
+                | xcb::xinput::XiEventMask::BUTTON_RELEASE
+                | xcb::xinput::XiEventMask::MOTION],
+        )];
+        consumer
+            .send_and_check_request(&xcb::xinput::XiSelectEvents {
+                window: child,
+                masks: &child_masks,
+            })
+            .expect("child client selects XI2 events");
+        let source = rect(40, 50, 101, 99);
+        let frame = rect(40, 50, 102, 100);
+        let mut input = InputRecorder::start(source, frame, false, None).expect("start input");
+        input.sync_origin();
+        let fake_click = || {
+            for (event_type, detail) in [(6, 0), (4, 1), (5, 1)] {
+                connection.send_request(&xcb::xtest::FakeInput {
+                    r#type: event_type,
+                    detail,
+                    time: 0,
+                    root,
+                    root_x: 140,
+                    root_y: 148,
+                    deviceid: 0,
+                });
+            }
+            connection.flush().expect("flush fake cursor events");
+            connection
+                .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+                .expect("synchronize fake cursor events");
+            consumer
+                .wait_for_reply(consumer.send_request(&x::GetInputFocus {}))
+                .expect("synchronize child input events");
+        };
+        let child_events = || {
+            let mut child_saw_press = false;
+            let mut child_saw_release = false;
+            let mut child_saw_motion = false;
+            while let Some(event) = consumer.poll_for_event().expect("poll child XI2 events") {
+                match event {
+                    xcb::Event::Input(xcb::xinput::Event::ButtonPress(_)) => {
+                        child_saw_press = true;
+                    }
+                    xcb::Event::Input(xcb::xinput::Event::ButtonRelease(_)) => {
+                        child_saw_release = true;
+                    }
+                    xcb::Event::Input(xcb::xinput::Event::Motion(_)) => {
+                        child_saw_motion = true;
+                    }
+                    _ => {}
+                }
+            }
+            (child_saw_press, child_saw_release, child_saw_motion)
+        };
+        fake_click();
+        let (child_saw_press, child_saw_release, child_saw_motion) = child_events();
+        assert!(child_saw_press);
+        assert!(child_saw_release);
+        assert!(child_saw_motion);
+        if supports_grabbed_raw_input {
+            let grab_mask = [(xcb::xinput::XiEventMask::BUTTON_PRESS
+                | xcb::xinput::XiEventMask::BUTTON_RELEASE
+                | xcb::xinput::XiEventMask::MOTION)
+                .bits()];
+            let grab = consumer
+                .wait_for_reply(consumer.send_request(&xcb::xinput::XiGrabDevice {
+                    window: child,
+                    time: x::CURRENT_TIME,
+                    cursor: x::Cursor::none(),
+                    device: xcb::xinput::Device::Id(2),
+                    mode: x::GrabMode::Async,
+                    paired_device_mode: x::GrabMode::Async,
+                    owner_events: xcb::xinput::GrabOwner::NoOwner,
+                    mask: &grab_mask,
+                }))
+                .expect("grab child pointer");
+            assert_eq!(grab.status(), x::GrabStatus::Success);
+            fake_click();
+            let grabbed_events = child_events();
+            assert!(grabbed_events.0);
+            assert!(grabbed_events.1);
+            assert!(grabbed_events.2);
+            consumer.send_request(&xcb::xinput::XiUngrabDevice {
+                time: x::CURRENT_TIME,
+                device: xcb::xinput::Device::Id(2),
+            });
+        }
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let output_directory = std::env::temp_dir().join(format!(
+            "poratake-linux-input-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&output_directory).expect("create sidecar directory");
+        let (cursor_path, keys_path) = input
+            .finish(1.0, &output_directory)
+            .expect("finish input sidecar");
+        assert!(keys_path.is_none());
+        let cursor_path = cursor_path.expect("cursor sidecar");
+        let cursor: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cursor_path).expect("read cursor sidecar"))
+                .expect("parse cursor sidecar");
+        assert_eq!(cursor["recordingArea"]["width"], 102);
+        assert_eq!(cursor["recordingArea"]["height"], 100);
+        let events = cursor["events"].as_array().expect("cursor events");
+        assert!(events.len() >= 3);
+        assert_eq!(events.first().expect("first event")["type"], "move");
+        assert!(events.iter().any(|event| event["type"] == "down"));
+        assert!(events.iter().any(|event| event["type"] == "up"));
+        for event in events {
+            assert!((event["x"].as_f64().expect("cursor x") - 100.0 / 102.0).abs() < 1e-12);
+            assert!((event["y"].as_f64().expect("cursor y") - 98.0 / 100.0).abs() < 1e-12);
+        }
+        connection.send_request(&x::DestroyWindow { window: child });
+        std::fs::remove_dir_all(output_directory).expect("remove sidecar directory");
     }
 }
 
@@ -486,19 +832,6 @@ fn wheel_delta(detail: u32) -> Option<(f64, f64)> {
         7 => Some((-1.0, 0.0)),
         _ => None,
     }
-}
-
-fn pointer_position(connection: &Connection) -> (i32, i32) {
-    let setup = connection.get_setup();
-    let Some(screen) = setup.roots().next() else {
-        return (0, 0);
-    };
-    let Ok(reply) = connection.wait_for_reply(connection.send_request(&x::QueryPointer {
-        window: screen.root(),
-    })) else {
-        return (0, 0);
-    };
-    (i32::from(reply.root_x()), i32::from(reply.root_y()))
 }
 
 fn wake_window(connection: &Connection, root: x::Window) -> Option<x::Window> {

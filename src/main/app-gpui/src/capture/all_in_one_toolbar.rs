@@ -64,7 +64,12 @@ pub fn render(
             this.set_all_in_one_mode(Mode::parse(key), cx);
         }));
 
-    let mut bar = div()
+    let surface = toolbar::surface(theme);
+    #[cfg(feature = "parity")]
+    let surface = surface.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("all-in-one-controls", bounds);
+    });
+    let bar = div()
         .absolute()
         .top(px(chrome::overlay_toolbar_top()))
         .left_0()
@@ -72,7 +77,10 @@ pub fn render(
         .flex()
         .justify_center()
         .child(
-            toolbar::surface(theme)
+            surface
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                })
                 .child(modes)
                 .when(choices.mode != Mode::Ocr, |el| {
                     el.child(target_menu(choices, menu, cx))
@@ -118,9 +126,6 @@ pub fn render(
                     cx,
                 )),
         );
-    bar = bar.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-        cx.stop_propagation();
-    });
     bar.into_any_element()
 }
 
@@ -157,8 +162,9 @@ fn toolbar_button(
     on_click: impl Fn(&mut AreaOverlay, &mut Window, &mut Context<AreaOverlay>) + 'static,
     cx: &mut Context<AreaOverlay>,
 ) -> AnyElement {
-    toolbar::tooltip_button(
+    toolbar::tooltip_button_at(
         toolbar::selected_icon(id, icon, selected, theme, tooltip),
+        herogpui::components::TooltipPlacement::Bottom,
         tooltip,
         cx,
         on_click,
@@ -171,6 +177,7 @@ fn target_menu_placement() -> MenuPlacement {
 
 fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay>) -> AnyElement {
     let handle = menu.clone();
+    let owner = cx.entity().downgrade();
     let entries = {
         let mut builder = MenuBuilder::new();
         for target in Target::ALL {
@@ -183,10 +190,11 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                     .trailing_check(choices.target == target)
                     .on_select({
                         let owner = cx.entity().downgrade();
-                        move |_window, app| {
+                        move |window, app| {
                             if let Some(owner) = owner.upgrade() {
                                 owner.update(app, |this, cx| {
                                     this.set_all_in_one_target(target, cx);
+                                    this.finish_all_in_one_target_selection(window, cx);
                                 });
                             }
                         }
@@ -220,6 +228,10 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                         )),
                 )
                 .on_press(move |_, window, cx| {
+                    let focus = window.focused(cx);
+                    if let Some(owner) = owner.upgrade() {
+                        owner.update(cx, |this, _| this.set_all_in_one_menu_focus(focus));
+                    }
                     handle.toggle(target_menu_placement(), entries.clone(), window, cx);
                     cx.stop_propagation();
                 }),

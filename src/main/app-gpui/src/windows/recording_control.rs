@@ -38,6 +38,19 @@ enum Mode {
     Recording,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PreferenceScope {
+    Global,
+    AllInOne,
+}
+
+#[derive(Clone, Copy)]
+enum RecordingPreference {
+    SystemAudio(bool),
+    Microphone(bool),
+    Camera(bool),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeviceMenuKind {
     Media(crate::system::devices::DeviceKind),
@@ -60,6 +73,7 @@ fn set_pre_recording_escape(enabled: bool, cx: &App) {
 
 pub struct RecordingControl {
     mode: Mode,
+    preference_scope: PreferenceScope,
     #[allow(dead_code)]
     target: RecordingTarget,
     target_name: Option<SharedString>,
@@ -92,16 +106,34 @@ pub struct RecordingControl {
     measured_width: Option<f32>,
     focus_handle: FocusHandle,
     recorder_error_subscription: Option<crate::daemon::EventSubscription>,
+    recording_error_generation: u64,
+    #[cfg(any(windows, target_os = "macos"))]
+    hovered_tooltip: Option<(&'static str, SharedString)>,
+    #[cfg(windows)]
+    tooltip_generation: u64,
+    #[cfg(windows)]
+    native_tooltip: Option<crate::system::native_tooltip::WindowsTooltip>,
 }
 
 impl RecordingControl {
-    pub fn open(
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_rect(&self) -> ScreenRect {
+        self.rect
+    }
+
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
+    pub(crate) fn parity_hovered_tooltip(&self) -> Option<SharedString> {
+        self.hovered_tooltip.as_ref().map(|(_, text)| text.clone())
+    }
+
+    pub(crate) fn open(
         cx: &mut App,
         target: RecordingTarget,
         rect: ScreenRect,
         display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<String>,
+        preference_scope: PreferenceScope,
     ) {
         if recorder::is_recording() {
             return;
@@ -113,11 +145,24 @@ impl RecordingControl {
             display_id,
             window_id,
             target_name.as_deref(),
+            preference_scope,
         ) {
             set_pre_recording_escape(true, cx);
             return;
         }
-        let config = crate::state::state(cx).config.get().recording;
+        let config = crate::state::state(cx).config.get();
+        let toggles = match preference_scope {
+            PreferenceScope::Global => crate::config::schema::AllInOneRecordingChoices {
+                system_audio: config.recording.system_audio,
+                mic_enabled: config.recording.mic_enabled,
+                camera_enabled: config.recording.camera.enabled,
+            },
+            PreferenceScope::AllInOne if config.all_in_one.remember_choices => {
+                config.all_in_one.recording
+            }
+            PreferenceScope::AllInOne => Default::default(),
+        };
+        let config = config.recording;
         let width = recording_control_width(false, target_name.is_some());
         let bounds = bar_bounds(cx, rect, width, false, false);
         let display = display_for_rect(cx, rect);
@@ -137,18 +182,20 @@ impl RecordingControl {
                     },
                 ),
                 |window, cx| {
+                    window.set_window_title("Poratake recording controls");
                     configure_toolbar_window(window);
                     let view = cx.new(|cx| Self {
                         mode: Mode::PreRecording,
+                        preference_scope,
                         target,
                         target_name: target_name.map(SharedString::from),
                         rect,
                         display_id,
                         window_id,
                         project: None,
-                        system_audio: config.system_audio,
-                        microphone: config.mic_enabled,
-                        camera: config.camera.enabled,
+                        system_audio: toggles.system_audio,
+                        microphone: toggles.mic_enabled,
+                        camera: toggles.camera_enabled,
                         camera_locked: false,
                         camera_preview_visible: false,
                         selected_mic_id: config.selected_mic_id.clone(),
@@ -174,6 +221,13 @@ impl RecordingControl {
                         countdown_remaining: None,
                         focus_handle: cx.focus_handle(),
                         recorder_error_subscription: None,
+                        recording_error_generation: 0,
+                        #[cfg(any(windows, target_os = "macos"))]
+                        hovered_tooltip: None,
+                        #[cfg(windows)]
+                        tooltip_generation: 0,
+                        #[cfg(windows)]
+                        native_tooltip: None,
                     });
                     view.update(cx, |this, cx| {
                         this.bounds_subscription =
@@ -183,6 +237,10 @@ impl RecordingControl {
                         if this.camera {
                             if let Err(error) = this.show_camera_preview(cx) {
                                 this.camera = false;
+                                this.persist_pre_recording_preference(
+                                    RecordingPreference::Camera(false),
+                                    cx,
+                                );
                                 crate::windows::toast::Toast::show(
                                     cx,
                                     "Camera preview failed",
@@ -249,6 +307,139 @@ impl RecordingControl {
         true
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
+    fn clear_native_tooltip(&mut self, _window: &Window) {
+        #[cfg(all(test, windows))]
+        if self.hovered_tooltip.is_some() {
+            crate::system::native_tooltip::record_test_hide("recording-control");
+        }
+        self.hovered_tooltip = None;
+        #[cfg(windows)]
+        {
+            self.tooltip_generation = self.tooltip_generation.wrapping_add(1);
+            if let Some(tooltip) = &mut self.native_tooltip {
+                tooltip.hide();
+            }
+        }
+        #[cfg(target_os = "macos")]
+        super::scroll_capture::set_native_tooltip(_window, None);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    fn hover_native_tooltip(
+        &mut self,
+        id: &'static str,
+        tooltip: SharedString,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !hovered {
+            if self
+                .hovered_tooltip
+                .as_ref()
+                .is_some_and(|(current, _)| *current == id)
+            {
+                self.clear_native_tooltip(window);
+            }
+            return;
+        }
+        self.clear_native_tooltip(window);
+        self.hovered_tooltip = Some((id, tooltip.clone()));
+        #[cfg(target_os = "macos")]
+        {
+            let _ = cx;
+            super::scroll_capture::set_native_tooltip(window, Some(tooltip.as_ref()));
+        }
+        #[cfg(windows)]
+        {
+            let generation = self.tooltip_generation;
+            cx.spawn_in(window, async move |entity, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let _ = entity.update_in(cx, |this, window, _| {
+                    if this.tooltip_generation != generation {
+                        return;
+                    }
+                    #[cfg(all(test, windows))]
+                    crate::system::native_tooltip::record_test_show(
+                        "recording-control",
+                        tooltip.as_ref(),
+                    );
+                    if this.native_tooltip.is_none() {
+                        this.native_tooltip =
+                            crate::system::native_tooltip::WindowsTooltip::new(window);
+                    }
+                    if let Some(native) = &mut this.native_tooltip {
+                        native.show(window, tooltip.as_ref());
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn tooltip(
+        id: &'static str,
+        tooltip: impl Into<SharedString>,
+        child: impl IntoElement,
+        max_body_width: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tooltip = tooltip.into();
+        let component = match max_body_width {
+            Some(width) => {
+                let body = tooltip.clone();
+                herogpui::components::Tooltip::new(tooltip.clone()).body(move |_, _| {
+                    div()
+                        .max_w(px(width))
+                        .line_clamp(2)
+                        .child(body.clone())
+                        .into_any_element()
+                })
+            }
+            None => herogpui::components::Tooltip::new(tooltip.clone()),
+        }
+        .id((gpui::ElementId::from("recording-focus-tooltip"), id));
+        let placement = match id {
+            "recording-target-tip"
+            | "recording-start"
+            | "recording-pause"
+            | "recording-stop"
+            | "camera" => herogpui::components::TooltipPlacement::Right,
+            _ => herogpui::components::TooltipPlacement::Left,
+        };
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            let hover_tooltip = tooltip.clone();
+            let trigger = div()
+                .id((gpui::ElementId::from("recording-native-tooltip"), id))
+                .flex()
+                .flex_shrink_0()
+                .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                    this.hover_native_tooltip(id, hover_tooltip.clone(), *hovered, window, cx);
+                }))
+                .capture_any_mouse_down(cx.listener(|this, _, window, _| {
+                    this.clear_native_tooltip(window);
+                }))
+                .child(child);
+            component
+                .trigger(herogpui::components::TooltipTrigger::Focus)
+                .placement(placement)
+                .child(trigger)
+                .into_any_element()
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let _ = cx;
+            component
+                .placement(placement)
+                .child(child)
+                .into_any_element()
+        }
+    }
+
     fn update_pre_recording(
         cx: &mut App,
         target: RecordingTarget,
@@ -256,6 +447,7 @@ impl RecordingControl {
         display_id: Option<u32>,
         window_id: Option<i64>,
         target_name: Option<&str>,
+        preference_scope: PreferenceScope,
     ) -> bool {
         #[cfg(not(windows))]
         let bounds = bar_bounds(
@@ -273,6 +465,11 @@ impl RecordingControl {
             let updated = handle
                 .update(cx, |this, window, cx| {
                     if this.mode != Mode::PreRecording {
+                        return false;
+                    }
+                    if this.preference_scope != preference_scope {
+                        this.hide_camera_preview(cx);
+                        window.remove_window();
                         return false;
                     }
                     #[cfg(not(windows))]
@@ -319,6 +516,7 @@ impl RecordingControl {
         let generation = self.countdown_generation;
         self.countdown_active = true;
         self.countdown_remaining = Some(delay);
+        window.focus(&self.focus_handle, cx);
         self.sync_window_bounds(window, cx, false);
         cx.notify();
         cx.spawn_in(window, async move |entity, cx| loop {
@@ -349,6 +547,21 @@ impl RecordingControl {
 
     fn begin_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let service = crate::state::state(cx);
+        let recording = service.config.get().recording;
+        let ios_recording = self.selected_ios_id.is_some();
+        #[cfg(all(target_os = "macos", not(test)))]
+        let excluded_window_ids = match recording_control_exclusion_ids(
+            recording_control_window_id(window),
+            self.window_id.is_some() || ios_recording,
+        ) {
+            Ok(window_ids) => window_ids,
+            Err(message) => {
+                crate::windows::toast::Toast::show(cx, "Recording failed", message);
+                return;
+            }
+        };
+        #[cfg(any(not(target_os = "macos"), test))]
+        let excluded_window_ids = Vec::new();
         let project = match recorder::create_project(&service.config) {
             Ok(path) => path,
             Err(error) => {
@@ -356,7 +569,6 @@ impl RecordingControl {
                 return;
             }
         };
-        let recording = service.config.get().recording;
         let config = RecordingConfig {
             x: self.rect.x,
             y: self.rect.y,
@@ -364,6 +576,7 @@ impl RecordingControl {
             height: self.rect.height,
             display_id: self.display_id,
             window_id: self.window_id,
+            excluded_window_ids,
             include_audio: self.system_audio,
             mic_enabled: self.microphone,
             mic_device_id: recording.selected_mic_id.clone(),
@@ -385,7 +598,6 @@ impl RecordingControl {
             );
             return;
         }
-        let ios_recording = self.selected_ios_id.is_some();
         if ios_recording {
             crate::capture::overlay::close_all(cx);
         }
@@ -399,8 +611,13 @@ impl RecordingControl {
             );
             return;
         }
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+        let error_generation = self.recording_error_generation;
+        self.watch_recorder_errors(window, cx, error_generation);
         if let Err(error) = recorder::start(&service.daemon, &config) {
             eprintln!("[recorder] {error}");
+            self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+            self.recorder_error_subscription = None;
             let _ = std::fs::remove_dir_all(&project);
             #[cfg(target_os = "macos")]
             crate::capture::overlay::end_recording_handoff(cx);
@@ -419,7 +636,6 @@ impl RecordingControl {
                 }
             }
         }
-        self.watch_recorder_errors(window, cx);
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
         let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
@@ -461,6 +677,38 @@ impl RecordingControl {
         .detach();
     }
 
+    fn persist_pre_recording_preference(&self, preference: RecordingPreference, cx: &App) {
+        if self.mode != Mode::PreRecording {
+            return;
+        }
+        let config = crate::state::state(cx).config;
+        if self.preference_scope == PreferenceScope::AllInOne
+            && !config.get().all_in_one.remember_choices
+        {
+            return;
+        }
+        config.update(|config| match (self.preference_scope, preference) {
+            (PreferenceScope::Global, RecordingPreference::SystemAudio(enabled)) => {
+                config.recording.system_audio = enabled;
+            }
+            (PreferenceScope::Global, RecordingPreference::Microphone(enabled)) => {
+                config.recording.mic_enabled = enabled;
+            }
+            (PreferenceScope::Global, RecordingPreference::Camera(enabled)) => {
+                config.recording.camera.enabled = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::SystemAudio(enabled)) => {
+                config.all_in_one.recording.system_audio = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::Microphone(enabled)) => {
+                config.all_in_one.recording.mic_enabled = enabled;
+            }
+            (PreferenceScope::AllInOne, RecordingPreference::Camera(enabled)) => {
+                config.all_in_one.recording.camera_enabled = enabled;
+            }
+        });
+    }
+
     /// AGENTS documents that the microphone, system-sound and camera toggles
     /// stay live while a recording runs, so they are applied through the
     /// recorder's setters instead of being frozen at start.
@@ -473,6 +721,7 @@ impl RecordingControl {
             }
         }
         self.system_audio = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::SystemAudio(enabled), cx);
         cx.notify();
         true
     }
@@ -495,6 +744,7 @@ impl RecordingControl {
             }
         }
         self.microphone = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::Microphone(enabled), cx);
         cx.notify();
         true
     }
@@ -526,6 +776,7 @@ impl RecordingControl {
             }
         }
         self.camera = enabled;
+        self.persist_pre_recording_preference(RecordingPreference::Camera(enabled), cx);
         cx.notify();
         true
     }
@@ -685,7 +936,7 @@ impl RecordingControl {
         div()
             .relative()
             .flex()
-            .child(herogpui::components::Tooltip::new(tooltip).child(trigger))
+            .child(Self::tooltip(id, tooltip, trigger, None, cx))
             .child(self.menu.render_dropdown(&format!("recording-{id}"), cx))
             .into_any_element()
     }
@@ -1024,7 +1275,12 @@ impl RecordingControl {
 
     /// Port of the `screen-recorder:error` listener in `recorder.ts`: a closed
     /// target ends the take normally, any other daemon failure tears it down.
-    fn watch_recorder_errors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn watch_recorder_errors(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        generation: u64,
+    ) {
         let service = crate::state::state(cx);
         let (error_tx, error_rx) = smol::channel::bounded::<(String, String)>(1);
         self.recorder_error_subscription =
@@ -1046,22 +1302,33 @@ impl RecordingControl {
             })));
 
         let handle = window.window_handle();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |_, cx| loop {
             let Ok((code, message)) = error_rx.recv().await else {
-                return;
+                break;
             };
-            cx.update(|cx| {
+            let continue_listening = cx.update(|cx| {
                 let Some(handle) = handle.downcast::<Self>() else {
-                    return;
+                    return false;
                 };
-                let _ = handle.update(cx, |this, window, cx| {
-                    if code == RECORDING_TARGET_CLOSED {
-                        this.finish(false, window, cx);
-                    } else {
-                        this.fail_recording(message, window, cx);
-                    }
-                });
+                handle
+                    .update(cx, |this, window, cx| {
+                        if this.recording_error_generation != generation
+                            || this.mode != Mode::Recording
+                        {
+                            return false;
+                        }
+                        if code == RECORDING_TARGET_CLOSED {
+                            !this.finish(false, window, cx)
+                        } else {
+                            this.fail_recording(message, window, cx);
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
             });
+            if !continue_listening {
+                break;
+            }
         })
         .detach();
     }
@@ -1070,6 +1337,7 @@ impl RecordingControl {
     /// out, so the partial project is deleted, the UI torn down and the
     /// failure surfaced, with no stop call issued.
     fn fail_recording(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         self.recorder_error_subscription = None;
         self.hide_camera_preview(cx);
         recorder::force_idle();
@@ -1087,9 +1355,12 @@ impl RecordingControl {
         crate::windows::toast::Toast::show(cx, "Recording failed", message);
     }
 
-    pub(crate) fn finish(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.recorder_error_subscription = None;
-        self.hide_camera_preview(cx);
+    pub(crate) fn finish(
+        &mut self,
+        discard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let duration = self.recording_duration(cx).as_secs_f64();
         let service = crate::state::state(cx);
         let stopped = recorder::stop(&service.daemon);
@@ -1099,8 +1370,11 @@ impl RecordingControl {
                 "Recording not finalized",
                 "Stop failed. The recording controls remain available so you can retry.",
             );
-            return;
+            return false;
         }
+        self.hide_camera_preview(cx);
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+        self.recorder_error_subscription = None;
 
         let project = self.project.take();
         self.started_at = None;
@@ -1113,11 +1387,11 @@ impl RecordingControl {
         crate::intents::refresh_shell(cx);
 
         let Some(project) = project else {
-            return;
+            return true;
         };
         if discard {
             let _ = std::fs::remove_dir_all(&project);
-            return;
+            return true;
         }
 
         let (history_enabled, max_items, show_preview, recording) = {
@@ -1184,6 +1458,7 @@ impl RecordingControl {
                 crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
             });
         }
+        true
     }
 
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1194,6 +1469,7 @@ impl RecordingControl {
         self.countdown_generation += 1;
         self.countdown_active = false;
         self.countdown_remaining = None;
+        self.hide_camera_preview(cx);
         set_pre_recording_escape(false, cx);
         window.remove_window();
         registry::close(RegistryKind::RecordingControl, cx);
@@ -1311,6 +1587,49 @@ fn camera_preview_position(rect: ScreenRect) -> (i32, i32) {
     )
 }
 
+#[cfg(windows)]
+fn exclude_toolbar_from_capture(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+
+    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_ok() }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn recording_control_window_id(window: &Window) -> Option<i64> {
+    use cocoa::base::nil;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let native_window: cocoa::base::id = msg_send![view, window];
+        if native_window == nil {
+            return None;
+        }
+        let number: isize = msg_send![native_window, windowNumber];
+        (number >= 0).then_some(number as i64)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn recording_control_exclusion_ids(
+    window_id: Option<i64>,
+    is_window_recording: bool,
+) -> Result<Vec<i64>, &'static str> {
+    if is_window_recording {
+        return Ok(Vec::new());
+    }
+    window_id
+        .map(|window_id| vec![window_id])
+        .ok_or("Could not protect the recording controls from capture")
+}
+
 fn configure_toolbar_window(window: &Window) {
     #[cfg(all(windows, not(test)))]
     {
@@ -1332,6 +1651,9 @@ fn configure_toolbar_window(window: &Window) {
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
             );
         }
+        if !exclude_toolbar_from_capture(hwnd) {
+            eprintln!("[recording-control] failed to exclude toolbar from capture");
+        }
     }
     #[cfg(any(not(windows), test))]
     let _ = window;
@@ -1346,9 +1668,7 @@ fn bar_bounds(
 ) -> Bounds<gpui::Pixels> {
     let (work_x, work_y, work_width) = display_for_rect(cx, rect)
         .map(|display| {
-            let bounds = crate::system::work_area::work_area(
-                crate::system::work_area::display_bounds(display.as_ref()),
-            );
+            let bounds = crate::system::work_area::work_area(display.as_ref());
             (
                 f32::from(bounds.origin.x),
                 f32::from(bounds.origin.y),
@@ -1423,11 +1743,16 @@ fn overlay_icon(
     on_click: impl Fn(&mut RecordingControl, &mut Window, &mut Context<RecordingControl>) + 'static,
     cx: &mut Context<RecordingControl>,
 ) -> AnyElement {
-    toolbar::tooltip_button(
-        toolbar::icon(id, icon, tooltip).is_disabled(disabled),
+    RecordingControl::tooltip(
+        id,
         tooltip,
+        toolbar::icon(id, icon, tooltip)
+            .is_disabled(disabled)
+            .on_press(cx.listener(move |this, _, window, cx| {
+                on_click(this, window, cx);
+            })),
+        None,
         cx,
-        on_click,
     )
 }
 
@@ -1464,39 +1789,66 @@ impl Render for RecordingControl {
         let toggles = self.input_toggles(cx);
         let countdown = self.countdown_remaining;
 
-        let mut bar = toolbar::surface(&theme)
-            .id("recording-control-bar")
-            .h(px(chrome::recording_inner_bar_height()));
+        let mut bar = toolbar::surface(&theme).h(px(chrome::recording_inner_bar_height()));
 
         if let Some(name) = &self.target_name {
+            use herogpui::a11y::{A11y as _, Name, Role};
+
+            let bar_width = self
+                .measured_width
+                .unwrap_or_else(|| recording_control_width(self.mode == Mode::Recording, true));
+            let window_width = f32::from(window.bounds().size.width);
+            let (_, bar_offset, _) = control_window_metrics(bar_width, false, false);
+            let tooltip_body_width = (window_width
+                - bar_offset
+                - chrome::OVERLAY_BORDER_WIDTH
+                - chrome::OVERLAY_SURFACE_PADDING
+                - chrome::RECORDING_TARGET_CHIP_MAX_W
+                - 8.0
+                - 3.0
+                - 22.0)
+                .max(1.0);
+            let target_label = div()
+                .id("recording-target-label")
+                .tab_index(0)
+                .a11y_named(Role::Label, &Name::labelled(name.clone()))
+                .debug_selector(|| "recording-target-label".into())
+                .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
+                .truncate()
+                .px(px(4.0))
+                .text_size(px(12.0))
+                .child(name.clone())
+                .map(|label| crate::ui::primitives::keyboard_focus_ring(label, &theme, cx));
             bar = bar
-                .child(
-                    herogpui::components::Tooltip::new(name.clone())
-                        .id("recording-target-tip")
-                        .child(
-                            div()
-                                .max_w(px(chrome::RECORDING_TARGET_CHIP_MAX_W))
-                                .truncate()
-                                .px(px(4.0))
-                                .text_size(px(12.0))
-                                .child(name.clone()),
-                        ),
-                )
+                .child(Self::tooltip(
+                    "recording-target-tip",
+                    name.clone(),
+                    target_label,
+                    Some(tooltip_body_width),
+                    cx,
+                ))
                 .child(toolbar::hairline(&theme));
         }
+
+        #[cfg(feature = "parity")]
+        let bar = bar.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("recording-controls", bounds);
+        });
+        let bar = bar.id("recording-control-bar");
 
         if self.mode == Mode::PreRecording {
             let start_name = "Start recording";
             return recording_shell(
                 &self.focus_handle,
-                bar.child(toolbar::tooltip_button(
+                bar.child(Self::tooltip(
+                    "recording-start",
+                    start_name,
                     toolbar::button("recording-start", start_name)
                         .is_disabled(self.countdown_active)
-                        .hover_bg(crate::ui::colors::white(0.15))
-                        .child(toolbar::filled_glyph(theme.accent, true)),
-                    start_name,
+                        .child(toolbar::filled_glyph(theme.accent, true))
+                        .on_press(cx.listener(|this, _, window, cx| this.start(window, cx))),
+                    None,
                     cx,
-                    |this, window, cx| this.start(window, cx),
                 ))
                 .child(toolbar::hairline(&theme))
                 .children(toggles)
@@ -1531,13 +1883,16 @@ impl Render for RecordingControl {
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
-            .child(toolbar::tooltip_button(
-                toolbar::button("recording-stop", stop_name)
-                    .hover_bg(crate::ui::colors::white(0.15))
-                    .child(toolbar::filled_glyph(theme.destructive, false)),
+            .child(Self::tooltip(
+                "recording-stop",
                 stop_name,
+                toolbar::button("recording-stop", stop_name)
+                    .child(toolbar::filled_glyph(theme.destructive, false))
+                    .on_press(cx.listener(|this, _, window, cx| {
+                        this.finish(false, window, cx);
+                    })),
+                None,
                 cx,
-                |this, window, cx| this.finish(false, window, cx),
             ))
             .child(
                 div()
@@ -1556,7 +1911,9 @@ impl Render for RecordingControl {
                 "trash-2",
                 "Discard recording",
                 false,
-                |this, window, cx| this.finish(true, window, cx),
+                |this, window, cx| {
+                    this.finish(true, window, cx);
+                },
                 cx,
             )),
             &self.menu,
@@ -1584,6 +1941,8 @@ fn recording_shell(
         .items_center()
         .on_key_down(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                #[cfg(any(windows, target_os = "macos"))]
+                this.clear_native_tooltip(window);
                 if event.keystroke.key != "escape" {
                     return;
                 }
@@ -1647,6 +2006,505 @@ fn recording_shell(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn recording_tooltip_timer_requests_show_and_dismisses_on_leave_or_key(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+        });
+        let control = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap()
+            .downcast::<RecordingControl>()
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
+        visual.settle();
+        let (width, height) = visual.update(|window, _| {
+            (
+                window.bounds().size.width.as_f32().ceil() as usize,
+                window.bounds().size.height.as_f32(),
+            )
+        });
+        let y = height / 2.0;
+        let mut microphone_point = None;
+        for x in (0..width).step_by(2) {
+            visual.simulate_mouse_move(
+                gpui::point(px(x as f32), px(y)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            let is_microphone = control
+                .update(cx, |this, _, _| {
+                    this.hovered_tooltip
+                        .as_ref()
+                        .is_some_and(|(_, text)| text == "Select microphone")
+                })
+                .unwrap();
+            if is_microphone {
+                microphone_point = Some(gpui::point(px(x as f32), px(y)));
+                break;
+            }
+        }
+        let microphone_point = microphone_point.expect("microphone control must be hit-testable");
+
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(microphone_point, None, gpui::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(149));
+        cx.run_until_parked();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Show(
+                "recording-control",
+                "Select microphone".into(),
+            )]
+        );
+        cx.simulate_keystrokes(control.into(), "a");
+        cx.run_until_parked();
+        assert_eq!(
+            crate::system::native_tooltip::take_test_requests(),
+            [crate::system::native_tooltip::TooltipRequest::Hide(
+                "recording-control"
+            )]
+        );
+
+        visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(microphone_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
+        visual.settle();
+        crate::system::native_tooltip::take_test_requests();
+        cx.executor().advance_clock(Duration::from_millis(150));
+        cx.run_until_parked();
+        assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[herogpui::test]
+    fn recording_target_title_tooltip_uses_measured_chip_bounds(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let target_name = "Browser — an exceptionally long recording target name that must remain accessible when its visible label is truncated";
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                Some(1),
+                Some(target_name.into()),
+                PreferenceScope::Global,
+            );
+        });
+        let control = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap()
+            .downcast::<RecordingControl>()
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
+        visual.settle();
+        let window_size = visual.update(|window, _| window.bounds().size);
+        let target_chip = visual.expect("recording-target-label");
+        let target_center = target_chip.center();
+        let tooltip_geometry = |visual: &mut gpui::VisualTestContext| {
+            visual.update(|window, cx| {
+                let scale = window.scale_factor();
+                let background =
+                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let tooltips = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == background
+                            && (31.0..=50.0)
+                                .contains(&(quad.bounds.size.height.as_f32() / scale))
+                            && quad.bounds.size.width.as_f32() / scale > 35.0
+                    })
+                    .collect::<Vec<_>>();
+                let tooltip = tooltips.first().unwrap_or_else(|| {
+                    panic!(
+                        "target-title tooltip must be painted after hovering {target_chip:?} at {target_center:?}"
+                    )
+                });
+                (
+                    tooltip.bounds,
+                    tooltip.content_mask.bounds,
+                    window.viewport_size(),
+                    scale,
+                    tooltips.len(),
+                )
+            })
+        };
+        visual.simulate_mouse_move(target_center, None, gpui::Modifiers::none());
+        #[cfg(target_os = "linux")]
+        visual.executor().advance_clock(Duration::from_millis(300));
+        #[cfg(windows)]
+        {
+            cx.executor().advance_clock(Duration::from_millis(150));
+            cx.run_until_parked();
+            let tooltip = control
+                .update(cx, |this, _, _| {
+                    this.hovered_tooltip
+                        .as_ref()
+                        .map(|(_, text)| text.to_string())
+                })
+                .unwrap();
+            assert_eq!(
+                tooltip.as_deref(),
+                Some(target_name),
+                "pointer at {target_center:?} missed target chip {target_chip:?}"
+            );
+        }
+        visual.settle();
+        #[cfg(target_os = "linux")]
+        {
+            let (tooltip, mask, viewport, scale, tooltip_count) = tooltip_geometry(&mut visual);
+            assert_eq!(tooltip_count, 1, "only the target-title tooltip is open");
+            assert_eq!(tooltip.size.height.as_f32() / scale, 48.0);
+            assert!(
+                tooltip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                    && tooltip.top().as_f32() >= 0.0
+                    && tooltip.right().as_f32() <= f32::from(viewport.width) * scale
+                    && tooltip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                    && mask.left().as_f32() <= tooltip.left().as_f32()
+                    && mask.top().as_f32() <= tooltip.top().as_f32()
+                    && mask.right().as_f32() >= tooltip.right().as_f32()
+                    && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
+                "long target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
+            );
+        }
+        visual.simulate_mouse_move(
+            gpui::point(px(-100.0), px(-100.0)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use herogpui::theme::ActiveTheme as _;
+
+            let close_delay = visual.update(|_, cx| cx.layout().tooltip_close_delay_ms);
+            visual
+                .executor()
+                .advance_clock(Duration::from_millis(close_delay + 1));
+        }
+        visual.settle();
+        visual.press("tab tab");
+        assert!(visual.update(|window, cx| {
+            window.focused(cx).is_some() && herogpui::extend::focus_visible(cx)
+        }));
+        let (tooltip, mask, viewport, scale, tooltip_count) = tooltip_geometry(&mut visual);
+        assert_eq!(
+            tooltip_count, 1,
+            "keyboard focus opens the target-title tooltip"
+        );
+        assert_eq!(tooltip.size.height.as_f32() / scale, 48.0);
+        assert!(tooltip.size.width.as_f32() / scale > f32::from(target_chip.size.width));
+        assert!(
+            tooltip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                && tooltip.top().as_f32() >= 0.0
+                && tooltip.right().as_f32() <= f32::from(viewport.width) * scale
+                && tooltip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                && mask.left().as_f32() <= tooltip.left().as_f32()
+                && mask.top().as_f32() <= tooltip.top().as_f32()
+                && mask.right().as_f32() >= tooltip.right().as_f32()
+                && mask.bottom().as_f32() >= tooltip.bottom().as_f32(),
+            "keyboard target-title tooltip is clipped: {tooltip:?}, mask {mask:?}"
+        );
+        assert_eq!(visual.update(|window, _| window.bounds().size), window_size);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[herogpui::test]
+    fn recording_target_tooltip_preserves_unbroken_and_unicode_titles_at_each_scale(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                Some(1),
+                Some("Initial title".into()),
+                PreferenceScope::Global,
+            );
+        });
+        let window_handle = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap();
+        let control = window_handle.downcast::<RecordingControl>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window_handle, cx);
+        visual.settle();
+        let unbroken = "A".repeat(160);
+        let unicode = "Cafe\u{0301} 👩‍💻 — recording window title 👨‍👩‍👧‍👦".to_owned();
+        for (title, scale) in [
+            (unbroken.clone(), 1.0),
+            (unbroken, 2.0),
+            (unicode.clone(), 1.0),
+            (unicode, 2.0),
+        ] {
+            cx.update(|cx| {
+                RecordingControl::open(
+                    cx,
+                    RecordingTarget::Window,
+                    ScreenRect {
+                        x: 0,
+                        y: 0,
+                        width: 640,
+                        height: 360,
+                    },
+                    None,
+                    Some(1),
+                    Some(title.clone()),
+                    PreferenceScope::Global,
+                );
+            });
+            visual.simulate_scale_factor_change(scale);
+            visual.settle();
+            control
+                .update(cx, |this, window, cx| window.focus(&this.focus_handle, cx))
+                .unwrap();
+            visual.settle();
+            visual.simulate_mouse_move(
+                gpui::point(px(-100.0), px(-100.0)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            visual.settle();
+            visual.press("tab tab");
+
+            let target_chip = visual.expect("recording-target-label");
+            let (tip, mask, viewport, actual_scale, count) = visual.update(|window, cx| {
+                let background =
+                    gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let tips = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == background
+                            && (31.0..=50.0).contains(&(quad.bounds.size.height.as_f32() / scale))
+                            && quad.bounds.size.width.as_f32() / scale > 35.0
+                    })
+                    .collect::<Vec<_>>();
+                let tip = tips.first().expect("target tooltip must be painted");
+                (
+                    tip.bounds,
+                    tip.content_mask.bounds,
+                    window.viewport_size(),
+                    window.scale_factor(),
+                    tips.len(),
+                )
+            });
+            assert_eq!(actual_scale, scale);
+            assert_eq!(count, 1, "only the target title tooltip is open");
+            assert_eq!(tip.size.height.as_f32() / scale, 48.0);
+            assert!(
+                tip.left().as_f32() >= f32::from(target_chip.right()) * scale
+                    && tip.top().as_f32() >= 0.0
+                    && tip.right().as_f32() <= f32::from(viewport.width) * scale
+                    && tip.bottom().as_f32() <= f32::from(viewport.height) * scale
+                    && mask.left().as_f32() <= tip.left().as_f32()
+                    && mask.top().as_f32() <= tip.top().as_f32()
+                    && mask.right().as_f32() >= tip.right().as_f32()
+                    && mask.bottom().as_f32() >= tip.bottom().as_f32(),
+                "target tooltip is clipped at {scale}x for title {title:?}: {tip:?}, mask {mask:?}"
+            );
+            assert_eq!(
+                control
+                    .update(cx, |this, _, _| this
+                        .target_name
+                        .as_ref()
+                        .unwrap()
+                        .to_string())
+                    .unwrap(),
+                title,
+                "the input title must remain unchanged"
+            );
+        }
+    }
+
+    #[herogpui::test]
+    fn pre_recording_preferences_follow_the_entry_scope(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json"))
+                .expect("load config"),
+        );
+        config.update(|config| {
+            config.recording.system_audio = false;
+            config.recording.mic_enabled = true;
+            config.all_in_one.recording.system_audio = true;
+            config.all_in_one.recording.mic_enabled = false;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config.clone());
+            let rect = ScreenRect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+            };
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+            let global = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            global
+                .update(cx, |control, _, cx| {
+                    assert!(!control.system_audio);
+                    assert!(control.microphone);
+                    assert!(control.set_system_audio(true, cx));
+                    assert!(control.set_microphone(false, cx));
+                })
+                .unwrap();
+            assert!(config.get().recording.system_audio);
+            assert!(!config.get().recording.mic_enabled);
+
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            let all_in_one = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            all_in_one
+                .update(cx, |control, _, cx| {
+                    assert_eq!(control.preference_scope, PreferenceScope::AllInOne);
+                    assert!(control.system_audio);
+                    assert!(!control.microphone);
+                    assert!(control.set_system_audio(false, cx));
+                })
+                .unwrap();
+            assert!(config.get().recording.system_audio);
+            assert!(!config.get().all_in_one.recording.system_audio);
+
+            config.update(|config| {
+                config.all_in_one.remember_choices = false;
+                config.all_in_one.recording.mic_enabled = true;
+                config.all_in_one.recording.camera_enabled = true;
+            });
+            all_in_one
+                .update(cx, |control, _, cx| {
+                    assert!(control.set_system_audio(true, cx));
+                    control.mode = Mode::Recording;
+                    control.persist_pre_recording_preference(
+                        RecordingPreference::Microphone(false),
+                        cx,
+                    );
+                    control
+                        .persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                    control.mode = Mode::PreRecording;
+                })
+                .unwrap();
+            assert!(!config.get().all_in_one.recording.system_audio);
+            assert!(config.get().all_in_one.recording.mic_enabled);
+            assert!(config.get().all_in_one.recording.camera_enabled);
+
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            all_in_one
+                .update(cx, |control, _, _| assert!(control.system_audio))
+                .unwrap();
+            registry::close(RegistryKind::RecordingControl, cx);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::AllInOne,
+            );
+            let reopened = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            reopened
+                .update(cx, |control, _, _| {
+                    assert!(control.system_audio);
+                    assert!(!control.microphone);
+                    assert!(!control.camera);
+                })
+                .unwrap();
+            registry::close(RegistryKind::RecordingControl, cx);
+        });
+    }
+
     #[test]
     fn camera_bubble_sits_in_the_recording_area_bottom_right() {
         assert_eq!(
@@ -1667,6 +2525,19 @@ mod tests {
             }),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn display_recording_requires_a_native_control_window_id() {
+        assert_eq!(
+            recording_control_exclusion_ids(Some(41), false),
+            Ok(vec![41])
+        );
+        assert_eq!(
+            recording_control_exclusion_ids(None, false),
+            Err("Could not protect the recording controls from capture")
+        );
+        assert_eq!(recording_control_exclusion_ids(None, true), Ok(Vec::new()));
     }
 
     #[test]
@@ -1766,6 +2637,7 @@ mod tests {
         let control = cx.update(|cx| {
             cx.new(|cx| RecordingControl {
                 mode: Mode::PreRecording,
+                preference_scope: PreferenceScope::Global,
                 target: RecordingTarget::Area,
                 target_name: None,
                 rect: ScreenRect {
@@ -1810,6 +2682,13 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recording_error_generation: 0,
+                #[cfg(any(windows, target_os = "macos"))]
+                hovered_tooltip: None,
+                #[cfg(windows)]
+                tooltip_generation: 0,
+                #[cfg(windows)]
+                native_tooltip: None,
             })
         });
         let weak = control.downgrade();
@@ -1912,6 +2791,7 @@ mod tests {
         let (control, cx) = cx.add_window_view(|window, cx| -> RecordingControl {
             let mut control = RecordingControl {
                 mode: Mode::PreRecording,
+                preference_scope: PreferenceScope::Global,
                 target: RecordingTarget::Area,
                 target_name: None,
                 rect: ScreenRect {
@@ -1948,6 +2828,13 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recording_error_generation: 0,
+                #[cfg(any(windows, target_os = "macos"))]
+                hovered_tooltip: None,
+                #[cfg(windows)]
+                tooltip_generation: 0,
+                #[cfg(windows)]
+                native_tooltip: None,
             };
             control.bounds_subscription = Some(cx.observe_window_bounds(
                 window,
@@ -2004,6 +2891,89 @@ mod tests {
 
 #[cfg(test)]
 mod toolbar_tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_capture_affinity_excludes_an_isolated_native_window() {
+        use super::exclude_toolbar_from_capture;
+        use windows::core::w;
+        use windows::Win32::Foundation::COLORREF;
+        use windows::Win32::Graphics::Dwm::DwmIsCompositionEnabled;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetWindowDisplayAffinity, SetLayeredWindowAttributes,
+            LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        let composition_enabled =
+            unsafe { DwmIsCompositionEnabled() }.expect("query desktop window composition");
+        assert!(composition_enabled.as_bool());
+
+        let window = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+                w!("STATIC"),
+                w!("recording-capture-affinity-test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create isolated native test window");
+        let layered =
+            unsafe { SetLayeredWindowAttributes(window, COLORREF(0), u8::MAX, LWA_ALPHA) };
+        let applied = exclude_toolbar_from_capture(window);
+        let mut affinity = 0;
+        let observed = unsafe { GetWindowDisplayAffinity(window, &mut affinity) };
+        let _ = unsafe { DestroyWindow(window) };
+        let expected_affinity = if crate::capture::overlay::windows_build() >= 19041 {
+            WDA_EXCLUDEFROMCAPTURE
+        } else {
+            windows::Win32::UI::WindowsAndMessaging::WDA_MONITOR
+        };
+
+        layered.expect("make isolated native test window layered");
+        assert!(applied, "set WDA_EXCLUDEFROMCAPTURE on native test window");
+        observed.expect("read native test window capture affinity");
+        assert_eq!(affinity, expected_affinity.0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_capture_affinity_accepts_gpui_transparent_window_style() {
+        use super::exclude_toolbar_from_capture;
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+
+        let window = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
+                w!("STATIC"),
+                w!("recording-capture-affinity-style-test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create GPUI-style native test window");
+        let applied = exclude_toolbar_from_capture(window);
+        let _ = unsafe { DestroyWindow(window) };
+
+        assert!(applied, "set capture affinity on GPUI-style native window");
+    }
+
     /// The recording bar's buttons carry their state in the icon, not in a
     /// background. `ToolbarButton` is `variant="ghost"` with only a hover
     /// background, and the system-audio button swaps `Volume2` for `VolumeX`.

@@ -82,7 +82,29 @@ describe('NativeDaemon', () => {
 
   it('call rejects when daemon is not running', async () => {
     const { daemon } = await import('@/main/daemon');
-    await expect(daemon.call('m', 'foo')).rejects.toThrow('Daemon not running');
+    await expect(daemon.call('m', 'foo')).rejects.toMatchObject({
+      message: 'Daemon not running',
+      code: 'DAEMON_UNAVAILABLE',
+    });
+  });
+
+  it('reports an unwritable daemon before dispatching a request', async () => {
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+    mockChild.stdin.writable = false;
+    await expect(daemon.call('m', 'foo')).rejects.toMatchObject({
+      message: 'Daemon stdin not writable',
+      code: 'DAEMON_UNAVAILABLE',
+    });
+    expect(mockChild.stdin.write).not.toHaveBeenCalled();
+    const stop = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stop;
   });
 
   it('call sends a request and resolves on success response', async () => {
@@ -123,6 +145,98 @@ describe('NativeDaemon', () => {
     const stopPromise = daemon.stop();
     mockChild.emit('exit', 0, null);
     await stopPromise;
+  });
+
+  it('waits for an untimed request beyond the default timeout', async () => {
+    vi.useFakeTimers();
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+
+    const writeSpy = mockChild.stdin.write as ReturnType<typeof vi.fn>;
+    writeSpy.mockClear();
+    let settled = false;
+    const call = daemon
+      .call(
+        'scroll-capture',
+        'finish',
+        { outputPath: '/tmp/capture.png' },
+        null
+      )
+      .then(result => {
+        settled = true;
+        return result;
+      });
+    const sent = JSON.parse(String(writeSpy.mock.calls[0][0]));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(settled).toBe(false);
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(
+        JSON.stringify({
+          id: sent.id,
+          success: true,
+          result: { success: true },
+        }) + '\n'
+      )
+    );
+    await expect(call).resolves.toEqual({ success: true });
+
+    const stop = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stop;
+  });
+
+  it('still times out an ordinary request', async () => {
+    vi.useFakeTimers();
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+    const call = daemon.call('mymod', 'method').catch(error => error as Error);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(await call).toEqual(
+      expect.objectContaining({ message: 'Request timeout: mymod.method' })
+    );
+    expect(await call).not.toHaveProperty('code');
+
+    const stop = daemon.stop();
+    mockChild.emit('exit', 0, null);
+    await stop;
+  });
+
+  it('rejects an untimed request when the daemon exits', async () => {
+    vi.useFakeTimers();
+    const { daemon } = await import('@/main/daemon');
+    const start = daemon.start();
+    mockChild.stdout.emit(
+      'data',
+      Buffer.from(JSON.stringify({ event: 'system:ready' }) + '\n')
+    );
+    await start;
+    const call = daemon
+      .call(
+        'scroll-capture',
+        'finish',
+        { outputPath: '/tmp/capture.png' },
+        null
+      )
+      .catch(error => error as Error);
+    mockChild.emit('exit', 1, null);
+    expect(await call).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/Daemon exited/),
+        code: 'DAEMON_UNAVAILABLE',
+      })
+    );
+    await daemon.stop();
   });
 
   it('call rejects when daemon returns error response', async () => {

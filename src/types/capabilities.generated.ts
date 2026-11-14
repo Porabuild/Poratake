@@ -82,7 +82,6 @@ export const PLATFORM_CAPABILITIES = {
     'screenshot-area',
     'qrcode',
     'all-in-one',
-    'recording',
     'video-editor',
     'print',
   ],

@@ -20,6 +20,8 @@
     "build",
     "src/main/target",
     "src/main/Cargo.lock",
+    "vendor/gpui-pre-windows",
+    "vendor/herogpui-components",
     "bun.lock",
     "package-lock.json",
     "yarn.lock",

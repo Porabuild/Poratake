@@ -13,6 +13,7 @@ class CameraPreviewModule: Module {
     private var resolution: String = "720p"
     private var flipped: Bool = false
     private var isContentProtected: Bool = false
+    private var presentationGeneration = WindowPresentationGeneration()
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         guard let method = DaemonContract.CameraPreview.Method(rawValue: method) else {
@@ -38,79 +39,88 @@ class CameraPreviewModule: Module {
         let newResolution = params?["resolution"]?.string() ?? "720p"
         let newFlipped = params?["flipped"]?.bool() ?? false
         
-        let deviceChanged = newDeviceId != deviceId || newDeviceName != deviceName
-        let resolutionChanged = newResolution != resolution
-        
-        deviceId = newDeviceId
-        deviceName = newDeviceName
-        resolution = newResolution
-        flipped = newFlipped
-        
         let x = params?["x"]?.int()
         let y = params?["y"]?.int()
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.showPanel(x: x, y: y)
-            
-            if (deviceChanged || resolutionChanged) && self.contentView != nil {
-                self.contentView?.updateCamera(
-                    deviceId: self.deviceId,
-                    deviceName: self.deviceName,
-                    resolution: self.resolution
-                )
+            Task { @MainActor in
+                do {
+                    let deviceChanged = newDeviceId != self.deviceId || newDeviceName != self.deviceName
+                    let resolutionChanged = newResolution != self.resolution
+                    self.deviceId = newDeviceId
+                    self.deviceName = newDeviceName
+                    self.resolution = newResolution
+                    self.flipped = newFlipped
+                    let visible = try await self.showPanel(x: x, y: y)
+
+                    if visible && (deviceChanged || resolutionChanged) && self.contentView != nil {
+                        self.contentView?.updateCamera(
+                            deviceId: self.deviceId,
+                            deviceName: self.deviceName,
+                            resolution: self.resolution
+                        )
+                    }
+
+                    self.respond(id: requestId, result: ["visible": visible])
+                } catch {
+                    self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
+                }
             }
-            
-            self.respond(id: requestId, result: ["visible": true])
         }
     }
     
     private func handleHide(requestId: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.hidePanel()
-            self.respond(id: requestId, result: ["visible": false])
+            Task { @MainActor in
+                await self.hidePanel()
+                self.respond(id: requestId, result: ["visible": false])
+            }
         }
     }
     
     private func handleUpdate(params: [String: AnyCodable]?, requestId: String) {
         let deviceChanged = params?["deviceId"] != nil || params?["deviceName"] != nil
         let resolutionChanged = params?["resolution"] != nil
-        
-        if params?["deviceId"] != nil {
-            deviceId = params?["deviceId"]?.string()
-        }
-        if params?["deviceName"] != nil {
-            deviceName = params?["deviceName"]?.string()
-        }
-        if let newResolution = params?["resolution"]?.string() {
-            resolution = newResolution
-        }
-        if let newFlipped = params?["flipped"]?.bool() {
-            flipped = newFlipped
-            DispatchQueue.main.async { [weak self] in
-                self?.contentView?.updateFlipped(newFlipped)
+        let hasDeviceId = params?["deviceId"] != nil
+        let hasDeviceName = params?["deviceName"] != nil
+        let deviceId = params?["deviceId"]?.string()
+        let deviceName = params?["deviceName"]?.string()
+        let resolution = params?["resolution"]?.string()
+        let flipped = params?["flipped"]?.bool()
+        let x = params?["x"]?.int()
+        let y = params?["y"]?.int()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                if hasDeviceId {
+                    self.deviceId = deviceId
+                }
+                if hasDeviceName {
+                    self.deviceName = deviceName
+                }
+                if let resolution {
+                    self.resolution = resolution
+                }
+                if let flipped {
+                    self.flipped = flipped
+                    self.contentView?.updateFlipped(flipped)
+                }
+                if let x, let y {
+                    self.updatePosition(x: x, y: y)
+                }
+                if deviceChanged || resolutionChanged {
+                    self.contentView?.updateCamera(
+                        deviceId: self.deviceId,
+                        deviceName: self.deviceName,
+                        resolution: self.resolution
+                    )
+                }
+                self.respond(id: requestId, result: ["updated": true])
             }
         }
-        
-        if let x = params?["x"]?.int(), let y = params?["y"]?.int() {
-            DispatchQueue.main.async { [weak self] in
-                self?.updatePosition(x: x, y: y)
-            }
-        }
-        
-        if deviceChanged || resolutionChanged {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.contentView?.updateCamera(
-                    deviceId: self.deviceId,
-                    deviceName: self.deviceName,
-                    resolution: self.resolution
-                )
-            }
-        }
-        
-        respond(id: requestId, result: ["updated": true])
     }
     
     private func handleSetContentProtection(params: [String: AnyCodable]?, requestId: String) {
@@ -118,23 +128,45 @@ class CameraPreviewModule: Module {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "enabled is required")
             return
         }
-        isContentProtected = enabled
-        
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.panel?.sharingType = self.isContentProtected ? .none : .readOnly
-            self.respond(id: requestId, result: ["protected": self.isContentProtected])
+            Task { @MainActor in
+                self.isContentProtected = enabled
+                self.panel?.sharingType = enabled ? .none : .readOnly
+                self.respond(id: requestId, result: ["protected": enabled])
+            }
         }
     }
     
-    private func showPanel(x: Int?, y: Int?) {
-        if panel != nil {
+    @MainActor
+    private func showPanel(x: Int?, y: Int?) async throws -> Bool {
+        let generation = presentationGeneration.begin()
+        await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
+        guard presentationGeneration.isCurrent(generation) else { return false }
+        if let panel {
+            if panel.alphaValue == 0 {
+                do {
+                    try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+                } catch {
+                    guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
+                    panel.orderOut(nil)
+                    RecordingCaptureWindowRegistry.shared.unregister(panel)
+                    contentView?.stopCamera()
+                    self.panel = nil
+                    self.contentView = nil
+                    try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+                    throw error
+                }
+                guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
+                panel.alphaValue = 1
+                panel.ignoresMouseEvents = false
+            }
             contentView?.updateFlipped(flipped)
             if let x = x, let y = y {
                 updatePosition(x: x, y: y)
             }
-            panel?.orderFrontRegardless()
-            return
+            panel.orderFrontRegardless()
+            return true
         }
         
         let previewSize: CGFloat = 230
@@ -143,23 +175,25 @@ class CameraPreviewModule: Module {
         
         let position = calculatePosition(x: x, y: y, width: totalSize, height: totalSize)
         
-        panel = NSPanel(
+        let panel = NSPanel(
             contentRect: NSRect(x: position.x, y: position.y, width: totalSize, height: totalSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         
-        panel?.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) + 1)
-        panel?.isOpaque = false
-        panel?.backgroundColor = .clear
-        panel?.hasShadow = false
-        panel?.isMovableByWindowBackground = true
-        panel?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel?.hidesOnDeactivate = false
-        panel?.sharingType = isContentProtected ? .none : .readOnly
-        
-        contentView = CameraPreviewContentView(
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.sharingType = isContentProtected ? .none : .readOnly
+        panel.alphaValue = 0
+        panel.ignoresMouseEvents = true
+
+        let contentView = CameraPreviewContentView(
             frame: NSRect(x: 0, y: 0, width: totalSize, height: totalSize),
             deviceId: deviceId,
             deviceName: deviceName,
@@ -168,19 +202,61 @@ class CameraPreviewModule: Module {
             padding: shadowPadding
         )
         
-        panel?.contentView = contentView
-        panel?.orderFrontRegardless()
+        panel.contentView = contentView
+        self.panel = panel
+        self.contentView = contentView
+        panel.orderFrontRegardless()
+        guard RecordingCaptureWindowRegistry.shared.register(panel) != nil else {
+            panel.orderOut(nil)
+            contentView.stopCamera()
+            self.panel = nil
+            self.contentView = nil
+            throw RecordingCaptureFilterError.unavailableWindowNumber
+        }
+        do {
+            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+        } catch {
+            guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
+            RecordingCaptureWindowRegistry.shared.unregister(panel)
+            contentView.stopCamera()
+            panel.orderOut(nil)
+            self.panel = nil
+            self.contentView = nil
+            try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            throw error
+        }
+        guard presentationGeneration.isCurrent(generation), self.panel === panel else {
+            if self.panel !== panel {
+                panel.orderOut(nil)
+                RecordingCaptureWindowRegistry.shared.unregister(panel)
+                contentView.stopCamera()
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            }
+            return false
+        }
+        panel.alphaValue = 1
+        panel.ignoresMouseEvents = false
         
         setupMoveTracking()
+        return true
     }
     
-    private func hidePanel() {
+    @MainActor
+    private func hidePanel() async {
+        presentationGeneration.cancel()
+        let contentView = self.contentView
+        let panel = self.panel
+        self.panel = nil
+        self.contentView = nil
         contentView?.stopCamera()
         panel?.orderOut(nil)
-        panel = nil
-        contentView = nil
+        if let panel {
+            RecordingCaptureWindowRegistry.shared.unregister(panel)
+        }
+        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
     }
     
+    @MainActor
     private func updatePosition(x: Int, y: Int) {
         guard let panel = panel else { return }
         let mainScreenHeight = NSScreen.main?.frame.height ?? 0
@@ -188,6 +264,7 @@ class CameraPreviewModule: Module {
         panel.setFrameOrigin(NSPoint(x: CGFloat(x), y: cocoaY))
     }
     
+    @MainActor
     private func calculatePosition(x: Int?, y: Int?, width: CGFloat, height: CGFloat) -> NSPoint {
         let mainScreenHeight = NSScreen.main?.frame.height ?? 0
         
@@ -210,19 +287,22 @@ class CameraPreviewModule: Module {
         return NSPoint(x: defaultX, y: defaultY)
     }
     
+    @MainActor
     private func setupMoveTracking() {
         NotificationCenter.default.addObserver(
             forName: NSWindow.didMoveNotification,
             object: panel,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self, let panel = self.panel else { return }
-            
-            let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-            let x = Int(panel.frame.origin.x)
-            let y = Int(mainScreenHeight - panel.frame.origin.y - panel.frame.height)
-            
-            self.emit(event: "position-changed", data: ["x": x, "y": y])
+            Task { @MainActor in
+                guard let self = self, let panel = self.panel else { return }
+
+                let mainScreenHeight = NSScreen.main?.frame.height ?? 0
+                let x = Int(panel.frame.origin.x)
+                let y = Int(mainScreenHeight - panel.frame.origin.y - panel.frame.height)
+
+                self.emit(event: "position-changed", data: ["x": x, "y": y])
+            }
         }
     }
 }

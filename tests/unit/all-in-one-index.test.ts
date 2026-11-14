@@ -768,7 +768,9 @@ describe('all-in-one orchestrator', () => {
     expect(markup).toContain('aria-label="Pick color"');
     expect(markup).toContain('aria-label="Close"');
     expect(
-      markup.match(/--button-fg:rgb\(255 255 255 \/ 0\.85\)/g)
+      markup.match(
+        /--button-fg:color-mix\(in oklab, var\(--foreground\) 85%, transparent\)/g
+      )
     ).toHaveLength(3);
     expect(markup).toContain('rounded-4xl border-2');
     expect(markup.match(/size-8 min-w-8 rounded-3xl/g)).toHaveLength(3);

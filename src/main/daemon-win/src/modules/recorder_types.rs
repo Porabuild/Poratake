@@ -39,43 +39,6 @@ impl CaptureRect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FitRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-/// Places `source` inside `target` at the largest scale that keeps its aspect
-/// ratio, centring the letterbox. A recorded window keeps the video size it
-/// started with, so every later window size is fitted into that frame.
-pub fn fit_rect(source: (u32, u32), target: (u32, u32)) -> FitRect {
-    let empty = FitRect {
-        x: 0.0,
-        y: 0.0,
-        width: 0.0,
-        height: 0.0,
-    };
-    if source.0 == 0 || source.1 == 0 || target.0 == 0 || target.1 == 0 {
-        return empty;
-    }
-
-    let scale = f64::min(
-        f64::from(target.0) / f64::from(source.0),
-        f64::from(target.1) / f64::from(source.1),
-    );
-    let width = f64::from(source.0) * scale;
-    let height = f64::from(source.1) * scale;
-
-    FitRect {
-        x: (f64::from(target.0) - width) / 2.0,
-        y: (f64::from(target.1) - height) / 2.0,
-        width,
-        height,
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct RecordingConfig {
     pub capture_rect: Option<CaptureRect>,
@@ -278,6 +241,7 @@ impl RecorderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use poratake_daemon_common::geometry::{FitRect, fit_rect};
     use serde_json::json;
     use std::collections::HashMap;
 

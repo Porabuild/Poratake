@@ -5,6 +5,11 @@ pub enum Device {
 }
 
 pub fn ensure_access(device: Device) -> bool {
+    #[cfg(feature = "parity")]
+    if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+        return true;
+    }
+
     #[cfg(windows)]
     if consent_is_denied(read_consent(device).as_deref()) {
         show_permission_dialog(device);

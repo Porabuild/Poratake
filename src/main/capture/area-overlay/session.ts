@@ -1,11 +1,21 @@
 import { globalShortcut, ipcMain, screen } from 'electron';
 import type { Display, Point, Rectangle, BrowserWindow } from 'electron';
-import { freezeScreen, releaseScreen } from '@/main/capture/freeze-screen';
+import {
+  freezeScreen,
+  isScreenFrozen,
+  releaseScreen,
+} from '@/main/capture/freeze-screen';
+import {
+  hideDesktopIcons,
+  showDesktopIcons,
+} from '@/main/capture/desktop-icons';
+import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
 import { daemon } from '@/main/daemon';
 import { flushPendingContinuations } from '@/main/utils/event-loop';
 import { isWindows } from '@/main/utils/platform';
 import { isDev } from '@/main/utils/env';
 import { formatClock } from '@/main/utils/clock';
+import { showTransientNotification } from '@/main/utils/notification';
 import {
   concealOverlayWindow,
   nativeWindowHandle,
@@ -84,6 +94,7 @@ interface OverlaySession {
   freeze: boolean;
   requestedFreeze: boolean;
   freezeTransition: Promise<void>;
+  freezeTransitionPending: number;
   interactive: boolean;
   autoConfirm: boolean;
   repeatablePicks: boolean;
@@ -97,6 +108,10 @@ interface OverlaySession {
   requestedVisible: boolean;
   visibilitySuspensions: number;
   selection: AreaOverlayResult | null;
+  selectionConfirmed: boolean;
+  freezeHideFailed: boolean;
+  freezeRestoreFailed: boolean;
+  releaseFailureNotified: boolean;
   pendingPreset: AreaOverlayResult | null;
   freezeSettled: boolean;
   pendingReady: Set<number>;
@@ -112,6 +127,11 @@ interface OverlaySession {
   resolve: (selection: OverlaySelection | null) => void;
 }
 
+type FreezeSessionResult = {
+  frozen: boolean;
+  failure?: 'hide-failed' | 'restore-failed';
+};
+
 let activeSession: OverlaySession | null = null;
 let pendingTeardown: Promise<void> | null = null;
 let pendingRestore: Promise<void> | null = null;
@@ -121,6 +141,50 @@ let ipcRegistered = false;
 let escapeShortcutRegistered = false;
 let nextSessionId = 1;
 const OVERLAY_REGION_INSET = 16;
+
+async function freezeSessionScreen(
+  session: OverlaySession
+): Promise<FreezeSessionResult> {
+  const hideIcons =
+    session.toolbar?.kind === 'all-in-one' &&
+    shouldHideDesktopIconsForCapture();
+  if (!hideIcons) return { frozen: await freezeScreen() };
+
+  let result: FreezeSessionResult = {
+    frozen: false,
+    failure: 'hide-failed',
+  };
+  let restored = true;
+  try {
+    if (await hideDesktopIcons('capture')) {
+      result = {
+        frozen: activeSession === session ? await freezeScreen() : false,
+      };
+    }
+  } finally {
+    restored = await showDesktopIcons('capture');
+  }
+
+  if (!restored) return { ...result, failure: 'restore-failed' };
+  return result;
+}
+
+function notifyFrozenScreenReleaseFailure(
+  toolbar?: AreaOverlayToolbar | null
+): void {
+  showTransientNotification(
+    toolbar?.activeMode === 'record' ? 'Recording failed' : 'Capture Failed',
+    'Could not release frozen screen'
+  );
+}
+
+function notifySessionFrozenScreenReleaseFailure(
+  session: OverlaySession
+): void {
+  if (session.releaseFailureNotified) return;
+  session.releaseFailureNotified = true;
+  notifyFrozenScreenReleaseFailure(session.toolbar);
+}
 
 function sessionEntryFor(
   session: OverlaySession,
@@ -663,18 +727,19 @@ export function concealOverlayHandoff(): void {
   entries?.forEach(parkEntry);
 }
 
-async function releaseSession(session: OverlaySession): Promise<void> {
+async function releaseSession(session: OverlaySession): Promise<boolean> {
   await session.freezeTransition;
-  if (!session.freeze) return;
+  if (!session.freeze) return true;
 
   const released = await releaseScreen();
   if (released) {
     session.freeze = false;
   }
+  return released;
 }
 
-function reserveTeardown(session: OverlaySession): () => Promise<void> {
-  let releasePromise: Promise<void> | null = null;
+function reserveTeardown(session: OverlaySession): () => Promise<boolean> {
+  let releasePromise: Promise<boolean> | null = null;
   let finishTeardown!: () => void;
   const teardown = new Promise<void>(resolve => {
     finishTeardown = resolve;
@@ -684,6 +749,9 @@ function reserveTeardown(session: OverlaySession): () => Promise<void> {
   return () => {
     if (!releasePromise) {
       releasePromise = releaseSession(session).finally(() => {
+        if (session.freeze && !startingSession) {
+          notifySessionFrozenScreenReleaseFailure(session);
+        }
         finishTeardown();
         if (pendingTeardown === teardown) {
           pendingTeardown = null;
@@ -701,6 +769,7 @@ function finishSession(
 ): Promise<void> {
   const session = activeSession;
   if (!session || session !== expectedSession) return Promise.resolve();
+  session.selectionConfirmed = result !== null;
   setColorPickerActive(session, false, enabled =>
     setEscapeShortcutEnabled(session, enabled)
   );
@@ -716,9 +785,10 @@ function finishSession(
   }
 
   const display = result ? session.displays.get(result.displayId) : undefined;
-  const release = session.freeze
-    ? reserveTeardown(session)
-    : () => Promise.resolve();
+  const release =
+    session.freeze || session.freezeTransitionPending > 0
+      ? reserveTeardown(session)
+      : () => Promise.resolve(true);
 
   const foregroundCheck =
     isWindows && session.previousForegroundHandle
@@ -731,7 +801,7 @@ function finishSession(
       : Promise.resolve(null);
 
   pendingRestore = Promise.all(parks)
-    .then(() => release())
+    .then(() => (result && display ? true : release()))
     .then(async () => {
       const foreground = await foregroundCheck;
       if (
@@ -752,16 +822,42 @@ function finishSession(
   if (!result || !display) {
     const teardown = release().catch(error => {
       console.error('Failed to release frozen displays:', error);
+      return false;
     });
     session.resolve(null);
-    return teardown;
+    return teardown.then(() => {});
   }
 
-  session.resolve({
+  const selection = {
     ...toRegion(session, display, result),
     frozen: session.freeze,
-    release,
-  });
+    release: async () => {
+      await release();
+    },
+  };
+  const selectionStartedFrozen = session.freeze;
+  if (!selectionStartedFrozen || session.freezeTransitionPending > 0) {
+    void session.freezeTransition.then(async () => {
+      await pendingRestore;
+      const frozen = selectionStartedFrozen && session.freeze;
+      if (!frozen) {
+        if (!(await release())) {
+          if (session.freeze) {
+            notifySessionFrozenScreenReleaseFailure(session);
+          }
+          session.resolve(null);
+          return;
+        }
+      }
+      if (session.freezeHideFailed || session.freezeRestoreFailed) {
+        session.resolve(null);
+        return;
+      }
+      session.resolve({ ...selection, frozen });
+    });
+  } else {
+    session.resolve(selection);
+  }
   return Promise.resolve();
 }
 
@@ -821,9 +917,18 @@ function raiseOverlayWindows(session: OverlaySession): void {
 export function setOverlayFreeze(enabled: boolean): Promise<void> {
   const session = activeSession;
   if (!session) return Promise.resolve();
+  if (
+    enabled === session.freeze &&
+    enabled === session.requestedFreeze &&
+    session.freezeTransitionPending === 0
+  ) {
+    return session.freezeTransition;
+  }
 
   session.requestedFreeze = enabled;
-  session.freezeTransition = session.freezeTransition
+  let closeAfterTransition = false;
+  session.freezeTransitionPending += 1;
+  const transition = session.freezeTransition
     .then(async () => {
       if (activeSession !== session) return;
 
@@ -831,14 +936,50 @@ export function setOverlayFreeze(enabled: boolean): Promise<void> {
       if (requestedFreeze === session.freeze) return;
 
       if (requestedFreeze) {
-        const frozen = await freezeScreen();
+        const frozen = await freezeSessionScreen(session);
         if (activeSession !== session) {
-          if (frozen) await releaseScreen();
-          session.freeze = false;
+          if (frozen.frozen) {
+            const released = await releaseScreen();
+            session.freeze = !released;
+          }
+          if (frozen.failure === 'restore-failed') {
+            if (session.selectionConfirmed) {
+              session.freezeRestoreFailed = true;
+            }
+            showTransientNotification(
+              session.toolbar?.activeMode === 'record'
+                ? 'Recording failed'
+                : 'Capture Failed',
+              'Could not restore desktop icons'
+            );
+          }
+          if (frozen.failure === 'hide-failed' && session.selectionConfirmed) {
+            session.freezeHideFailed = true;
+            showTransientNotification(
+              session.toolbar?.activeMode === 'record'
+                ? 'Recording failed'
+                : 'Capture Failed',
+              'Could not hide desktop icons'
+            );
+          }
           return;
         }
-        session.freeze = frozen;
-        if (frozen) {
+        if (frozen.failure) {
+          session.requestedFreeze = false;
+          session.freeze = frozen.frozen;
+          showTransientNotification(
+            session.toolbar?.activeMode === 'record'
+              ? 'Recording failed'
+              : 'Capture Failed',
+            frozen.failure === 'hide-failed'
+              ? 'Could not hide desktop icons'
+              : 'Could not restore desktop icons'
+          );
+          closeAfterTransition = true;
+          return;
+        }
+        session.freeze = frozen.frozen;
+        if (frozen.frozen) {
           raiseOverlayWindows(session);
         }
       } else {
@@ -852,9 +993,16 @@ export function setOverlayFreeze(enabled: boolean): Promise<void> {
     })
     .catch(error => {
       console.error('Failed to update overlay freeze state:', error);
+    })
+    .finally(() => {
+      session.freezeTransitionPending -= 1;
     });
+  session.freezeTransition = transition;
+  void transition.then(() => {
+    if (closeAfterTransition) void cancelSession(session);
+  });
 
-  return session.freezeTransition;
+  return transition;
 }
 
 export function updateOverlaySelection(rect: Rectangle): boolean {
@@ -1007,6 +1155,14 @@ export async function startOverlaySession(
     await pendingRestore;
     timingTeardown = performance.now();
 
+    if (isScreenFrozen()) {
+      const released = await releaseScreen();
+      if (!released && isScreenFrozen()) {
+        notifyFrozenScreenReleaseFailure(options?.toolbar);
+        return null;
+      }
+    }
+
     if (activeSession) {
       return null;
     }
@@ -1040,6 +1196,7 @@ export async function startOverlaySession(
       freeze: false,
       requestedFreeze,
       freezeTransition: Promise.resolve(),
+      freezeTransitionPending: 0,
       interactive: options?.interactive ?? false,
       autoConfirm: options?.autoConfirm ?? true,
       repeatablePicks: options?.repeatablePicks ?? false,
@@ -1053,6 +1210,10 @@ export async function startOverlaySession(
       requestedVisible: options?.visible !== false,
       visibilitySuspensions: 0,
       selection: presetSelection(displays, options?.preset),
+      selectionConfirmed: false,
+      freezeHideFailed: false,
+      freezeRestoreFailed: false,
+      releaseFailureNotified: false,
       pendingPreset: null,
       freezeSettled: !requestedFreeze,
       pendingReady: new Set(),
@@ -1099,12 +1260,71 @@ export async function startOverlaySession(
       }
 
       if (requestedFreeze) {
-        const freeze = await freezeScreen();
-        if (activeSession !== session) {
-          if (freeze) await releaseScreen();
+        let finishFreezeTransition!: () => void;
+        session.freezeTransitionPending += 1;
+        session.freezeTransition = new Promise(resolve => {
+          finishFreezeTransition = resolve;
+        });
+        let staleSession = false;
+        let closeAfterFreezeFailure = false;
+        try {
+          const freeze = await freezeSessionScreen(session);
+          if (activeSession !== session) {
+            staleSession = true;
+            if (freeze.frozen) {
+              const released = await releaseScreen();
+              session.freeze = !released;
+            }
+            if (freeze.failure === 'restore-failed') {
+              if (session.selectionConfirmed) {
+                session.freezeRestoreFailed = true;
+              }
+              showTransientNotification(
+                session.toolbar?.activeMode === 'record'
+                  ? 'Recording failed'
+                  : 'Capture Failed',
+                'Could not restore desktop icons'
+              );
+            }
+            if (
+              freeze.failure === 'hide-failed' &&
+              session.selectionConfirmed
+            ) {
+              session.freezeHideFailed = true;
+              showTransientNotification(
+                session.toolbar?.activeMode === 'record'
+                  ? 'Recording failed'
+                  : 'Capture Failed',
+                'Could not hide desktop icons'
+              );
+            }
+          } else if (freeze.failure) {
+            session.requestedFreeze = false;
+            session.freeze = freeze.frozen;
+            showTransientNotification(
+              session.toolbar?.activeMode === 'record'
+                ? 'Recording failed'
+                : 'Capture Failed',
+              freeze.failure === 'hide-failed'
+                ? 'Could not hide desktop icons'
+                : 'Could not restore desktop icons'
+            );
+            closeAfterFreezeFailure = true;
+          } else {
+            session.freeze = freeze.frozen;
+          }
+        } finally {
+          session.freezeTransitionPending -= 1;
+          finishFreezeTransition();
+        }
+        if (closeAfterFreezeFailure) await cancelSession(session);
+        if (staleSession) {
+          await pendingRestore;
+          if (session.freeze && !session.selectionConfirmed) {
+            notifySessionFrozenScreenReleaseFailure(session);
+          }
           return resultPromise;
         }
-        session.freeze = freeze;
       }
       timingFreeze = performance.now();
 

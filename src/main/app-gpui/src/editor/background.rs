@@ -114,13 +114,11 @@ pub fn preview_image(source: &str, size: f32) -> Option<Arc<gpui::RenderImage>> 
     crate::windows::video_editor::preview::to_render_image(&scaled)
 }
 
-/// Opens the picker the renderer's "Add Background" button opens.
-pub fn pick_image() -> Option<String> {
-    rfd::FileDialog::new()
+pub fn image_picker(window: &gpui::Window) -> rfd::AsyncFileDialog {
+    rfd::AsyncFileDialog::new()
         .set_title("Choose background image")
         .add_filter("Images", &IMAGE_EXTENSIONS)
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
+        .set_parent(window)
 }
 
 #[cfg(test)]

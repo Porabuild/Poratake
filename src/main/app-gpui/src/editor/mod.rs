@@ -11,6 +11,10 @@ pub mod layers;
 pub mod open;
 pub mod options;
 pub mod preview_raster;
+#[cfg(windows)]
+mod screenshot_save;
+#[cfg(unix)]
+mod screenshot_save_unix;
 pub mod text_render;
 pub mod title_bar;
 pub mod tool_options;

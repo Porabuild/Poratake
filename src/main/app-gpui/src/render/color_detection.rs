@@ -58,7 +58,7 @@ fn tally(
     y: u32,
     width: u32,
     height: u32,
-    counts: &mut std::collections::HashMap<String, u32>,
+    counts: &mut std::collections::HashMap<String, (u32, usize)>,
 ) {
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
@@ -68,15 +68,16 @@ fn tally(
             if pixel[3] == 0 {
                 continue;
             }
-            *counts.entry(to_hex(pixel)).or_insert(0) += 1;
+            let index = counts.len();
+            counts.entry(to_hex(pixel)).or_insert((0, index)).0 += 1;
         }
     }
 }
 
-fn dominant(counts: std::collections::HashMap<String, u32>) -> Option<String> {
+fn dominant(counts: std::collections::HashMap<String, (u32, usize)>) -> Option<String> {
     counts
         .into_iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by_key(|(_, (count, index))| (*count, std::cmp::Reverse(*index)))
         .map(|(color, _)| color)
 }
 
@@ -202,6 +203,24 @@ mod tests {
             dominant_edge_color(pixmap.as_ref()).as_deref(),
             Some("#141414")
         );
+    }
+
+    #[test]
+    fn tied_edge_colours_choose_the_first_sample_consistently() {
+        let mut pixmap = Pixmap::new(2, 2).unwrap();
+        pixmap.data_mut().copy_from_slice(&[
+            240, 80, 64, 255, 64, 112, 192, 255, 64, 112, 192, 255, 240, 80, 64, 255,
+        ]);
+        for _ in 0..128 {
+            assert_eq!(
+                dominant_edge_color(pixmap.as_ref()).as_deref(),
+                Some("#f05040")
+            );
+            assert_eq!(
+                dominant_inset_color(pixmap.as_ref(), ContentBounds::default()).as_deref(),
+                Some("#f05040")
+            );
+        }
     }
 
     #[test]

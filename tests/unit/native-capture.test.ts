@@ -162,4 +162,33 @@ describe('native-capture', () => {
     ).resolves.toBe(false);
     await expect(captureWindowByIdToFile(1, '/tmp/b.png')).resolves.toBe(false);
   });
+
+  it.each([
+    ['CAPTURE_FAILED', true],
+    ['INVALID_PARAMS', true],
+    ['METHOD_NOT_FOUND', true],
+    ['DAEMON_UNAVAILABLE', true],
+    ['EPIPE', false],
+    [undefined, false],
+  ])(
+    'distinguishes completed daemon errors from uncertain failures: %s',
+    async (code, completed) => {
+      const failure = code
+        ? Object.assign(new Error('capture failed'), { code })
+        : new Error('Request timeout: screenshot.capture-area');
+      mockDaemonCall.mockRejectedValue(failure);
+      const onFailure = vi.fn();
+      const { captureRegionToFile, captureWindowByIdToFile } =
+        await import('@/main/capture/screenshot/native-capture');
+
+      await captureRegionToFile(
+        { x: 0, y: 0, width: 10, height: 10 },
+        '/tmp/a.png',
+        { onFailure }
+      );
+      await captureWindowByIdToFile(1, '/tmp/b.png', onFailure);
+      expect(onFailure.mock.calls).toEqual([[completed], [completed]]);
+      expect(mockDaemonCall.mock.calls[0][2]).not.toHaveProperty('onFailure');
+    }
+  );
 });

@@ -44,6 +44,10 @@ pub struct OverlayLaunch {
 #[derive(Default)]
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
+    capture_hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
+    revision: u64,
+    pending_freeze: Option<u64>,
+    timer_cancel: Option<smol::channel::Sender<bool>>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
@@ -71,8 +75,124 @@ fn session(cx: &mut App) -> &mut OverlaySession {
     cx.default_global::<OverlaySession>()
 }
 
+pub(crate) fn revision(cx: &mut App) -> u64 {
+    session(cx).revision
+}
+
+pub(crate) fn set_pending_freeze(generation: u64, cx: &mut App) {
+    session(cx).pending_freeze = Some(generation);
+}
+
+pub(crate) fn clear_pending_freeze(generation: u64, owner: u64, cx: &mut App) {
+    if session(cx).revision == owner && session(cx).pending_freeze == Some(generation) {
+        session(cx).pending_freeze = None;
+    }
+}
+
+pub(crate) fn watch_timer(
+    revision: u64,
+    cancel: smol::channel::Sender<bool>,
+    cx: &mut App,
+) -> bool {
+    if session(cx).revision != revision {
+        return false;
+    }
+    session(cx).timer_cancel = Some(cancel);
+    true
+}
+
+pub(crate) fn close_timer(revision: u64, cx: &mut App) -> bool {
+    if session(cx).revision != revision {
+        return false;
+    }
+    session(cx).timer_cancel = None;
+    close_all(cx);
+    true
+}
+
+pub(crate) fn set_capture_hide(
+    hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
+    cx: &mut App,
+) {
+    session(cx).capture_hide = hide;
+}
+
+fn take_capture_hide(
+    cx: &mut App,
+) -> Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>> {
+    session(cx).capture_hide.take()
+}
+
+pub(crate) fn capture_hide(
+    cx: &mut App,
+) -> Option<std::sync::Weak<crate::capture::desktop_icons::CaptureHide>> {
+    session(cx)
+        .capture_hide
+        .as_ref()
+        .map(std::sync::Arc::downgrade)
+}
+
+pub(crate) fn release_capture_hide(
+    expected: Option<std::sync::Weak<crate::capture::desktop_icons::CaptureHide>>,
+    cx: &mut App,
+) {
+    let Some(expected) = expected else { return };
+    if session(cx)
+        .capture_hide
+        .as_ref()
+        .is_some_and(|current| expected.ptr_eq(&std::sync::Arc::downgrade(current)))
+    {
+        let hide = session(cx).capture_hide.take();
+        crate::capture::desktop_icons::release_for_capture(hide, cx);
+    }
+}
+
+#[cfg(any(all(test, windows), feature = "parity"))]
+pub(crate) fn parity_is_active(cx: &mut App) -> bool {
+    !session(cx).handles.is_empty()
+}
+
+#[cfg(any(all(test, windows), feature = "parity"))]
+pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
+    session(cx).handles.first().map(|overlay| overlay.handle)
+}
+
+#[cfg(feature = "parity")]
+pub(crate) fn parity_selection(cx: &mut App) -> Option<selection::Rect> {
+    let handle = parity_active_overlay(cx)?.downcast::<AreaOverlay>()?;
+    handle.update(cx, |overlay, _, _| overlay.rect).ok()?
+}
+
+#[cfg(all(windows, feature = "parity"))]
+pub(crate) fn parity_active_overlays(cx: &mut App) -> Vec<AnyWindowHandle> {
+    session(cx)
+        .handles
+        .iter()
+        .map(|overlay| overlay.handle)
+        .collect()
+}
+
+#[cfg(all(windows, any(test, feature = "parity")))]
+pub(crate) fn active_intents_for_test(cx: &mut App) -> Vec<crate::capture::intent::CaptureIntent> {
+    session(cx)
+        .handles
+        .clone()
+        .into_iter()
+        .filter_map(|tracked| {
+            tracked
+                .handle
+                .downcast::<AreaOverlay>()?
+                .update(cx, |overlay, _, _| overlay.intent)
+                .ok()
+        })
+        .collect()
+}
+
 pub fn close_all(cx: &mut App) {
     if let Some(generation) = remove_all(cx, true) {
+        if generation != 0 {
+            set_pending_freeze(generation, cx);
+        }
         release_frozen_screen(generation, cx);
     }
 }
@@ -206,8 +326,19 @@ pub fn replace_all(cx: &mut App) -> Option<u64> {
 }
 
 fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
+    session(cx).revision = session(cx).revision.wrapping_add(1);
+    if let Some(cancel) = session(cx).timer_cancel.take() {
+        let _ = cancel.try_send(false);
+    }
     let handles = std::mem::take(&mut session(cx).handles);
-    let generation = handles.iter().map(|tracked| tracked.generation).max();
+    let hide = take_capture_hide(cx);
+    crate::capture::desktop_icons::release_for_capture(hide, cx);
+    let pending = session(cx).pending_freeze.take();
+    let generation = handles
+        .iter()
+        .map(|tracked| tracked.generation)
+        .chain(pending)
+        .max();
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
     } else {
@@ -221,13 +352,17 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
         #[cfg(windows)]
         if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
             if handle
-                .update(cx, |overlay, window, _| {
+                .update(cx, |overlay, window, cx| {
                     overlay.window_list_generation = overlay.window_list_generation.wrapping_add(1);
                     overlay.picking_windows = false;
                     overlay.color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                     overlay.picking_color = false;
                     overlay.color_frame = None;
+                    overlay.rect = None;
+                    overlay.interaction = None;
+                    overlay.pointer = None;
                     park_overlay(window);
+                    cx.notify();
                 })
                 .is_ok()
             {
@@ -262,19 +397,39 @@ pub fn raise_all(generation: u64, cx: &mut App) {
 
 /// Drops the daemon's frozen snapshot. Cheap and idempotent when the screen was
 /// never frozen, which is why the callers do not track whether it was.
-fn release_frozen_screen(generation: u64, cx: &mut App) {
+pub(crate) fn release_frozen_screen(generation: u64, cx: &mut App) {
+    if generation == 0 {
+        return;
+    }
     let service = crate::state::state(cx);
-    cx.background_executor()
-        .spawn(async move { service.release_screen(generation) })
-        .detach();
+    let owner = revision(cx);
+    cx.spawn(async move |cx| {
+        let released = cx
+            .background_executor()
+            .spawn(async move { service.release_screen(generation) })
+            .await;
+        if released {
+            cx.update(|cx| clear_pending_freeze(generation, owner, cx));
+        }
+    })
+    .detach();
 }
 
 pub(crate) fn dismiss(window: &mut Window, cx: &mut App) {
-    let tracked = !session(cx).handles.is_empty();
-    close_all(cx);
-    if !cfg!(windows) || !tracked {
+    if let Some(generation) = conceal_for_capture(window, cx) {
+        if generation != 0 {
+            set_pending_freeze(generation, cx);
+        }
+        release_frozen_screen(generation, cx);
+    }
+}
+
+fn conceal_for_capture(window: &mut Window, cx: &mut App) -> Option<u64> {
+    let generation = remove_all(cx, true);
+    if !cfg!(windows) || generation.is_none() {
         window.remove_window();
     }
+    generation
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -488,8 +643,8 @@ fn set_overlay_topmost(window: &Window) {
     let _ = window;
 }
 
-#[cfg(all(windows, not(test)))]
-fn windows_build() -> u32 {
+#[cfg(windows)]
+pub(crate) fn windows_build() -> u32 {
     use std::sync::OnceLock;
 
     use windows::Wdk::System::SystemServices::RtlGetVersion;
@@ -581,7 +736,8 @@ fn take_pooled_overlay(
     Some(pooled.swap_remove(index).handle)
 }
 
-fn prepare_overlay_window(window: &Window, display_bounds: Bounds<Pixels>) {
+fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
+    window.set_window_title("Poratake capture overlay");
     #[cfg(all(windows, not(test)))]
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         crate::system::window_composition::configure_transparent_surface(hwnd);
@@ -664,7 +820,21 @@ fn open_overlay_window(
                 view.display_id = Some(u64::from(display_id) as u32);
                 view
             });
-            view.update(cx, after_new);
+            view.update(cx, |overlay, cx| {
+                cx.observe_window_activation(window, |overlay, window, _| {
+                    let active = window.is_window_active();
+                    if !active {
+                        overlay.menu_activation_key = None;
+                        overlay.menu_return_focus = false;
+                    }
+                    #[cfg(all(windows, not(test)))]
+                    if active {
+                        prepare_overlay_window(window, overlay.display_bounds);
+                    }
+                })
+                .detach();
+                after_new(overlay, cx);
+            });
             let shown = reveal_overlay_window(window, launch, active);
             if launch.focus && shown {
                 window.activate_window();
@@ -740,6 +910,7 @@ fn begin_recording(
     display_id: Option<u32>,
     window_id: Option<i64>,
     target_name: Option<String>,
+    preference_scope: crate::windows::recording_control::PreferenceScope,
 ) {
     crate::windows::recording_control::RecordingControl::open(
         cx,
@@ -748,7 +919,120 @@ fn begin_recording(
         display_id,
         window_id,
         target_name,
+        preference_scope,
     );
+}
+
+fn begin_recording_after_icon_restore(
+    cx: &mut Context<AreaOverlay>,
+    all_in_one: bool,
+    target: crate::video::recorder::RecordingTarget,
+    rect: ScreenRect,
+    display_id: Option<u32>,
+    window_id: Option<i64>,
+    target_name: Option<String>,
+    preference_scope: crate::windows::recording_control::PreferenceScope,
+    after_open: impl FnOnce(&mut App) + 'static,
+) {
+    if !all_in_one {
+        begin_recording(
+            cx,
+            target,
+            rect,
+            display_id,
+            window_id,
+            target_name,
+            preference_scope,
+        );
+        after_open(cx);
+        return;
+    }
+    let owner = revision(cx);
+    let selected_overlay = cx.entity().downgrade();
+    let restore_area = matches!(&target, crate::video::recorder::RecordingTarget::Area);
+    App::defer(cx, move |cx| {
+        if revision(cx) != owner || crate::capture::desktop_icons::is_shutting_down() {
+            return;
+        }
+        for tracked in session(cx).handles.clone() {
+            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+                continue;
+            };
+            let _ = handle.update(cx, |overlay, _, cx| {
+                if overlay.intent != crate::capture::intent::CaptureIntent::Recording
+                    || overlay.all_in_one.is_none()
+                {
+                    return;
+                }
+                overlay.all_in_one = None;
+                overlay.handed_off = true;
+                overlay.interaction = None;
+                overlay.pointer = None;
+                cx.notify();
+            });
+        }
+        let Some(hide) = take_capture_hide(cx) else {
+            begin_recording(
+                cx,
+                target,
+                rect,
+                display_id,
+                window_id,
+                target_name,
+                preference_scope,
+            );
+            after_open(cx);
+            if restore_area {
+                let _ = selected_overlay.update(cx, |overlay, cx| {
+                    overlay.handed_off = false;
+                    cx.notify();
+                });
+            }
+            return;
+        };
+        let transition = crate::capture::desktop_icons::track_transition();
+        cx.spawn(async move |cx| {
+            let worker_transition = transition.clone();
+            let restored = smol::unblock(move || {
+                let restored = crate::capture::desktop_icons::restore_after_capture_hide(hide);
+                drop(worker_transition);
+                restored
+            })
+            .await;
+            cx.update(|cx| {
+                if revision(cx) != owner || crate::capture::desktop_icons::is_shutting_down() {
+                    return;
+                }
+                if !restored {
+                    close_all(cx);
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Recording failed",
+                        "Could not restore desktop icons",
+                    );
+                    return;
+                }
+                begin_recording(
+                    cx,
+                    target,
+                    rect,
+                    display_id,
+                    window_id,
+                    target_name,
+                    preference_scope,
+                );
+                after_open(cx);
+                if restore_area {
+                    let _ = selected_overlay.update(cx, |overlay, cx| {
+                        overlay.handed_off = false;
+                        cx.notify();
+                    });
+                }
+            });
+            drop(transition);
+        })
+        .detach();
+    });
 }
 
 pub struct AreaOverlay {
@@ -771,6 +1055,7 @@ pub struct AreaOverlay {
     interaction: Option<Interaction>,
     cursor: gpui::CursorStyle,
     screen_picker: bool,
+    recording_preference_scope: crate::windows::recording_control::PreferenceScope,
     /// Set in all-in-one mode: the toolbar's current mode and target.
     all_in_one: Option<crate::capture::all_in_one::Choices>,
     all_in_one_targets: [crate::capture::all_in_one::Target; 2],
@@ -779,6 +1064,9 @@ pub struct AreaOverlay {
     color_frame_generation: u64,
     handed_off: bool,
     menu: crate::ui::menu::MenuHandle,
+    menu_trigger_focus: Option<gpui::FocusHandle>,
+    menu_activation_key: Option<&'static str>,
+    menu_return_focus: bool,
     service: CaptureService,
 }
 
@@ -805,6 +1093,7 @@ impl AreaOverlay {
             window_list_generation: 0,
             hovered_window: None,
             screen_picker: false,
+            recording_preference_scope: crate::windows::recording_control::PreferenceScope::Global,
             all_in_one: None,
             all_in_one_targets: [crate::capture::all_in_one::Target::Area; 2],
             picking_color: false,
@@ -812,6 +1101,9 @@ impl AreaOverlay {
             color_frame_generation: 0,
             handed_off: false,
             menu: crate::ui::menu::MenuHandle::new(),
+            menu_trigger_focus: None,
+            menu_activation_key: None,
+            menu_return_focus: false,
             service,
         }
     }
@@ -852,9 +1144,24 @@ impl AreaOverlay {
         self.picking_color && self.color_frame_generation == generation
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_picking_color(&self) -> bool {
+        self.picking_color
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_all_in_one_state(
+        &self,
+        cx: &App,
+    ) -> (Option<crate::capture::all_in_one::Choices>, bool) {
+        (self.all_in_one, self.menu.is_open(cx))
+    }
+
     pub fn with_all_in_one(mut self, choices: crate::capture::all_in_one::Choices) -> Self {
         use crate::capture::all_in_one::{Mode, Target};
 
+        self.recording_preference_scope =
+            crate::windows::recording_control::PreferenceScope::AllInOne;
         let config = self.service.config.get();
         if config.all_in_one.remember_choices {
             self.all_in_one_targets = [
@@ -913,6 +1220,19 @@ impl AreaOverlay {
         ))
     }
 
+    fn window_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let scale = capture_coordinate_scale(self.scale);
+        let x = f32::from(self.display_bounds.left() + position.x) * scale;
+        let y = f32::from(self.display_bounds.top() + position.y) * scale;
+        crate::capture::windows_list::hit_test(&self.windows, x as f64, y as f64).and_then(
+            |picked| {
+                self.windows
+                    .iter()
+                    .position(|window| window.window_id == picked.window_id)
+            },
+        )
+    }
+
     fn confirm_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.hovered_window else {
             return;
@@ -921,6 +1241,7 @@ impl AreaOverlay {
             return;
         };
         if self.intent == crate::capture::intent::CaptureIntent::Recording {
+            let all_in_one = self.all_in_one.is_some();
             let rect = ScreenRect {
                 x: picked.bounds.x as i32,
                 y: picked.bounds.y as i32,
@@ -937,17 +1258,6 @@ impl AreaOverlay {
                 );
                 return;
             }
-            begin_recording(
-                cx,
-                crate::video::recorder::RecordingTarget::Window,
-                rect,
-                self.display_id,
-                Some(window_id),
-                Some(label),
-            );
-            if !show_window_recording_outline(window_id, cx) {
-                eprintln!("[recording-overlay] failed to outline window {window_id}");
-            }
             self.all_in_one = None;
             self.picking_windows = false;
             self.hovered_window = None;
@@ -956,14 +1266,60 @@ impl AreaOverlay {
             self.handed_off = true;
             conceal_recording_selector(window);
             sync_window_recording_handoff(cx);
+            begin_recording_after_icon_restore(
+                cx,
+                all_in_one,
+                crate::video::recorder::RecordingTarget::Window,
+                rect,
+                self.display_id,
+                Some(window_id),
+                Some(label),
+                self.recording_preference_scope,
+                move |cx| {
+                    for window_handle in cx.windows() {
+                        let Some(handle) = window_handle
+                            .downcast::<crate::windows::recording_control::RecordingControl>(
+                        ) else {
+                            continue;
+                        };
+                        let _ = handle.update(cx, |_, window, _| window.activate_window());
+                        break;
+                    }
+                    if !show_window_recording_outline(window_id, cx) {
+                        eprintln!("[recording-overlay] failed to outline window {window_id}");
+                    }
+                },
+            );
             cx.notify();
             return;
         }
+        let mut capture = display_capture(self.display_bounds, self.scale, self.display_id);
+        capture.rect = CaptureRect {
+            x: picked.bounds.x as i32,
+            y: picked.bounds.y as i32,
+            width: picked.bounds.width as i32,
+            height: picked.bounds.height as i32,
+        };
+        let reservation = self
+            .service
+            .config
+            .get()
+            .screenshot
+            .freeze_screen
+            .then(|| self.service.reserve_cached_capture());
+        let hide = take_capture_hide(cx);
+        let release_after = conceal_for_capture(window, cx);
         let coordinator = crate::state::coordinator(cx);
         coordinator.update(cx, |coordinator, cx| {
-            coordinator.capture_window(picked.window_id, cx);
+            coordinator.capture_window(
+                picked.window_id,
+                capture,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         });
-        dismiss(window, cx);
     }
 
     /// Opens the overlay covering one display.
@@ -1069,6 +1425,28 @@ impl AreaOverlay {
 
     pub fn close_all_in_one_menu(&self, window: &mut Window, cx: &App) {
         self.menu.close(window, cx);
+    }
+
+    pub fn set_all_in_one_menu_focus(&mut self, focus: Option<gpui::FocusHandle>) {
+        self.menu_trigger_focus = focus;
+    }
+
+    pub fn finish_all_in_one_target_selection(&mut self, window: &mut Window, cx: &mut App) {
+        if self.menu_activation_key.is_some() {
+            self.menu_return_focus = true;
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
+        self.focus_all_in_one_menu_trigger(window, cx);
+    }
+
+    fn focus_all_in_one_menu_trigger(&self, window: &mut Window, cx: &mut App) {
+        window.focus(
+            self.menu_trigger_focus
+                .as_ref()
+                .unwrap_or(&self.focus_handle),
+            cx,
+        );
     }
 
     pub fn set_all_in_one_target(
@@ -1199,8 +1577,7 @@ impl AreaOverlay {
                         return;
                     }
                     let Some(frame) = frame else {
-                        this.picking_color = false;
-                        sync_color_picker(false, cx);
+                        this.stop_color_picker(cx);
                         crate::windows::toast::Toast::show(
                             cx,
                             "Pick failed",
@@ -1240,17 +1617,13 @@ impl AreaOverlay {
         display_bounds: Bounds<Pixels>,
         intent: crate::capture::intent::CaptureIntent,
         windows: Vec<crate::capture::windows_list::WindowListItem>,
-        focus: bool,
+        launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
         open_overlay_window(
             display_id,
             display_bounds,
-            OverlayLaunch {
-                focus,
-                deferred_show: false,
-                generation: 0,
-            },
+            launch,
             |scale, focus_handle| {
                 AreaOverlay::with_focus(display_bounds, scale, service, intent, focus_handle)
                     .with_windows(windows)
@@ -1355,10 +1728,14 @@ impl AreaOverlay {
         let intent = self.intent;
         let scale = self.scale;
         if intent == crate::capture::intent::CaptureIntent::Recording {
-            self.all_in_one = None;
-            sync_recording_handoff(cx);
-            begin_recording(
+            let all_in_one = self.all_in_one.is_some();
+            if all_in_one {
+                self.all_in_one = None;
+                self.handed_off = true;
+            }
+            begin_recording_after_icon_restore(
                 cx,
+                all_in_one,
                 crate::video::recorder::RecordingTarget::Area,
                 ScreenRect {
                     x,
@@ -1369,18 +1746,16 @@ impl AreaOverlay {
                 self.display_id,
                 None,
                 None,
+                self.recording_preference_scope,
+                |_| {},
             );
             cx.notify();
             return;
         }
 
-        if hides_icons_at_confirm(intent) {
-            crate::capture::desktop_icons::hide_for_capture(
-                &self.service.daemon,
-                &self.service.config,
-            );
-        }
+        let hide = take_capture_hide(cx);
 
+        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
         let display_origin = (
             (f32::from(self.display_bounds.left()) * coordinate_scale).round() as i32,
@@ -1390,8 +1765,8 @@ impl AreaOverlay {
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        if !retained {
-            dismiss(window, cx);
+        let release_after = if !retained {
+            conceal_for_capture(window, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -1399,8 +1774,11 @@ impl AreaOverlay {
                 "Could not release the frozen screen",
             );
             dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
-        }
+        } else {
+            None
+        };
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
                 coordinator.capture_area_reserved(
@@ -1420,6 +1798,9 @@ impl AreaOverlay {
                     ),
                     intent,
                     reservation,
+                    release_after,
+                    hide,
+                    owner,
                     cx,
                 );
             });
@@ -1489,18 +1870,20 @@ fn crosshair_guides(pointer: Point<Pixels>, accent: gpui::Hsla) -> gpui::AnyElem
 fn scrim_around(
     origin: Point<Pixels>,
     hole: gpui::Size<Pixels>,
-    viewport: gpui::Size<Pixels>,
+    window: &Window,
     dim: gpui::Hsla,
 ) -> Vec<gpui::AnyElement> {
-    let right = origin.x + hole.width;
-    let bottom = origin.y + hole.height;
+    let left = window.pixel_snap(origin.x);
+    let top = window.pixel_snap(origin.y);
+    let right = window.pixel_snap(origin.x + hole.width);
+    let bottom = window.pixel_snap(origin.y + hole.height);
     vec![
         div()
             .absolute()
             .left_0()
             .right_0()
             .top_0()
-            .h(origin.y.max(px(0.0)))
+            .h(top.max(px(0.0)))
             .bg(dim)
             .into_any_element(),
         div()
@@ -1508,23 +1891,23 @@ fn scrim_around(
             .left_0()
             .right_0()
             .top(bottom)
-            .h((viewport.height - bottom).max(px(0.0)))
+            .bottom_0()
             .bg(dim)
             .into_any_element(),
         div()
             .absolute()
             .left_0()
-            .top(origin.y)
-            .w(origin.x.max(px(0.0)))
-            .h(hole.height)
+            .top(top)
+            .w(left.max(px(0.0)))
+            .h((bottom - top).max(px(0.0)))
             .bg(dim)
             .into_any_element(),
         div()
             .absolute()
             .left(right)
-            .top(origin.y)
-            .w((viewport.width - right).max(px(0.0)))
-            .h(hole.height)
+            .right_0()
+            .top(top)
+            .h((bottom - top).max(px(0.0)))
             .bg(dim)
             .into_any_element(),
     ]
@@ -1556,15 +1939,6 @@ fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::int
             crate::capture::intent::CaptureIntent::Screenshot
         }
     }
-}
-
-fn hides_icons_at_confirm(intent: crate::capture::intent::CaptureIntent) -> bool {
-    !matches!(
-        intent,
-        crate::capture::intent::CaptureIntent::Recording
-            | crate::capture::intent::CaptureIntent::Timer
-            | crate::capture::intent::CaptureIntent::ScrollCapture
-    )
 }
 
 fn hand_off_for_timer(cx: &mut Context<AreaOverlay>) -> bool {
@@ -1641,18 +2015,6 @@ fn sync_color_picker(active: bool, cx: &mut Context<AreaOverlay>) {
     });
 }
 
-fn sync_recording_handoff(cx: &mut Context<AreaOverlay>) {
-    for_each_area_overlay(cx, move |overlay, cx| {
-        if overlay.intent != crate::capture::intent::CaptureIntent::Recording
-            || overlay.all_in_one.is_none()
-        {
-            return;
-        }
-        overlay.all_in_one = None;
-        cx.notify();
-    });
-}
-
 fn sync_window_recording_handoff(cx: &mut Context<AreaOverlay>) {
     let handles = session(cx).handles.clone();
     App::defer(cx, move |cx| {
@@ -1718,13 +2080,18 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.surface(window, cx);
+        let content = self.surface(window.is_window_hovered(), window, cx);
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
 
 impl AreaOverlay {
-    fn surface(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn surface(
+        &mut self,
+        window_hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = crate::theme::vars::active_theme(cx);
         // The overlay's frame, handles and crosshairs are `border-primary` /
         // `bg-primary` / `bg-primary/70`, and `--primary` is the operating
@@ -1751,7 +2118,7 @@ impl AreaOverlay {
                     root.children(scrim_around(
                         point(left, top),
                         size(right - left, bottom - top),
-                        viewport,
+                        window,
                         dim,
                     ))
                 }
@@ -1761,14 +2128,60 @@ impl AreaOverlay {
 
         let root = root
             .cursor(self.cursor)
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                if this.menu.is_open(cx) {
+                    let menu = this.menu.clone();
+                    let focus = this.focus_handle.clone();
+                    let previous = window.focused(cx);
+                    window.defer(cx, move |window, cx| {
+                        if !menu.is_open(cx) && window.focused(cx) == previous {
+                            window.focus(&focus, cx);
+                        }
+                    });
+                    return;
+                }
+                this.menu_activation_key = None;
+                this.menu_return_focus = false;
+            }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.menu.is_open(cx) && !event.keystroke.modifiers.modified() {
+                    this.menu_activation_key = match event.keystroke.key.as_str() {
+                        "enter" => Some("enter"),
+                        "space" => Some("space"),
+                        _ => None,
+                    };
+                    this.menu_return_focus = false;
+                } else if !event.is_held {
+                    this.menu_activation_key = None;
+                    this.menu_return_focus = false;
+                }
+            }))
+            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
+                if this.menu_activation_key != Some(event.keystroke.key.as_str()) {
+                    return;
+                }
+                this.menu_activation_key = None;
+                let restore = std::mem::take(&mut this.menu_return_focus);
+                if restore
+                    && this.focus_handle.is_focused(window)
+                    && this.all_in_one.is_some_and(|choices| {
+                        choices.mode != crate::capture::all_in_one::Mode::Ocr
+                    })
+                {
+                    this.focus_all_in_one_menu_trigger(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.menu.is_open(cx) {
+                    this.menu.close(window, cx);
+                    this.focus_all_in_one_menu_trigger(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.picking_color {
                     this.stop_color_picker(cx);
                     return;
                 }
-                crate::capture::desktop_icons::restore_after_capture(
-                    &crate::state::state(cx).daemon,
-                );
                 if this.intent == crate::capture::intent::CaptureIntent::Recording {
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
                 }
@@ -1791,12 +2204,7 @@ impl AreaOverlay {
         if self.picking_color {
             return root.children(self.pointer.and_then(|pointer| {
                 self.color_frame.as_ref().map(|frame| {
-                    crate::capture::color_picker::render(
-                        frame,
-                        pointer,
-                        window.viewport_size(),
-                        &theme,
-                    )
+                    crate::capture::color_picker::render(frame, pointer, window, &theme)
                 })
             }));
         }
@@ -1805,17 +2213,14 @@ impl AreaOverlay {
             // `SelectionScrim` takes the hovered target as its rect while
             // picking, so the candidate window shows through undimmed. The DOM
             // overlay draws neither a frame nor a name label in this mode.
-            let viewport = window.viewport_size();
             let mut picking = root;
-            let hovered_frame = if window.is_window_hovered() {
+            let hovered_frame = if window_hovered {
                 self.hovered_frame()
             } else {
                 None
             };
             picking = match hovered_frame {
-                Some((origin, frame)) => {
-                    picking.children(scrim_around(origin, frame, viewport, dim))
-                }
+                Some((origin, frame)) => picking.children(scrim_around(origin, frame, window, dim)),
                 None => picking.child(div().absolute().inset_0().bg(dim)),
             };
             if let Some(toolbar) = toolbar {
@@ -1829,7 +2234,7 @@ impl AreaOverlay {
             ));
         }
 
-        if let Some(dimmed) = self.screen_picker_dimmed(window.is_window_hovered()) {
+        if let Some(dimmed) = self.screen_picker_dimmed(window_hovered) {
             let mut picking = if dimmed {
                 root.child(div().absolute().inset_0().bg(dim))
             } else {
@@ -1857,39 +2262,51 @@ impl AreaOverlay {
                         .then(|| prompt(self.intent.prompt(), self.all_in_one.is_some())),
                 ),
             Some((origin, bounds_size)) => {
-                let left_w = origin.x;
-                let right_x = origin.x + bounds_size.width;
-                let right_w = px(f32::from(window.viewport_size().width) - f32::from(right_x));
-                let bottom_y = origin.y + bounds_size.height;
-                let bottom_h = px(f32::from(window.viewport_size().height) - f32::from(bottom_y));
+                let left_w = window.pixel_snap(origin.x);
+                let top_h = window.pixel_snap(origin.y);
+                let selection_width = window.pixel_snap(bounds_size.width);
+                let selection_height = window.pixel_snap(bounds_size.height);
+                let outline_width = window.pixel_snap(px(1.0));
+                let right_x = left_w + selection_width;
+                let bottom_y = top_h + selection_height;
 
                 root.child(div().absolute().left_0().top_0().w(left_w).h_full().bg(dim))
                     .child(
                         div()
                             .absolute()
+                            .left(right_x)
                             .right_0()
                             .top_0()
-                            .w(right_w.max(px(0.0)))
                             .h_full()
                             .bg(dim),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left(origin.x)
+                            .left(left_w)
                             .top_0()
-                            .w(bounds_size.width)
-                            .h(origin.y)
+                            .w(selection_width)
+                            .h(top_h)
                             .bg(dim),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left(origin.x)
+                            .left(left_w)
                             .top(bottom_y)
-                            .w(bounds_size.width)
-                            .h(bottom_h.max(px(0.0)))
+                            .bottom_0()
+                            .w(selection_width)
                             .bg(dim),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(left_w - outline_width)
+                            .top(top_h - outline_width)
+                            .w(selection_width + outline_width * 2.0)
+                            .h(selection_height + outline_width * 2.0)
+                            .border_1()
+                            .border_color(crate::ui::colors::black(0.35)),
                     )
                     .child({
                         let mut frame = div()
@@ -1899,16 +2316,7 @@ impl AreaOverlay {
                             .w(bounds_size.width)
                             .h(bounds_size.height)
                             .border_1()
-                            .border_color(accent)
-                            // `shadow-[0_0_0_1px_rgba(0,0,0,0.35)]` keeps the
-                            // accent frame legible over light content.
-                            .shadow(vec![gpui::BoxShadow {
-                                color: crate::ui::colors::black(0.35),
-                                offset: point(px(0.0), px(0.0)),
-                                blur_radius: px(0.0),
-                                spread_radius: px(1.0),
-                                inset: false,
-                            }]);
+                            .border_color(accent);
                         for (handle_x, handle_y, handle_w, handle_h) in
                             crate::ui::chrome::overlay_handle_rects(
                                 f32::from(bounds_size.width),
@@ -1939,16 +2347,24 @@ impl AreaOverlay {
                         let viewport_h = f32::from(window.viewport_size().height);
                         let top = f32::from(origin.y);
                         let height = f32::from(bounds_size.height);
-                        let label_y = crate::ui::chrome::overlay_label_top(top, height, viewport_h);
-                        div()
-                            .absolute()
-                            .left(origin.x)
-                            .w(bounds_size.width)
-                            .top(px(label_y))
-                            .flex()
-                            .justify_center()
+                        let above = height < crate::ui::chrome::OVERLAY_LABEL_CLEARANCE
+                            && top >= crate::ui::chrome::OVERLAY_LABEL_CLEARANCE
+                            && !crate::ui::chrome::overlay_label_below(top, height, viewport_h);
+                        let (anchor, label_y) = if above {
+                            (gpui::Anchor::BottomCenter, top - 8.)
+                        } else {
+                            (
+                                gpui::Anchor::TopCenter,
+                                crate::ui::chrome::overlay_label_top(top, height, viewport_h),
+                            )
+                        };
+                        gpui::anchored()
+                            .anchor(anchor)
+                            .position(point(origin.x + bounds_size.width / 2., px(label_y)))
+                            .snap_to_window_with_margin(px(1.))
                             .child(
                                 div()
+                                    .debug_selector(|| "overlay-size-label".to_string())
                                     .rounded(px(crate::ui::chrome::OVERLAY_LABEL_RADIUS))
                                     .bg(crate::ui::colors::black(0.75))
                                     .px(px(crate::ui::chrome::OVERLAY_LABEL_PX))
@@ -1978,13 +2394,21 @@ impl AreaOverlay {
     /// `startDrag`: a press on a handle resizes, inside the box moves, and
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
         if self.picking_color {
             if self.pick_color(event.position, cx) {
                 dismiss(window, cx);
             }
             return;
         }
+        if self.menu.is_present(cx) {
+            return;
+        }
         if self.is_picking_windows() {
+            self.hovered_window = self.window_at(event.position);
+            cx.notify();
             self.confirm_window(window, cx);
             return;
         }
@@ -2020,6 +2444,10 @@ impl AreaOverlay {
         let rect = capture.rect;
         let intent = self.intent;
         if intent == crate::capture::intent::CaptureIntent::Recording {
+            let all_in_one = self.all_in_one.is_some();
+            if all_in_one {
+                self.handed_off = true;
+            }
             if self.screen_picker {
                 conceal_screen_recording_pick(window, cx);
             } else {
@@ -2029,32 +2457,29 @@ impl AreaOverlay {
                     width: self.viewport().width,
                     height: self.viewport().height,
                 });
-                self.all_in_one = None;
-                sync_recording_handoff(cx);
             }
-            begin_recording(
+            begin_recording_after_icon_restore(
                 cx,
+                all_in_one,
                 crate::video::recorder::RecordingTarget::Screen,
                 rect,
                 self.display_id,
                 None,
                 None,
+                self.recording_preference_scope,
+                |_| {},
             );
             cx.notify();
             return;
         }
-        if hides_icons_at_confirm(intent) {
-            crate::capture::desktop_icons::hide_for_capture(
-                &self.service.daemon,
-                &self.service.config,
-            );
-        }
+        let hide = take_capture_hide(cx);
+        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
         let coordinator = crate::state::coordinator(cx);
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
-        if !retained {
-            dismiss(window, cx);
+        let release_after = if !retained {
+            conceal_for_capture(window, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -2062,11 +2487,22 @@ impl AreaOverlay {
                 "Could not release the frozen screen",
             );
             dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
             return;
-        }
+        } else {
+            None
+        };
         cx.defer(move |cx| {
             coordinator.update(cx, |coordinator, cx| {
-                coordinator.capture_area_reserved(capture, intent, reservation, cx);
+                coordinator.capture_area_reserved(
+                    capture,
+                    intent,
+                    reservation,
+                    release_after,
+                    hide,
+                    owner,
+                    cx,
+                );
             });
         });
     }
@@ -2090,15 +2526,7 @@ impl AreaOverlay {
             return;
         }
         if self.is_picking_windows() {
-            let scale = capture_coordinate_scale(self.scale);
-            let x = f32::from(self.display_bounds.left() + event.position.x) * scale;
-            let y = f32::from(self.display_bounds.top() + event.position.y) * scale;
-            let hovered = crate::capture::windows_list::hit_test(&self.windows, x as f64, y as f64)
-                .and_then(|picked| {
-                    self.windows
-                        .iter()
-                        .position(|window| window.window_id == picked.window_id)
-                });
+            let hovered = self.window_at(event.position);
             if hovered != self.hovered_window {
                 self.hovered_window = hovered;
                 cx.notify();
@@ -2124,13 +2552,16 @@ impl AreaOverlay {
     /// `endDrag`: a freshly drawn box is committed (or discarded when it is too
     /// small); an adjusted one stays put.
     fn on_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
         if self.is_picking_windows() {
             return;
         }
+        self.drag_to(event.position, cx);
         let Some(interaction) = self.interaction.take() else {
             return;
         };
-        self.drag_to(event.position, cx);
 
         let bounds = self.viewport();
         let point = selection::clamp_point(self.to_selection_point(event.position), bounds);
@@ -2194,17 +2625,6 @@ mod tests {
             CaptureIntent::Screenshot
         ));
         assert!(!super::retains_overlay_after_selection(CaptureIntent::Ocr));
-    }
-
-    #[test]
-    fn only_the_pre_selection_flows_keep_their_icon_hide() {
-        use crate::capture::intent::CaptureIntent;
-
-        assert!(super::hides_icons_at_confirm(CaptureIntent::Screenshot));
-        assert!(super::hides_icons_at_confirm(CaptureIntent::Ocr));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::Timer));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::ScrollCapture));
-        assert!(!super::hides_icons_at_confirm(CaptureIntent::Recording));
     }
 
     #[test]
@@ -2288,6 +2708,67 @@ mod tests {
                 .update(cx, |overlay, _, _| overlay.display_id)
                 .expect("read display id"),
             Some(u64::from(display_id) as u32)
+        );
+    }
+
+    #[herogpui::test]
+    fn deactivation_clears_a_menu_key_whose_release_was_lost(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (display_id, bounds) = cx.read(|cx| {
+            let display = cx.primary_display().expect("primary display");
+            (display.id(), display.bounds())
+        });
+        let first = cx.update(|cx| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open overlay")
+        });
+        let service = cx.read(crate::state::state);
+        let second = cx.add_window(|_, cx| {
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        first
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("activate overlay");
+        cx.run_until_parked();
+        first
+            .update(cx, |overlay, window, _| {
+                assert!(window.is_window_active());
+                overlay.menu_activation_key = Some("enter");
+                overlay.menu_return_focus = true;
+            })
+            .expect("hold menu key");
+        second
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("activate another window");
+        cx.run_until_parked();
+        assert_eq!(
+            first
+                .update(cx, |overlay, _, _| (
+                    overlay.menu_activation_key,
+                    overlay.menu_return_focus
+                ))
+                .expect("read menu key"),
+            (None, false)
         );
     }
 
@@ -2424,6 +2905,235 @@ mod tests {
         );
     }
 
+    #[herogpui::test]
+    fn selection_size_label_stays_inside_display_edges(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            visual.simulate_scale_factor_change(scale);
+            visual.simulate_resize(size(px(400.), px(300.)));
+            for (width, height) in [(12., 12.), (20., 20.), (123., 40.)] {
+                for y in [0., 100., 300. - height] {
+                    let mut label_width = None;
+                    for x in [0., (400. - width) / 2., 400. - width] {
+                        visual.update(|_, cx| {
+                            overlay.update(cx, |overlay, cx| {
+                                overlay.rect = Some(super::selection::Rect {
+                                    x,
+                                    y,
+                                    width,
+                                    height,
+                                });
+                                cx.notify();
+                            });
+                        });
+                        let label = visual.expect("overlay-size-label");
+                        assert!(
+                            label.left() >= px(0.)
+                                && label.right() <= px(400.)
+                                && label.top() >= px(0.)
+                                && label.bottom() <= px(300.),
+                            "scale {scale}, selection ({x}, {y}, {width}, {height}): label {label:?}"
+                        );
+                        if y == 300. - height && height < 36. {
+                            assert!(
+                                label.bottom() <= px(y - 7.),
+                                "scale {scale}, selection ({x}, {y}, {width}, {height}): label overlaps selection {label:?}"
+                            );
+                        }
+                        if let Some(previous) = label_width {
+                            assert_eq!(label.size.width, previous);
+                        }
+                        label_width = Some(label.size.width);
+                        if x == (400. - width) / 2. {
+                            assert!((f32::from(label.center().x) - 200.).abs() <= 1.);
+                        }
+                        visual.update(|window, _| {
+                            assert_eq!(window.scale_factor(), scale);
+                            let quads: Vec<_> = window
+                                .painted_quads()
+                                .into_iter()
+                                .filter(|quad| {
+                                    [
+                                        (quad.bounds.left().0 / scale, f32::from(label.left())),
+                                        (quad.bounds.top().0 / scale, f32::from(label.top())),
+                                        (
+                                            quad.bounds.size.width.0 / scale,
+                                            f32::from(label.size.width),
+                                        ),
+                                        (
+                                            quad.bounds.size.height.0 / scale,
+                                            f32::from(label.size.height),
+                                        ),
+                                    ]
+                                    .iter()
+                                    .all(
+                                        |(actual, expected)| {
+                                            (actual - expected).abs() <= 1. / scale + 0.001
+                                        },
+                                    )
+                                })
+                                .collect();
+                            assert_eq!(quads.len(), 1, "label {label:?}: {quads:?}");
+                            let quad = quads[0];
+                            let bounds = quad.bounds;
+                            let mask = quad.content_mask.bounds;
+                            assert!(
+                                mask.left().0 <= bounds.left().0
+                                    && mask.right().0 >= bounds.right().0
+                                    && mask.top().0 <= bounds.top().0
+                                    && mask.bottom().0 >= bounds.bottom().0,
+                                "label {bounds:?}, mask {mask:?}"
+                            );
+                        });
+                    }
+                }
+            }
+        }
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 0.,
+                    y: 0.,
+                    width: 20.,
+                    height: 20.,
+                });
+                cx.notify();
+            });
+        });
+        let label = visual.expect("overlay-size-label");
+        visual.simulate_mouse_down(
+            label.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(matches!(
+            overlay.read_with(visual, |overlay, _| overlay.interaction),
+            Some(super::Interaction::Creating { .. })
+        ));
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 100.,
+                    y: 100.,
+                    width: 123.,
+                    height: 40.,
+                });
+                overlay.interaction = None;
+                cx.notify();
+            });
+        });
+        visual.simulate_mouse_down(
+            gpui::point(px(224.), px(120.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(matches!(
+            overlay.read_with(visual, |overlay, _| overlay.interaction),
+            Some(super::Interaction::Resizing {
+                handle: super::selection::Handle::Right,
+            })
+        ));
+    }
+
+    #[herogpui::test]
+    fn recording_handoff_scrim_covers_the_display_without_seams(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Recording,
+                cx.focus_handle(),
+            )
+        });
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            visual.simulate_scale_factor_change(scale);
+            visual.simulate_resize(size(px(400.), px(300.)));
+            let viewport_width = (400. * scale) as u32;
+            let viewport_height = (300. * scale) as u32;
+            for (x, y, width, height) in [
+                (53, 79, 173, 151),
+                (0, 0, 119, 91),
+                (viewport_width - 121, viewport_height - 101, 121, 101),
+            ] {
+                let rect = super::selection::Rect {
+                    x: x as f32 / scale,
+                    y: y as f32 / scale,
+                    width: width as f32 / scale,
+                    height: height as f32 / scale,
+                };
+                visual.update(|_, cx| {
+                    overlay.update(cx, |overlay, cx| {
+                        overlay.scale = scale;
+                        overlay.rect = Some(rect);
+                        overlay.handed_off = true;
+                        cx.notify();
+                    });
+                });
+                visual.settle();
+                visual.update(|window, _| {
+                    assert_eq!(window.scale_factor(), scale);
+                    let edges = [
+                        (rect.x - 1.).max(0.),
+                        (rect.y - 1.).max(0.),
+                        (rect.x + rect.width + 1.).min(400.),
+                        (rect.y + rect.height + 1.).min(300.),
+                    ]
+                    .map(|value| (f32::from(window.pixel_snap(px(value))) * scale).round() as u32);
+                    let quads = window.painted_quads();
+                    for y in 0..viewport_height {
+                        for x in 0..viewport_width {
+                            let point_x = x as f32 + 0.5;
+                            let point_y = y as f32 + 0.5;
+                            let count = quads
+                                .iter()
+                                .filter(|quad| {
+                                    let bounds = quad.bounds;
+                                    let mask = quad.content_mask.bounds;
+                                    [bounds, mask].iter().all(|bounds| {
+                                        point_x >= bounds.left().0
+                                            && point_x < bounds.right().0
+                                            && point_y >= bounds.top().0
+                                            && point_y < bounds.bottom().0
+                                    })
+                                })
+                                .count();
+                            let inside = x >= edges[0]
+                                && y >= edges[1]
+                                && x < edges[2]
+                                && y < edges[3];
+                            assert_eq!(
+                                count,
+                                usize::from(!inside),
+                                "scale {scale}, selection {rect:?}, pixel ({x}, {y}), edges {edges:?}, quads {quads:?}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     #[test]
     fn early_show_requires_capture_exclusion_support() {
         assert!(!super::can_show_before_freeze(19040, true));
@@ -2478,6 +3188,15 @@ mod tests {
                 .update(cx, |overlay, _, _| {
                     overlay.picking_windows = true;
                     overlay.picking_color = true;
+                    overlay.rect = Some(crate::capture::selection::Rect {
+                        x: 100.,
+                        y: 100.,
+                        width: 200.,
+                        height: 100.,
+                    });
+                    overlay.interaction = Some(super::Interaction::Creating {
+                        start: crate::capture::selection::Point { x: 100., y: 100. },
+                    });
                     (
                         overlay.window_list_generation,
                         overlay.color_frame_generation,
@@ -2485,6 +3204,15 @@ mod tests {
                 })
                 .expect("prepare pending work");
             assert_eq!(super::replace_all(cx), Some(0));
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert!(overlay.rect.is_none(), "parked selections must be cleared");
+                    assert!(
+                        overlay.interaction.is_none(),
+                        "parked gestures must be cleared"
+                    );
+                })
+                .unwrap();
             assert!(super::session(cx)
                 .pooled
                 .iter()
@@ -2653,6 +3381,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let config =
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        config.update(|settings| settings.screenshot.hide_desktop_icons = false);
         cx.update(|cx| crate::state::set_test_state(cx, config));
         let service = cx.read(crate::state::state);
         let bounds = gpui::Bounds {
@@ -2695,6 +3424,43 @@ mod tests {
                 .into_iter()
                 .all(|window| window.downcast::<super::AreaOverlay>().is_none())
         }));
+    }
+
+    #[herogpui::test]
+    fn all_in_one_toolbar_click_does_not_start_a_selection(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(crate::capture::all_in_one::Choices::default())
+        });
+        cx.simulate_resize(bounds.size);
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+
+        cx.simulate_mouse_down(
+            point(px(400.0), px(chrome::overlay_toolbar_top() + 22.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        assert!(overlay.read_with(cx, |overlay, _| overlay.interaction.is_none()));
     }
 
     #[herogpui::test]
@@ -2804,10 +3570,38 @@ mod tests {
 
         overlay
             .update(cx, |overlay, window, cx| {
-                overlay.hovered_window = Some(0);
-                overlay.confirm_window(window, cx);
+                overlay.on_move(
+                    &gpui::MouseMoveEvent {
+                        position: gpui::point(px(200.0), px(200.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                overlay.on_down(
+                    &gpui::MouseDownEvent {
+                        position: gpui::point(px(780.0), px(580.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
             })
-            .expect("confirm window");
+            .expect("click outside the hovered window");
+        cx.run_until_parked();
+        assert!(overlay.update(cx, |_, _, _| ()).is_ok());
+        overlay
+            .update(cx, |overlay, window, cx| {
+                overlay.on_down(
+                    &gpui::MouseDownEvent {
+                        position: gpui::point(px(300.0), px(300.0)),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .expect("confirm from the click without another move");
         cx.run_until_parked();
 
         assert!(overlay.update(cx, |_, _, _| ()).is_err());
@@ -3050,26 +3844,112 @@ mod tests {
         assert!(first.update(cx, |_, _, _| ()).is_err());
     }
 
-    #[test]
-    fn selection_reserves_frozen_pixels_before_dismissal() {
-        let source = include_str!("overlay.rs");
-        for (start, end) in [
-            ("fn confirm(", "fn prompt("),
-            ("fn confirm_screen(", "fn on_move("),
-        ] {
-            let start = source.find(start).expect("selection handler");
-            let source = &source[start..];
-            let body = &source[..source.find(end).expect("next selection handler")];
-            let reserved = body
-                .find("reserve_cached_capture()")
-                .expect("cached reservation");
-            let dismissed = body.find("dismiss(window, cx)").expect("dismissal");
-            let captured = body
-                .find("capture_area_reserved(")
-                .expect("reserved capture");
+    #[herogpui::test]
+    fn color_picker_card_click_copies_the_display_pixel(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
 
-            assert!(reserved < dismissed);
-            assert!(dismissed < captured);
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(400.), px(300.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        visual.simulate_resize(size(px(400.), px(300.)));
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                overlay.picking_color = true;
+                overlay.pointer = Some(gpui::point(px(100.), px(100.)));
+                overlay.color_frame =
+                    Some(Arc::new(image::RgbaImage::from_fn(800, 600, |x, y| {
+                        image::Rgba(match (x >= 400, y >= 300) {
+                            (false, false) => [240, 80, 64, 255],
+                            (true, false) => [64, 112, 192, 255],
+                            (false, true) => [48, 160, 104, 255],
+                            (true, true) => [184, 96, 192, 255],
+                        })
+                    })));
+                cx.notify();
+            });
+        });
+        let card = visual.expect("color-picker-card");
+        assert!(card.center().x > px(200.) && card.center().y > px(150.));
+        visual.simulate_mouse_down(
+            card.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(
+            cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("#b860c0".to_string())
+        );
+    }
+
+    #[herogpui::test]
+    fn selection_uses_the_release_position_when_moving_and_resizing(cx: &mut TestAppContext) {
+        use gpui::{point, Modifiers, MouseButton};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let (overlay, cx) = cx.add_window_view(|_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(point(px(-800.), px(0.)), size(px(800.), px(600.))),
+                1.5,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+        });
+        for (start, moved, released, expected) in [
+            (
+                (150., 150.),
+                (160., 160.),
+                (175., 180.),
+                (125., 130., 200., 150.),
+            ),
+            (
+                (300., 250.),
+                (310., 260.),
+                (330., 280.),
+                (100., 100., 230., 180.),
+            ),
+        ] {
+            overlay.update(cx, |overlay, cx| {
+                overlay.rect = Some(super::selection::Rect {
+                    x: 100.,
+                    y: 100.,
+                    width: 200.,
+                    height: 150.,
+                });
+                cx.notify();
+            });
+            cx.refresh().unwrap();
+            cx.run_until_parked();
+            cx.simulate_mouse_down(
+                point(px(start.0), px(start.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            cx.simulate_mouse_move(
+                point(px(moved.0), px(moved.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            cx.simulate_mouse_up(
+                point(px(released.0), px(released.1)),
+                MouseButton::Left,
+                Modifiers::none(),
+            );
+            let rect = overlay.read_with(cx, |overlay, _| overlay.rect.unwrap());
+            assert_eq!((rect.x, rect.y, rect.width, rect.height), expected);
         }
     }
 }

@@ -47,6 +47,7 @@ pub struct HistoryWindow {
     hovered_id: Option<String>,
     item_menu_open: bool,
     scroll: ScrollHandle,
+    viewport: Option<(gpui::Size<Pixels>, f32)>,
     store: Arc<ConfigStore>,
     focus_handle: FocusHandle,
     now_ms: i64,
@@ -69,6 +70,7 @@ impl HistoryWindow {
             hovered_id: None,
             item_menu_open: false,
             scroll: ScrollHandle::new(),
+            viewport: None,
             store,
             focus_handle: cx.focus_handle(),
             now_ms: chrono::Local::now().timestamp_millis(),
@@ -89,13 +91,41 @@ impl HistoryWindow {
         view
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn focus_for_parity(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle, cx);
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_state(&self) -> (bool, bool, usize, HistoryLayout) {
+        (
+            self.items
+                .iter()
+                .all(|item| self.media.contains_key(&item.id)),
+            self.keyboard_navigation,
+            self.selected_index,
+            self.layout,
+        )
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_item_bounds(&self, index: usize) -> Option<Bounds<Pixels>> {
+        self.scroll.bounds_for_item(index)
+    }
+
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
         registry::toggle(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
             let (bounds, display_id) = popover_placement(tray_rect, cx);
+            let window_bounds = display_id
+                .and_then(|id| cx.find_display(id))
+                .map(|display| {
+                    crate::system::work_area::local_window_bounds(bounds, display.as_ref())
+                })
+                .unwrap_or(bounds);
             cx.open_window(
                 super::popup_window_options(
-                    bounds,
+                    window_bounds,
                     super::PopupWindowConfig {
                         show: !cfg!(windows),
                         display_id,
@@ -255,7 +285,11 @@ impl HistoryWindow {
     }
 
     pub fn toggle_layout(&mut self, cx: &mut Context<Self>) {
+        let keep_selection_visible = self.selected_is_visible();
         self.layout = self.layout.toggled();
+        if keep_selection_visible {
+            self.scroll.scroll_to_item(self.selected_index);
+        }
         self.persist_preferences();
         cx.notify();
     }
@@ -380,11 +414,27 @@ impl HistoryWindow {
         cx.notify();
     }
 
+    fn selected_is_visible(&self) -> bool {
+        if !self.keyboard_navigation {
+            return false;
+        }
+        let Some(item) = self.scroll.bounds_for_item(self.selected_index) else {
+            return false;
+        };
+        let viewport = self.scroll.bounds();
+        let offset = self.scroll.offset().y;
+        item.bottom() + offset > viewport.top() && item.top() + offset < viewport.bottom()
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.item_menu_open || !self.focus_handle.is_focused(window) {
             return;
         }
-        let columns = self.layout.columns() as isize;
+        let columns = if self.layout == HistoryLayout::Grid {
+            grid_layout(window).0 as isize
+        } else {
+            1
+        };
         match event.keystroke.key.as_str() {
             "up" | "k" => self.move_selection(-columns, cx),
             "down" | "j" => self.move_selection(columns, cx),
@@ -398,6 +448,26 @@ impl HistoryWindow {
     }
 }
 
+fn grid_layout(window: &Window) -> (usize, f32) {
+    let scale = window.scale_factor();
+    let width = window.pixel_snap(window.viewport_size().width)
+        - window.pixel_snap(px(crate::ui::chrome::HISTORY_CONTENT_PAD)) * 2.0;
+    let available = width - window.pixel_snap(px(crate::ui::chrome::HISTORY_GRID_GAP));
+    let physical_card_width = ((f32::from(available) * scale).round() / 2.0).floor();
+    let card_width = (physical_card_width / scale).max(0.0);
+    let card_width = if window.pixel_snap(px(card_width)) * 2.0 > available {
+        (physical_card_width - 1.0).max(0.0) / scale
+    } else {
+        card_width
+    };
+    let min_card_width = crate::ui::chrome::HISTORY_ITEM_ACTION_SIZE * 2.0 + 12.0;
+    if card_width < min_card_width {
+        (1, f32::from(width).max(0.0))
+    } else {
+        (model::GRID_COLUMNS, card_width)
+    }
+}
+
 fn popover_placement(
     tray_rect: Option<TrayRect>,
     cx: &mut App,
@@ -406,8 +476,18 @@ fn popover_placement(
     let Some(display) = crate::windows::tray_menu::menu_display(tray_rect, cx) else {
         return (Bounds::centered(None, popover, cx), None);
     };
-    let work_area = display.work_area;
-    let tray = display.tray_rect.map(|rect| {
+    (
+        popover_bounds(display.tray_rect, display.work_area),
+        Some(display.id),
+    )
+}
+
+fn popover_bounds(tray_rect: Option<TrayRect>, work_area: Bounds<Pixels>) -> Bounds<Pixels> {
+    let popover = size(
+        px(POPOVER_WIDTH.min(f32::from(work_area.size.width))),
+        px(POPOVER_HEIGHT.min(f32::from(work_area.size.height))),
+    );
+    let tray = tray_rect.map(|rect| {
         (
             rect.x - f32::from(work_area.origin.x),
             rect.y - f32::from(work_area.origin.y),
@@ -420,20 +500,22 @@ fn popover_placement(
         f32::from(work_area.size.width),
         f32::from(work_area.size.height),
     );
-    (
-        Bounds {
-            origin: gpui::point(work_area.origin.x + px(x), work_area.origin.y + px(y)),
-            size: popover,
-        },
-        Some(display.id),
-    )
+    Bounds {
+        origin: gpui::point(work_area.origin.x + px(x), work_area.origin.y + px(y)),
+        size: popover,
+    }
 }
 
 impl Render for HistoryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
         let has_items = !self.items.is_empty();
+        let viewport = (window.viewport_size(), window.scale_factor());
+        if self.viewport.replace(viewport) != Some(viewport) && self.selected_is_visible() {
+            self.scroll.scroll_to_item(self.selected_index);
+        }
         let visible = self.visible();
+        let (columns, card_width) = grid_layout(window);
         let hovered_id = if window.is_window_hovered() {
             self.hovered_id.as_deref()
         } else {
@@ -442,6 +524,7 @@ impl Render for HistoryWindow {
 
         let mut scroller = div()
             .id("history-scroll")
+            .debug_selector(|| "history-scroll".to_string())
             .track_scroll(&self.scroll)
             .size_full()
             .overflow_y_scroll()
@@ -485,8 +568,23 @@ impl Render for HistoryWindow {
                     theme: &theme,
                 };
                 scroller = scroller.child(match self.layout {
-                    HistoryLayout::Grid => item::grid_card(&view, cx),
-                    HistoryLayout::List => item::list_row(&view, cx),
+                    HistoryLayout::Grid if columns == 1 => {
+                        let card = item::grid_card(&view, (card_width - 8.0).max(0.0), columns, cx);
+                        let padded = div().p(px(4.0)).child(card);
+                        #[cfg(feature = "parity")]
+                        let padded = if view.selected {
+                            padded.on_children_prepainted(|bounds, _, _| {
+                                crate::ui::parity::record("history-selected-grid-card", bounds);
+                            })
+                        } else {
+                            padded
+                        };
+                        padded.into_any_element()
+                    }
+                    HistoryLayout::Grid => item::grid_card(&view, card_width, columns, cx),
+                    HistoryLayout::List => {
+                        item::list_row(&view, f32::from(window.viewport_size().width), cx)
+                    }
                 });
             }
         }
@@ -504,7 +602,7 @@ impl Render for HistoryWindow {
             .rounded(px(crate::ui::chrome::HISTORY_RADIUS))
             .when(!cfg!(target_os = "macos"), |el| el.bg(theme.background))
             .text_color(theme.foreground)
-            .child(toolbar::header(has_items, &theme, cx))
+            .child(toolbar::header(has_items, columns == 1, &theme, cx))
             .when(has_items, |el| {
                 el.child(toolbar::toolbar(
                     self.filter,
@@ -534,6 +632,7 @@ impl Render for HistoryWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use herogpui::test::TestWindowExt;
 
     #[test]
     fn history_closes_when_the_window_blurs() {
@@ -541,5 +640,637 @@ mod tests {
         assert!(!should_close_on_blur(true, false));
         assert!(!should_close_on_blur(false, true));
         assert!(!should_close_on_blur(true, true));
+    }
+
+    #[test]
+    fn history_bounds_fit_small_and_offset_work_areas() {
+        for (width, height) in [(300.0, 400.0), (640.0, 384.0), (1920.0, 1080.0)] {
+            let work_area = Bounds {
+                origin: gpui::point(px(-1280.0), px(200.0)),
+                size: size(px(width), px(height)),
+            };
+            for tray in [
+                None,
+                Some(TrayRect {
+                    x: -1280.0,
+                    y: 200.0,
+                    width: 20.0,
+                    height: 20.0,
+                }),
+                Some(TrayRect {
+                    x: -1280.0 + width - 20.0,
+                    y: 200.0 + height - 20.0,
+                    width: 20.0,
+                    height: 20.0,
+                }),
+            ] {
+                let bounds = popover_bounds(tray, work_area);
+                assert_eq!(
+                    bounds.size,
+                    size(px(width.min(400.0)), px(height.min(500.0)))
+                );
+                assert!(bounds.origin.x >= work_area.origin.x);
+                assert!(bounds.origin.y >= work_area.origin.y);
+                assert!(
+                    bounds.origin.x + bounds.size.width
+                        <= work_area.origin.x + work_area.size.width
+                );
+                assert!(
+                    bounds.origin.y + bounds.size.height
+                        <= work_area.origin.y + work_area.size.height
+                );
+            }
+        }
+    }
+
+    #[herogpui::test]
+    fn history_layout_fits_narrow_windows(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (history, visual) = herogpui::test::open_window(cx, |window, cx| {
+            let focus_handle = cx.focus_handle();
+            window.focus(&focus_handle, cx);
+            HistoryWindow {
+                items: ["first", "second", "third"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, id)| HistoryItem {
+                        id: id.into(),
+                        timestamp: index as i64,
+                        original_path: String::new(),
+                        r#type: HistoryItemType::Screenshot,
+                        editor_state: None,
+                        duration: None,
+                    })
+                    .collect(),
+                media: HashMap::new(),
+                filter: HistoryFilter::All,
+                sort_order: HistorySortOrder::Newest,
+                layout: HistoryLayout::Grid,
+                selected_index: 0,
+                keyboard_navigation: false,
+                hovered_id: None,
+                item_menu_open: false,
+                scroll: ScrollHandle::new(),
+                viewport: None,
+                store,
+                focus_handle,
+                now_ms: 0,
+                activation: None,
+                revealing: false,
+                closing: false,
+            }
+        });
+        visual.update(|_, cx| {
+            crate::theme::vars::update_theme(cx, crate::theme::presets::ThemeMode::Light, "default")
+        });
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            visual.simulate_scale_factor_change(scale);
+            for width in [140.0, 148.0] {
+                visual.simulate_resize(size(px(width), px(364.0)));
+                let first = visual.expect("history-card-first");
+                let second = visual.expect("history-card-second");
+                assert!(
+                    second.top() >= first.bottom(),
+                    "scale {scale}, width {width}: cards must use one column: {first:?}, {second:?}"
+                );
+                visual.update(|_, cx| {
+                    history.update(cx, |history, cx| {
+                        history.selected_index = 0;
+                        history.keyboard_navigation = false;
+                        history.scroll.scroll_to_item(0);
+                        cx.notify();
+                    });
+                });
+                visual.press("right");
+                assert_eq!(
+                    history.read_with(visual, |history, _| history.selected_index),
+                    1
+                );
+                visual.press("left");
+                assert_eq!(
+                    history.read_with(visual, |history, _| history.selected_index),
+                    0
+                );
+                visual.press("down");
+                assert_eq!(
+                    history.read_with(visual, |history, _| history.selected_index),
+                    1,
+                    "scale {scale}, width {width}: Down must select the next row"
+                );
+                visual.press("up");
+                assert_eq!(
+                    history.read_with(visual, |history, _| history.selected_index),
+                    0,
+                    "scale {scale}, width {width}: Up must select the previous row"
+                );
+                visual.press("down");
+                let second = visual.expect("history-card-second");
+                let actions = visual.expect("history-grid-actions-second");
+                let scroller = visual.expect("history-scroll");
+                assert!(second.top() >= scroller.top() && second.bottom() <= scroller.bottom());
+                assert!(actions.left() >= second.left() && actions.right() <= second.right());
+                assert!(actions.top() >= second.top() && actions.bottom() <= second.bottom());
+                let filters = visual.expect("history-filters");
+                let toolbar_actions = visual.expect("history-toolbar-actions");
+                let header_actions = visual.expect("history-header-actions");
+                assert!(filters.right() <= px(width));
+                assert!(toolbar_actions.right() <= px(width));
+                assert!(
+                    header_actions.right() <= px(width),
+                    "width {width}, scale {scale}: header actions {header_actions:?}"
+                );
+                visual.update(|window, cx| {
+                    history.update(cx, |history, cx| {
+                        history.layout = HistoryLayout::List;
+                        window.focus(&history.focus_handle, cx);
+                        cx.notify();
+                    });
+                });
+                let thumb = visual.expect("history-row-thumb-second");
+                let actions = visual.expect("history-row-actions-second");
+                assert!(
+                    actions.left() >= thumb.left()
+                        && actions.right() <= thumb.right()
+                        && actions.top() >= thumb.top()
+                        && actions.bottom() <= thumb.bottom(),
+                    "width {width}, scale {scale}: list actions {actions:?}, thumbnail {thumb:?}"
+                );
+                visual.update(|_, cx| {
+                    history.update(cx, |history, cx| {
+                        history.layout = HistoryLayout::Grid;
+                        history.selected_index = 0;
+                        history.keyboard_navigation = false;
+                        history.scroll.scroll_to_item(0);
+                        cx.notify();
+                    });
+                });
+            }
+        }
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            visual.simulate_scale_factor_change(scale);
+            visual.simulate_resize(size(px(400.0), px(364.0)));
+            visual.update(|_, cx| {
+                history.update(cx, |history, cx| {
+                    history.selected_index = 2;
+                    history.keyboard_navigation = true;
+                    history.scroll.scroll_to_item(2);
+                    cx.notify();
+                });
+            });
+            visual.simulate_resize(size(px(140.0), px(364.0)));
+            let selected = visual.expect("history-card-third");
+            let scroller = visual.expect("history-scroll");
+            assert!(
+                selected.top() >= scroller.top() && selected.bottom() <= scroller.bottom(),
+                "scale {scale}: selected card {selected:?}, scroller {scroller:?}"
+            );
+            let actions = visual.expect("history-toolbar-actions");
+            let toggle = gpui::point(actions.right() - px(12.0), actions.center().y);
+            visual.click_at(toggle);
+            assert_eq!(
+                history.read_with(visual, |history, _| history.layout),
+                HistoryLayout::List
+            );
+            let selected = visual.expect("history-row-third");
+            let scroller = visual.expect("history-scroll");
+            assert!(
+                selected.top() >= scroller.top() && selected.bottom() <= scroller.bottom(),
+                "scale {scale}: selected row {selected:?}, scroller {scroller:?}"
+            );
+            visual.click_at(toggle);
+            assert_eq!(
+                history.read_with(visual, |history, _| history.layout),
+                HistoryLayout::Grid
+            );
+        }
+        visual.simulate_scale_factor_change(1.0);
+        visual.simulate_resize(size(px(155.6), px(364.0)));
+        assert_eq!(visual.update(|window, _| grid_layout(window).0), 2);
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.selected_index = 2;
+                history.keyboard_navigation = true;
+                history.scroll.scroll_to_item(2);
+                cx.notify();
+            });
+        });
+        visual.simulate_scale_factor_change(1.25);
+        assert_eq!(
+            visual.update(|window, _| window.viewport_size().width),
+            px(155.6)
+        );
+        assert_eq!(visual.update(|window, _| grid_layout(window).0), 1);
+        let selected = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        assert!(
+            selected.top() >= scroller.top() && selected.bottom() <= scroller.bottom(),
+            "DPI change: selected card {selected:?}, scroller {scroller:?}"
+        );
+        visual.simulate_scale_factor_change(1.0);
+        visual.simulate_resize(size(px(140.0), px(364.0)));
+        let scroller = visual.expect("history-scroll");
+        visual.simulate_event(gpui::ScrollEvent {
+            position: scroller.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(40.0))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        let selected = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        assert!(selected.top() < scroller.bottom() && selected.bottom() > scroller.bottom());
+        visual.simulate_resize(size(px(142.0), px(364.0)));
+        let selected = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        assert!(selected.top() >= scroller.top() && selected.bottom() <= scroller.bottom());
+        visual.simulate_resize(size(px(140.0), px(364.0)));
+        let scroller = visual.expect("history-scroll");
+        visual.simulate_event(gpui::ScrollEvent {
+            position: scroller.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(600.0))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        let first = visual.expect("history-card-first");
+        let selected = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        let first_offset = first.top() - scroller.top();
+        assert!(selected.top() >= scroller.bottom());
+        visual.simulate_resize(size(px(142.0), px(364.0)));
+        let first = visual.expect("history-card-first");
+        let selected = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        assert_eq!(first.top() - scroller.top(), first_offset);
+        assert!(
+            selected.top() >= scroller.bottom(),
+            "resize must preserve the manually scrolled position"
+        );
+        let actions = visual.expect("history-toolbar-actions");
+        visual.click_at(gpui::point(actions.right() - px(12.0), actions.center().y));
+        let first = visual.expect("history-row-first");
+        let selected = visual.expect("history-row-third");
+        let scroller = visual.expect("history-scroll");
+        assert_eq!(
+            first.top() - scroller.top(),
+            px(crate::ui::chrome::HISTORY_CONTENT_PAD)
+        );
+        assert!(
+            selected.top() >= scroller.bottom(),
+            "layout change must preserve the manually scrolled position"
+        );
+        visual.click_at(gpui::point(actions.right() - px(12.0), actions.center().y));
+        visual.update(|window, cx| {
+            history.update(cx, |history, cx| {
+                history.selected_index = 0;
+                history.keyboard_navigation = false;
+                history.scroll.scroll_to_item(0);
+                window.focus(&history.focus_handle, cx);
+                cx.notify();
+            });
+        });
+        for mode in [
+            crate::theme::presets::ThemeMode::Light,
+            crate::theme::presets::ThemeMode::Dark,
+        ] {
+            visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
+                for width in [200.0, 220.0, 240.0, 250.0, 300.0, 320.0, 400.0] {
+                    visual.simulate_resize(size(px(width), px(364.0)));
+                    let first = visual.expect("history-card-first");
+                    assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                    let second = visual.expect("history-card-second");
+                    let third = visual.expect("history-card-third");
+                    let filters = visual.expect("history-filters");
+                    let actions = visual.expect("history-toolbar-actions");
+                    let scroller = visual.expect("history-scroll");
+                    let title = visual.expect("history-title");
+                    let header_actions = visual.expect("history-header-actions");
+                    assert_eq!(
+                        first.origin.y, second.origin.y,
+                        "scale {scale}, width {width}, first {first:?}, second {second:?}, scroller {scroller:?}"
+                    );
+                    assert!(first.origin.x + first.size.width < second.origin.x);
+                    assert!(second.origin.x + second.size.width <= px(width));
+                    assert!(third.origin.y > first.origin.y);
+                    assert!(filters.origin.x + filters.size.width <= px(width));
+                    assert!(
+                        filters.origin.x + filters.size.width <= actions.origin.x
+                            || filters.origin.y + filters.size.height <= actions.origin.y
+                    );
+                    assert!(actions.origin.x + actions.size.width <= px(width));
+                    assert!(actions.origin.y + actions.size.height <= scroller.origin.y);
+                    assert!(
+                        title.origin.x + title.size.width <= header_actions.origin.x
+                            || title.origin.y + title.size.height <= header_actions.origin.y
+                    );
+                    assert!(header_actions.origin.x + header_actions.size.width <= px(width));
+                    for filter in ["all", "screenshot", "video"] {
+                        let control = visual.expect(&format!("history-filter-{filter}"));
+                        assert!(control.origin.x >= filters.origin.x);
+                        assert!(
+                            control.origin.x + control.size.width
+                                <= filters.origin.x + filters.size.width
+                        );
+                        assert!(control.origin.y >= filters.origin.y);
+                        assert!(
+                            control.origin.y + control.size.height
+                                <= filters.origin.y + filters.size.height
+                        );
+                    }
+                }
+            }
+        }
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            visual.simulate_scale_factor_change(scale);
+            for physical_width in (140.0 * scale) as u32..=(400.0 * scale) as u32 {
+                let width = physical_width as f32 / scale;
+                visual.simulate_resize(size(px(width), px(364.0)));
+                let first = visual.expect("history-card-first");
+                let second = visual.expect("history-card-second");
+                let scroller = visual.expect("history-scroll");
+                let header_actions = visual.expect("history-header-actions");
+                assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                assert!(
+                    header_actions.right() <= px(width),
+                    "scale {scale}, physical width {physical_width}: {header_actions:?}"
+                );
+                if first.top() == second.top() {
+                    assert!(first.right() < second.left());
+                    assert!(first.size.width >= px(60.0));
+                } else {
+                    assert!(second.top() >= first.bottom());
+                }
+                assert!(second.right() <= scroller.right());
+            }
+        }
+        visual.press("down");
+        assert_eq!(
+            history.read_with(visual, |history, _| history.selected_index),
+            2
+        );
+        let third = visual.expect("history-card-third");
+        let scroller = visual.expect("history-scroll");
+        assert!(third.origin.y >= scroller.origin.y);
+        assert!(third.origin.y + third.size.height <= scroller.origin.y + scroller.size.height);
+
+        for mode in [
+            crate::theme::presets::ThemeMode::Light,
+            crate::theme::presets::ThemeMode::Dark,
+        ] {
+            visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
+                for width in [140.0, 148.0, 200.0, 240.0, 400.0] {
+                    visual.simulate_resize(size(px(width), px(364.0)));
+                    for (index, id) in [(0, "first"), (2, "third"), (1, "second")] {
+                        visual.update(|_, cx| {
+                            history.update(cx, |history, cx| {
+                                history.selected_index = index;
+                                history.scroll.scroll_to_item(index);
+                                cx.notify();
+                            });
+                        });
+                        let actions = visual.expect(&format!("history-grid-actions-{id}"));
+                        let scroller_top = if id == "first" {
+                            let first = visual.expect("history-card-first");
+                            let scroller = visual.expect("history-scroll");
+                            assert!(first.top() >= scroller.top());
+                            f32::from(scroller.top())
+                        } else {
+                            0.0
+                        };
+                        for offset in [12.0, 40.0] {
+                            let action =
+                                gpui::point(actions.origin.x + px(offset), actions.center().y);
+                            visual.simulate_mouse_move(action, None, gpui::Modifiers::none());
+                            visual
+                                .executor()
+                                .advance_clock(std::time::Duration::from_millis(800));
+                            visual.settle();
+                            visual.update(|window, _| {
+                                assert_eq!(window.scale_factor(), scale);
+                                let tips: Vec<_> = window
+                                    .painted_quads()
+                                    .into_iter()
+                                    .filter(|quad| {
+                                        let bounds = quad.bounds;
+                                        (31.0..=35.0).contains(&(bounds.size.height.0 / scale))
+                                            && bounds.size.width.0 / scale > 30.0
+                                            && bounds.bottom().0 <= f32::from(action.y) * scale
+                                            && bounds.bottom().0
+                                                >= (f32::from(action.y) - 30.0) * scale
+                                    })
+                                    .collect();
+                                assert_eq!(tips.len(), 1, "width {width}, item {id}: {tips:?}");
+                                let tip = tips[0];
+                                let bounds = tip.bounds;
+                                let mask = tip.content_mask.bounds;
+                                assert!(
+                                    bounds.left().0 >= 0.0
+                                        && bounds.right().0 <= width * scale
+                                        && bounds.top().0 >= 0.0
+                                        && bounds.bottom().0 <= 364.0 * scale
+                                        && mask.left().0 <= bounds.left().0
+                                        && mask.right().0 >= bounds.right().0
+                                        && mask.top().0 <= bounds.top().0
+                                        && mask.bottom().0 >= bounds.bottom().0,
+                                    "width {width}, item {id}: tooltip {bounds:?}, mask {mask:?}"
+                                );
+                                if id == "first" {
+                                    assert!(
+                                        bounds.top().0 < scroller_top * scale,
+                                        "width {width}: first grid tooltip must extend above the scroll viewport: {bounds:?}, scroller top={scroller_top}"
+                                    );
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        visual.simulate_scale_factor_change(1.0);
+        visual.simulate_resize(size(px(140.0), px(364.0)));
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.layout = HistoryLayout::List;
+                history.selected_index = 0;
+                history.keyboard_navigation = true;
+                history.scroll.scroll_to_item(0);
+                cx.notify();
+            });
+        });
+        let scroller = visual.expect("history-scroll");
+        let first = visual.expect("history-row-first");
+        let thumb = visual.expect("history-row-thumb-first");
+        let actions = visual.expect("history-row-actions-first");
+        assert!(
+            first.top() >= scroller.top()
+                && first.top() <= scroller.top() + px(crate::ui::chrome::HISTORY_CONTENT_PAD)
+        );
+        assert!(actions.top() >= thumb.top() && actions.bottom() <= thumb.bottom());
+        for (offset, label) in [(12.0, "reveal"), (40.0, "delete")] {
+            let action = gpui::point(actions.left() + px(offset), actions.center().y);
+            visual.simulate_mouse_move(action, None, gpui::Modifiers::none());
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(800));
+            visual.settle();
+            visual.update(|window, _| {
+                let tips: Vec<_> = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        let bounds = quad.bounds;
+                        (31.0..=35.0).contains(&bounds.size.height.0)
+                            && bounds.size.width.0 > 30.0
+                            && bounds.bottom().0 <= f32::from(action.y)
+                            && bounds.bottom().0 >= f32::from(action.y) - 30.0
+                    })
+                    .collect();
+                assert_eq!(tips.len(), 1, "first list {label} tooltip: {tips:?}");
+                let tip = tips[0];
+                let bounds = tip.bounds;
+                let mask = tip.content_mask.bounds;
+                assert!(
+                    bounds.left().0 >= 0.0
+                        && bounds.right().0 <= 140.0
+                        && bounds.top().0 >= 0.0
+                        && bounds.bottom().0 <= 364.0
+                        && bounds.top().0 < f32::from(scroller.top())
+                        && bounds.top().0 < f32::from(thumb.top())
+                        && mask.left().0 <= bounds.left().0
+                        && mask.right().0 >= bounds.right().0
+                        && mask.top().0 <= bounds.top().0
+                        && mask.bottom().0 >= bounds.bottom().0,
+                    "first list {label} tooltip is clipped at its scroll/thumb edge: {bounds:?}, mask {mask:?}, scroller {scroller:?}, thumb {thumb:?}"
+                );
+            });
+        }
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.layout = HistoryLayout::Grid;
+                history.selected_index = 0;
+                history.scroll.scroll_to_item(0);
+                cx.notify();
+            });
+        });
+
+        visual.simulate_resize(size(px(200.0), px(364.0)));
+        visual.click("history-filter-video");
+        assert_eq!(
+            history.read_with(visual, |history, _| history.filter),
+            HistoryFilter::Video
+        );
+        assert_eq!(
+            history.read_with(visual, |history, _| history.visible().len()),
+            0
+        );
+        visual.click("history-filter-all");
+        assert_eq!(
+            history.read_with(visual, |history, _| history.filter),
+            HistoryFilter::All
+        );
+        let actions = visual.expect("history-toolbar-actions");
+        visual.click_at(gpui::point(
+            actions.origin.x + actions.size.width - px(12.0),
+            actions.center().y,
+        ));
+        assert_eq!(
+            history.read_with(visual, |history, _| history.layout),
+            HistoryLayout::List
+        );
+        visual.update(|window, cx| {
+            let focus = history.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        visual.press("down");
+        assert_eq!(
+            history.read_with(visual, |history, _| history.selected_index),
+            1
+        );
+        for mode in [
+            crate::theme::presets::ThemeMode::Light,
+            crate::theme::presets::ThemeMode::Dark,
+        ] {
+            visual.update(|_, cx| crate::theme::vars::update_theme(cx, mode, "default"));
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                visual.simulate_scale_factor_change(scale);
+                visual.simulate_resize(size(px(400.0), px(364.0)));
+                let full_label = visual.expect("history-row-label-second");
+                assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                for width in [140.0, 148.0, 200.0, 240.0, 280.0, 300.0, 319.0, 320.0] {
+                    visual.simulate_resize(size(px(width), px(364.0)));
+                    let narrow_label = visual.expect("history-row-label-second");
+                    assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                    assert!(
+                        narrow_label.size.width >= full_label.size.width,
+                        "width {width}, scale {scale}: narrow label {narrow_label:?} versus full {full_label:?}"
+                    );
+                    if width < 320.0 {
+                        let thumb = visual.expect("history-row-thumb-second");
+                        let actions = visual.expect("history-row-actions-second");
+                        assert!(actions.origin.x >= thumb.origin.x);
+                        assert!(actions.origin.y >= thumb.origin.y);
+                        assert!(
+                            actions.origin.x + actions.size.width
+                                <= thumb.origin.x + thumb.size.width
+                        );
+                        assert!(
+                            actions.origin.y + actions.size.height
+                                <= thumb.origin.y + thumb.size.height
+                        );
+                    }
+                }
+            }
+        }
+        visual.simulate_resize(size(px(200.0), px(364.0)));
+        let selected = visual.expect("history-row-second");
+        let scroller = visual.expect("history-scroll");
+        assert!(selected.origin.x >= scroller.origin.x);
+        assert!(selected.origin.x + selected.size.width <= scroller.origin.x + scroller.size.width);
+        assert!(selected.origin.y >= scroller.origin.y);
+        assert!(
+            selected.origin.y + selected.size.height <= scroller.origin.y + scroller.size.height
+        );
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.items[1].r#type = HistoryItemType::Video;
+                history.media.insert(
+                    "second".into(),
+                    ItemMedia {
+                        thumbnail: None,
+                        features: RecordingFeatures {
+                            has_mic: true,
+                            has_system_audio: true,
+                            has_camera: true,
+                            has_cursor: true,
+                        },
+                    },
+                );
+                cx.notify();
+            });
+        });
+        let selected = visual.expect("history-row-second");
+        let features = visual.expect("history-row-features-second");
+        let scroller = visual.expect("history-scroll");
+        assert!(
+            features.origin.x + features.size.width
+                <= selected.origin.x + selected.size.width - px(8.0)
+        );
+        assert!(
+            features.origin.y + features.size.height
+                <= selected.origin.y + selected.size.height - px(8.0)
+        );
+        assert!(selected.origin.y >= scroller.origin.y);
+        assert!(
+            selected.origin.y + selected.size.height <= scroller.origin.y + scroller.size.height
+        );
     }
 }

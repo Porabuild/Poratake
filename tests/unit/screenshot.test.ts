@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'path';
+import type * as FileSystem from 'node:fs';
 import type { SettingsConfig } from '@/types/settings';
 import type { HistoryItem, EditorState } from '@/types/history';
 import type { RectAnnotation, WallpaperSettings } from '@/types/editor';
@@ -23,6 +24,12 @@ const mockReadFile = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockCopyFileSync = vi.fn();
 const mockRmSync = vi.fn();
+const mockOpenSync = vi.fn().mockReturnValue(7);
+const mockCloseSync = vi.fn();
+const mockLink = vi.fn();
+const mockUnlink = vi.fn();
+const mockStat = vi.fn();
+const mockStatSync = vi.fn();
 
 vi.mock('fs', () => ({
   default: {
@@ -35,8 +42,15 @@ vi.mock('fs', () => ({
     copyFileSync: (src: string, dest: string) => mockCopyFileSync(src, dest),
     rmSync: (filePath: string, options?: object) =>
       mockRmSync(filePath, options),
+    openSync: (...args: unknown[]) => mockOpenSync(...args),
+    closeSync: (...args: unknown[]) => mockCloseSync(...args),
+    statSync: (...args: unknown[]) => mockStatSync(...args),
+    constants: { COPYFILE_EXCL: 1 },
     promises: {
       readFile: (filePath: string) => mockReadFile(filePath),
+      link: (...args: unknown[]) => mockLink(...args),
+      unlink: (...args: unknown[]) => mockUnlink(...args),
+      stat: (...args: unknown[]) => mockStat(...args),
     },
   },
   existsSync: (filePath: string) => mockExistsSync(filePath),
@@ -207,16 +221,37 @@ vi.mock('@/main/capture/display-selector', () => ({
 const mockCaptureDisplayToFile = vi.fn();
 
 vi.mock('@/main/capture/screenshot/native-capture', () => ({
-  captureDisplayToFile: (display: unknown, filePath: string) =>
-    mockCaptureDisplayToFile(display, filePath),
+  captureDisplayToFile: (
+    display: unknown,
+    filePath: string,
+    failed: (completed: boolean) => void
+  ) => mockCaptureDisplayToFile(display, filePath, failed),
 }));
 
 const mockCaptureAreaToFile = vi.fn();
 const mockCaptureWindowToFile = vi.fn();
 
 vi.mock('@/main/capture/area-overlay', () => ({
-  captureAreaToFile: (filePath: string) => mockCaptureAreaToFile(filePath),
-  captureWindowToFile: (filePath: string) => mockCaptureWindowToFile(filePath),
+  captureAreaToFile: (
+    filePath: string | (() => string),
+    started: () => void,
+    failed: (completed: boolean) => void
+  ) =>
+    mockCaptureAreaToFile(
+      typeof filePath === 'function' ? filePath() : filePath,
+      started,
+      failed
+    ),
+  captureWindowToFile: (
+    filePath: string | (() => string),
+    started: () => void,
+    failed: (completed: boolean) => void
+  ) =>
+    mockCaptureWindowToFile(
+      typeof filePath === 'function' ? filePath() : filePath,
+      started,
+      failed
+    ),
 }));
 
 vi.mock('@/main/system/capabilities', () => ({
@@ -256,6 +291,12 @@ function createWallpaperSettings(
 describe('Screenshot Module', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockOpenSync.mockReset().mockReturnValue(7);
+    mockCloseSync.mockReset();
+    mockLink.mockReset();
+    mockUnlink.mockReset();
+    mockStat.mockReset();
+    mockStatSync.mockReset();
     MockBrowserWindow.resetMock();
 
     mockAppGetPath.mockImplementation((name: string) => {
@@ -438,7 +479,8 @@ describe('Screenshot Module', () => {
 
       expect(mockCaptureDisplayToFile).toHaveBeenCalledWith(
         expect.objectContaining({ id: 1 }),
-        expect.stringContaining('Poratake')
+        expect.stringContaining('Poratake'),
+        expect.any(Function)
       );
       expect(mockFinalizeCapture).toHaveBeenCalled();
     });
@@ -455,7 +497,9 @@ describe('Screenshot Module', () => {
       await screenshot('area');
 
       expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
-        expect.stringContaining('Poratake')
+        expect.stringContaining('Poratake'),
+        expect.any(Function),
+        expect.any(Function)
       );
       expect(mockFinalizeCapture).toHaveBeenCalled();
     });
@@ -481,7 +525,9 @@ describe('Screenshot Module', () => {
       await screenshot('window');
 
       expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
-        expect.stringContaining('Poratake')
+        expect.stringContaining('Poratake'),
+        expect.any(Function),
+        expect.any(Function)
       );
       expect(mockFinalizeCapture).toHaveBeenCalled();
     });
@@ -534,10 +580,11 @@ describe('Screenshot Module', () => {
       const { default: screenshot } = await import('@/main/capture/screenshot');
       await screenshot('area');
 
-      expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
+      expect(mockFinalizeCapture).toHaveBeenCalledWith(
         expect.stringMatching(
           /Screenshot \d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2}\.png/
-        )
+        ),
+        null
       );
     });
 
@@ -548,9 +595,126 @@ describe('Screenshot Module', () => {
       expect(mockCaptureAreaToFile).toHaveBeenCalledWith(
         expect.stringContaining(
           path.join('/mock/Pictures', 'Poratake') + path.sep
-        )
+        ),
+        expect.any(Function),
+        expect.any(Function)
       );
     });
+
+    it.each([
+      ['screen', 'success'],
+      ['area', 'success'],
+      ['window', 'success'],
+      ['screen', 'failed'],
+      ['area', 'failed'],
+      ['window', 'failed'],
+      ['screen', 'timeout'],
+    ] as const)(
+      'preserves an existing file for %s capture: %s',
+      async (mode, outcome) => {
+        const realFs = await vi.importActual<typeof FileSystem>('node:fs');
+        const os = await import('node:os');
+        const directory = realFs.mkdtempSync(
+          path.join(os.tmpdir(), 'poratake-capture-workflow-')
+        );
+        const existing = path.join(directory, 'Collision.png');
+        realFs.writeFileSync(existing, 'original');
+        mockGetConfig.mockReturnValue({
+          screenshot: { ...mockScreenshotConfig },
+          general: { ...mockGeneralConfig },
+          storage: { screenshotsPath: directory, namingPattern: 'Collision' },
+        } as Partial<SettingsConfig>);
+        mockExistsSync.mockImplementation((file: string) =>
+          realFs.existsSync(file)
+        );
+        mockStatSync.mockImplementation((file: string) =>
+          realFs.statSync(file)
+        );
+        mockOpenSync.mockImplementation((file: string, flags: string) =>
+          realFs.openSync(file, flags)
+        );
+        mockCloseSync.mockImplementation((fd: number) => realFs.closeSync(fd));
+        mockLink.mockImplementation((from: string, to: string) =>
+          realFs.promises.link(from, to)
+        );
+        mockUnlink.mockImplementation((file: string) =>
+          realFs.promises.unlink(file)
+        );
+        mockStat.mockImplementation((file: string) =>
+          realFs.promises.stat(file)
+        );
+        const finishCapture = (
+          file: string,
+          failed: (completed: boolean) => void
+        ) => {
+          if (outcome !== 'success') {
+            failed(outcome === 'failed');
+            return false;
+          }
+          realFs.writeFileSync(file, mode);
+          return true;
+        };
+        mockCaptureDisplayToFile.mockImplementation(
+          async (
+            _display,
+            file: string,
+            failed: (completed: boolean) => void
+          ) => finishCapture(file, failed)
+        );
+        for (const capture of [
+          mockCaptureAreaToFile,
+          mockCaptureWindowToFile,
+        ]) {
+          capture.mockImplementation(
+            async (
+              file: string,
+              started: () => void,
+              failed: (completed: boolean) => void
+            ) => {
+              started();
+              return finishCapture(file, failed);
+            }
+          );
+        }
+
+        try {
+          const { default: screenshot } =
+            await import('@/main/capture/screenshot');
+          await screenshot(mode);
+          const published = path.join(directory, 'Collision (1).png');
+          expect(realFs.readFileSync(existing, 'utf8')).toBe('original');
+          expect(realFs.existsSync(published)).toBe(outcome === 'success');
+          expect(
+            realFs.existsSync(published)
+              ? realFs.readFileSync(published, 'utf8')
+              : null
+          ).toBe(outcome === 'success' ? mode : null);
+          expect(mockFinalizeCapture.mock.calls).toEqual(
+            outcome === 'success' ? [[published, null]] : []
+          );
+          const temporary = realFs
+            .readdirSync(directory)
+            .filter(name => name.startsWith('.poratake-'));
+          expect(temporary).toHaveLength(outcome === 'timeout' ? 1 : 0);
+          if (outcome === 'timeout') {
+            realFs.writeFileSync(
+              path.join(directory, temporary[0]),
+              'late image'
+            );
+          }
+          expect(
+            outcome === 'timeout'
+              ? realFs.readFileSync(path.join(directory, temporary[0]), 'utf8')
+              : null
+          ).toBe(outcome === 'timeout' ? 'late image' : null);
+        } finally {
+          for (const name of realFs.readdirSync(directory)) {
+            realFs.unlinkSync(path.join(directory, name));
+          }
+          realFs.rmdirSync(directory);
+        }
+      }
+    );
   });
 
   describe('IPC Handler: screenshot:read-file', () => {

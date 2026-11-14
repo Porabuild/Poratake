@@ -180,6 +180,292 @@ mod tests {
     }
 
     #[test]
+    fn detects_photographed_qr_with_surrounding_controls() {
+        let payload =
+            detect_qr_code(&fixture_path("qr-window.png")).expect("decode window capture");
+        assert_eq!(
+            payload,
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
+    fn detects_photographed_qr_with_uneven_lighting() {
+        let payload = detect_qr_code(&fixture_path("qr-uneven-light.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(payload, "http://google.com/gwt/n?u=bluenile.com");
+    }
+
+    #[test]
+    fn detects_low_contrast_photographed_qr() {
+        let (pixels, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        for divisor in [5, 10, 20] {
+            for offset in [0, 72, 180] {
+                let faded: Vec<_> = pixels
+                    .iter()
+                    .map(|pixel| offset + pixel / divisor)
+                    .collect();
+                assert_eq!(
+                    detect_payload_from_greyscale(&faded, width, height),
+                    "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                    "divisor {divisor}, offset {offset}"
+                );
+            }
+        }
+        for (name, expected) in [
+            (
+                "qr-region-histogram.png",
+                "http://google.com/gwt/n?u=bluenile.com",
+            ),
+            (
+                "qr-region-framed.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-medium.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+        ] {
+            let (pixels, width, height) =
+                load_greyscale(&fixture_path(name)).expect("load photographed QR code");
+            let faded: Vec<_> = pixels.iter().map(|pixel| 72 + pixel / 10).collect();
+            assert_eq!(
+                detect_payload_from_greyscale(&faded, width, height),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_rotated_photographed_qr() {
+        let (mut pixels, mut width, mut height) =
+            load_greyscale(&fixture_path("qr-region-original.png"))
+                .expect("load photographed QR code");
+        for turn in 1..=3 {
+            let mut rotated = vec![0; pixels.len()];
+            for y in 0..height {
+                for x in 0..width {
+                    rotated[x * height + height - y - 1] = pixels[y * width + x];
+                }
+            }
+            pixels = rotated;
+            std::mem::swap(&mut width, &mut height);
+            assert_eq!(
+                detect_payload_from_greyscale(&pixels, width, height),
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                "quarter turn {turn}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_photographed_qr_after_arbitrary_rotation_and_perspective() {
+        let (pixels, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        let expected =
+            "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com";
+
+        for degrees in [10.0, 25.0, 45.0] {
+            let (rotated, rotated_width, rotated_height) =
+                rotate_greyscale(&pixels, width, height, degrees);
+            assert_eq!(
+                detect_payload_from_greyscale(&rotated, rotated_width, rotated_height),
+                expected,
+                "rotation {degrees} degrees"
+            );
+        }
+
+        let (perspective, perspective_width, perspective_height) =
+            perspective_greyscale(&pixels, width, height);
+        assert_eq!(
+            detect_payload_from_greyscale(&perspective, perspective_width, perspective_height),
+            expected
+        );
+
+        let (rotated, rotated_width, rotated_height) =
+            rotate_greyscale(&pixels, width, height, 15.0);
+        let (combined, combined_width, combined_height) =
+            perspective_greyscale(&rotated, rotated_width, rotated_height);
+        assert_eq!(
+            detect_payload_from_greyscale(&combined, combined_width, combined_height),
+            expected,
+            "15-degree rotation with perspective"
+        );
+    }
+
+    #[test]
+    fn detects_valid_qr_beside_another_candidate() {
+        let clean = std::fs::read(fixture_path("qr-hello.gray")).expect("fixture grayscale");
+        let (photo, photo_width, photo_height) =
+            load_greyscale(&fixture_path("qr-region-original.png"))
+                .expect("load photographed QR code");
+        let width = 264 + 60 + photo_width + 40;
+        let height = photo_height.max(264) + 80;
+        for damaged in [false, true] {
+            let mut screen = vec![255; width * height];
+            for y in 0..264 {
+                let target = (y + 20) * width + 20;
+                screen[target..target + 264].copy_from_slice(&clean[y * 264..(y + 1) * 264]);
+            }
+            if damaged {
+                for y in 90..175 {
+                    let target = (y + 20) * width + 20;
+                    screen[target + 90..target + 175].fill(255);
+                }
+            }
+            for y in 0..photo_height {
+                let target = (y + 20) * width + 264 + 60;
+                screen[target..target + photo_width]
+                    .copy_from_slice(&photo[y * photo_width..(y + 1) * photo_width]);
+            }
+            let payload = detect_payload_from_greyscale(&screen, width, height);
+            let photo_payload =
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com";
+            if damaged {
+                assert_eq!(payload, photo_payload);
+            } else {
+                assert!(payload == photo_payload || payload == "https://example.com/qr-test");
+            }
+        }
+    }
+
+    #[test]
+    fn detects_qr_when_the_finder_ring_blends_into_the_background() {
+        let payload = detect_qr_code(&fixture_path("qr-small-block.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(
+            payload,
+            r"MEBKM:URL:http\://en.wikipedia.org/wiki/Main_Page;;"
+        );
+    }
+
+    #[test]
+    fn detects_framed_qr_with_uneven_lighting() {
+        let payload = detect_qr_code(&fixture_path("qr-large-block.png"))
+            .expect("decode photographed QR code");
+        assert_eq!(payload, "http://google.com/gwt/n?u=bluenile.com");
+    }
+
+    #[test]
+    fn detects_photographed_qr_against_distracting_surroundings() {
+        for (name, expected) in [
+            (
+                "qr-region-histogram.png",
+                "http://google.com/gwt/n?u=bluenile.com",
+            ),
+            (
+                "qr-region-original.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-framed.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-coarse.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+            (
+                "qr-region-medium.png",
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+            ),
+        ] {
+            let payload = detect_qr_code(&fixture_path(name)).expect("decode photographed QR code");
+            assert_eq!(payload, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn detects_photographed_qr_inside_a_4k_capture() {
+        let (source, width, height) = load_greyscale(&fixture_path("qr-region-original.png"))
+            .expect("load photographed QR code");
+        let (screen_width, screen_height) = (3840, 2160);
+        for (x, y, background) in [
+            (300, 400, 225),
+            (1101, 601, 225),
+            (2048, 1024, 255),
+            (3199, 1679, 225),
+        ] {
+            let mut screen = vec![background; screen_width * screen_height];
+            for row in 0..height {
+                let target = (row + y) * screen_width + x;
+                screen[target..target + width]
+                    .copy_from_slice(&source[row * width..(row + 1) * width]);
+            }
+            assert_eq!(
+                detect_payload_from_greyscale(&screen, screen_width, screen_height),
+                "Sean Owen\r\nsrowen@google.com\r\n917-364-2918\r\nhttp://awesome-thoughts.com",
+                "position {x},{y} on {background}"
+            );
+        }
+    }
+
+    fn rotate_greyscale(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+        degrees: f64,
+    ) -> (Vec<u8>, usize, usize) {
+        let radians = degrees.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        let rotated_width = (width as f64 * cos.abs() + height as f64 * sin.abs()).ceil() as usize;
+        let rotated_height = (height as f64 * cos.abs() + width as f64 * sin.abs()).ceil() as usize;
+        let mut rotated = vec![255; rotated_width * rotated_height];
+        for y in 0..rotated_height {
+            for x in 0..rotated_width {
+                let dx = x as f64 + 0.5 - rotated_width as f64 / 2.0;
+                let dy = y as f64 + 0.5 - rotated_height as f64 / 2.0;
+                let source_x = cos * dx + sin * dy + width as f64 / 2.0 - 0.5;
+                let source_y = -sin * dx + cos * dy + height as f64 / 2.0 - 0.5;
+                rotated[y * rotated_width + x] =
+                    sample_greyscale(pixels, width, height, source_x, source_y);
+            }
+        }
+        (rotated, rotated_width, rotated_height)
+    }
+
+    fn perspective_greyscale(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+    ) -> (Vec<u8>, usize, usize) {
+        let strength = 0.3;
+        let perspective_height = (height as f64 / (1.0 + strength)).round() as usize;
+        let mut perspective = vec![255; width * perspective_height];
+        for y in 0..perspective_height {
+            for x in 0..width {
+                let dest_y = y as f64 + 0.5;
+                let inverse = 1.0 - strength * dest_y / height as f64;
+                let source_y = dest_y / inverse - 0.5;
+                let source_x =
+                    width as f64 / 2.0 + (x as f64 + 0.5 - width as f64 / 2.0) / inverse - 0.5;
+                perspective[y * width + x] =
+                    sample_greyscale(pixels, width, height, source_x, source_y);
+            }
+        }
+        (perspective, width, perspective_height)
+    }
+
+    fn sample_greyscale(pixels: &[u8], width: usize, height: usize, x: f64, y: f64) -> u8 {
+        if x < 0.0 || y < 0.0 || x >= width as f64 - 1.0 || y >= height as f64 - 1.0 {
+            return 255;
+        }
+        let left = x.floor() as usize;
+        let top = y.floor() as usize;
+        let horizontal = x - left as f64;
+        let vertical = y - top as f64;
+        let top_left = f64::from(pixels[top * width + left]);
+        let top_right = f64::from(pixels[top * width + left + 1]);
+        let bottom_left = f64::from(pixels[(top + 1) * width + left]);
+        let bottom_right = f64::from(pixels[(top + 1) * width + left + 1]);
+        let upper = top_left + (top_right - top_left) * horizontal;
+        let lower = bottom_left + (bottom_right - bottom_left) * horizontal;
+        (upper + (lower - upper) * vertical).round() as u8
+    }
+
+    #[test]
     fn returns_empty_payload_when_no_code_present() {
         let white = vec![255u8; 64 * 64];
         let payload = detect_payload_from_greyscale(&white, 64, 64);

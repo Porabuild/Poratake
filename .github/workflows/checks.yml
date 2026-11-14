@@ -129,6 +129,23 @@ jobs:
       - name: Build macOS daemon
         run: ./scripts/build-daemon.sh
 
+      - name: Compile macOS scroll preview fixture
+        timeout-minutes: 5
+        run: |
+          swiftc -O -target "$(uname -m)-apple-macosx13.0" -D SCROLL_CAPTURE_TEST \
+            -framework ScreenCaptureKit -o "$RUNNER_TEMP/scroll-capture-preview-test" \
+            src/main/daemon/Core/Protocol.swift \
+            src/main/daemon/Core/ModuleProtocol.swift \
+            src/main/daemon/Core/DaemonContract.generated.swift \
+            src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
+            src/main/daemon/Modules/ScrollCaptureModule.swift \
+            tests/native/scroll-capture-preview.swift
+
+      - name: Run macOS scroll preview fixture
+        timeout-minutes: 5
+        run: |
+          "$RUNNER_TEMP/scroll-capture-preview-test"
+
       - name: Check GPUI shell
         run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml
 
@@ -156,7 +173,7 @@ jobs:
 
       - name: Install native dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update --error-on=any
           sudo apt-get install -y libclang-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libpipewire-0.3-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev libxcb-xfixes0-dev libasound2-dev xvfb
 
       - name: Cache Rust target
@@ -178,10 +195,17 @@ jobs:
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui
 
       - name: Test Linux X11 window capture
-        run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored
+        run: |
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::failed_freeze_presentation_closes_created_windows -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::window_source_tracks_moves_resizes_and_closure_at_a_fixed_frame_size -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux recording_input::tests::records_global_raw_input_when_a_child_selects_xi2_events -- --ignored --exact
+          xvfb-run -a -s "-extension Composite" cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::x11_connection_keeps_working_when_composite_is_unavailable -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 daemon_records_x11_window_frames_and_cursor_across_lifecycle -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked -- --ignored --exact
+          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored --skip daemon_records_x11_window_frames_and_cursor_across_lifecycle --skip daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked --skip blocked_encoder_proxy_reads_one_frame_then_stalls
 
       - name: Test Linux X11 capture with scaled GTK
-        run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored
+        run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored --skip daemon_records_x11_window_frames_and_cursor_across_lifecycle --skip daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked --skip blocked_encoder_proxy_reads_one_frame_then_stalls
         env:
           GDK_SCALE: 2
 
@@ -226,6 +250,52 @@ jobs:
 
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
+
+      - name: Test native Windows scroll capture stitching
+        env:
+          PORATAKE_RUN_WINDOWS_SCROLL_CAPTURE_TEST: '1'
+        run: pwsh -NoProfile -File scripts/parity/windows-scroll-capture-test.ps1
+
+      - name: Test GPUI accessibility actions
+        run: bun scripts/parity/gpui-accessibility-test.mjs
+
+      - name: Inspect Windows audio output availability
+        run: |
+          $endpointErrors = @()
+          $renderEndpoints = @(Get-PnpDevice -Class AudioEndpoint -PresentOnly -ErrorAction SilentlyContinue -ErrorVariable +endpointErrors | Where-Object { $_.Status -eq 'OK' -and $_.InstanceId -match '\{0\.0\.0\.' })
+          $unexpectedErrors = @($endpointErrors | Where-Object { $_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound })
+          if ($unexpectedErrors.Count) { throw $unexpectedErrors[0] }
+          Write-Host "Present, healthy audio render endpoints: $($renderEndpoints.Count). Default endpoint and capture remain unverified."
+
+      - name: Test native GPUI recording tooltips
+        run: pwsh -NoProfile -File scripts/parity/windows-recording-tooltip-test.ps1
+
+      - name: Test Windows clipboard image formats
+        id: clipboard_formats
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
+
+      - name: Visual regressions
+        run: bun run test:visual
+
+      - name: Preserve visual evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-evidence
+          path: |
+            ${{ runner.temp }}/poratake-visual-*/**/*.png
+            ${{ runner.temp }}/poratake-visual-*/**/renderer.json
+            ${{ runner.temp }}/poratake-visual-*/*.json
+            ${{ runner.temp }}/poratake-visual-*/*.log
+            ${{ runner.temp }}/poratake-visual-tooltip-*/recording/*.mp4
+            ${{ runner.temp }}/poratake-scroll-capture-*/**
+          if-no-files-found: ignore
+
+      - name: Test native Windows clipboard roundtrip
+        if: ${{ !cancelled() && steps.clipboard_formats.outcome == 'success' }}
+        env:
+          PORATAKE_ISOLATED_CLIPBOARD_TEST: '1'
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests::native_clipboard_round_trips_text_png_and_dib -- --ignored
 
       - name: Tests
         run: bun run test:run
