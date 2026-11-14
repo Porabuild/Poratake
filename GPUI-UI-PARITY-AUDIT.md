@@ -1615,6 +1615,13 @@ Bugs fixed in this pass:
 Entries distinguish observed defects from missing evidence. An unverified path
 is not a demonstrated product defect; reproduce before changing its behavior.
 
+Selecting through the empty interior of an outlined rectangle or circle now
+reaches the visible annotation underneath; line hit testing follows its stroke
+rather than its bounding box. Headless tests cover overlaps, rounded corners and
+zoom-aware tolerance. Arrows and freehand marks still use bounding boxes.
+A decoded-video regression also checks that a blackout covers an earlier filled
+annotation in both preview and export at four timeline positions.
+
 Windows screenshot Save As now backs up an existing file before writing through
 its original handle and restores it on a returned write error. The backup is kept
 and its path reported if restoration fails. The handle preserves the original

@@ -55,6 +55,150 @@ pub fn screenshot_paints<'a>(
     paints
 }
 
+pub fn screenshot_annotation_at(
+    annotations: &[Annotation],
+    point: (f64, f64),
+    zoom: f32,
+) -> Option<&Annotation> {
+    screenshot_paints(annotations.iter())
+        .into_iter()
+        .rev()
+        .map(ScreenshotPaint::annotation)
+        .find(|annotation| hit_test_annotation(annotation, point, zoom))
+}
+
+fn hit_test_annotation(annotation: &Annotation, point: (f64, f64), zoom: f32) -> bool {
+    match annotation {
+        Annotation::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            stroke_width,
+            fill,
+            ..
+        } => {
+            let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
+            let fill = fill
+                .as_deref()
+                .is_some_and(|fill| !fill.eq_ignore_ascii_case("none"));
+            rounded_rectangle_hit(
+                point,
+                (left, top, width, height),
+                1.0,
+                fill,
+                stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64,
+            )
+        }
+        Annotation::Circle {
+            x,
+            y,
+            radius,
+            stroke_width,
+            fill,
+            ..
+        } => {
+            if *radius <= 0.0 {
+                return false;
+            }
+            let distance = (point.0 - x).hypot(point.1 - y);
+            if fill
+                .as_deref()
+                .is_some_and(|fill| !fill.eq_ignore_ascii_case("none"))
+                && distance <= *radius
+            {
+                return true;
+            }
+            (distance - radius).abs() <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64
+        }
+        Annotation::Line {
+            points,
+            stroke_width,
+            ..
+        } => {
+            distance_to_segment(point, (points[0], points[1]), (points[2], points[3]))
+                <= stroke_width.abs() / 2.0 + 4.0 / zoom.max(0.01) as f64
+        }
+        _ => {
+            const TOLERANCE: f64 = 4.0;
+            let (left, top, right, bottom) = annotation.bounds();
+            point.0 >= left - TOLERANCE
+                && point.0 <= right + TOLERANCE
+                && point.1 >= top - TOLERANCE
+                && point.1 <= bottom + TOLERANCE
+        }
+    }
+}
+
+fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
+    let delta = (end.0 - start.0, end.1 - start.1);
+    let length_squared = delta.0 * delta.0 + delta.1 * delta.1;
+    if length_squared == 0.0 {
+        return (point.0 - start.0).hypot(point.1 - start.1);
+    }
+    let progress = (((point.0 - start.0) * delta.0 + (point.1 - start.1) * delta.1)
+        / length_squared)
+        .clamp(0.0, 1.0);
+    (point.0 - (start.0 + delta.0 * progress)).hypot(point.1 - (start.1 + delta.1 * progress))
+}
+
+fn rounded_rectangle_hit(
+    point: (f64, f64),
+    rect: (f64, f64, f64, f64),
+    radius: f64,
+    filled: bool,
+    stroke_band: f64,
+) -> bool {
+    let (left, top, width, height) = rect;
+    if width <= 0.0 || height <= 0.0 {
+        return false;
+    }
+    if filled && point_in_rounded_rectangle(point, rect, radius) {
+        return true;
+    }
+    if stroke_band <= 0.0 {
+        return false;
+    }
+    let outer = (
+        left - stroke_band,
+        top - stroke_band,
+        width + stroke_band * 2.0,
+        height + stroke_band * 2.0,
+    );
+    if !point_in_rounded_rectangle(point, outer, radius + stroke_band) {
+        return false;
+    }
+    let inner = (
+        left + stroke_band,
+        top + stroke_band,
+        width - stroke_band * 2.0,
+        height - stroke_band * 2.0,
+    );
+    inner.2 <= 0.0
+        || inner.3 <= 0.0
+        || !point_in_rounded_rectangle(point, inner, (radius - stroke_band).max(0.0))
+}
+
+fn point_in_rounded_rectangle(point: (f64, f64), rect: (f64, f64, f64, f64), radius: f64) -> bool {
+    let (left, top, width, height) = rect;
+    if width <= 0.0
+        || height <= 0.0
+        || point.0 < left
+        || point.0 > left + width
+        || point.1 < top
+        || point.1 > top + height
+    {
+        return false;
+    }
+    let radius = radius.min(width / 2.0).min(height / 2.0).max(0.0);
+    if radius == 0.0 {
+        return true;
+    }
+    let center_x = point.0.clamp(left + radius, left + width - radius);
+    let center_y = point.1.clamp(top + radius, top + height - radius);
+    (point.0 - center_x).hypot(point.1 - center_y) <= radius
+}
+
 pub fn draw_all_screenshot(canvas: &mut Canvas, annotations: &[Annotation], native_scale: f64) {
     for paint in screenshot_paints(annotations.iter()) {
         draw_screenshot_paint(canvas, paint, native_scale);
@@ -1102,6 +1246,119 @@ pub fn scale_to_composition(annotation: &Annotation, scale_x: f64, scale_y: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outline_rect(id: &str, fill: Option<&str>) -> Annotation {
+        Annotation::Rectangle {
+            id: id.into(),
+            x: 10.0,
+            y: 10.0,
+            width: 100.0,
+            height: 80.0,
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            fill: fill.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn hollow_and_filled_shapes_hit_their_rendered_regions() {
+        let hollow = outline_rect("hollow", None);
+        let filled = outline_rect("filled", Some("#ff0000"));
+        assert!(!hit_test_annotation(&hollow, (50.0, 50.0), 1.0));
+        assert!(hit_test_annotation(&hollow, (10.0, 50.0), 1.0));
+        assert!(hit_test_annotation(&filled, (50.0, 50.0), 1.0));
+
+        let hollow_circle = Annotation::Circle {
+            id: "hollow-circle".into(),
+            x: 50.0,
+            y: 50.0,
+            radius: 20.0,
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        let filled_circle = Annotation::Circle {
+            id: "filled-circle".into(),
+            x: 50.0,
+            y: 50.0,
+            radius: 20.0,
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+            fill: Some("#ff0000".into()),
+        };
+        assert!(!hit_test_annotation(&hollow_circle, (50.0, 50.0), 1.0));
+        assert!(hit_test_annotation(&hollow_circle, (70.0, 50.0), 1.0));
+        assert!(hit_test_annotation(&filled_circle, (50.0, 50.0), 1.0));
+    }
+
+    #[test]
+    fn rectangle_corner_hits_match_the_rendered_one_pixel_radius() {
+        let rectangle = Annotation::Rectangle {
+            id: "rounded".into(),
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+            stroke: "#000000".into(),
+            stroke_width: 0.0,
+            fill: Some("#ff0000".into()),
+        };
+        let zoom = 10_000.0;
+        assert!(!hit_test_annotation(&rectangle, (10.2, 10.2), zoom));
+        assert!(hit_test_annotation(&rectangle, (10.5, 10.5), zoom));
+
+        let mut canvas = Canvas::new(640, 640).expect("canvas");
+        canvas.scale(16.0, 16.0);
+        draw(&mut canvas, &rectangle);
+        let alpha_at = |x: f64, y: f64| {
+            let pixel = (y * 16.0).floor() as usize * 640 + (x * 16.0).floor() as usize;
+            canvas.pixmap().data()[pixel * 4 + 3]
+        };
+        assert_eq!(alpha_at(10.2, 10.2), 0);
+        assert!(alpha_at(10.5, 10.5) > 0);
+    }
+
+    #[test]
+    fn shape_selection_slop_stays_four_screen_pixels_at_each_zoom() {
+        let hollow = outline_rect("hollow", None);
+        assert!(hit_test_annotation(&hollow, (5.0, 50.0), 0.5));
+        assert!(!hit_test_annotation(&hollow, (5.0, 50.0), 4.0));
+
+        let line = Annotation::Line {
+            id: "line".into(),
+            points: [10.0, 10.0, 90.0, 90.0],
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+        };
+        assert!(hit_test_annotation(&line, (50.0, 45.0), 0.5));
+        assert!(!hit_test_annotation(&line, (50.0, 45.0), 4.0));
+        assert!(!hit_test_annotation(&line, (10.0, 90.0), 1.0));
+    }
+
+    #[test]
+    fn transparent_top_shape_does_not_hide_a_filled_shape_below_it() {
+        let annotations = [
+            outline_rect("filled", Some("#ff0000")),
+            outline_rect("hollow", None),
+        ];
+        assert_eq!(
+            screenshot_annotation_at(&annotations, (50.0, 50.0), 1.0).map(Annotation::id),
+            Some("filled")
+        );
+        assert_eq!(
+            screenshot_annotation_at(&annotations, (10.0, 50.0), 1.0).map(Annotation::id),
+            Some("hollow")
+        );
+
+        let annotations = [
+            outline_rect("filled", Some("#ff0000")),
+            outline_rect("top", Some("#00ff00")),
+        ];
+        assert_eq!(
+            screenshot_annotation_at(&annotations, (50.0, 50.0), 1.0).map(Annotation::id),
+            Some("top")
+        );
+    }
 
     fn covered(canvas: &Canvas) -> usize {
         canvas

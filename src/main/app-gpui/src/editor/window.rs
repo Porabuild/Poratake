@@ -1060,19 +1060,12 @@ impl EditorWindow {
 
     /// The topmost annotation under `point`, which is the last one drawn.
     fn annotation_at(&self, point: Point) -> Option<String> {
-        const TOLERANCE: f64 = 4.0;
-        crate::render::annotations::screenshot_paints(self.history.current().iter())
-            .into_iter()
-            .rev()
-            .map(|paint| paint.annotation())
-            .find(|annotation| {
-                let (left, top, right, bottom) = annotation.bounds();
-                point.x as f64 >= left - TOLERANCE
-                    && point.x as f64 <= right + TOLERANCE
-                    && point.y as f64 >= top - TOLERANCE
-                    && point.y as f64 <= bottom + TOLERANCE
-            })
-            .map(|annotation| annotation.id().to_string())
+        crate::render::annotations::screenshot_annotation_at(
+            self.history.current(),
+            (f64::from(point.x), f64::from(point.y)),
+            self.zoom,
+        )
+        .map(|annotation| annotation.id().to_string())
     }
 
     pub fn toggle_capture_mode(&mut self, cx: &mut Context<Self>) {
