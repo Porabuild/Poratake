@@ -26,6 +26,19 @@ struct MultiDisplayPreview {
     preview: Entity<CapturePreviewWindow>,
 }
 
+fn await_preview_thumbnails(cx: &mut HeadlessAppContext, handle: gpui::AnyWindowHandle) {
+    cx.run_until_parked();
+    let ready = handle
+        .downcast::<CapturePreviewWindow>()
+        .expect("capture preview window")
+        .update(cx, |view, _, _| view.thumbnails_ready_for_parity())
+        .expect("capture preview remains open while thumbnails load");
+    assert!(
+        ready,
+        "capture preview thumbnails must be applied before capture"
+    );
+}
+
 impl Render for MultiDisplayPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let displays = [
@@ -80,6 +93,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
             .unwrap();
         settle(cx, preview);
+        await_preview_thumbnails(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 1));
         let single = measured("capture-previews", 0);
         assert_eq!(single.size, size(px(200.), px(140.)));
@@ -208,6 +222,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             cx.update_window(hovered, |_, window, _| window.remove_window())
                 .unwrap();
             settle(cx, preview);
+            await_preview_thumbnails(cx, preview);
         }
         {
             let view = cx
@@ -379,6 +394,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
             settle(cx, preview);
         }
+        await_preview_thumbnails(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 4));
         let rendered = cx.capture_screenshot(preview).unwrap();
         for index in 0..4 {
@@ -481,6 +497,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
             .unwrap();
         settle(cx, preview);
+        await_preview_thumbnails(cx, preview);
         let single = measured("capture-previews", 0);
         let view = cx
             .update_window(preview, |view, _, _| {
@@ -589,6 +606,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
     cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
         .unwrap();
     settle(cx, preview);
+    await_preview_thumbnails(cx, preview);
     let single = measured("capture-previews", 0);
     let view = cx
         .update_window(preview, |view, _, _| {
@@ -709,6 +727,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
         .expect("auto-dismiss preview window opened");
     settle(cx, preview);
+    await_preview_thumbnails(cx, preview);
     cx.run_until_parked();
     cx.advance_clock(Duration::from_secs(1));
     cx.run_until_parked();

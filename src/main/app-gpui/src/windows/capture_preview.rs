@@ -40,6 +40,20 @@ const PREVIEW_MOVE_MS: u64 = 120;
 /// `<video>` tag. 8fps keeps the thumbnail alive without decoding full rate.
 const VIDEO_PLAYBACK_TICK: Duration = Duration::from_millis(125);
 
+#[derive(Clone)]
+struct PreviewThumbnailDecodeSlots(Arc<smol::lock::Semaphore>);
+
+impl gpui::Global for PreviewThumbnailDecodeSlots {}
+
+fn preview_thumbnail_decode_slots(cx: &mut App) -> Arc<smol::lock::Semaphore> {
+    if let Some(slots) = cx.try_global::<PreviewThumbnailDecodeSlots>() {
+        return slots.0.clone();
+    }
+    let slots = Arc::new(smol::lock::Semaphore::new(1));
+    cx.set_global(PreviewThumbnailDecodeSlots(slots.clone()));
+    slots
+}
+
 #[cfg(feature = "parity")]
 thread_local! {
     static SIMULATE_HEADLESS_PREVIEW_REVEAL: Cell<bool> = const { Cell::new(false) };
@@ -173,6 +187,11 @@ struct CapturePreview {
     kind: PreviewKind,
     path: PathBuf,
     image: Option<Arc<gpui::RenderImage>>,
+    thumbnail_loading: bool,
+    thumbnail_cancel: Option<smol::channel::Sender<()>>,
+    thumbnail_generation: u64,
+    #[cfg(all(test, feature = "parity"))]
+    thumbnail_ready: Option<smol::channel::Receiver<()>>,
     video: Option<VideoPlayback>,
     export_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Electron's scrim is `backdrop-blur-md` over the thumbnail; gpui cannot
@@ -196,6 +215,81 @@ struct CapturePreview {
     dismiss_animation: Option<DismissAnimation>,
 }
 
+fn cancel_thumbnail_load(preview: &mut CapturePreview) {
+    if let Some(cancel) = preview.thumbnail_cancel.take() {
+        let _ = cancel.try_send(());
+    }
+    preview.thumbnail_generation = preview.thumbnail_generation.wrapping_add(1);
+    preview.thumbnail_loading = false;
+}
+
+fn thumbnail_preview_matches(
+    preview: &CapturePreview,
+    id: u64,
+    path: &Path,
+    generation: u64,
+) -> bool {
+    preview.id == id
+        && preview.kind == PreviewKind::Screenshot
+        && preview.path == path
+        && preview.thumbnail_loading
+        && preview.thumbnail_generation == generation
+        && preview.dismiss_animation.is_none()
+}
+
+fn thumbnail_preview_mut<'a>(
+    previews: &'a mut [CapturePreview],
+    id: u64,
+    path: &Path,
+    generation: u64,
+) -> Option<&'a mut CapturePreview> {
+    previews
+        .iter_mut()
+        .find(|preview| thumbnail_preview_matches(preview, id, path, generation))
+}
+
+#[cfg(not(windows))]
+fn restart_screenshot_thumbnail_loads(
+    previews: &mut [CapturePreview],
+) -> Vec<(
+    u64,
+    PathBuf,
+    u64,
+    smol::channel::Receiver<()>,
+    Option<smol::channel::Sender<()>>,
+)> {
+    let mut pending = Vec::new();
+    for preview in previews {
+        cancel_thumbnail_load(preview);
+        if preview.kind != PreviewKind::Screenshot
+            || preview.image.is_some()
+            || preview.dismiss_animation.is_some()
+        {
+            continue;
+        }
+        let (cancel, canceled) = smol::channel::bounded(1);
+        preview.thumbnail_cancel = Some(cancel);
+        preview.thumbnail_loading = true;
+        preview.thumbnail_generation = preview.thumbnail_generation.wrapping_add(1);
+        #[cfg(all(test, feature = "parity"))]
+        let (ready_sender, ready_receiver) = smol::channel::bounded(1);
+        #[cfg(not(all(test, feature = "parity")))]
+        let ready_sender = None;
+        #[cfg(all(test, feature = "parity"))]
+        {
+            preview.thumbnail_ready = Some(ready_receiver);
+        }
+        pending.push((
+            preview.id,
+            preview.path.clone(),
+            preview.thumbnail_generation,
+            canceled,
+            ready_sender,
+        ));
+    }
+    pending
+}
+
 pub struct CapturePreviewWindow {
     previews: Vec<CapturePreview>,
     revealed: bool,
@@ -208,6 +302,16 @@ pub struct CapturePreviewWindow {
 }
 
 impl CapturePreviewWindow {
+    #[cfg(feature = "parity")]
+    pub(crate) fn thumbnails_ready_for_parity(&self) -> bool {
+        self.previews.iter().all(|preview| {
+            preview.kind != PreviewKind::Screenshot
+                || (!preview.thumbnail_loading
+                    && preview.image.is_some()
+                    && preview.blurred.is_some())
+        })
+    }
+
     fn active_preview_count(&self) -> usize {
         self.previews
             .iter()
@@ -218,6 +322,11 @@ impl CapturePreviewWindow {
     pub fn open(cx: &mut App, path: PathBuf) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
+        let (thumbnail_cancel, thumbnail_canceled) = smol::channel::bounded(1);
+        #[cfg(all(test, feature = "parity"))]
+        let (thumbnail_ready_sender, thumbnail_ready_receiver) = smol::channel::bounded(1);
+        #[cfg(not(all(test, feature = "parity")))]
+        let thumbnail_ready_sender = None;
         let entered_at = cx.background_executor().now();
         Self::push_preview(
             cx,
@@ -226,9 +335,14 @@ impl CapturePreviewWindow {
             CapturePreview {
                 id,
                 kind: PreviewKind::Screenshot,
-                image: load_thumbnail(&path),
-                blurred: load_blurred_thumbnail(&path),
-                path,
+                image: None,
+                thumbnail_loading: true,
+                thumbnail_cancel: Some(thumbnail_cancel),
+                thumbnail_generation: 1,
+                #[cfg(all(test, feature = "parity"))]
+                thumbnail_ready: Some(thumbnail_ready_receiver),
+                blurred: None,
+                path: path.clone(),
                 video: None,
                 export_cancel: None,
                 hover_progress: 0.0,
@@ -243,6 +357,17 @@ impl CapturePreviewWindow {
                 layout_animation: None,
                 dismiss_animation: None,
             },
+        );
+        Self::load_screenshot_thumbnails(
+            id,
+            path,
+            1,
+            thumbnail_canceled,
+            #[cfg(all(test, feature = "parity"))]
+            Some(thumbnail_ready_sender),
+            #[cfg(not(all(test, feature = "parity")))]
+            thumbnail_ready_sender,
+            cx,
         );
     }
 
@@ -261,6 +386,11 @@ impl CapturePreviewWindow {
                 id,
                 kind: PreviewKind::Video,
                 image: None,
+                thumbnail_loading: false,
+                thumbnail_cancel: None,
+                thumbnail_generation: 0,
+                #[cfg(all(test, feature = "parity"))]
+                thumbnail_ready: None,
                 blurred: None,
                 path: project,
                 video: None,
@@ -279,6 +409,98 @@ impl CapturePreviewWindow {
             },
         );
         pump_video_preview(cx, id);
+    }
+
+    fn load_screenshot_thumbnails(
+        id: u64,
+        path: PathBuf,
+        generation: u64,
+        thumbnail_canceled: smol::channel::Receiver<()>,
+        thumbnail_ready: Option<smol::channel::Sender<()>>,
+        cx: &mut App,
+    ) {
+        let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
+            .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+        else {
+            return;
+        };
+        let active = handle
+            .update(cx, |view, _, _| {
+                view.previews
+                    .iter()
+                    .any(|preview| thumbnail_preview_matches(preview, id, &path, generation))
+            })
+            .unwrap_or(false);
+        if !active {
+            return;
+        }
+        let decode_slots = preview_thumbnail_decode_slots(cx);
+        cx.spawn(async move |cx| {
+            let permit = smol::future::race(async { Some(decode_slots.acquire().await) }, async {
+                let _ = thumbnail_canceled.recv().await;
+                None
+            })
+            .await;
+            let Some(_permit) = permit else { return };
+            let active = cx.update(|cx| {
+                registry::handle(WindowKind::CapturePreview, cx)
+                    .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+                    .is_some_and(|handle| {
+                        handle
+                            .update(cx, |view, _, _| {
+                                view.previews.iter().any(|preview| {
+                                    thumbnail_preview_matches(preview, id, &path, generation)
+                                })
+                            })
+                            .unwrap_or(false)
+                    })
+            });
+            if !active {
+                return;
+            }
+            let decode_path = path.clone();
+            let (image, blurred) = cx
+                .background_executor()
+                .spawn(async move { load_preview_thumbnails(&decode_path) })
+                .await;
+            #[cfg(all(test, feature = "parity"))]
+            let mut thumbnail_ready = thumbnail_ready;
+            #[cfg(not(all(test, feature = "parity")))]
+            let _ = thumbnail_ready;
+            cx.update(|cx| {
+                let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
+                    .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+                else {
+                    return;
+                };
+                let timer = handle
+                    .update(cx, |view, _, cx| {
+                        let revealed = view.revealed;
+                        let preview =
+                            thumbnail_preview_mut(&mut view.previews, id, &path, generation)?;
+                        preview.image = image;
+                        preview.blurred = blurred;
+                        preview.thumbnail_loading = false;
+                        preview.thumbnail_cancel.take();
+                        #[cfg(all(test, feature = "parity"))]
+                        if let Some(ready) = thumbnail_ready.take() {
+                            let _ = ready.try_send(());
+                        }
+                        let timer = revealed.then(|| {
+                            preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                            (preview.id, preview.dismiss_token.clone())
+                        });
+                        cx.notify();
+                        timer
+                    })
+                    .ok()
+                    .flatten();
+                if let Some((id, dismiss_token)) = timer {
+                    schedule_auto_dismiss(handle.into(), id, cx, dismiss_token);
+                }
+            });
+        })
+        .detach();
     }
 
     fn push_preview(cx: &mut App, id: u64, dismiss_token: Arc<AtomicU64>, preview: CapturePreview) {
@@ -314,6 +536,11 @@ impl CapturePreviewWindow {
                             configure_stack_window(window, cx, view.active_preview_count());
                             cx.notify();
                             view.revealed
+                                && view
+                                    .previews
+                                    .iter()
+                                    .find(|preview| preview.id == id)
+                                    .is_some_and(|preview| !preview.thumbnail_loading)
                         })
                         .ok()
                 });
@@ -373,12 +600,23 @@ impl CapturePreviewWindow {
                         preview.video = None;
                     }
                 }
+                let thumbnail_loads = restart_screenshot_thumbnail_loads(&mut previews);
                 let ids: Vec<u64> = previews
                     .iter()
                     .filter(|preview| preview.kind == PreviewKind::Video)
                     .map(|preview| preview.id)
                     .collect();
                 Self::open_stack_window(cx, previews);
+                for (id, path, generation, canceled, ready_sender) in thumbnail_loads {
+                    Self::load_screenshot_thumbnails(
+                        id,
+                        path,
+                        generation,
+                        canceled,
+                        ready_sender,
+                        cx,
+                    );
+                }
                 for id in ids {
                     pump_video_preview(cx, id);
                 }
@@ -550,7 +788,12 @@ fn reveal_preview_when_ready(
 
 #[cfg(windows)]
 fn fail_preview_reveal(window: &mut Window, view: Entity<CapturePreviewWindow>, cx: &mut App) {
-    let failure_body = view.update(cx, |view, _| preview_open_failure_body(&view.previews));
+    let failure_body = view.update(cx, |view, _| {
+        for preview in &mut view.previews {
+            cancel_thumbnail_load(preview);
+        }
+        preview_open_failure_body(&view.previews)
+    });
     registry::forget(WindowKind::CapturePreview, cx);
     window.remove_window();
     crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
@@ -570,6 +813,7 @@ fn reveal_preview_stack_view(
         Some(
             view.previews
                 .iter()
+                .filter(|preview| !preview.thumbnail_loading)
                 .map(|preview| (preview.id, preview.dismiss_token.clone()))
                 .collect::<Vec<_>>(),
         )
@@ -602,6 +846,7 @@ fn schedule_revealed_previews(handle: AnyWindowHandle, cx: &mut App) {
                     view.revealed.then(|| {
                         view.previews
                             .iter()
+                            .filter(|preview| !preview.thumbnail_loading)
                             .map(|preview| (preview.id, preview.dismiss_token.clone()))
                             .collect::<Vec<_>>()
                     })
@@ -692,7 +937,8 @@ fn dismiss_verdict(
                 generation,
                 preview.hovered,
                 window.is_window_hovered(),
-                preview.busy
+                preview.thumbnail_loading
+                    || preview.busy
                     || preview.completed.is_some()
                     || view
                         .display_menu
@@ -1232,10 +1478,18 @@ const BLUR_SIGMA: f32 = 12.0;
 /// Scaling first matters: `backdrop-blur-md` blurs the *rendered* pixels, so
 /// blurring a 3440x1440 capture and then shrinking it to 200x140 would come out
 /// almost sharp.
-fn load_blurred_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
-    let bytes = std::fs::read(path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?;
-    // `object_fit: Cover` crops rather than squashes, so match it here.
+fn load_preview_thumbnails(
+    path: &Path,
+) -> (
+    Option<Arc<gpui::RenderImage>>,
+    Option<Arc<gpui::RenderImage>>,
+) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return (None, None);
+    };
+    let Ok(decoded) = image::load_from_memory(&bytes) else {
+        return (None, None);
+    };
     let scaled = decoded
         .resize_to_fill(
             PREVIEW_WIDTH as u32,
@@ -1243,33 +1497,19 @@ fn load_blurred_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
             image::imageops::FilterType::Triangle,
         )
         .to_rgba8();
-
-    let mut pixmap = crate::editor::export::from_rgba(&scaled)?;
-    crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
-    let mut buffer = crate::editor::export::to_rgba(&pixmap);
-    // `RenderImage` wants BGRA, the same swap `load_thumbnail` makes.
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    let frame = image::Frame::new(buffer);
-    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
+    let blurred = crate::editor::export::from_rgba(&scaled).map(|mut pixmap| {
+        crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
+        render_thumbnail(crate::editor::export::to_rgba(&pixmap))
+    });
+    (Some(render_thumbnail(scaled)), blurred)
 }
 
-fn load_thumbnail(path: &PathBuf) -> Option<Arc<gpui::RenderImage>> {
-    let bytes = std::fs::read(path).ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?;
-    let mut buffer = decoded
-        .resize_to_fill(
-            PREVIEW_WIDTH as u32,
-            PREVIEW_HEIGHT as u32,
-            image::imageops::FilterType::Triangle,
-        )
-        .to_rgba8();
-    for pixel in buffer.as_chunks_mut::<4>().0 {
+fn render_thumbnail(mut image: image::RgbaImage) -> Arc<gpui::RenderImage> {
+    for pixel in image.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let frame = image::Frame::new(buffer);
-    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
+    let frame = image::Frame::new(image);
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]))
 }
 
 /// The preset the user starred, which is what `usePolishCopy` looks up via
@@ -1378,6 +1618,7 @@ fn begin_remove_preview(
     if view.previews[index].dismiss_animation.is_some() {
         return;
     }
+    cancel_thumbnail_load(&mut view.previews[index]);
     view.clear_native_tooltip(window);
     if view
         .display_menu
@@ -1471,6 +1712,9 @@ fn remove_preview_now(
     window: &mut Window,
     cx: &mut Context<CapturePreviewWindow>,
 ) {
+    if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
+        cancel_thumbnail_load(preview);
+    }
     view.previews.retain(|preview| preview.id != id);
     if view.previews.is_empty() {
         registry::forget(WindowKind::CapturePreview, cx);
@@ -1675,6 +1919,14 @@ impl CapturePreviewWindow {
         } else {
             preview.image.as_ref()
         };
+        let placeholder = if preview.thumbnail_loading {
+            crate::ui::icon::spinner_element(
+                gpui::ElementId::Name(format!("capture-preview-thumbnail-{id}").into()),
+                px(20.0),
+            )
+        } else {
+            icon_element(if is_video { "film" } else { "image" }, px(48.0))
+        };
         if !is_video {
             let drag = PreviewDrag {
                 path: path.clone(),
@@ -1718,10 +1970,7 @@ impl CapturePreviewWindow {
                 .child(
                     div()
                         .when(is_video && show_controls, |el| el.opacity(1.0 - progress))
-                        .child(icon_element(
-                            if is_video { "film" } else { "image" },
-                            px(48.0),
-                        )),
+                        .child(placeholder),
                 )
                 .into_any_element(),
         });
@@ -2532,6 +2781,7 @@ mod tests {
 
         let _reveal_guard = HeadlessPreviewRevealGuard::enter();
         cx.update(|cx| CapturePreviewWindow::open(cx, capture_path.clone()));
+        cx.run_until_parked();
         let handle = cx
             .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
             .expect("headless preview window stays registered");
@@ -2540,6 +2790,19 @@ mod tests {
             .expect("capture preview window")
             .root(&mut cx)
             .expect("capture preview root");
+        let thumbnail_ready = handle
+            .downcast::<CapturePreviewWindow>()
+            .expect("capture preview window")
+            .update(&mut cx, |view, _, _| {
+                let preview = &mut view.previews[0];
+                (
+                    !preview.thumbnail_loading && preview.image.is_some(),
+                    preview.thumbnail_ready.take(),
+                )
+            })
+            .unwrap();
+        assert!(thumbnail_ready.0);
+        assert!(thumbnail_ready.1.unwrap().try_recv().is_ok());
         let state = view.update(&mut cx, |view, _| {
             view.revealed = false;
             for preview in &view.previews {
@@ -3404,6 +3667,67 @@ mod tests {
         assert!(super::video_thumbnail(&empty).is_none());
     }
 
+    #[test]
+    fn single_decode_thumbnails_match_the_previous_two_decode_output() {
+        let directory = tempfile::tempdir().unwrap();
+        for (index, (width, height, translucent)) in
+            [(640, 360, false), (90, 240, true), (180, 180, true)]
+                .into_iter()
+                .enumerate()
+        {
+            let path = directory.path().join(format!("fixture-{index}.png"));
+            let fixture = image::RgbaImage::from_fn(width, height, |x, y| {
+                let alpha = if translucent {
+                    ((x + y) % 5 * 63) as u8
+                } else {
+                    255
+                };
+                image::Rgba([
+                    (x.wrapping_mul(7) % 256) as u8,
+                    (y.wrapping_mul(11) % 256) as u8,
+                    ((x + y).wrapping_mul(3) % 256) as u8,
+                    alpha,
+                ])
+            });
+            fixture.save(&path).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let expected_thumbnail = render_thumbnail(
+                image::load_from_memory(&bytes)
+                    .unwrap()
+                    .resize_to_fill(
+                        PREVIEW_WIDTH as u32,
+                        PREVIEW_HEIGHT as u32,
+                        image::imageops::FilterType::Triangle,
+                    )
+                    .to_rgba8(),
+            );
+            let mut expected_blur = image::load_from_memory(&bytes)
+                .unwrap()
+                .resize_to_fill(
+                    PREVIEW_WIDTH as u32,
+                    PREVIEW_HEIGHT as u32,
+                    image::imageops::FilterType::Triangle,
+                )
+                .to_rgba8();
+            let mut pixmap = crate::editor::export::from_rgba(&expected_blur).unwrap();
+            crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
+            expected_blur = crate::editor::export::to_rgba(&pixmap);
+            let expected_blur = render_thumbnail(expected_blur);
+
+            let (thumbnail, blurred) = load_preview_thumbnails(&path);
+            assert_eq!(
+                thumbnail.unwrap().as_bytes(0),
+                expected_thumbnail.as_bytes(0),
+                "thumbnail pixels differ for {width}x{height}, translucent={translucent}"
+            );
+            assert_eq!(
+                blurred.unwrap().as_bytes(0),
+                expected_blur.as_bytes(0),
+                "blurred pixels differ for {width}x{height}, translucent={translucent}"
+            );
+        }
+    }
+
     #[herogpui::test]
     fn open_video_stacks_a_recording_preview(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
@@ -3441,6 +3765,11 @@ mod tests {
             kind: super::PreviewKind::Screenshot,
             path: PathBuf::new(),
             image: None,
+            thumbnail_loading: false,
+            thumbnail_cancel: None,
+            thumbnail_generation: 0,
+            #[cfg(all(test, feature = "parity"))]
+            thumbnail_ready: None,
             blurred: None,
             video: None,
             export_cancel: None,
@@ -3466,6 +3795,145 @@ mod tests {
             CapturePreviewWindow::control_frame(&mut preview, false, false, now),
             (true, 0.75, false)
         );
+    }
+
+    #[test]
+    fn canceled_or_removed_thumbnail_generation_cannot_be_applied() {
+        let now = Instant::now();
+        let path = PathBuf::from("capture.png");
+        let (cancel, canceled) = smol::channel::bounded(1);
+        let mut preview = CapturePreview {
+            id: 71,
+            kind: PreviewKind::Screenshot,
+            path: path.clone(),
+            image: None,
+            thumbnail_loading: true,
+            thumbnail_cancel: Some(cancel),
+            thumbnail_generation: 9,
+            #[cfg(all(test, feature = "parity"))]
+            thumbnail_ready: None,
+            blurred: None,
+            video: None,
+            export_cancel: None,
+            hover_progress: 0.0,
+            last_frame: None,
+            hovered: false,
+            busy: false,
+            completed: None,
+            export_progress: None,
+            dismiss_token: Arc::new(AtomicU64::new(0)),
+            entered_at: now,
+            layout_y: None,
+            layout_animation: None,
+            dismiss_animation: None,
+        };
+        assert!(thumbnail_preview_matches(&preview, 71, &path, 9));
+
+        cancel_thumbnail_load(&mut preview);
+
+        assert!(canceled.try_recv().is_ok());
+        assert!(!thumbnail_preview_matches(&preview, 71, &path, 9));
+        assert!(thumbnail_preview_mut(&mut [], 71, &path, 9).is_none());
+    }
+
+    #[test]
+    fn thumbnail_decode_gate_is_one_slot_per_app() {
+        let mut first_app = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        let slots = first_app.update(preview_thumbnail_decode_slots);
+        let same_app_slots = first_app.update(preview_thumbnail_decode_slots);
+        assert!(Arc::ptr_eq(&slots, &same_app_slots));
+
+        let mut second_app = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        let other_app_slots = second_app.update(preview_thumbnail_decode_slots);
+        assert!(!Arc::ptr_eq(&slots, &other_app_slots));
+
+        smol::block_on(async {
+            let first = slots.acquire().await;
+            let mut second = Box::pin(slots.acquire());
+            assert!(smol::future::poll_once(second.as_mut()).await.is_none());
+            drop(first);
+            assert!(smol::future::poll_once(second.as_mut()).await.is_some());
+        });
+    }
+
+    #[cfg(feature = "parity")]
+    #[test]
+    fn queued_thumbnail_cancel_and_reopen_reuses_the_app_decode_gate() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("first.png");
+        let second_path = directory.path().join("second.png");
+        image::RgbaImage::new(32, 24).save(&first_path).unwrap();
+        image::RgbaImage::new(24, 32).save(&second_path).unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let _reveal_guard = HeadlessPreviewRevealGuard::enter();
+        let decode_slots = cx.update(preview_thumbnail_decode_slots);
+        let held_slot = smol::block_on(decode_slots.acquire());
+
+        cx.update(|cx| CapturePreviewWindow::open(cx, first_path));
+        cx.run_until_parked();
+        let first_handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .expect("first preview stack");
+        assert!(first_handle
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(&mut cx, |view, _, _| view.previews[0].thumbnail_loading)
+            .unwrap());
+        first_handle
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(&mut cx, |view, window, cx| {
+                for preview in &mut view.previews {
+                    cancel_thumbnail_load(preview);
+                }
+                view.previews.clear();
+                registry::forget(WindowKind::CapturePreview, cx);
+                window.remove_window();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.update(|cx| CapturePreviewWindow::open(cx, second_path));
+        cx.run_until_parked();
+        let second_handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .expect("reopened preview stack");
+        let ready = second_handle
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(&mut cx, |view, _, _| {
+                assert!(view.previews[0].thumbnail_loading);
+                view.previews[0].thumbnail_ready.take().unwrap()
+            })
+            .unwrap();
+        drop(held_slot);
+        cx.run_until_parked();
+
+        assert!(ready.try_recv().is_ok());
+        assert!(second_handle
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(&mut cx, |view, _, _| {
+                !view.previews[0].thumbnail_loading && view.previews[0].image.is_some()
+            })
+            .unwrap());
     }
 
     /// The whole point of the transition is that it takes 200ms, so a full

@@ -1732,7 +1732,7 @@ wheel input, capture and pixel-by-pixel PNG verification; its first CI step
 passed in [run `43586226485`](https://github.com/Porabuild/Poratake/actions/runs/43586226485).
 The four-frame extension passed its native step in
 [run `43590070286`](https://github.com/Porabuild/Poratake/actions/runs/43590070286);
-the remaining hosted checks are still running.
+all active jobs passed, including the visual matrix.
 A candidate header fix corrected that fixture but corrupted 256 pixels
 when an animated body block touched the footer, so it was not adopted. Native
 fixed-header stitching remains open. A stricter scratch variant also inferred a
@@ -1744,6 +1744,13 @@ differed in 40,960 pixels. Pixel matching alone cannot distinguish that pair.
 A proposed guard stopped the corrupt header fixture, but also stopped a valid
 8px scroll whose naturally repeated top and bottom rows looked like fixed UI;
 that guard was not adopted.
+
+Capture-preview thumbnails now decode once on a background worker. On synthetic
+noisy PNGs, 12 warm samples measured median generation at 70 ms versus 135 ms
+for 4K, and 283 ms versus 561 ms for 8K. Normal and blurred thumbnail bytes
+matched the previous path in the tested fixtures. Peak measured allocation was
+approximately unchanged; these measurements exclude GPUI upload and full-app
+interaction, so they do not establish end-to-end responsiveness.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
