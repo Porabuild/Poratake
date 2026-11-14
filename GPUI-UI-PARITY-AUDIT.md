@@ -24,12 +24,12 @@ remaining effort. Partial work does not count as a completed gate.
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
-| Reviewed visual coverage             | Done   | Hosted CI at `e3e5775f` passed 16 Windows profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                           |
+| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                  |
 | Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Open   | All active jobs passed at `e3e5775f`. A later Windows run timed out on reopened-editor readiness before the visual matrix; the final review must check the actual PR head.  |
+| Hosted code-and-baseline CI          | Open   | All active jobs passed at `a2cea4c5`. Windows passed at `5f50562a`, but macOS failed Clippy; the correction and attachment tests need CI on the current PR head.            |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
@@ -1654,14 +1654,18 @@ leave a partial destination with an undiscovered temporary backup. macOS and
 Linux use same-file recovery for returned write failures as well; 13 standalone
 Linux filesystem tests passed in WSL, and the integrated Linux job passed in
 [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43605856597). The
-macOS ACL tests still need hosted verification: the macOS build passed in that
-run, but Clippy stopped on a C-string literal before tests. The literal has been
-corrected and needs another hosted run. Unix recovery is not crash-atomic,
+macOS ACL tests still need hosted verification. The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/43610852822)
+passed Clippy, but both ACL fixtures failed to parse before reaching the recovery
+path. Their test input syntax has been corrected. Unix recovery is not crash-atomic,
 and it refuses overwrites where a private backup cannot be secured. This includes
 some writable ACL-managed directories owned by another user; write-only existing
 files also fail before modification because they cannot be backed up.
 A hosted Windows scratch probe found that unprivileged `ReplaceFileW` removed a
 seeded audit ACE, so it is not used for this save path.
+
+The same run stopped the native Windows attachment test before capture: another
+runner window covered the fixture after the editor hid. The test now places the
+fixture directly below the selector and still needs hosted verification.
 
 The [Windows run at `50f9db03`](https://github.com/Porabuild/Poratake/actions/runs/43603549394)
 stopped before the visual matrix: its pre-marker preview comparison counted 493

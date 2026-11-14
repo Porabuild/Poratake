@@ -1118,6 +1118,18 @@ public static class PoratakeTooltipFixture {
         }
     }
 
+    public static void PositionScreenshotWindowBehind(IntPtr hwnd, IntPtr behindWindow, uint processId, uint behindProcessId) {
+        if (hwnd == IntPtr.Zero || behindWindow == IntPtr.Zero) throw new InvalidOperationException("The attachment fixture or z-order anchor is empty.");
+        uint ownerProcessId;
+        GetWindowThreadProcessId(hwnd, out ownerProcessId);
+        uint actualBehindProcessId;
+        GetWindowThreadProcessId(behindWindow, out actualBehindProcessId);
+        if (ownerProcessId != processId || actualBehindProcessId != behindProcessId) throw new InvalidOperationException("Refusing to reposition an attachment fixture outside the test-owned windows.");
+        if (!SetWindowPos(hwnd, behindWindow, 0, 0, 0, 0, 0x0213) || !IsWindowVisible(hwnd)) {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Could not place the attachment fixture immediately behind the test-owned window.");
+        }
+    }
+
     public static IntPtr CreateBackdrop(Rect rect, IntPtr owner) {
         uint style = 0x98000006u;
         IntPtr hwnd = CreateWindowEx(0x080000A0, "STATIC", "", style, rect.Left, rect.Top,
@@ -1899,6 +1911,13 @@ function Open-WorkflowEditorAttachSelector([System.Diagnostics.Process]$app, [In
     if ($selectorRoot -eq [IntPtr]::Zero) { $selectorRoot = $selectorHit }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($selectorRoot)) { throw 'Could not foreground the native attachment selector.' }
     Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $selectorRoot } 3000 'The native attachment selector did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipFixture]::PositionScreenshotWindowBehind($script:workflowFixtureWindow, $selectorRoot, [uint32]$PID, [uint32]$app.Id)
+    $selectorCenterHit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+    $selectorCenterProcess = [uint32]0
+    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($selectorCenterHit, [ref]$selectorCenterProcess)
+    if ($selectorCenterProcess -ne [uint32]$app.Id -or [PoratakeTooltipProbe]::GetAncestor($selectorCenterHit, 2) -ne $selectorRoot) {
+        throw 'Re-anchoring the fixture beneath the selector changed native hit testing away from the selector.'
+    }
     $selection = Get-WorkflowAttachmentSelection
     if ($beforeColors -and $beforeColors.Count -eq 4) {
         $path = Join-Path $captureRoot "$proofPrefix-before-live-update.png"
@@ -1970,9 +1989,13 @@ function Select-WorkflowEditorAttachArea([System.Diagnostics.Process]$app, [IntP
     [PoratakeTooltipProbe]::Drag($start.X, $start.Y, $end.X, $end.Y)
     Wait-Until {
         if ($app.HasExited) { throw 'The screenshot editor app exited before the attachment restored its editor.' }
-        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
-        return [PoratakeTooltipProbe]::IsWindowVisible($editorHandle) -and $script:workflowFixtureWindow -ne [IntPtr]::Zero -and [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -and [PoratakeTooltipProbe]::GetAncestor($hit, 2) -eq $editorHandle
+        return [PoratakeTooltipProbe]::IsWindowVisible($editorHandle)
     } 15000 'The editor did not return after the attachment selection.' | Out-Null
+    [PoratakeTooltipFixture]::PositionScreenshotWindowBehind($script:workflowFixtureWindow, $editorHandle, [uint32]$PID, [uint32]$app.Id)
+    $restoreHit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -or [PoratakeTooltipProbe]::GetAncestor($restoreHit, 2) -ne $editorHandle) {
+        throw 'The editor did not regain hit testing over the restored attachment fixture.'
+    }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)) { throw 'Could not foreground the screenshot editor after attachment.' }
     Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $editorHandle } 3000 'The screenshot editor did not regain foreground input after attachment.' | Out-Null
 }
@@ -3708,9 +3731,13 @@ try {
     $null = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-cancel' $null $null
     [PoratakeTooltipProbe]::PressKey(0x1B)
     Wait-Until {
-        $hit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
-        return [PoratakeTooltipProbe]::IsWindowVisible($reopenedEditor.Handle) -and [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -and [PoratakeTooltipProbe]::GetAncestor($hit, 2) -eq $reopenedEditor.Handle
+        return [PoratakeTooltipProbe]::IsWindowVisible($reopenedEditor.Handle)
     } 10000 'Cancelling the editor attachment did not restore the original editor window.' | Out-Null
+    [PoratakeTooltipFixture]::PositionScreenshotWindowBehind($script:workflowFixtureWindow, $reopenedEditor.Handle, [uint32]$PID, [uint32]$reopenApplication.Id)
+    $cancelRestoreHit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -or [PoratakeTooltipProbe]::GetAncestor($cancelRestoreHit, 2) -ne $reopenedEditor.Handle) {
+        throw 'The editor did not regain hit testing over the fixture after cancelling attachment.'
+    }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($reopenedEditor.Handle)) { throw 'Could not foreground the screenshot editor after cancelling attachment.' }
     Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $reopenedEditor.Handle } 3000 'The screenshot editor did not regain foreground input after attachment cancellation.' | Out-Null
     $captureCountAfterCancel = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' }).Count

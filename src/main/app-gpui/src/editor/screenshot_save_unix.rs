@@ -1024,7 +1024,7 @@ mod tests {
         fs::write(&target_path, b"original screenshot").unwrap();
         set_test_acl(
             directory.path(),
-            "!#acl 1\ngroup:everyone deny delete\ngroup:everyone allow read,readattr,readextattr,file_inherit,directory_inherit",
+            "!#acl 1\ngroup::everyone::deny:delete\ngroup::everyone::allow,file_inherit,directory_inherit:read,readattr,readextattr",
         );
         let parent = open_backup_parent_without_acl_gate(directory.path()).unwrap();
         let target = File::open(&target_path).unwrap();
@@ -1068,7 +1068,7 @@ mod tests {
         let directory = TestDir::new();
         set_test_acl(
             directory.path(),
-            "!#acl 1\ngroup:everyone allow delete_child",
+            "!#acl 1\ngroup::everyone::allow:delete_child",
         );
         let parent = OpenOptions::new()
             .read(true)
@@ -1084,7 +1084,11 @@ mod tests {
         let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         let acl_text = std::ffi::CString::new(acl_text).unwrap();
         let acl = unsafe { macos_acl::acl_from_text(acl_text.as_ptr()) };
-        assert!(!acl.is_null(), "could not build test ACL");
+        assert!(
+            !acl.is_null(),
+            "could not build test ACL: {}",
+            io::Error::last_os_error()
+        );
         let result =
             unsafe { macos_acl::acl_set_file(path.as_ptr(), MACOS_ACL_TYPE_EXTENDED, acl) };
         unsafe { macos_acl::acl_free(acl) };
