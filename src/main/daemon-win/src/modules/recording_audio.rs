@@ -1790,12 +1790,25 @@ mod tests {
         );
 
         let _apartment = ComApartment::initialize().expect("initialize Media Foundation MTA");
-        let mut encoder = AudioEncoder::new(&output_path).expect("create AAC audio-only writer");
+        let encoder = AudioEncoder::new(&output_path).expect("create AAC audio-only writer");
+        let clock = Arc::new(Mutex::new(AudioClockState::default()));
+        clock.lock().expect("lock fixture audio clock").sync(0);
+        let format = AudioFormat {
+            sample_rate: AAC_SAMPLE_RATE,
+            channels: AAC_CHANNELS,
+            bits_per_sample: AAC_BITS_PER_SAMPLE,
+            valid_bits_per_sample: AAC_BITS_PER_SAMPLE,
+            block_align: AAC_BLOCK_ALIGN,
+            channel_mask: Some(0x3),
+            floating_point: false,
+        };
+        let mut processor = AudioProcessor::new(encoder, format, clock);
         let duration_frames = AAC_SAMPLE_RATE * 2;
         let chunk_frames = AAC_SAMPLE_RATE / 10;
         for start in (0..duration_frames).step_by(chunk_frames as usize) {
             let frames = chunk_frames.min(duration_frames - start);
             let mut pcm = Vec::with_capacity(frames as usize * AAC_BLOCK_ALIGN as usize);
+            let mut frequency_for_packet = None;
             for frame in start..start + frames {
                 let time = frame as f64 / f64::from(AAC_SAMPLE_RATE);
                 let frequency = if (0.2..0.7).contains(&time) {
@@ -1805,6 +1818,9 @@ mod tests {
                 } else {
                     None
                 };
+                if frequency_for_packet.is_none() && frequency.is_some() {
+                    frequency_for_packet = frequency;
+                }
                 let sample = frequency
                     .map(|frequency| {
                         let phase = frame as f64 * frequency * std::f64::consts::TAU
@@ -1815,11 +1831,38 @@ mod tests {
                 pcm.extend_from_slice(&sample.to_le_bytes());
                 pcm.extend_from_slice(&sample.to_le_bytes());
             }
-            encoder
-                .write(&pcm, frames, frames_to_hns(start, AAC_SAMPLE_RATE))
-                .expect("write deterministic system-audio fixture tone");
+            if frequency_for_packet.is_none()
+                && (AAC_SAMPLE_RATE * 8 / 10..AAC_SAMPLE_RATE * 9 / 10).contains(&start)
+            {
+                processor
+                    .process(AudioPacket {
+                        data: std::ptr::null_mut(),
+                        frames,
+                        flags: AUDCLNT_BUFFERFLAGS_SILENT.0 as u32,
+                        qpc_position: frames_to_hns(start, AAC_SAMPLE_RATE),
+                    })
+                    .expect("write a silent loopback packet");
+                assert_eq!(
+                    processor.next_time,
+                    frames_to_hns(start + frames, AAC_SAMPLE_RATE)
+                );
+                continue;
+            }
+            if frequency_for_packet.is_none() {
+                continue;
+            }
+            processor
+                .process(AudioPacket {
+                    data: pcm.as_mut_ptr(),
+                    frames,
+                    flags: 0,
+                    qpc_position: frames_to_hns(start, AAC_SAMPLE_RATE),
+                })
+                .expect("process deterministic system-audio fixture tone");
         }
-        let staged = encoder.finish().expect("finalize audio-only M4A fixture");
+        let staged = processor
+            .finish(2.0)
+            .expect("finalize processed audio-only M4A fixture");
         assert_eq!(staged.output_path, output_path);
         std::fs::rename(&staged.temporary_path, &staged.output_path)
             .expect("publish audio-only M4A fixture");
