@@ -689,6 +689,90 @@ mod tests {
     use super::*;
 
     #[cfg(windows)]
+    fn first_audio_sample_time(path: &Path) -> i64 {
+        use windows::core::{HSTRING, PCWSTR};
+        use windows::Win32::Media::MediaFoundation::*;
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+        let path = path.to_path_buf();
+        std::thread::Builder::new()
+            .name("first-frame-audio-timestamp".into())
+            .spawn(move || unsafe {
+                if let Err(error) = CoInitializeEx(None, COINIT_MULTITHREADED).ok() {
+                    return Err(error.to_string());
+                }
+                if let Err(error) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+                    CoUninitialize();
+                    return Err(error.to_string());
+                }
+                let result = (|| -> Result<i64, String> {
+                    let wide = HSTRING::from(path.as_os_str());
+                    let reader = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), None)
+                        .map_err(|error| error.to_string())?;
+                    reader
+                        .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
+                        .map_err(|error| error.to_string())?;
+                    reader
+                        .SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32, true)
+                        .map_err(|error| error.to_string())?;
+
+                    let output = MFCreateMediaType().map_err(|error| error.to_string())?;
+                    output
+                        .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)
+                        .map_err(|error| error.to_string())?;
+                    output
+                        .SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)
+                        .map_err(|error| error.to_string())?;
+                    output
+                        .SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)
+                        .map_err(|error| error.to_string())?;
+                    output
+                        .SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, AUDIO_SAMPLE_RATE)
+                        .map_err(|error| error.to_string())?;
+                    output
+                        .SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, AUDIO_CHANNELS)
+                        .map_err(|error| error.to_string())?;
+                    reader
+                        .SetCurrentMediaType(
+                            MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32,
+                            None,
+                            &output,
+                        )
+                        .map_err(|error| error.to_string())?;
+
+                    loop {
+                        let mut flags = 0u32;
+                        let mut timestamp = 0i64;
+                        let mut sample = None;
+                        reader
+                            .ReadSample(
+                                MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32,
+                                0,
+                                None,
+                                Some(&mut flags),
+                                Some(&mut timestamp),
+                                Some(&mut sample),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                            return Err("export has no audio samples".to_string());
+                        }
+                        if sample.is_some() {
+                            return Ok(timestamp);
+                        }
+                    }
+                })();
+                let _ = MFShutdown();
+                CoUninitialize();
+                result
+            })
+            .expect("start audio timestamp reader")
+            .join()
+            .expect("audio timestamp reader thread")
+            .expect("read exported audio sample timestamp")
+    }
+
+    #[cfg(windows)]
     #[test]
     fn audio_preview_and_export_follow_volume_changes_across_a_cut() {
         use crate::video::audio_tracks::VolumeSource;
@@ -897,6 +981,133 @@ mod tests {
                 "keyboard click export error {error} at {time}s"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn first_frame_intro_matches_preview_and_delays_exported_audio() {
+        use crate::video::audio_tracks::VolumeSource;
+        use crate::video::preview_audio::{self, RebuildInputs};
+        use crate::windows::video_editor::{model, preview};
+        use std::collections::HashMap;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("First frame workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut encoder = Encoder::create(
+            &project::recording_video_path(&project),
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: true,
+            },
+        )
+        .unwrap();
+        let samples: Vec<i16> = (0..AUDIO_SAMPLE_RATE * 2)
+            .flat_map(|frame| {
+                let phase =
+                    frame as f64 * 440. * std::f64::consts::TAU / f64::from(AUDIO_SAMPLE_RATE);
+                let sample = (phase.sin() * 5000.) as i16;
+                [sample, sample]
+            })
+            .collect();
+        encoder.write_audio(audio::to_bytes(&samples), 0).unwrap();
+        for index in 0..24 {
+            let color = if index < 12 {
+                [32, 64, 192, 255]
+            } else {
+                [192, 64, 32, 255]
+            };
+            encoder.write_frame(color.repeat(320 * 180)).unwrap();
+        }
+        encoder.finish().unwrap();
+
+        let first_frame_path = project.join("intro.png");
+        image::RgbaImage::from_pixel(320, 180, image::Rgba([240, 32, 48, 255]))
+            .save(&first_frame_path)
+            .unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(2.),
+            segments: vec![model::Segment::spanning(2.)],
+            ..VideoEditorState::default()
+        };
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "12".into();
+        state.wallpaper.enabled = false;
+        state.audio_style.system_audio_volume = 1.0;
+        state.audio_style.mic_audio_enabled = false;
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some(first_frame_path.to_string_lossy().into_owned());
+        state.first_frame.fit = "stretch".into();
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+
+        let frame_duration = 1.0 / f64::from(crate::video::export::frame_rate(&state));
+        let mut preview = preview::Source::open(&project, model::load_state(&project)).unwrap();
+        let preview_stems =
+            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        let system_stem = preview_stems
+            .stems
+            .iter()
+            .find(|stem| stem.volume == VolumeSource::SystemAudio)
+            .expect("embedded source audio is available in preview");
+        let tone_window = AUDIO_SAMPLE_RATE as usize / 5 * 2;
+        assert!(audio::tone_strength(&system_stem.samples[..tone_window], 440.) > 0.5);
+
+        let output = directory.path().join("first-frame-edited.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+
+        let exported = VideoDecoder::open(&output).unwrap();
+        assert!((exported.info().duration - (2.0 + frame_duration)).abs() < frame_duration / 2.0);
+        for (time, expected_color) in [
+            (0.0, [48_u8, 32, 240]),
+            (frame_duration, [32, 64, 192]),
+            (frame_duration + 1.0, [192, 64, 32]),
+        ] {
+            let preview_frame = preview.compose(time, None).unwrap();
+            let expected = to_bgra(&preview_frame);
+            let actual = exported.frame_at(time).unwrap();
+            let error: u64 = expected
+                .iter()
+                .zip(actual.bgra.iter())
+                .map(|(expected, actual)| u64::from(expected.abs_diff(*actual)))
+                .sum();
+            let mean = error as f64 / expected.len() as f64;
+            assert!(mean < 4.0, "preview/export error {mean} at {time}s");
+            let pixel = (90 * exported.info().width as usize + 160) * 4;
+            for (channel, color) in expected_color.into_iter().enumerate() {
+                assert!(
+                    expected[pixel + channel].abs_diff(color) <= 3,
+                    "preview color differs at {time}s: {:?}",
+                    &expected[pixel..pixel + 3]
+                );
+                assert!(
+                    actual.bgra[pixel + channel].abs_diff(color) <= 8,
+                    "decoded export color differs at {time}s: {:?}",
+                    &actual.bgra[pixel..pixel + 3]
+                );
+            }
+        }
+
+        let first_audio_time = first_audio_sample_time(&output) as f64 / 10_000_000.0;
+        let aac_packet_duration = 1024.0 / f64::from(AUDIO_SAMPLE_RATE);
+        assert!(
+            (first_audio_time - frame_duration).abs() <= aac_packet_duration,
+            "decoded audio starts at {first_audio_time}s, expected first-frame offset {frame_duration}s"
+        );
+        let exported_audio = audio::decode(&output).expect("decoded exported audio");
+        assert!(audio::tone_strength(&exported_audio[..tone_window], 440.) > 0.5);
     }
 
     #[cfg(windows)]

@@ -837,6 +837,9 @@ remain unverified. A separate local headless test generated a genuine two-second
 audio-only M4A with the Windows daemon audio processor and encoder, then verified sidecar selection,
 both tone frequencies, duration and preview/export audio in GPUI. This does not
 exercise a live audio endpoint.
+A local Windows test now compares preview and decoded export across a one-frame
+intro and checks the first audio sample timestamp within one AAC packet. It does
+not exercise live playback or recording.
 The normal local visual matrix also passed all 16 cases and 2,136 exact images
 after the audio, attachment and monitor fixes, without updating baselines.
 Most GPUI surfaces use HeroGPUI tooltips and shared helpers. The tray icon,
