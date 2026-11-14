@@ -1658,6 +1658,12 @@ and it refuses overwrites where a private backup cannot be secured.
 A hosted Windows scratch probe found that unprivileged `ReplaceFileW` removed a
 seeded audit ACE, so it is not used for this save path.
 
+The [Windows run at `50f9db03`](https://github.com/Porabuild/Poratake/actions/runs/43603549394)
+stopped before the visual matrix: its pre-marker preview comparison counted 493
+small color changes against a limit of 377. The harness now tolerates those small
+changes while checking the actual initial marker against a decoded frame; the
+corrected workflow still needs hosted verification.
+
 In an isolated native Windows editor, the inset slider responded to a pointer
 click. Two control-tool set-value attempts left its value unchanged, but that
 tool documents set-value for text fields, not numeric range controls. The

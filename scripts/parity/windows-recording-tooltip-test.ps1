@@ -3625,12 +3625,12 @@ try {
             Capture-TooltipArea "video-editor-pre-marker-$script:videoBaselineCaptureAttempt-a" $videoEditorScreenBounds $first 5
             $firstCounts = Get-VideoTimelinePlayheadCounts $first ($baselineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
             if ($firstCounts.Target -lt 8 -or $firstCounts.Start -gt 6) { return $null }
-            $firstPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $first $videoClipBefore.Top 3
+            $firstPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $first $videoClipBefore.Top
             if ($firstPreview.Changed -gt [Math]::Ceiling($firstPreview.Checked * 0.005)) { return $null }
             Capture-TooltipArea "video-editor-pre-marker-$script:videoBaselineCaptureAttempt-b" $videoEditorScreenBounds $second 5
             $secondCounts = Get-VideoTimelinePlayheadCounts $second ($baselineRulerPoint.X - $videoEditorScreenBounds.Left) $videoClipBefore.Left $videoClipBefore.Top $videoClipBefore.Bottom
             $stablePreview = Get-VideoPreviewPixelComparison $first $second $videoClipBefore.Top 3
-            $secondPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $second $videoClipBefore.Top 3
+            $secondPreview = Get-VideoPreviewPixelComparison $videoBeforeTrimCapture $second $videoClipBefore.Top
             if ($secondCounts.Target -lt 8 -or $secondCounts.Start -gt 6 -or $stablePreview.Changed -gt [Math]::Ceiling($stablePreview.Checked * 0.005) -or $secondPreview.Changed -gt [Math]::Ceiling($secondPreview.Checked * 0.005)) { return $null }
             Copy-Item -LiteralPath $second -Destination $videoEditorPreMarkerCapture -Force -ErrorAction Stop
             Write-Host "Timeline ruler seek to ${videoPreviewBaselineTime}s is visible, stable and matches the pre-marker preview: target playhead pixels=$($secondCounts.Target)."

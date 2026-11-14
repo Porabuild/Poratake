@@ -1998,6 +1998,22 @@ mod tests {
                         preview_fiducial_match(&editor_preview, &fiducial_export, &search).expect(
                             "unique multicolor fiducial match in the actual GPUI video preview",
                         );
+                    let initial_marker_matches = marker_preview_sample_errors(
+                        &editor_preview,
+                        &frame,
+                        &manifest.capture_bounds,
+                        &manifest.marker_panel_bounds,
+                        &manifest.fiducial_bounds,
+                        preview_match,
+                    );
+                    let initial_marker_match_count = initial_marker_matches
+                        .iter()
+                        .filter(|error| **error <= 48.0)
+                        .count();
+                    assert!(
+                        initial_marker_match_count >= 16,
+                        "pre-marker editor preview did not show the initial marker state: {initial_marker_match_count}/18 matched"
+                    );
                     let preview_roi = image::imageops::crop_imm(
                         &editor_preview,
                         preview_match.left,
