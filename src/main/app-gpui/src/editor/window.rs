@@ -4941,6 +4941,92 @@ mod tests {
         );
     }
 
+    #[herogpui::test]
+    fn overlapping_highlight_selects_above_circle_without_mutating_saved_pixels(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::new(160, 120).save(&source).unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(source.to_str().unwrap(), window, cx);
+            editor.file_path.clear();
+            editor.tool = Tool::Select;
+            editor.history = annotations::AnnotationHistory::new(vec![
+                Annotation::Circle {
+                    id: "lower-circle".into(),
+                    x: 80.0,
+                    y: 60.0,
+                    radius: 30.0,
+                    stroke: "#ff0000".into(),
+                    stroke_width: 2.0,
+                    fill: Some("#ff0000".into()),
+                },
+                Annotation::Highlight {
+                    id: "top-highlight".into(),
+                    points: vec![30.0, 60.0, 130.0, 60.0],
+                    fill: "#0000ff".into(),
+                    opacity: 0.5,
+                    stroke_width: 20.0,
+                },
+            ]);
+            editor.sync_snapshot(cx);
+            editor
+        });
+        cx.settle();
+
+        let screen_point = |cx: &mut gpui::VisualTestContext, image_x: f32, image_y: f32| {
+            cx.update(|_, app| {
+                let editor = editor.read(app);
+                let bounds = editor.bounds.borrow().unwrap();
+                gpui::point(
+                    bounds.origin.x + px(image_x * editor.zoom),
+                    bounds.origin.y + px(image_y * editor.zoom),
+                )
+            })
+        };
+        let initial = cx.update(|_, app| {
+            let editor = editor.read(app);
+            (
+                editor.history.current().to_vec(),
+                editor.export_png().unwrap(),
+            )
+        });
+
+        let overlap = screen_point(cx, 80.0, 60.0);
+        cx.simulate_mouse_move(overlap, None, gpui::Modifiers::none());
+        cx.simulate_click(overlap, gpui::Modifiers::none());
+        cx.settle();
+        assert_eq!(
+            cx.update(|_, app| editor.read(app).selected_annotations.clone()),
+            ["top-highlight"]
+        );
+
+        let circle_only = screen_point(cx, 80.0, 44.0);
+        cx.simulate_mouse_move(circle_only, None, gpui::Modifiers::none());
+        cx.simulate_click(circle_only, gpui::Modifiers::none());
+        cx.settle();
+        assert_eq!(
+            cx.update(|_, app| editor.read(app).selected_annotations.clone()),
+            ["lower-circle"]
+        );
+
+        let final_state = cx.update(|_, app| {
+            let editor = editor.read(app);
+            (
+                editor.history.current().to_vec(),
+                editor.export_png().unwrap(),
+            )
+        });
+        assert_eq!(final_state.0, initial.0);
+        assert_eq!(final_state.1, initial.1);
+    }
+
     fn point(x: f32, y: f32) -> Point {
         Point { x, y }
     }
