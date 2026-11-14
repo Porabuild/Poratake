@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
+import { existsSync } from 'node:fs';
+import { type as osType } from 'node:os';
+import type * as NodeChildProcess from 'node:child_process';
 
 type Handler = (...args: unknown[]) => unknown;
 const ipcHandle: Record<string, Handler> = {};
@@ -17,6 +20,119 @@ const mockWriteFile = vi.fn();
 const mockUnlink = vi.fn();
 const mockGetExportAbortSignal = vi.fn();
 const exportEvent = { sender: { id: 1, send: mockSend } };
+const isWindowsHost = process.platform === 'win32' || osType() === 'Windows_NT';
+const pathSeparator = isWindowsHost ? '\\' : '/';
+const joinPath = (...parts: string[]): string => parts.join(pathSeparator);
+const bundledFfmpegCandidate = joinPath(
+  process.cwd(),
+  'src',
+  'main',
+  'binaries',
+  'ffmpeg',
+  isWindowsHost ? 'ffmpeg.exe' : 'ffmpeg'
+);
+const bundledFfmpegPath = existsSync(bundledFfmpegCandidate)
+  ? bundledFfmpegCandidate
+  : undefined;
+
+function pcmToneAmplitude(
+  bytes: Buffer,
+  frequency: number,
+  startFrame: number,
+  endFrame: number
+): number {
+  let sine = 0;
+  let cosine = 0;
+  for (let frame = startFrame; frame < endFrame; frame++) {
+    const sample = bytes.readInt16LE(frame * 2);
+    const phase = (2 * Math.PI * frequency * frame) / 48000;
+    sine += sample * Math.sin(phase);
+    cosine += sample * Math.cos(phase);
+  }
+  return (2 * Math.hypot(sine, cosine)) / (endFrame - startFrame);
+}
+
+function expectToneLevel(actual: number, expected: number): void {
+  expect(Math.abs(actual / expected - 1)).toBeLessThan(0.02);
+}
+
+function expectToneAbsent(actual: number, reference: number): void {
+  expect(actual).toBeLessThan(reference * 0.02);
+}
+
+function renderAudioMix(
+  execFile: typeof NodeChildProcess.execFileSync,
+  ffmpegPath: string,
+  filter: string,
+  secondFrequency: number,
+  secondDuration = '1'
+): Buffer {
+  return execFile(
+    ffmpegPath,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=black:s=16x16:r=1:d=1',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:sample_rate=48000:duration=1',
+      '-f',
+      'lavfi',
+      '-i',
+      `sine=frequency=${secondFrequency}:sample_rate=48000:duration=${secondDuration}`,
+      '-filter_complex',
+      filter,
+      '-map',
+      '[aout]',
+      '-t',
+      '1',
+      '-f',
+      's16le',
+      '-acodec',
+      'pcm_s16le',
+      '-ac',
+      '1',
+      'pipe:1',
+    ],
+    { maxBuffer: 1024 * 1024, timeout: 10000 }
+  );
+}
+
+function renderSingleAudioTrack(
+  execFile: typeof NodeChildProcess.execFileSync,
+  ffmpegPath: string,
+  frequency: number
+): Buffer {
+  return execFile(
+    ffmpegPath,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      `sine=frequency=${frequency}:sample_rate=48000:duration=1`,
+      '-map',
+      '0:a',
+      '-t',
+      '1',
+      '-f',
+      's16le',
+      '-acodec',
+      'pcm_s16le',
+      '-ac',
+      '1',
+      'pipe:1',
+    ],
+    { maxBuffer: 1024 * 1024, timeout: 10000 }
+  );
+}
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -260,9 +376,115 @@ describe('audio handlers', () => {
     const args = lastSpawnArgs();
     const command = args.join(' ');
     expect(command).toContain('volume=0.5');
-    expect(command).toContain('amix=inputs=2:duration=longest');
+    expect(command).toContain('amix=inputs=2:duration=longest:normalize=0');
     expect(command).toContain('apad');
   });
+
+  it('mux-audio preserves source levels for overlapping, muted, and ended tracks', async ({
+    skip,
+  }) => {
+    const { execFileSync, spawnSync } =
+      await vi.importActual<typeof NodeChildProcess>('node:child_process');
+    let ffmpegPath = bundledFfmpegPath;
+    if (!ffmpegPath) {
+      const probe = spawnSync('ffmpeg', ['-version'], {
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      if (probe.error?.code === 'ENOENT') {
+        skip('FFmpeg executable is not available');
+        return;
+      }
+      if (probe.error) throw probe.error;
+      if (probe.status !== 0) {
+        throw new Error(`FFmpeg probe failed: ${probe.stderr}`);
+      }
+      ffmpegPath = 'ffmpeg';
+    }
+    const { buildMuxAudioFilter } =
+      await import('@/main/capture/video/ipc/audio-handlers');
+    const baseline440 = renderSingleAudioTrack(execFileSync, ffmpegPath, 440);
+    const baseline880 = renderSingleAudioTrack(execFileSync, ffmpegPath, 880);
+    const overlapping = renderAudioMix(
+      execFileSync,
+      ffmpegPath,
+      buildMuxAudioFilter(2, [1, 1], 0) ?? '',
+      880
+    );
+    const muted = renderAudioMix(
+      execFileSync,
+      ffmpegPath,
+      buildMuxAudioFilter(2, [1, 0], 0) ?? '',
+      880
+    );
+    const ended = renderAudioMix(
+      execFileSync,
+      ffmpegPath,
+      buildMuxAudioFilter(2, [1, 1], 0) ?? '',
+      880,
+      '0.25'
+    );
+    for (const output of [
+      baseline440,
+      baseline880,
+      overlapping,
+      muted,
+      ended,
+    ]) {
+      expect(output.byteLength).toBe(48000 * 2);
+    }
+
+    const overlapStart = 2400;
+    const overlapEnd = 9600;
+    const tailStart = 24000;
+    const tailEnd = 43200;
+    const baseline440Overlap = pcmToneAmplitude(
+      baseline440,
+      440,
+      overlapStart,
+      overlapEnd
+    );
+    const baseline880Overlap = pcmToneAmplitude(
+      baseline880,
+      880,
+      overlapStart,
+      overlapEnd
+    );
+    expect(baseline440Overlap).toBeGreaterThan(1000);
+    expect(baseline880Overlap).toBeGreaterThan(1000);
+    expectToneLevel(
+      pcmToneAmplitude(overlapping, 440, overlapStart, overlapEnd),
+      baseline440Overlap
+    );
+    expectToneLevel(
+      pcmToneAmplitude(overlapping, 880, overlapStart, overlapEnd),
+      baseline880Overlap
+    );
+    expectToneLevel(
+      pcmToneAmplitude(ended, 440, overlapStart, overlapEnd),
+      baseline440Overlap
+    );
+    expectToneLevel(
+      pcmToneAmplitude(ended, 880, overlapStart, overlapEnd),
+      baseline880Overlap
+    );
+    expectToneLevel(
+      pcmToneAmplitude(muted, 440, overlapStart, overlapEnd),
+      baseline440Overlap
+    );
+    expectToneAbsent(
+      pcmToneAmplitude(muted, 880, overlapStart, overlapEnd),
+      baseline880Overlap
+    );
+    expectToneLevel(
+      pcmToneAmplitude(ended, 440, tailStart, tailEnd),
+      pcmToneAmplitude(baseline440, 440, tailStart, tailEnd)
+    );
+    expectToneAbsent(
+      pcmToneAmplitude(ended, 880, tailStart, tailEnd),
+      baseline880Overlap
+    );
+  }, 30_000);
 
   it('mux-audio rejects invalid track payloads', async () => {
     const { registerAudioHandlers } =
