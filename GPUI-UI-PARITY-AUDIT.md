@@ -174,6 +174,10 @@ passed Linux, macOS and the native Windows workflows. The visual cases passed th
 preview timing check but later closed previews in other headless capture workflows,
 which were outside the parity-only reveal guard. The guard now covers the whole
 headless parity context; native windows retain their reveal checks.
+[Hosted CI at `05bdabab`](https://github.com/Porabuild/Poratake/actions/runs/43556661556)
+passed all active jobs, including native Windows capture and recording workflows,
+the audio-only sidecar proof, and 16 visual profiles with 2,912 baseline
+comparisons. Windows packaging was skipped. Verify the final PR head separately.
 Video export, tray file selection, screenshot wallpaper and video media imports
 use asynchronous dialogs to avoid the same nested event-loop pattern. The other
 native selection and cancellation flows still need verification.
