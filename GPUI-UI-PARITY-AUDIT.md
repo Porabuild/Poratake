@@ -1729,7 +1729,9 @@ wheel input, capture and pixel-by-pixel PNG verification; its first CI step
 passed in [run `43586226485`](https://github.com/Porabuild/Poratake/actions/runs/43586226485).
 A candidate header fix corrected that fixture but corrupted 256 pixels
 when an animated body block touched the footer, so it was not adopted. Native
-fixed-header stitching remains open.
+fixed-header stitching remains open. A stricter scratch variant also inferred a
+footer on a no-footer page with a one-pixel animated marker, producing 40 wrong
+pixels; it was not adopted either.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
