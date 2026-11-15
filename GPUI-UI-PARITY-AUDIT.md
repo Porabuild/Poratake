@@ -33,7 +33,7 @@ release verification; routine PR checks do not run the matrix.
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Open   | All active jobs passed at `71ec03ef`; verify the current PR head before completion.                                                                                         |
+| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
@@ -1460,8 +1460,12 @@ Bugs fixed in this pass:
   Before the patch-local composition change, a whole-frame comparison of the
   inset fixture at simulated 100% DPI stayed within one level at those zooms
   when the blur was not clipped. The clipped variant differed outside the
-  checked region, reaching 56 levels at 137% and 55 at 150%. Repeat those
-  comparisons for the patch-local path; physical DPI remains unverified.
+  checked region, reaching 56 levels at 137% and 55 at 150%. A later whole-frame
+  comparison of the [hosted `b8dd8672` artifact](https://github.com/Porabuild/Poratake/actions/runs/43688781846)
+  found maxima of 23 and 20 levels,
+  with 238 of 20,988 and 381 of 25,056 pixels differing by more than two levels,
+  respectively, in both themes. These pixels remain outside the strict regional
+  assertion; physical DPI and the current head remain unverified.
   The shared blur kernel previously used the box width as its radius. Sampled
   Electron canvas edge profiles at sigma 0.5–32 now differ by at most three
   channel levels; 56 shadow samples differ by at most four alpha levels.
