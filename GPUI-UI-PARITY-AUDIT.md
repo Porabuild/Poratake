@@ -1862,9 +1862,17 @@ Electron clips them. The user-visible impact of that difference is unverified.
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                                                                                                                                                              |
 
-Source tracing also shows both shells can report deletion success after the file
-is removed even if the history update fails to persist. A stale entry may return
-after restart; the partial-success case has not been reproduced in a live app.
+GPUI now attempts to restore history after returned write errors and reports when a
+capture was deleted but its history update failed. Isolated store tests cover
+partial writes, malformed indexes and deletion/clear failures; a Windows headless
+preview test exercises the partial-success warning. Native interaction remains
+unverified. Electron still swallows history write errors.
+History writes are not crash-atomic; readers outside the GPUI process may observe
+a partial write.
+GPUI's automatic history-limit eviction can still remove old files before a
+failed index save, and simultaneous writes from the two shells are not coordinated.
+A failed history update after renaming a recording can leave the old path in the
+index without notifying the user.
 
 A zero-padding framed attachment also matches CPU preview and export over a
 rectangle and blackout crossing the primary-image seam. A positive control checks

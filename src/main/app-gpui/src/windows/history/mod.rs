@@ -342,13 +342,34 @@ impl HistoryWindow {
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
-        if !history_store::delete_item(&item.id) {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Delete failed",
-                "The capture could not be deleted",
-            );
-            return;
+        match history_store::delete_item(&item.id) {
+            history_store::DeleteOutcome::Deleted => {}
+            history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History recovery copy remains",
+                    format!("Could not remove the saved recovery copy at {path}"),
+                );
+            }
+            history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History update failed",
+                    format!(
+                        "The capture was deleted, but its history entry may return after restart: {error}"
+                    ),
+                );
+            }
+            history_store::DeleteOutcome::SourceDeletionFailed
+            | history_store::DeleteOutcome::HistoryUnavailable
+            | history_store::DeleteOutcome::NotFound => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Delete failed",
+                    "The capture could not be deleted",
+                );
+                return;
+            }
         }
         self.media.remove(&item.id);
         self.items.retain(|candidate| candidate.id != item.id);
@@ -363,19 +384,63 @@ impl HistoryWindow {
     }
 
     pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        if !history_store::clear_history() {
-            self.reload(cx);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Clear history failed",
-                "Some captures could not be deleted",
-            );
-            return;
-        }
-        self.items.clear();
-        self.media.clear();
+        let outcome = match history_store::clear_history() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Clear history failed",
+                    format!("History could not be read; no captures were deleted: {error}"),
+                );
+                return;
+            }
+        };
+        let retained_ids: std::collections::HashSet<_> = outcome
+            .retained
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        self.items = outcome.retained;
+        self.media.retain(|id, _| retained_ids.contains(id));
         self.selected_index = 0;
         cx.notify();
+        if !outcome.history_updated || outcome.source_deletion_failures > 0 {
+            let source_failure = if outcome.source_deletion_failures == 0 {
+                String::new()
+            } else {
+                format!(
+                    "{} capture(s) could not be deleted. ",
+                    outcome.source_deletion_failures
+                )
+            };
+            let history_failure = if outcome.history_updated {
+                String::new()
+            } else {
+                format!(
+                    "Deleted captures may return in history after restart: {}.",
+                    outcome
+                        .history_error
+                        .as_deref()
+                        .unwrap_or("history write failed")
+                )
+            };
+            crate::windows::toast::Toast::show(
+                cx,
+                if outcome.history_updated {
+                    "Clear history incomplete"
+                } else {
+                    "History update failed"
+                },
+                format!("{source_failure}{history_failure}"),
+            );
+        }
+        if let Some(path) = outcome.backup_warning.as_deref() {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        }
     }
 
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {

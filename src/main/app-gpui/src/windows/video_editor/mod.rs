@@ -2929,14 +2929,28 @@ impl VideoEditorWindow {
             return;
         }
 
-        if !crate::history_store::delete_path(&path, crate::history_store::HistoryItemType::Video) {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Delete failed",
-                "The recording could not be deleted",
-            );
-            return;
-        }
+        let (history_update_error, backup_warning) = match crate::history_store::delete_path(
+            &path,
+            crate::history_store::HistoryItemType::Video,
+        ) {
+            crate::history_store::DeleteOutcome::Deleted => (None, None),
+            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                (None, Some(path))
+            }
+            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                (Some(error), None)
+            }
+            crate::history_store::DeleteOutcome::SourceDeletionFailed
+            | crate::history_store::DeleteOutcome::HistoryUnavailable
+            | crate::history_store::DeleteOutcome::NotFound => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Delete failed",
+                    "The recording could not be deleted",
+                );
+                return;
+            }
+        };
         let notify = crate::state::state(cx)
             .config
             .get()
@@ -2944,7 +2958,21 @@ impl VideoEditorWindow {
             .show_deletion_notifications;
         window.remove_window();
         registry::close(RegistryKind::VideoEditor, cx);
-        if notify {
+        if let Some(path) = backup_warning {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        } else if let Some(error) = history_update_error {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                format!(
+                    "The recording was deleted, but its history entry may return after restart: {error}"
+                ),
+            );
+        } else if notify {
             cx.defer(|cx| {
                 crate::windows::toast::Toast::show(
                     cx,

@@ -1431,7 +1431,7 @@ impl RecordingControl {
             }
         }
         save_initial_recording_state(&project, &state);
-        crate::history_store::add_item(
+        let history_saved = crate::history_store::add_item(
             crate::history_store::HistoryItem {
                 id: format!(
                     "{}",
@@ -1446,6 +1446,13 @@ impl RecordingControl {
             max_items,
             history_enabled,
         );
+        if !history_saved {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                "The recording was saved, but it could not be added to history",
+            );
+        }
 
         if show_preview {
             let project = project.clone();

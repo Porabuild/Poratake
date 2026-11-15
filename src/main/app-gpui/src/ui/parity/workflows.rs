@@ -4568,7 +4568,10 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         cx.update_window(reopened.into(), |_, window, _| window.remove_window())
             .unwrap();
         cx.run_until_parked();
-        assert!(crate::history_store::delete_item(&id));
+        assert_eq!(
+            crate::history_store::delete_item(&id),
+            crate::history_store::DeleteOutcome::Deleted
+        );
         std::fs::remove_file(top_path).unwrap();
         std::fs::remove_file(right_path).unwrap();
     }
@@ -5481,9 +5484,10 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
     cx.update_window(delayed_window, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
-    assert!(crate::history_store::delete_item(
-        "visual-debounced-editor-state"
-    ));
+    assert_eq!(
+        crate::history_store::delete_item("visual-debounced-editor-state"),
+        crate::history_store::DeleteOutcome::Deleted
+    );
 
     let draft_source = scratch.join("workflow-draft-state.png");
     std::fs::copy(scratch.join("capture.png"), &draft_source).unwrap();
@@ -5539,7 +5543,10 @@ pub(super) fn screenshot(cx: &mut HeadlessAppContext, output: &Path, scratch: &P
         Some(1),
         "closing during a new draft must persist the last committed annotation"
     );
-    assert!(crate::history_store::delete_item("visual-draft-flush"));
+    assert_eq!(
+        crate::history_store::delete_item("visual-draft-flush"),
+        crate::history_store::DeleteOutcome::Deleted
+    );
     println!("editor history saves after 500ms and reopens while the original editor stays open");
 }
 

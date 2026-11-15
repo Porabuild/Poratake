@@ -4104,24 +4104,49 @@ impl EditorWindow {
         }
 
         let path = std::path::PathBuf::from(&self.file_path);
-        if !crate::history_store::delete_path(
+        let (history_update_error, backup_warning) = match crate::history_store::delete_path(
             &path,
             crate::history_store::HistoryItemType::Screenshot,
         ) {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Delete failed",
-                "The screenshot could not be deleted",
-            );
-            return;
-        }
+            crate::history_store::DeleteOutcome::Deleted => (None, None),
+            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                (None, Some(path))
+            }
+            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                (Some(error), None)
+            }
+            crate::history_store::DeleteOutcome::SourceDeletionFailed
+            | crate::history_store::DeleteOutcome::HistoryUnavailable
+            | crate::history_store::DeleteOutcome::NotFound => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Delete failed",
+                    "The screenshot could not be deleted",
+                );
+                return;
+            }
+        };
         let notify = crate::state::state(cx)
             .config
             .get()
             .general
             .show_deletion_notifications;
         window.remove_window();
-        if notify {
+        if let Some(path) = backup_warning {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        } else if let Some(error) = history_update_error {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                format!(
+                    "The screenshot was deleted, but its history entry may return after restart: {error}"
+                ),
+            );
+        } else if notify {
             let name = path
                 .file_name()
                 .and_then(|value| value.to_str())

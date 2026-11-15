@@ -2045,18 +2045,37 @@ impl CapturePreviewWindow {
                                     } else {
                                         crate::history_store::HistoryItemType::Screenshot
                                     };
-                                    if !crate::history_store::delete_path(&path, kind) {
-                                        let message = if is_video {
-                                            "Could not delete the recording."
-                                        } else {
-                                            "Could not delete the screenshot."
-                                        };
-                                        crate::windows::toast::Toast::show(
-                                            cx,
-                                            "Delete failed",
-                                            message,
-                                        );
-                                        return;
+                                    match crate::history_store::delete_path(&path, kind) {
+                                        crate::history_store::DeleteOutcome::Deleted => {}
+                                        crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                                            crate::windows::toast::Toast::show(
+                                                cx,
+                                                "History recovery copy remains",
+                                                format!("Could not remove the saved recovery copy at {path}"),
+                                            );
+                                        }
+                                        crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                                            crate::windows::toast::Toast::show(
+                                                cx,
+                                                "History update failed",
+                                                format!("The capture was deleted, but its history entry may return after restart: {error}"),
+                                            );
+                                        }
+                                        crate::history_store::DeleteOutcome::SourceDeletionFailed
+                                        | crate::history_store::DeleteOutcome::HistoryUnavailable
+                                        | crate::history_store::DeleteOutcome::NotFound => {
+                                            let message = if is_video {
+                                                "Could not delete the recording."
+                                            } else {
+                                                "Could not delete the screenshot."
+                                            };
+                                            crate::windows::toast::Toast::show(
+                                                cx,
+                                                "Delete failed",
+                                                message,
+                                            );
+                                            return;
+                                        }
                                     }
                                     let _ = preview_entity.update(cx, |view, cx| {
                                         begin_remove_preview(
@@ -2833,6 +2852,57 @@ mod tests {
             );
             notifications.borrow_mut().clear();
         }
+
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let source_directory = tempfile::tempdir().unwrap();
+        let persisted_capture = source_directory.path().join("persisted-capture.png");
+        image::RgbaImage::new(32, 24)
+            .save(&persisted_capture)
+            .unwrap();
+        let history_path = crate::history_store::history_file_path();
+        let history_items = [crate::history_store::HistoryItem {
+            id: "persist-failure-preview".into(),
+            timestamp: 1,
+            original_path: persisted_capture.to_string_lossy().into_owned(),
+            r#type: crate::history_store::HistoryItemType::Screenshot,
+            editor_state: None,
+            duration: None,
+        }];
+        let original_history = serde_json::to_vec_pretty(&history_items).unwrap();
+        std::fs::write(&history_path, &original_history).unwrap();
+        let _history_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(&history_path)
+            .unwrap();
+        preview.update(visual, |view, _| {
+            let preview = &mut view.previews[0];
+            preview.kind = PreviewKind::Screenshot;
+            preview.path = persisted_capture.clone();
+            preview.image = None;
+        });
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(500.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+        let delete_bounds = visual
+            .debug_bounds("preview-delete-1-tooltip-trigger")
+            .expect("Delete control must render while the preview is hovered");
+        visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.settle();
+        assert!(!persisted_capture.exists());
+        assert!(preview.update(visual, |view, _| {
+            view.previews[0].dismiss_animation.is_some()
+        }));
+        assert_eq!(*notifications.borrow(), ["History update failed"]);
+        assert_eq!(std::fs::read(&history_path).unwrap(), original_history);
+        notifications.borrow_mut().clear();
 
         let successful_capture = crate::config::store::config_dir().join("successful.png");
         image::RgbaImage::new(32, 24)
