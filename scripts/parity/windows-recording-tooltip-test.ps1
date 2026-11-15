@@ -386,6 +386,7 @@ $previousDpiAwarenessContext = [IntPtr]::Zero
 $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerTempRoot, 'poratake-visual-tooltip-' + [guid]::NewGuid().ToString('N')))
 $captureRoot = Join-Path $evidenceRoot 'captures'
 $workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
+$handoffTracePath = Join-Path $evidenceRoot 'recording-handoff-daemon-trace.log'
 $previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
 $systemAudioFixturePath = Join-Path $evidenceRoot 'native-system-audio-fixture.m4a'
 $systemAudioProofPath = Join-Path $evidenceRoot 'native-system-audio-preview-export.json'
@@ -3693,9 +3694,31 @@ try {
     }
     New-Item -ItemType Directory -Path $handoffProfileRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $handoffRecordingRoot -Force | Out-Null
+    $handoffFreezeBeforeColors = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(11, 80, 220),
+        [System.Drawing.Color]::FromArgb(240, 40, 90),
+        [System.Drawing.Color]::FromArgb(20, 190, 130),
+        [System.Drawing.Color]::FromArgb(220, 170, 15)
+    )
+    $handoffFreezeLiveColors = [System.Drawing.Color[]]@(
+        [System.Drawing.Color]::FromArgb(40, 200, 230),
+        [System.Drawing.Color]::FromArgb(200, 20, 220),
+        [System.Drawing.Color]::FromArgb(70, 220, 25),
+        [System.Drawing.Color]::FromArgb(245, 110, 30)
+    )
+    Release-ScreenshotFixture
+    $script:workflowFixtureBitmapHandle = New-WorkflowFixtureBitmapHandle $handoffFreezeBeforeColors
+    $script:workflowFixtureWindow = [PoratakeTooltipFixture]::CreateScreenshotWindow((ConvertTo-FixtureRect $fixtureBounds))
+    $script:workflowFixturePreviousBitmapHandle = [PoratakeTooltipFixture]::SetScreenshotBitmap($script:workflowFixtureWindow, $script:workflowFixtureBitmapHandle, [uint32]$PID)
+    if ($script:workflowFixturePreviousBitmapHandle -ne [IntPtr]::Zero) { throw 'The direct recording freeze fixture already had an attached bitmap.' }
+    [PoratakeTooltipFixture]::ShowScreenshotWindow($script:workflowFixtureWindow, (ConvertTo-FixtureRect $fixtureBounds), [uint32]$PID)
+    Wait-WorkflowFixtureColors $handoffFreezeBeforeColors 'The direct recording pre-freeze fixture did not repaint.'
+    $handoffFreezeBeforePath = Join-Path $captureRoot 'direct-record-area-freeze-before.png'
+    Capture-TooltipArea 'direct-record-area-freeze-before' $fixtureBounds $handoffFreezeBeforePath
+    Assert-QuadrantFixtureCapture $handoffFreezeBeforePath $fixtureWidth $fixtureHeight 0 $handoffFreezeBeforeColors 8 'Direct Record Area pre-freeze pixel control' | Out-Null
     $handoffConfig = @{
         onboarding = @{ completed = $true }
-        screenshot = @{ freezeScreen = $false; hideDesktopIcons = $false }
+        screenshot = @{ freezeScreen = $true; hideDesktopIcons = $false }
         recording = @{
             startDelay = 0
             frameRate = 10
@@ -3708,15 +3731,20 @@ try {
         storage = @{ recordingsPath = $handoffRecordingRoot }
     } | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText((Join-Path $handoffProfileRoot 'config.json'), $handoffConfig, [System.Text.UTF8Encoding]::new($false))
+    $handoffLoadedConfig = Get-Content -LiteralPath (Join-Path $handoffProfileRoot 'config.json') -Raw | ConvertFrom-Json -ErrorAction Stop
+    if (-not $handoffLoadedConfig.screenshot.freezeScreen) { throw 'The isolated direct-recording profile did not enable Freeze Screen.' }
     $handoffPreviousProfile = $env:PORATAKE_CONFIG_DIR
     $handoffPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    $handoffPreviousTracePath = $env:PORATAKE_TRACE_FILE
     try {
         $env:PORATAKE_CONFIG_DIR = $handoffProfileRoot
         $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $env:PORATAKE_TRACE_FILE = $handoffTracePath
         $handoffApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'record-area') -WorkingDirectory $root -RedirectStandardOutput $handoffStdoutPath -RedirectStandardError $handoffStderrPath -WindowStyle Hidden -PassThru
     } finally {
         if ($null -eq $handoffPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $handoffPreviousProfile }
         if ($null -eq $handoffPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $handoffPreviousDaemonPath }
+        if ($null -eq $handoffPreviousTracePath) { Remove-Item Env:PORATAKE_TRACE_FILE -ErrorAction SilentlyContinue } else { $env:PORATAKE_TRACE_FILE = $handoffPreviousTracePath }
     }
     if (-not $handoffApplication) { throw 'Could not launch the isolated record-area handoff app.' }
     Capture-OwnedDaemonChildren $handoffApplication
@@ -3731,6 +3759,25 @@ try {
         }
         return $null
     } 20000 'The isolated record-area selector did not appear over the display.'
+    $handoffFixtureCenter = New-Object PoratakeTooltipProbe+Point
+    $handoffFixtureCenter.X = [int](($fixtureBounds.Left + $fixtureBounds.Right) / 2)
+    $handoffFixtureCenter.Y = [int](($fixtureBounds.Top + $fixtureBounds.Bottom) / 2)
+    $handoffFixtureHit = [PoratakeTooltipProbe]::WindowFromPoint($handoffFixtureCenter)
+    if ($handoffFixtureHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($handoffFixtureHit, 2) -ne $handoffOverlay) {
+        throw 'The direct record-area selector did not receive input over the changing pixel fixture.'
+    }
+    $handoffFreezeBeforeSelectorPath = Join-Path $captureRoot 'direct-record-area-freeze-selector-before-update.png'
+    Capture-TooltipArea 'direct-record-area-freeze-selector-before-update' $fixtureBounds $handoffFreezeBeforeSelectorPath
+    Assert-QuadrantFixtureCapture $handoffFreezeBeforeSelectorPath $fixtureWidth $fixtureHeight 0 $handoffFreezeBeforeColors 8 'Direct Record Area selector pre-update pixels' | Out-Null
+    Update-WorkflowFixtureColors $handoffFreezeLiveColors
+    $handoffFreezeAfterSelectorPath = Join-Path $captureRoot 'direct-record-area-freeze-selector-after-update.png'
+    Capture-TooltipArea 'direct-record-area-freeze-selector-after-update' $fixtureBounds $handoffFreezeAfterSelectorPath
+    Assert-QuadrantFixtureCapture $handoffFreezeAfterSelectorPath $fixtureWidth $fixtureHeight 0 $handoffFreezeLiveColors 8 'Direct Record Area selector live pixels'
+    $handoffPaletteAnalysis = Get-WorkflowAttachmentColorAnalysis $handoffFreezeAfterSelectorPath ($handoffFreezeBeforeColors + $handoffFreezeLiveColors)
+    Assert-WorkflowColorsAbsent $handoffFreezeAfterSelectorPath $handoffFreezeBeforeColors 'Direct Record Area stale frozen pixels' $handoffPaletteAnalysis
+    Write-Host 'Direct Record Area selector captured the post-open fixture palette with Freeze Screen enabled.'
+    Release-ScreenshotFixture
+    if ($workflowFixtureWindow -ne [IntPtr]::Zero) { throw 'Could not close the direct recording pixel fixture before area selection.' }
     $handoffSelectionStart = New-Object PoratakeTooltipProbe+Point
     $handoffSelectionStart.X = $monitor.Monitor.Left + 180
     $handoffSelectionStart.Y = $monitor.Monitor.Top + 180
@@ -3835,6 +3882,18 @@ try {
     } 10000 'Starting the area recording did not create exactly one project under the test-owned recordings path.'
     if (-not $handoffProject) { throw 'The test-owned recordings directory did not contain exactly one new project.' }
     Write-Host "Area recording created its unique GPUI project under the isolated recordings path: $handoffProject."
+    $handoffTrace = Wait-Until {
+        if (-not (Test-Path -LiteralPath $handoffTracePath)) { return $null }
+        $lines = @(Get-Content -LiteralPath $handoffTracePath)
+        if (-not ($lines | Where-Object { $_ -match 'route screen-recorder start$' })) { return $null }
+        return $lines
+    } 10000 'The app daemon did not trace the screen-recorder start request.'
+    if (-not $handoffTrace) { throw 'The app daemon trace did not reach screen-recorder start.' }
+    $unexpectedFreezeRequests = @($handoffTrace | Where-Object { $_ -match 'route freeze-screen freeze$' })
+    if ($unexpectedFreezeRequests.Count -gt 0) {
+        throw "Direct Record Area requested a frozen screen despite its live-pixel policy: $($unexpectedFreezeRequests -join '; ')."
+    }
+    Write-Host 'Direct Record Area kept its selector live with Freeze Screen enabled; the daemon trace reached screen-recorder start without a freeze request.'
     if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffControl, [ref]$handoffControlBounds)) { throw 'Could not measure the active area-recording control window.' }
     $handoffStopButtonProof = Join-Path $evidenceRoot 'recording-handoff-stop-button.json'
     $handoffStopButton = Get-VideoEditorButtonReadiness $handoffControl $handoffControlBounds $handoffStopButtonProof 'Stop recording'
@@ -4307,6 +4366,7 @@ try {
         @{ Source = (Join-Path $workflowProfileRoot 'reopen-stderr.log'); Name = 'capture-reopen-stderr.log' },
         @{ Source = $handoffStdoutPath; Name = 'recording-handoff-stdout.log' },
         @{ Source = $handoffStderrPath; Name = 'recording-handoff-stderr.log' },
+        @{ Source = $handoffTracePath; Name = 'recording-handoff-daemon-trace.log' },
         @{ Source = $videoStdoutPath; Name = 'video-editor-stdout.log' },
         @{ Source = $videoStderrPath; Name = 'video-editor-stderr.log' }
     )) {
