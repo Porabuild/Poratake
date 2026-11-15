@@ -347,6 +347,8 @@ mod tests {
         for (intent, replace) in [
             (crate::capture::intent::CaptureIntent::ScrollCapture, true),
             (crate::capture::intent::CaptureIntent::Timer, false),
+            (crate::capture::intent::CaptureIntent::Ocr, false),
+            (crate::capture::intent::CaptureIntent::QrCode, false),
         ] {
             cx.update(|cx| crate::capture::start_area_selection(intent, cx));
             cx.run_until_parked();
@@ -368,6 +370,8 @@ mod tests {
         for intent in [
             crate::capture::intent::CaptureIntent::ScrollCapture,
             crate::capture::intent::CaptureIntent::Timer,
+            crate::capture::intent::CaptureIntent::Ocr,
+            crate::capture::intent::CaptureIntent::QrCode,
         ] {
             cx.update(|cx| crate::capture::start_area_selection(intent, cx));
             cx.run_until_parked();
@@ -394,7 +398,12 @@ mod tests {
         }
         assert_eq!(
             *notifications.borrow(),
-            ["Scroll Capture Failed", "Timer Capture Failed"]
+            [
+                "Scroll Capture Failed",
+                "Timer Capture Failed",
+                "OCR Failed",
+                "Scan Failed"
+            ]
         );
         config.update(|settings| settings.screenshot.hide_desktop_icons = false);
         cx.update(|cx| {

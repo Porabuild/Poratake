@@ -1098,6 +1098,10 @@ Bugs fixed in this pass:
   cancellation. A fake-daemon workflow duplicates a display target and verifies
   request order and saved pixels; a separate simulated two-display test checks
   cancellation and the live-picker path. Physical monitors remain unverified.
+- Standalone OCR and QR capture now honor the desktop-icon hiding preference
+  before selection and freezing. A headless lease test covers cancellation and
+  capture failure for both; native icon timing and successful capture remain
+  unverified.
 - A timer could close a newer selector and capture its old area after the
   selector was replaced. Replacement now cancels its countdown; isolated GPUI
   tests cover replacement, queued completion or cancellation events and a held

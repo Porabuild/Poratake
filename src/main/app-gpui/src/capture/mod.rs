@@ -709,6 +709,8 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
     matches!(
         intent,
         intent::CaptureIntent::Screenshot
+            | intent::CaptureIntent::Ocr
+            | intent::CaptureIntent::QrCode
             | intent::CaptureIntent::Timer
             | intent::CaptureIntent::ScrollCapture
     )
