@@ -1430,7 +1430,7 @@ impl RecordingControl {
                 }
             }
         }
-        crate::windows::video_editor::model::save_state(&project, &state);
+        save_initial_recording_state(&project, &state);
         crate::history_store::add_item(
             crate::history_store::HistoryItem {
                 id: format!(
@@ -1562,6 +1562,15 @@ fn take_ready_device_menu(
         return None;
     }
     pending.take()
+}
+
+fn save_initial_recording_state(
+    project: &std::path::Path,
+    state: &crate::windows::video_editor::model::VideoEditorState,
+) {
+    crate::windows::video_editor::model::save_state_with_camera_segments_presence(
+        project, state, false,
+    );
 }
 
 fn recording_control_width(recording: bool, has_target_name: bool) -> f32 {
@@ -2538,6 +2547,46 @@ mod tests {
             Err("Could not protect the recording controls from capture")
         );
         assert_eq!(recording_control_exclusion_ids(None, true), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn generated_recording_leaves_camera_segments_uninitialized_for_sidecar_mapping() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Generated.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let state = crate::windows::video_editor::model::VideoEditorState {
+            source_duration: Some(2.0),
+            segments: vec![crate::windows::video_editor::model::Segment::spanning(2.0)],
+            ..Default::default()
+        };
+        std::fs::write(
+            crate::video::project::camera_meta_path(&project),
+            r#"{"duration":2.0,"visibleRanges":[{"start":0.25,"end":1.25}]}"#,
+        )
+        .unwrap();
+
+        save_initial_recording_state(&project, &state);
+
+        let (loaded, camera_segments_were_saved) =
+            crate::windows::video_editor::model::load_state_with_camera_segments_presence(&project);
+        assert!(!camera_segments_were_saved);
+        let meta = crate::video::sidecars::load_camera_meta(&project).unwrap();
+        let camera_segments = crate::video::sidecars::map_visible_ranges_to_segments(
+            meta.visible_ranges.as_deref(),
+            &loaded.segments,
+            crate::windows::video_editor::model::total_duration(
+                &loaded.segments,
+                loaded.source_duration.unwrap(),
+            ),
+        );
+        assert_eq!(
+            camera_segments,
+            [crate::windows::video_editor::model::CameraSegment {
+                id: "camera-0-0".into(),
+                start_time: 0.25,
+                end_time: 1.25,
+            }]
+        );
     }
 
     #[test]

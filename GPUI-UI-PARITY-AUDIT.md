@@ -1809,6 +1809,18 @@ Failed screenshot or recording deletion now reports an error and retains the
 preview. A Windows headless button test covers failure and successful deletion;
 native interaction remains unverified.
 
+Saved video projects with empty or invalid timeline ranges now recover a usable
+clip in memory while preserving valid ranges and the original saved file on open.
+An isolated generated-video test checks the filtered timeline's preview against
+export; real legacy projects remain unverified. Camera sidecar ranges are mapped
+after normalization, and an explicitly saved empty camera track is preserved.
+New recordings leave that track uninitialized until sidecar mapping, including
+when the preview's Copy action exports directly. Generated-recording tests cover
+both camera visibility and an explicitly empty track. Older GPUI recordings with
+an empty saved track are ambiguous and remain unchanged.
+GPUI retains explicitly saved camera ranges beyond the normalized timeline;
+Electron clips them. The user-visible impact of that difference is unverified.
+
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, outside-window placement, dismissal, re-entry and exclusion from a WGC screenshot and three decoded full-monitor recording frames, with painted-foreground, backdrop and known-visible controls. Verify other capture targets, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                          |

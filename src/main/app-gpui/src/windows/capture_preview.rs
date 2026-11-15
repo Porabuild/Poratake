@@ -1150,14 +1150,16 @@ fn start_video_export(
             .spawn({
                 let project = project.clone();
                 async move {
-                    let state = crate::windows::video_editor::model::load_state(&project);
+                    let (state, camera_segments_were_saved) = crate::windows::video_editor::model::
+                        load_state_with_camera_segments_presence(&project);
                     let output = crate::video::export::default_output_path(&project, &state);
-                    let result = crate::video::export::run(
+                    let result = crate::video::export::run_with_camera_segments_presence(
                         crate::video::export::Request {
                             project,
                             output,
                             state,
                         },
+                        camera_segments_were_saved,
                         &mut |value| {
                             progress
                                 .store((value.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);

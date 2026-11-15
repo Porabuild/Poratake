@@ -134,6 +134,7 @@ enum TranscriptionEvent {
 pub struct VideoEditorWindow {
     path: Option<PathBuf>,
     state: VideoEditorState,
+    camera_segments_initialized: bool,
     history: Vec<VideoEditorState>,
     future: Vec<VideoEditorState>,
     pixels_per_second: f32,
@@ -289,7 +290,10 @@ impl VideoEditorWindow {
         let has_saved_state = path
             .as_deref()
             .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
-        let mut state = path.as_deref().map(model::load_state).unwrap_or_default();
+        let (mut state, camera_segments_initialized) = path
+            .as_deref()
+            .map(model::load_state_with_camera_segments_presence)
+            .unwrap_or_default();
         if !has_saved_state {
             let recording = crate::state::state(cx).config.get().recording;
             state.camera_style.mirrored = recording.camera.flipped;
@@ -307,25 +311,6 @@ impl VideoEditorWindow {
                         state.ui.sidebar_tab = "zoom".to_string();
                     }
                 }
-            }
-        }
-        // A recording whose camera was toggled on and off records its
-        // on-periods in `camera.json`; the first open turns them into timeline
-        // segments, the same way `useCameraSegments` seeds itself.
-        if state.camera_segments.is_empty() {
-            if let Some(meta) = path
-                .as_deref()
-                .and_then(crate::video::sidecars::load_camera_meta)
-            {
-                let total = model::total_duration(
-                    &state.segments,
-                    state.source_duration.unwrap_or(meta.duration),
-                );
-                state.camera_segments = crate::video::sidecars::map_visible_ranges_to_segments(
-                    meta.visible_ranges.as_deref(),
-                    &state.segments,
-                    total,
-                );
             }
         }
         styles::normalize_export_settings(&mut state.export_settings);
@@ -350,6 +335,7 @@ impl VideoEditorWindow {
         Self {
             path,
             state,
+            camera_segments_initialized,
             history: Vec::new(),
             future: Vec::new(),
             pixels_per_second,
@@ -945,24 +931,40 @@ impl VideoEditorWindow {
     /// a saved project's value is authoritative because trims and speed changes
     /// are expressed against it.
     fn adopt_source_duration(&mut self, duration: f64, cx: &mut Context<Self>) {
-        if !duration.is_finite() || duration <= 0.0 {
+        let saved_duration_was_missing = self.state.source_duration.is_none();
+        let has_saved_state = self
+            .path
+            .as_deref()
+            .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
+        let Some(changes) = model::normalize_loaded_state(
+            self.path.as_deref(),
+            &mut self.state,
+            duration,
+            !self.camera_segments_initialized,
+        ) else {
+            return;
+        };
+        self.camera_segments_initialized = true;
+        let tracks_changed = if changes.source_duration_changed {
+            self.path
+                .as_deref()
+                .is_some_and(|project| materialize_builtin_audio_tracks(&mut self.state, project))
+        } else {
+            false
+        };
+        if !changes.source_duration_changed
+            && !changes.segments_changed
+            && !changes.camera_segments_changed
+            && !tracks_changed
+        {
             return;
         }
-        if self.state.source_duration.is_some() {
-            return;
+        if tracks_changed
+            && (!has_saved_state || (saved_duration_was_missing && !changes.segments_changed))
+        {
+            self.persist(cx);
         }
-        self.state.source_duration = Some(duration);
-        // `initializeDocument({ segments: defaultSegments })` when there is no
-        // saved project: one segment covering the whole recording. Without it
-        // the ruler is drawn over an empty lane.
-        if self.state.segments.is_empty() {
-            self.state.segments = vec![model::Segment::spanning(duration)];
-        }
-        if let Some(project) = self.path.clone() {
-            if materialize_builtin_audio_tracks(&mut self.state, &project) {
-                self.persist(cx);
-            }
-        }
+        self.sync_preview_state(cx);
         self.request_audio_sync(cx);
         cx.notify();
     }
@@ -985,6 +987,7 @@ impl VideoEditorWindow {
     {
         let before = self.state.clone();
         mutate(&mut self.state);
+        self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.state == before {
             return;
         }
@@ -1030,6 +1033,7 @@ impl VideoEditorWindow {
             self.request_frame(cx);
             return;
         }
+        self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.history.len() >= UNDO_HISTORY_LIMIT {
             self.history.remove(0);
         }
@@ -1060,7 +1064,11 @@ impl VideoEditorWindow {
                 };
                 let mut written = this.state.clone();
                 written.saved_at = chrono::Utc::now().to_rfc3339();
-                model::save_state(&path, &written);
+                model::save_state_with_camera_segments_presence(
+                    &path,
+                    &written,
+                    this.camera_segments_initialized,
+                );
                 this.state.saved_at = written.saved_at;
             });
         })
@@ -1072,6 +1080,7 @@ impl VideoEditorWindow {
             return;
         };
         previous.export_settings = self.state.export_settings.clone();
+        self.camera_segments_initialized |= previous.camera_segments != self.state.camera_segments;
         self.future
             .push(std::mem::replace(&mut self.state, previous));
         self.persist(cx);
@@ -1085,6 +1094,7 @@ impl VideoEditorWindow {
             return;
         };
         next.export_settings = self.state.export_settings.clone();
+        self.camera_segments_initialized |= next.camera_segments != self.state.camera_segments;
         self.history.push(std::mem::replace(&mut self.state, next));
         self.persist(cx);
         self.sync_preview_state(cx);
@@ -1122,6 +1132,7 @@ impl VideoEditorWindow {
             }
         }
         self.state = state;
+        self.camera_segments_initialized = true;
         self.history.clear();
         self.future.clear();
         self.selected_clip = None;
@@ -4012,6 +4023,539 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn loaded_empty_timeline_uses_saved_duration_without_rewriting_project_on_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Legacy.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let saved_state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.state.segments.is_empty());
+                editor.adopt_source_duration(12.0, cx);
+                assert_eq!(editor.state.source_duration, Some(8.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(8.0)]);
+                assert_eq!(editor.total_duration(), 8.0);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&project), saved_state);
+    }
+
+    #[herogpui::test]
+    fn loaded_timeline_keeps_valid_edits_and_uses_decoded_duration_when_saved_duration_is_invalid(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Edited.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let valid = model::Segment {
+            id: "kept-edit".into(),
+            original_start: 1.0,
+            original_end: 3.0,
+            trim_min_start: 0.5,
+            trim_max_end: 3.5,
+            speed: Some(1.5),
+        };
+        let zoom = model::ZoomSegment {
+            id: "kept-zoom".into(),
+            start_time: 1.0,
+            end_time: 2.0,
+            ..model::ZoomSegment::default()
+        };
+        let saved_state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: vec![
+                valid.clone(),
+                model::Segment {
+                    id: "negative-start".into(),
+                    original_start: -1.0,
+                    original_end: 2.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "past-end".into(),
+                    original_start: 7.0,
+                    original_end: 9.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "reversed".into(),
+                    original_start: 5.0,
+                    original_end: 4.0,
+                    ..model::Segment::default()
+                },
+            ],
+            zoom_segments: vec![zoom.clone()],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(12.0, cx);
+                assert_eq!(editor.state.source_duration, Some(8.0));
+                assert_eq!(editor.state.segments, [valid]);
+                assert_eq!(editor.state.zoom_segments, [zoom]);
+                assert_eq!(editor.total_duration(), 2.0 / 1.5);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&project), saved_state);
+
+        let invalid_project = directory.path().join("InvalidDuration.poratake");
+        std::fs::create_dir(&invalid_project).unwrap();
+        let invalid_saved_state = VideoEditorState {
+            source_duration: Some(-1.0),
+            segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&invalid_project, &invalid_saved_state);
+        let invalid = cx
+            .add_window(|_, cx| VideoEditorWindow::new_for_test(Some(invalid_project.clone()), cx));
+        invalid
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(6.0, cx);
+                assert_eq!(editor.state.source_duration, Some(6.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(6.0)]);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&invalid_project), invalid_saved_state);
+    }
+
+    #[herogpui::test]
+    fn invalid_saved_duration_with_audio_sidecar_is_recovered_without_rewriting_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("InvalidDurationWithAudio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join(crate::video::project::SYSTEM_AUDIO),
+            b"fixture audio",
+        )
+        .unwrap();
+        let saved_state = VideoEditorState {
+            source_duration: Some(-1.0),
+            segments: vec![model::Segment::spanning(3.0)],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let state_path = crate::video::project::editor_state_path(&project);
+        let original_bytes = std::fs::read(&state_path).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(6.0, cx);
+                assert_eq!(editor.state.source_duration, Some(6.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(3.0)]);
+                assert!(editor
+                    .state
+                    .music_tracks
+                    .iter()
+                    .any(|track| track.source == crate::video::audio_tracks::SYSTEM_SOURCE));
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+
+        assert_eq!(std::fs::read(state_path).unwrap(), original_bytes);
+        assert_eq!(model::load_state(&project), saved_state);
+    }
+
+    #[herogpui::test]
+    fn camera_ranges_map_after_timeline_normalization_and_preserve_saved_camera_edits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("CameraRanges.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let valid = model::Segment {
+            id: "valid-later".into(),
+            original_start: 1.0,
+            original_end: 3.0,
+            trim_min_start: 1.0,
+            trim_max_end: 3.0,
+            speed: None,
+        };
+        let saved_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![
+                model::Segment {
+                    id: "invalid-leading".into(),
+                    original_start: -1.0,
+                    original_end: 0.5,
+                    ..model::Segment::default()
+                },
+                valid.clone(),
+            ],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let state_path = crate::video::project::editor_state_path(&project);
+        let mut legacy_state = serde_json::to_value(&saved_state).unwrap();
+        legacy_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let original_state_bytes = serde_json::to_vec_pretty(&legacy_state).unwrap();
+        std::fs::write(&state_path, &original_state_bytes).unwrap();
+        let camera_meta = crate::video::project::camera_meta_path(&project);
+        let camera_meta_contents =
+            r#"{"duration":4.0,"visibleRanges":[{"start":1.25,"end":1.75}]}"#;
+        std::fs::write(&camera_meta, camera_meta_contents).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.segments, [valid]);
+                assert_eq!(
+                    editor.state.camera_segments,
+                    [model::CameraSegment {
+                        id: "camera-0-0".into(),
+                        start_time: 0.25,
+                        end_time: 0.75,
+                    }]
+                );
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_state_bytes);
+        assert_eq!(
+            std::fs::read(&camera_meta).unwrap(),
+            camera_meta_contents.as_bytes()
+        );
+
+        let edited_project = directory.path().join("SavedCameraEdits.poratake");
+        std::fs::create_dir(&edited_project).unwrap();
+        let saved_camera_edit = model::CameraSegment {
+            id: "user-camera-edit".into(),
+            start_time: 0.4,
+            end_time: 1.2,
+        };
+        let edited_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: vec![saved_camera_edit.clone()],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&edited_project, &edited_state);
+        let edited_state_path = crate::video::project::editor_state_path(&edited_project);
+        let edited_state_bytes = std::fs::read(&edited_state_path).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&edited_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let edited = cx
+            .add_window(|_, cx| VideoEditorWindow::new_for_test(Some(edited_project.clone()), cx));
+        edited
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.camera_segments, [saved_camera_edit]);
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&edited_state_path).unwrap(),
+            edited_state_bytes
+        );
+        assert_eq!(model::load_state(&edited_project), edited_state);
+
+        let empty_project = directory.path().join("SavedEmptyCameraTrack.poratake");
+        std::fs::create_dir(&empty_project).unwrap();
+        let empty_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&empty_project, &empty_state);
+        let empty_state_path = crate::video::project::editor_state_path(&empty_project);
+        let empty_state_bytes = std::fs::read(&empty_state_path).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&empty_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let empty =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(empty_project.clone()), cx));
+        empty
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert!(editor.state.camera_segments.is_empty());
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&empty_state_path).unwrap(), empty_state_bytes);
+
+        let edit_project = directory.path().join("CameraEditedDuringLoad.poratake");
+        std::fs::create_dir(&edit_project).unwrap();
+        let mut missing_camera_state = serde_json::to_value(VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            ..VideoEditorState::default()
+        })
+        .unwrap();
+        missing_camera_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let state_path = crate::video::project::editor_state_path(&edit_project);
+        let original_state_bytes = serde_json::to_vec_pretty(&missing_camera_state).unwrap();
+        std::fs::write(&state_path, &original_state_bytes).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&edit_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let editing =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(edit_project.clone()), cx));
+        editing
+            .update(cx, |editor, _, cx| {
+                editor.add_clip(TrackKind::Camera, 0.5, 1.0, cx);
+                assert_eq!(editor.state.camera_segments.len(), 1);
+                editor.undo(cx);
+                assert!(editor.state.camera_segments.is_empty());
+                editor.adopt_source_duration(4.0, cx);
+                assert!(editor.state.camera_segments.is_empty());
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_state_bytes);
+
+        let persisted_project = directory.path().join("CameraNotLoadedYet.poratake");
+        std::fs::create_dir(&persisted_project).unwrap();
+        let mut legacy_state = serde_json::to_value(VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            ..VideoEditorState::default()
+        })
+        .unwrap();
+        legacy_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let persisted_state_path = crate::video::project::editor_state_path(&persisted_project);
+        std::fs::write(
+            &persisted_state_path,
+            serde_json::to_vec_pretty(&legacy_state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&persisted_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let before_adoption = cx.add_window(|_, cx| {
+            VideoEditorWindow::new_for_test(Some(persisted_project.clone()), cx)
+        });
+        before_adoption
+            .update(cx, |editor, _, cx| editor.toggle_sidebar(cx))
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let persisted_value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&persisted_state_path).unwrap()).unwrap();
+        assert!(persisted_value.get("cameraSegments").is_none());
+        assert_eq!(persisted_value["ui"]["sidebarOpen"], false);
+        let persisted_bytes = std::fs::read(&persisted_state_path).unwrap();
+        let reopened = cx.add_window(|_, cx| {
+            VideoEditorWindow::new_for_test(Some(persisted_project.clone()), cx)
+        });
+        reopened
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(
+                    editor.state.camera_segments,
+                    [model::CameraSegment {
+                        id: "camera-0-0".into(),
+                        start_time: 1.25,
+                        end_time: 1.75,
+                    }]
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&persisted_state_path).unwrap(),
+            persisted_bytes
+        );
+    }
+
+    #[herogpui::test]
+    fn new_project_persists_materialized_builtin_audio_with_default_timeline(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("NewWithAudio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join(crate::video::project::SYSTEM_AUDIO), []).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.state.segments.is_empty());
+                assert!(editor.state.music_tracks.is_empty());
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.source_duration, Some(4.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(4.0)]);
+                assert_eq!(editor.state.music_tracks.len(), 1);
+                assert_eq!(editor.state.music_tracks[0].source, "system");
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+
+        let saved = model::load_state(&project);
+        assert_eq!(saved.source_duration, Some(4.0));
+        assert_eq!(saved.segments, [model::Segment::spanning(4.0)]);
+        assert_eq!(saved.music_tracks.len(), 1);
+        assert_eq!(saved.music_tracks[0].source, "system");
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn loaded_invalid_leading_timeline_segment_updates_preview_and_export(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::video::encoder::{Encoder, Settings};
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("LegacyPreview.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = crate::video::project::recording_video_path(&project);
+        let mut encoder = Encoder::create(
+            &recording,
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..12 {
+            encoder
+                .write_frame([24, 220, 24, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        for _ in 0..12 {
+            encoder
+                .write_frame([24, 24, 220, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        encoder.finish().unwrap();
+
+        let saved_state = VideoEditorState {
+            source_duration: Some(2.0),
+            segments: vec![
+                model::Segment {
+                    id: "invalid-leading".into(),
+                    original_start: -1.0,
+                    original_end: 1.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "valid-later".into(),
+                    original_start: 1.0,
+                    original_end: 2.0,
+                    trim_min_start: 1.0,
+                    trim_max_end: 2.0,
+                    speed: None,
+                },
+            ],
+            wallpaper: styles::VideoWallpaperSettings {
+                enabled: false,
+                ..styles::VideoWallpaperSettings::default()
+            },
+            export_settings: styles::ExportSettings {
+                resolution: "original".into(),
+                frame_rate: "12".into(),
+                ..styles::ExportSettings::default()
+            },
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+
+        let (state, preview_pixels, dimensions) = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let image = editor.preview_image().expect("normalized video preview");
+                (
+                    editor.state.clone(),
+                    image.as_bytes(0).expect("preview pixels").to_vec(),
+                    editor.composition_size.expect("composition dimensions"),
+                )
+            })
+        });
+        assert_eq!(state.source_duration, Some(2.0));
+        assert_eq!(state.segments.len(), 1);
+        assert_eq!(state.segments[0].id, "valid-later");
+        assert_eq!(state.segments[0].original_start, 1.0);
+        assert_eq!(state.segments[0].original_end, 2.0);
+        assert_eq!(dimensions, (320.0, 180.0));
+        let center_pixel = (90 * 320 + 160) * 4;
+        assert!(preview_pixels[center_pixel + 2] > 160);
+        assert!(preview_pixels[center_pixel + 1] < 90);
+        assert_eq!(model::load_state(&project), saved_state);
+
+        let output = directory.path().join("legacy-preview-export.mp4");
+        crate::video::export::run(
+            crate::video::export::Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = crate::video::decoder::VideoDecoder::open(&output)
+            .unwrap()
+            .frame_at(0.0)
+            .expect("exported timeline frame");
+        assert_eq!((exported.width, exported.height), (320, 180));
+        assert!(exported.bgra[center_pixel + 2] > 160);
+        assert!(exported.bgra[center_pixel + 1] < 90);
+        let channel_error: u64 = preview_pixels
+            .iter()
+            .zip(exported.bgra.iter())
+            .map(|(preview, exported)| u64::from(preview.abs_diff(*exported)))
+            .sum();
+        let mean_error = channel_error as f64 / preview_pixels.len() as f64;
+        assert!(
+            mean_error < 5.0,
+            "filtered timeline preview/export error {mean_error}"
+        );
     }
 
     #[herogpui::test]

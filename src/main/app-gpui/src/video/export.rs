@@ -158,12 +158,28 @@ pub fn run(
     progress: &mut dyn FnMut(f32),
     should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<PathBuf, String> {
+    run_with_camera_segments_presence(request, true, progress, should_cancel)
+}
+
+pub fn run_with_camera_segments_presence(
+    mut request: Request,
+    camera_segments_were_saved: bool,
+    progress: &mut dyn FnMut(f32),
+    should_cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<PathBuf, String> {
     let is_gif = request.state.export_settings.format == "gif";
 
     let video_path = project::recording_video_path(&request.project);
     let decoder = VideoDecoder::open(&video_path)
         .ok_or_else(|| "the recording could not be decoded".to_string())?;
     let info = decoder.info();
+    crate::windows::video_editor::model::normalize_loaded_state(
+        Some(&request.project),
+        &mut request.state,
+        info.duration,
+        !camera_segments_were_saved,
+    )
+    .ok_or_else(|| "the recording has an invalid duration".to_string())?;
 
     let camera_path = project::camera_video_path(&request.project);
     let camera = camera_path
@@ -2657,6 +2673,166 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fresh_recording_copy_maps_camera_sidecar_but_preserves_explicit_empty_track() {
+        use crate::windows::video_editor::model;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Fresh camera recording.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut recording = Encoder::create(
+            &project::recording_video_path(&project),
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..24 {
+            recording
+                .write_frame([24, 24, 24, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        recording.finish().unwrap();
+        let mut camera = Encoder::create(
+            &project::camera_video_path(&project),
+            Settings {
+                width: 160,
+                height: 120,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..24 {
+            camera
+                .write_frame([24, 220, 24, 255].repeat(160 * 120))
+                .unwrap();
+        }
+        camera.finish().unwrap();
+        std::fs::write(
+            project::camera_meta_path(&project),
+            serde_json::to_vec(&serde_json::json!({
+                "duration": 2.0,
+                "visibleRanges": [{"start": 0.0, "end": 2.0}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let state = VideoEditorState {
+            source_duration: Some(2.0),
+            segments: vec![model::Segment::spanning(2.0)],
+            wallpaper: crate::windows::video_editor::styles::VideoWallpaperSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            export_settings: crate::windows::video_editor::styles::ExportSettings {
+                resolution: "original".into(),
+                frame_rate: "12".into(),
+                ..Default::default()
+            },
+            camera_style: crate::windows::video_editor::styles::CameraStyle {
+                position: "top-left".into(),
+                size: "large".into(),
+                padding: 0.0,
+                border_radius: 0.0,
+                shadow: 0.0,
+                ..Default::default()
+            },
+            ..VideoEditorState::default()
+        };
+        model::save_state_with_camera_segments_presence(&project, &state, false);
+        let original_state_bytes = std::fs::read(project::editor_state_path(&project)).unwrap();
+        let (loaded, camera_segments_were_saved) =
+            model::load_state_with_camera_segments_presence(&project);
+        assert!(!camera_segments_were_saved);
+        assert!(loaded.camera_segments.is_empty());
+
+        let output = directory.path().join("fresh-camera-copy.mp4");
+        run_with_camera_segments_presence(
+            Request {
+                project: project.clone(),
+                output: output.clone(),
+                state: loaded,
+            },
+            camera_segments_were_saved,
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap().frame_at(0.5).unwrap();
+        let green_pixels = exported
+            .bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[0] < 90 && pixel[1] > 170 && pixel[2] < 90)
+            .count();
+        assert!(green_pixels > 500, "generated camera should appear in Copy");
+        assert_eq!(
+            std::fs::read(project::editor_state_path(&project)).unwrap(),
+            original_state_bytes
+        );
+
+        let explicit_project = directory.path().join("Explicitly hidden camera.poratake");
+        std::fs::create_dir(&explicit_project).unwrap();
+        for (source, destination) in [
+            (
+                project::recording_video_path(&project),
+                project::recording_video_path(&explicit_project),
+            ),
+            (
+                project::camera_video_path(&project),
+                project::camera_video_path(&explicit_project),
+            ),
+            (
+                project::camera_meta_path(&project),
+                project::camera_meta_path(&explicit_project),
+            ),
+        ] {
+            std::fs::copy(source, destination).unwrap();
+        }
+        model::save_state(&explicit_project, &state);
+        let explicit_state_bytes =
+            std::fs::read(project::editor_state_path(&explicit_project)).unwrap();
+        let (explicit_state, camera_segments_were_saved) =
+            model::load_state_with_camera_segments_presence(&explicit_project);
+        assert!(camera_segments_were_saved);
+        let explicit_output = directory.path().join("explicitly-hidden-camera.mp4");
+        run_with_camera_segments_presence(
+            Request {
+                project: explicit_project.clone(),
+                output: explicit_output.clone(),
+                state: explicit_state,
+            },
+            camera_segments_were_saved,
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let explicit_frame = VideoDecoder::open(&explicit_output)
+            .unwrap()
+            .frame_at(0.5)
+            .unwrap();
+        let explicit_green_pixels = explicit_frame
+            .bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|pixel| pixel[0] < 90 && pixel[1] > 170 && pixel[2] < 90)
+            .count();
+        assert_eq!(explicit_green_pixels, 0);
+        assert_eq!(
+            std::fs::read(project::editor_state_path(&explicit_project)).unwrap(),
+            explicit_state_bytes
+        );
     }
 
     #[test]

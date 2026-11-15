@@ -254,6 +254,13 @@ pub struct VideoEditorState {
     pub ui: EditorUiState,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateNormalization {
+    pub source_duration_changed: bool,
+    pub segments_changed: bool,
+    pub camera_segments_changed: bool,
+}
+
 fn default_version() -> u32 {
     EDITOR_STATE_VERSION
 }
@@ -285,21 +292,99 @@ impl Default for VideoEditorState {
     }
 }
 
+#[cfg(any(test, feature = "parity"))]
 pub fn load_state(project_or_video: &Path) -> VideoEditorState {
+    load_state_with_camera_segments_presence(project_or_video).0
+}
+
+pub fn load_state_with_camera_segments_presence(
+    project_or_video: &Path,
+) -> (VideoEditorState, bool) {
     let path = project::editor_state_path(project_or_video);
     let Ok(contents) = std::fs::read_to_string(&path) else {
-        return VideoEditorState::default();
+        return (VideoEditorState::default(), false);
     };
-    match serde_json::from_str(&contents) {
-        Ok(state) => state,
+    match serde_json::from_str::<serde_json::Value>(&contents) {
+        Ok(value) => {
+            let has_camera_segments = value
+                .as_object()
+                .is_some_and(|object| object.contains_key("cameraSegments"));
+            match serde_json::from_value(value) {
+                Ok(state) => (state, has_camera_segments),
+                Err(error) => {
+                    eprintln!("[video-editor] failed to parse {}: {error}", path.display());
+                    (VideoEditorState::default(), false)
+                }
+            }
+        }
         Err(error) => {
             eprintln!("[video-editor] failed to parse {}: {error}", path.display());
-            VideoEditorState::default()
+            (VideoEditorState::default(), false)
         }
     }
 }
 
+pub fn normalize_loaded_state(
+    project: Option<&Path>,
+    state: &mut VideoEditorState,
+    decoded_duration: f64,
+    initialize_camera_segments: bool,
+) -> Option<StateNormalization> {
+    if !decoded_duration.is_finite() || decoded_duration <= 0.0 {
+        return None;
+    }
+    let source_duration = match state.source_duration {
+        Some(saved) if saved.is_finite() && saved > 0.0 => saved,
+        _ => decoded_duration,
+    };
+    let mut changes = StateNormalization {
+        source_duration_changed: state.source_duration != Some(source_duration),
+        ..StateNormalization::default()
+    };
+    state.source_duration = Some(source_duration);
+    let valid_segments: Vec<_> = state
+        .segments
+        .iter()
+        .filter(|segment| {
+            segment.original_start.is_finite()
+                && segment.original_end.is_finite()
+                && segment.original_start >= 0.0
+                && segment.original_start < segment.original_end
+                && segment.original_end <= source_duration
+        })
+        .cloned()
+        .collect();
+    let segments = if valid_segments.is_empty() {
+        vec![Segment::spanning(source_duration)]
+    } else {
+        valid_segments
+    };
+    changes.segments_changed = state.segments != segments;
+    state.segments = segments;
+    if initialize_camera_segments && state.camera_segments.is_empty() {
+        if let Some(meta) = project.and_then(crate::video::sidecars::load_camera_meta) {
+            let total = total_duration(&state.segments, source_duration);
+            state.camera_segments = crate::video::sidecars::map_visible_ranges_to_segments(
+                meta.visible_ranges.as_deref(),
+                &state.segments,
+                total,
+            );
+            changes.camera_segments_changed = !state.camera_segments.is_empty();
+        }
+    }
+    Some(changes)
+}
+
+#[cfg(any(test, feature = "parity"))]
 pub fn save_state(project_or_video: &Path, state: &VideoEditorState) {
+    save_state_with_camera_segments_presence(project_or_video, state, true);
+}
+
+pub fn save_state_with_camera_segments_presence(
+    project_or_video: &Path,
+    state: &VideoEditorState,
+    camera_segments_present: bool,
+) {
     let path = project::editor_state_path(project_or_video);
     let Some(parent) = path.parent() else {
         return;
@@ -307,13 +392,25 @@ pub fn save_state(project_or_video: &Path, state: &VideoEditorState) {
     if !parent.is_dir() {
         return;
     }
-    match serde_json::to_string_pretty(state) {
-        Ok(contents) => {
-            if let Err(error) = std::fs::write(&path, contents) {
-                eprintln!("[video-editor] failed to save {}: {error}", path.display());
+    match serde_json::to_value(state) {
+        Ok(mut value) => {
+            if !camera_segments_present {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("cameraSegments");
+                }
+            }
+            match serde_json::to_string_pretty(&value) {
+                Ok(contents) => {
+                    if let Err(error) = std::fs::write(&path, contents) {
+                        eprintln!("[video-editor] failed to save {}: {error}", path.display());
+                    }
+                }
+                Err(error) => eprintln!("[video-editor] failed to serialize state: {error}"),
             }
         }
-        Err(error) => eprintln!("[video-editor] failed to serialize state: {error}"),
+        Err(error) => {
+            eprintln!("[video-editor] failed to serialize state: {error}");
+        }
     }
 }
 
