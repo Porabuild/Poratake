@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -52,28 +53,50 @@ async function runVisualProfile(
   return profileRunner(executable, args, options, timeoutMs);
 }
 function processCommandLine(pid: number): string {
-  if (isWindows) {
-    const query = `$process = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; if ($process) { [Console]::Write($process.CommandLine) }`;
-    const result = spawnSync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', query],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5000,
-        windowsHide: true,
-      }
-    );
-    if (result.error) throw result.error;
-    return result.stdout;
-  }
-
   const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   if (result.error) throw result.error;
   return result.stdout;
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function createTestDirectory(prefix: string): string {
+  const tempRoot = realpathSync(tmpdir());
+  const directory = realpathSync(mkdtempSync(path.join(tempRoot, prefix)));
+  if (
+    path.dirname(directory) !== tempRoot ||
+    !path.basename(directory).startsWith(prefix)
+  ) {
+    throw new Error(
+      `Refusing test directory outside the OS temp root: ${directory}`
+    );
+  }
+  return directory;
+}
+
+function removeTestDirectory(directory: string, prefix: string): void {
+  const tempRoot = realpathSync(tmpdir());
+  const resolved = realpathSync(directory);
+  if (
+    path.dirname(resolved) !== tempRoot ||
+    !path.basename(resolved).startsWith(prefix)
+  ) {
+    throw new Error(
+      `Refusing to remove test directory outside the OS temp root: ${resolved}`
+    );
+  }
+  rmSync(resolved, { recursive: true, force: true });
 }
 
 async function waitForFile(
@@ -95,7 +118,11 @@ async function waitForCommandLine(
   timeoutMs = 5000
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (processCommandLine(pid).includes(pathname) !== present) {
+  const matches = () =>
+    isWindows
+      ? processExists(pid) === present
+      : processCommandLine(pid).includes(pathname) === present;
+  while (!matches()) {
     if (Date.now() >= deadline) return false;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
@@ -103,7 +130,7 @@ async function waitForCommandLine(
 }
 
 it('visual profile timeout stops owned child processes and leaves siblings alone', async () => {
-  const evidence = mkdtempSync(path.join(tmpdir(), 'poratake-visual-test-'));
+  const evidence = createTestDirectory('poratake-visual-test-');
   const id = randomUUID();
   const profilePath = path.join(evidence, `profile-${id}.mjs`);
   const workerPath = path.join(evidence, `worker-${id}.mjs`);
@@ -169,7 +196,7 @@ it('visual profile timeout stops owned child processes and leaves siblings alone
       });
       sibling.kill('SIGKILL');
       await stopped;
-      rmSync(evidence, { recursive: true, force: true });
+      removeTestDirectory(evidence, 'poratake-visual-test-');
     }
   }
 }, 35000);
@@ -177,9 +204,7 @@ it('visual profile timeout stops owned child processes and leaves siblings alone
 it.skipIf(isWindows)(
   'visual timeout kills detached descendants after the profile leader exits',
   async () => {
-    const evidence = mkdtempSync(
-      path.join(tmpdir(), 'poratake-visual-leader-')
-    );
+    const evidence = createTestDirectory('poratake-visual-leader-');
     const id = randomUUID();
     const profilePath = path.join(evidence, `profile-${id}.mjs`);
     const workerPath = path.join(evidence, `worker-${id}.mjs`);
@@ -227,7 +252,7 @@ it.skipIf(isWindows)(
       try {
         if (resultPromise) await resultPromise;
       } finally {
-        rmSync(evidence, { recursive: true, force: true });
+        removeTestDirectory(evidence, 'poratake-visual-leader-');
       }
     }
   },
