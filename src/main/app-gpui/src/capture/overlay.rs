@@ -80,7 +80,46 @@ pub(crate) fn revision(cx: &mut App) -> u64 {
 }
 
 pub(crate) fn set_pending_freeze(generation: u64, cx: &mut App) {
-    session(cx).pending_freeze = Some(generation);
+    if generation == 0 {
+        return;
+    }
+    let pending = session(cx).pending_freeze;
+    session(cx).pending_freeze =
+        Some(pending.map_or(generation, |pending| pending.max(generation)));
+}
+
+pub(crate) fn finish_pending_freeze_release(generation: u64, released: bool, cx: &mut App) {
+    if generation != 0 && released && session(cx).pending_freeze == Some(generation) {
+        session(cx).pending_freeze = None;
+    }
+}
+
+pub(crate) fn retry_pending_freeze_release(generation: u64, cx: &mut App) {
+    if generation == 0 || session(cx).pending_freeze != Some(generation) {
+        return;
+    }
+    let service = crate::state::state(cx);
+    cx.spawn(async move |cx| {
+        let released = cx
+            .background_executor()
+            .spawn(async move { service.release_screen(generation) })
+            .await;
+        cx.update(|cx| {
+            if session(cx).pending_freeze != Some(generation) {
+                return;
+            }
+            if released {
+                finish_pending_freeze_release(generation, true, cx);
+                return;
+            }
+            crate::windows::toast::Toast::show(
+                cx,
+                "Screen still frozen",
+                "The frozen screen could not be released. The next capture will retry before opening.",
+            );
+        });
+    })
+    .detach();
 }
 
 pub(crate) fn clear_pending_freeze(generation: u64, owner: u64, cx: &mut App) {
@@ -333,12 +372,15 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     let handles = std::mem::take(&mut session(cx).handles);
     let hide = take_capture_hide(cx);
     crate::capture::desktop_icons::release_for_capture(hide, cx);
-    let pending = session(cx).pending_freeze.take();
+    let pending = session(cx).pending_freeze;
     let generation = handles
         .iter()
         .map(|tracked| tracked.generation)
         .chain(pending)
         .max();
+    if let Some(generation) = generation {
+        set_pending_freeze(generation, cx);
+    }
     if deferred {
         App::defer(cx, move |cx| dispose_overlays(handles, cx));
     } else {
@@ -402,15 +444,12 @@ pub(crate) fn release_frozen_screen(generation: u64, cx: &mut App) {
         return;
     }
     let service = crate::state::state(cx);
-    let owner = revision(cx);
     cx.spawn(async move |cx| {
         let released = cx
             .background_executor()
             .spawn(async move { service.release_screen(generation) })
             .await;
-        if released {
-            cx.update(|cx| clear_pending_freeze(generation, owner, cx));
-        }
+        cx.update(|cx| finish_pending_freeze_release(generation, released, cx));
     })
     .detach();
 }

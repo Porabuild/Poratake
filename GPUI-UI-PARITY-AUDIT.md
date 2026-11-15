@@ -1113,6 +1113,10 @@ Bugs fixed in this pass:
   Isolated GPUI tests force the delayed-open path, simulate successful freezes
   and release failures, and cover rapid replacements and cancellation. Native
   macOS and Linux handoffs remain unverified.
+- After a completed frozen capture, a failed release could lose its retry token.
+  The token now remains pending, with an immediate retry and notification if it
+  still fails. Isolated tests cover the shared capture/release path, replacement
+  generations and live-selector retry; native failure behavior remains unverified.
 - A failed or timed-out freeze could continue in the daemon after the app opened
   a live selector. The app now releases the failed freeze before falling back;
   if cleanup fails, it closes the selector and retains the generation for retry.

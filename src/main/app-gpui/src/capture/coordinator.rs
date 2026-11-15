@@ -239,27 +239,31 @@ impl Coordinator {
             .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
-            let result = (|| -> anyhow::Result<_> {
-                let temporary = prepare_screenshot(&path)?;
-                service
-                    .capture_area_cached(capture, &temporary, reservation, None)
-                    .with_context(|| {
-                        format!("Capture data may be available at {}", temporary.display())
-                    })?;
-                publish_screenshot(&temporary, &path).with_context(|| {
-                    format!("Capture data is available at {}", temporary.display())
-                })
-            })();
-            if let Some(generation) = release_after {
-                service.release_screen(generation);
-            }
+            let (result, released) = crate::capture::capture_then_release(
+                &service,
+                release_after,
+                || -> anyhow::Result<_> {
+                    let temporary = prepare_screenshot(&path)?;
+                    service
+                        .capture_area_cached(capture, &temporary, reservation, None)
+                        .with_context(|| {
+                            format!("Capture data may be available at {}", temporary.display())
+                        })?;
+                    publish_screenshot(&temporary, &path).with_context(|| {
+                        format!("Capture data is available at {}", temporary.display())
+                    })
+                },
+            );
             drop(hide);
             drop(transition);
-            result
+            (result, released)
         });
 
         cx.spawn(async move |_entity, cx| {
-            let result = task.await;
+            let (result, released) = task.await;
+            let result = cx.update(|cx| {
+                crate::capture::complete_capture_release(result, release_after, released, cx)
+            });
             match result {
                 Ok(path) => finalize_capture(path, false, cx).await,
                 Err(error) => show_capture_error(cx, "Capture Failed", &error.to_string()),
@@ -400,16 +404,23 @@ impl Coordinator {
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
-            let result = service.capture_area_cached(capture, &path, reservation, release_after);
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    service.capture_area_cached(capture, &path, reservation, None)
+                });
             if result.is_err() {
                 let _ = std::fs::remove_file(&path);
             }
             drop(hide);
             drop(transition);
-            result.map(|_| path)
+            (result.map(|_| path), released)
         });
         cx.spawn(async move |_entity, cx| {
-            let captured = match task.await {
+            let (result, released) = task.await;
+            let result = cx.update(|cx| {
+                crate::capture::complete_capture_release(result, release_after, released, cx)
+            });
+            let captured = match result {
                 Ok(path) => path,
                 Err(error) => {
                     cx.update(|cx| {
@@ -474,28 +485,35 @@ impl Coordinator {
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
-            let result = (|| -> anyhow::Result<_> {
-                let temporary = prepare_screenshot(&path)?;
-                service
-                    .capture_window_to_file(window_id, capture, &temporary, reservation)
-                    .with_context(|| {
-                        format!("Capture data may be available at {}", temporary.display())
-                    })?;
-                publish_screenshot(&temporary, &path).with_context(|| {
-                    format!("Capture data is available at {}", temporary.display())
-                })
-            })();
-            if let Some(generation) = release_after {
-                service.release_screen(generation);
-            }
+            let (result, released) = crate::capture::capture_then_release(
+                &service,
+                release_after,
+                || -> anyhow::Result<_> {
+                    let temporary = prepare_screenshot(&path)?;
+                    service
+                        .capture_window_to_file(window_id, capture, &temporary, reservation)
+                        .with_context(|| {
+                            format!("Capture data may be available at {}", temporary.display())
+                        })?;
+                    publish_screenshot(&temporary, &path).with_context(|| {
+                        format!("Capture data is available at {}", temporary.display())
+                    })
+                },
+            );
             drop(hide);
             drop(transition);
-            result
+            (result, released)
         });
 
-        cx.spawn(async move |_entity, cx| match task.await {
-            Ok(path) => finalize_capture(path, false, cx).await,
-            Err(error) => show_capture_error(cx, "Window Capture Failed", &error.to_string()),
+        cx.spawn(async move |_entity, cx| {
+            let (result, released) = task.await;
+            let result = cx.update(|cx| {
+                crate::capture::complete_capture_release(result, release_after, released, cx)
+            });
+            match result {
+                Ok(path) => finalize_capture(path, false, cx).await,
+                Err(error) => show_capture_error(cx, "Window Capture Failed", &error.to_string()),
+            }
         })
         .detach();
     }
@@ -1019,18 +1037,25 @@ impl Coordinator {
             .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
-            let result = service.capture_area_cached(capture, &path, reservation, release_after);
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    service.capture_area_cached(capture, &path, reservation, None)
+                });
             drop(hide);
             drop(transition);
             if let Err(error) = result {
                 let _ = std::fs::remove_file(&path);
-                return Err(error);
+                return (Err(error), released);
             }
-            Ok(path)
+            (Ok(path), released)
         });
 
         cx.spawn(async move |entity, cx| {
-            let captured = match task.await {
+            let (result, released) = task.await;
+            let result = cx.update(|cx| {
+                crate::capture::complete_capture_release(result, release_after, released, cx)
+            });
+            let captured = match result {
                 Ok(path) => path,
                 Err(error) => {
                     eprintln!("[capture] analysis capture failed: {error}");

@@ -132,6 +132,10 @@ struct FreezeState {
     #[cfg(all(test, windows))]
     release_fails_for_test: std::sync::atomic::AtomicBool,
     #[cfg(all(test, windows))]
+    fail_next_release_for_test: std::sync::atomic::AtomicBool,
+    #[cfg(all(test, windows))]
+    release_attempts_for_test: std::sync::atomic::AtomicU64,
+    #[cfg(all(test, windows))]
     freeze_succeeds_for_test: std::sync::atomic::AtomicBool,
 }
 
@@ -171,6 +175,32 @@ impl CachedCaptureReservation {
         }
         state.frozen_generation == Some(self.generation)
     }
+}
+
+pub(crate) fn capture_then_release<T>(
+    service: &CaptureService,
+    release_after: Option<u64>,
+    capture: impl FnOnce() -> T,
+) -> (T, bool) {
+    let result = capture();
+    let released = release_after.is_none_or(|generation| service.release_screen(generation));
+    (result, released)
+}
+
+pub(crate) fn complete_capture_release<T>(
+    result: T,
+    release_after: Option<u64>,
+    released: bool,
+    cx: &mut gpui::App,
+) -> T {
+    if let Some(generation) = release_after.filter(|generation| *generation != 0) {
+        if released {
+            overlay::finish_pending_freeze_release(generation, true, cx);
+        } else {
+            overlay::retry_pending_freeze_release(generation, cx);
+        }
+    }
+    result
 }
 
 impl CaptureService {
@@ -338,6 +368,18 @@ impl CaptureService {
     }
 
     fn release_screen_started(&self) -> bool {
+        #[cfg(all(test, windows))]
+        self.freeze
+            .release_attempts_for_test
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(all(test, windows))]
+        if self
+            .freeze
+            .fail_next_release_for_test
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
         #[cfg(all(test, windows))]
         if self
             .freeze
@@ -2026,6 +2068,178 @@ mod tests {
             .release_fails_for_test
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(service.release_screen(1));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn post_capture_release_retries_immediately_and_keeps_the_capture(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        cx.update(|cx| {
+            super::overlay::set_pending_freeze(generation, cx);
+            assert_eq!(super::overlay::replace_all(cx), Some(generation));
+        });
+        service
+            .freeze
+            .release_attempts_for_test
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        service
+            .freeze
+            .fail_next_release_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let capture_path = dir.path().join("captured.png");
+        let (capture_result, released) =
+            super::capture_then_release(&service, Some(generation), || {
+                std::fs::write(&capture_path, b"captured screenshot").map(|()| capture_path.clone())
+            });
+        assert!(!released);
+        let capture_path = cx.update(|cx| {
+            super::complete_capture_release(capture_result, Some(generation), released, cx)
+        });
+        assert_eq!(
+            std::fs::read(capture_path.unwrap()).unwrap(),
+            b"captured screenshot"
+        );
+        cx.run_until_parked();
+
+        assert_eq!(
+            service
+                .freeze
+                .release_attempts_for_test
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(cx.update(super::overlay::replace_all), None);
+        assert!(notifications.borrow().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_capture_release_retry_notifies_and_leaves_generation_pending(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        service
+            .freeze
+            .release_fails_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::overlay::set_pending_freeze(generation, cx);
+            assert_eq!(super::overlay::replace_all(cx), Some(generation));
+        });
+
+        let (capture_result, released) =
+            super::capture_then_release(&service, Some(generation), || {
+                Ok::<_, std::io::Error>("captured screenshot")
+            });
+        assert!(!released);
+        let capture_result = cx.update(|cx| {
+            super::complete_capture_release(capture_result, Some(generation), released, cx)
+        });
+        assert_eq!(capture_result.unwrap(), "captured screenshot");
+        cx.run_until_parked();
+        assert_eq!(
+            service
+                .freeze
+                .release_attempts_for_test
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(cx.update(super::overlay::replace_all), Some(generation));
+        assert_eq!(*notifications.borrow(), ["Screen still frozen"]);
+
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        cx.update(|cx| {
+            super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::ScrollCapture]
+        );
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn older_capture_release_cannot_clear_a_newer_freeze(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+        });
+        cx.update(|cx| {
+            super::overlay::set_pending_freeze(1, cx);
+            super::overlay::set_pending_freeze(2, cx);
+            super::complete_capture_release((), Some(1), true, cx);
+            assert_eq!(super::overlay::replace_all(cx), Some(2));
+            super::complete_capture_release((), Some(1), false, cx);
+            assert_eq!(super::overlay::replace_all(cx), Some(2));
+            super::complete_capture_release((), Some(2), true, cx);
+            assert_eq!(super::overlay::replace_all(cx), None);
+        });
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn closing_a_live_selector_does_not_leave_a_zero_freeze_pending(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.update(super::overlay::parity_is_active));
+
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+        assert_eq!(cx.update(super::overlay::replace_all), None);
+
+        cx.update(|cx| {
+            super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::ScrollCapture]
+        );
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
     }
 
     #[cfg(windows)]
