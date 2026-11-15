@@ -1117,6 +1117,9 @@ Bugs fixed in this pass:
   The token now remains pending, with an immediate retry and notification if it
   still fails. Isolated tests cover the shared capture/release path, replacement
   generations and live-selector retry; native failure behavior remains unverified.
+- Direct Record Area now uses a live selector even when screenshot freezing is
+  enabled, matching Electron. A headless test also checks that All-in-one Record
+  retains its configured freeze; native behavior still needs verification.
 - A failed or timed-out freeze could continue in the daemon after the app opened
   a live selector. The app now releases the failed freeze before falling back;
   if cleanup fails, it closes the selector and retains the generation for retry.

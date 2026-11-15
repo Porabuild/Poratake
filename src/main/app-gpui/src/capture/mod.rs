@@ -2244,6 +2244,60 @@ mod tests {
 
     #[cfg(windows)]
     #[herogpui::test]
+    fn direct_record_area_stays_live_while_all_in_one_honors_freeze(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = true;
+            settings.screenshot.hide_desktop_icons = false;
+            settings.all_in_one.remember_choices = true;
+            settings.all_in_one.last_mode = "record".into();
+            settings.all_in_one.last_targets.record = "area".into();
+        });
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            service
+        });
+
+        cx.update(|cx| {
+            super::start_area_selection(super::intent::CaptureIntent::Recording, cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(service.freeze.state.lock().next_generation, 0);
+        assert_eq!(service.freeze.state.lock().frozen_generation, None);
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::Recording]
+        );
+
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+
+        cx.update(super::start_all_in_one);
+        cx.run_until_parked();
+
+        let freeze = service.freeze.state.lock();
+        assert_eq!(freeze.next_generation, 1);
+        assert_eq!(freeze.frozen_generation, Some(1));
+        drop(freeze);
+        assert_eq!(
+            cx.update(super::overlay::active_intents_for_test),
+            [super::intent::CaptureIntent::Recording]
+        );
+
+        cx.update(super::overlay::close_all);
+        cx.run_until_parked();
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
     fn screen_recording_replaces_an_existing_selector(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
