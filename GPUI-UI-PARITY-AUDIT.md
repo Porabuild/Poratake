@@ -1846,6 +1846,10 @@ native interaction remains unverified.
 | P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                                                                                                                                                              |
 
+Source tracing also shows both shells can report deletion success after the file
+is removed even if the history update fails to persist. A stale entry may return
+after restart; the partial-success case has not been reproduced in a live app.
+
 A zero-padding framed attachment also matches CPU preview and export over a
 rectangle and blackout crossing the primary-image seam. A positive control checks
 the attachment pixel before the blackout is drawn.
