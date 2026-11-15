@@ -363,7 +363,14 @@ impl CaptureService {
                 continue;
             }
             drop(state);
-            return self.release_screen_started();
+            let released = self.release_screen_started();
+            if released {
+                let mut state = self.freeze.state.lock();
+                if state.frozen_generation == Some(generation) {
+                    state.frozen_generation = None;
+                }
+            }
+            return released;
         }
     }
 
@@ -716,6 +723,15 @@ fn hides_icons_before_selection(intent: intent::CaptureIntent) -> bool {
     )
 }
 
+fn selection_failure_title(intent: intent::CaptureIntent) -> &'static str {
+    match intent {
+        intent::CaptureIntent::Recording => "Recording failed",
+        intent::CaptureIntent::Ocr => "OCR Failed",
+        intent::CaptureIntent::QrCode => "Scan Failed",
+        _ => "Capture Failed",
+    }
+}
+
 fn with_selection_icon_hide(
     cx: &mut gpui::App,
     release_first: Option<u64>,
@@ -797,9 +813,14 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     }
     let release_first = overlay::replace_all(cx);
     if hides_icons_before_selection(intent) {
-        with_selection_icon_hide(cx, release_first, "Capture Failed", move |cx| {
-            open_area_selection(intent, release_first, cx);
-        });
+        with_selection_icon_hide(
+            cx,
+            release_first,
+            selection_failure_title(intent),
+            move |cx| {
+                open_area_selection(intent, release_first, cx);
+            },
+        );
         return;
     }
     open_area_selection(intent, release_first, cx);
@@ -815,11 +836,7 @@ fn open_area_selection(
         cx,
         release_first,
         freeze,
-        if intent == intent::CaptureIntent::Recording {
-            "Recording failed"
-        } else {
-            "Capture Failed"
-        },
+        selection_failure_title(intent),
         move |cx, deferred_show, generation| {
             let opened = each_display(cx, |service, id, bounds, focus, cx| {
                 overlay::AreaOverlay::open(
@@ -1752,7 +1769,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         cx.update(|cx| {
             super::start_area_selection(super::intent::CaptureIntent::ScrollCapture, cx);
-            super::start_area_selection(super::intent::CaptureIntent::Ocr, cx);
+            super::start_area_selection(super::intent::CaptureIntent::EditorAttach, cx);
         });
         finish_queued_freeze(&cx, &service, generation);
         cx.run_until_parked();
@@ -1762,11 +1779,11 @@ mod tests {
             .freeze
             .release_fails_for_test
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        cx.update(|cx| super::start_area_selection(super::intent::CaptureIntent::Ocr, cx));
+        cx.update(|cx| super::start_area_selection(super::intent::CaptureIntent::EditorAttach, cx));
         cx.run_until_parked();
         assert_eq!(
             cx.update(super::overlay::active_intents_for_test),
-            [super::intent::CaptureIntent::Ocr]
+            [super::intent::CaptureIntent::EditorAttach]
         );
         assert!(service.reserve_cached_capture().wait_for_freeze());
         cx.update(super::overlay::close_all);
@@ -1934,6 +1951,48 @@ mod tests {
 
     #[cfg(windows)]
     #[herogpui::test]
+    fn analysis_release_failures_use_the_requested_action_title(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+        let notifications = crate::system::notification::capture_for_test();
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            super::overlay::init_bindings(cx);
+            crate::state::state(cx)
+        });
+        for (intent, title) in [
+            (super::intent::CaptureIntent::Ocr, "OCR Failed"),
+            (super::intent::CaptureIntent::QrCode, "Scan Failed"),
+        ] {
+            let generation = service.begin_freeze();
+            service.finish_freeze(generation, Ok(())).unwrap();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            cx.update(|cx| {
+                super::overlay::set_pending_freeze(generation, cx);
+                super::start_area_selection(intent, cx);
+            });
+            cx.run_until_parked();
+            assert!(!cx.update(super::overlay::parity_is_active));
+            assert_eq!(*notifications.borrow(), [title]);
+            notifications.borrow_mut().clear();
+            service
+                .freeze
+                .release_fails_for_test
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            assert!(service.release_screen(generation));
+            cx.update(|cx| super::overlay::finish_pending_freeze_release(generation, true, cx));
+        }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
     fn failed_release_blocks_a_replacement_freeze_until_retry(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
@@ -1970,7 +2029,7 @@ mod tests {
             });
             cx.run_until_parked();
             assert!(!cx.update(super::overlay::parity_is_active));
-            assert_eq!(*notifications.borrow(), ["Capture Failed"]);
+            assert_eq!(*notifications.borrow(), ["OCR Failed"]);
             notifications.borrow_mut().clear();
             assert_eq!(service.freeze.state.lock().frozen_generation, None);
             cx.update(|cx| {
@@ -2606,6 +2665,47 @@ mod tests {
     }
 
     #[test]
+    fn successful_release_clears_cached_generation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+
+        assert!(service.release_screen(generation));
+        assert_eq!(service.freeze.state.lock().frozen_generation, None);
+        assert!(!service.reserve_cached_capture().wait_for_freeze());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_release_keeps_cached_generation_until_retry_succeeds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let generation = service.begin_freeze();
+        service.finish_freeze(generation, Ok(())).unwrap();
+        service
+            .freeze
+            .release_fails_for_test
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(!service.release_screen(generation));
+        assert_eq!(
+            service.freeze.state.lock().frozen_generation,
+            Some(generation)
+        );
+        assert!(service.reserve_cached_capture().wait_for_freeze());
+
+        service
+            .freeze
+            .release_fails_for_test
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(service.release_screen(generation));
+        assert_eq!(service.freeze.state.lock().frozen_generation, None);
+    }
+
+    #[test]
     fn release_does_not_block_a_pending_freeze() {
         let dir = tempfile::tempdir().unwrap();
         let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
@@ -2681,6 +2781,8 @@ mod tests {
         service
             .finish_freeze(second, Ok(()))
             .expect("finish second");
+        assert!(service.release_screen(first));
+        assert_eq!(service.freeze.state.lock().frozen_generation, Some(second));
     }
 
     #[test]

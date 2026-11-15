@@ -953,9 +953,9 @@ fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
                 [CaptureIntent::Recording],
                 "{kind} {error}"
             );
-            let reservation = cx.update(|cx| crate::state::state(cx).reserve_cached_capture());
-            assert!(reservation.wait_for_freeze(), "{kind} {error}");
-            drop(reservation);
+            assert!(!calls(output)[before..]
+                .iter()
+                .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
             previous_picker = Some(area_picker(cx));
             cx.update(crate::capture::overlay::close_all);
             cx.run_until_parked();
@@ -993,10 +993,14 @@ fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
     .unwrap();
     cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Recording, cx));
     cx.run_until_parked();
-    let reservation = cx.update(|cx| crate::state::state(cx).reserve_cached_capture());
-    assert!(reservation.wait_for_freeze());
-    drop(reservation);
+    assert_eq!(
+        cx.update(crate::capture::overlay::active_intents_for_test),
+        [CaptureIntent::Recording]
+    );
     let recorded = calls(output);
+    assert!(!recorded[before..]
+        .iter()
+        .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
     let methods: Vec<_> = recorded[before..]
         .iter()
         .filter(|call| call["module"] == "desktop-helper")
@@ -1005,6 +1009,40 @@ fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
     assert_eq!(methods, ["hide", "show", "show"]);
     assert!(!crate::capture::desktop_icons::needs_restoration());
 
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen", "expectDesktopVisible": true,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.screenshot.freeze_screen = true;
+            config.screenshot.hide_desktop_icons = false;
+        });
+    });
+    let frozen_before = calls(output).len();
+    cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Screenshot, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(crate::capture::overlay::active_intents_for_test),
+        [CaptureIntent::Screenshot]
+    );
+    let frozen_calls = calls(output);
+    assert!(frozen_calls[frozen_before..]
+        .iter()
+        .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze"));
+    let reservation = cx.update(|cx| crate::state::state(cx).reserve_cached_capture());
+    assert!(reservation.wait_for_freeze());
+    drop(reservation);
+
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| config.screenshot.hide_desktop_icons = true);
+    });
     std::fs::write(
         output.join("capture-fixture.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -1047,18 +1085,23 @@ fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
         )
         .unwrap();
         take_notifications();
-        cx.update(|cx| crate::capture::start_area_selection(intent, cx));
-        cx.run_until_parked();
-        let picker = area_picker(cx);
         let before = calls(output).len();
-        select_area(cx, picker);
+        cx.update(|cx| crate::capture::start_area_selection(intent, cx));
         cx.run_until_parked();
         let recorded = calls(output);
         let recorded = &recorded[before..];
-        assert!(!recorded.iter().any(|call| call["module"] == "screenshot"));
-        assert!(recorded
+        assert!(!cx.update(crate::capture::overlay::parity_is_active));
+        let methods: Vec<_> = recorded
             .iter()
-            .any(|call| call["module"] == "freeze-screen" && call["method"] == "release"));
+            .filter(|call| call["module"] == "desktop-helper")
+            .map(|call| call["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(methods, ["hide", "show"]);
+        assert!(!crate::capture::desktop_icons::needs_restoration());
+        assert!(!recorded.iter().any(|call| call["module"] == "screenshot"));
+        assert!(!recorded
+            .iter()
+            .any(|call| call["module"] == "freeze-screen"));
         assert_eq!(
             take_notifications(),
             [(title.into(), "Could not hide desktop icons".into(), false)]
@@ -1130,7 +1173,7 @@ fn replacement_waits_for_icons_before_freezing(cx: &mut HeadlessAppContext, outp
     cx.run_until_parked();
     assert!(cx.update(crate::capture::overlay::parity_is_active));
     cx.update(|cx| {
-        crate::capture::start_area_selection(CaptureIntent::Recording, cx);
+        crate::capture::start_area_selection(CaptureIntent::EditorAttach, cx);
         assert!(!crate::capture::overlay::parity_is_active(cx));
     });
     cx.run_until_parked();
@@ -1140,7 +1183,7 @@ fn replacement_waits_for_icons_before_freezing(cx: &mut HeadlessAppContext, outp
     );
     assert_eq!(
         cx.update(crate::capture::overlay::active_intents_for_test),
-        [CaptureIntent::Recording]
+        [CaptureIntent::EditorAttach]
     );
     let calls = calls(output);
     let calls = &calls[before..];
@@ -1185,7 +1228,7 @@ fn replacement_recovers_from_failed_icon_restore(cx: &mut HeadlessAppContext, ou
             crate::capture::start_area_selection(CaptureIntent::ScrollCapture, cx);
         });
         cx.run_until_parked();
-        cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::Recording, cx));
+        cx.update(|cx| crate::capture::start_area_selection(CaptureIntent::EditorAttach, cx));
         cx.run_until_parked();
         let calls = calls(output);
         let calls = &calls[before..];
@@ -1200,7 +1243,7 @@ fn replacement_recovers_from_failed_icon_restore(cx: &mut HeadlessAppContext, ou
         if scenario == "icons-show-not-applied" {
             assert_eq!(
                 cx.update(crate::capture::overlay::active_intents_for_test),
-                [CaptureIntent::Recording]
+                [CaptureIntent::EditorAttach]
             );
             assert!(calls
                 .iter()
@@ -1214,7 +1257,7 @@ fn replacement_recovers_from_failed_icon_restore(cx: &mut HeadlessAppContext, ou
             assert_eq!(
                 take_notifications(),
                 [(
-                    "Recording failed".into(),
+                    "Capture Failed".into(),
                     "Could not restore desktop icons".into(),
                     false
                 )]

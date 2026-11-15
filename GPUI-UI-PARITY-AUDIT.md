@@ -1125,11 +1125,16 @@ Bugs fixed in this pass:
   The token now remains pending, with an immediate retry and notification if it
   still fails. Isolated tests cover the shared capture/release path, replacement
   generations and live-selector retry; native failure behavior remains unverified.
+  A successful release also clears the matching cached-generation state. A
+  reservation racing the release RPC can still observe the old generation;
+  the daemon falls back to live pixels if its cache is empty, and no incorrect
+  output has been reproduced for that race.
 - Direct Record Area now uses a live selector even when screenshot freezing is
   enabled, matching Electron. A headless test also checks that All-in-one Record
   retains its configured freeze. The native Windows workflow in [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43667610426)
-  passed the freeze-preference positive control and live-pixel check; the visual
-  matrix was still running when this was recorded.
+  passed the freeze-preference positive control and live-pixel check. The visual
+  matrix then failed two profiles because a fixture still expected direct recording
+  to freeze; the revised fixture needs hosted verification.
 - A failed or timed-out freeze could continue in the daemon after the app opened
   a live selector. The app now releases the failed freeze before falling back;
   if cleanup fails, it closes the selector and retains the generation for retry.

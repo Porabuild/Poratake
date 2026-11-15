@@ -9,6 +9,8 @@ use super::workflows::{area_picker, select_area, SELECTED_RECT};
 use super::{escape, take_notifications, HeadlessAppContext, Path};
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
+    let config = cx.update(|cx| crate::state::state(cx).config.clone());
+    let original_config = config.get();
     for (intent, module, text, copied, empty, failed) in [
         (
             CaptureIntent::Ocr,
@@ -36,24 +38,32 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             ("Scan Failed", "Failed to scan QR code from the image"),
         ),
     ] {
-        for (name, freeze, freeze_case) in [
-            ("success", true, "frozen"),
-            ("empty", false, "live"),
-            ("error", true, "freeze-failed"),
-            ("capture-failed", true, "frozen"),
-            ("cancelled", true, "frozen"),
-            ("retry", true, "frozen"),
+        for (name, freeze, freeze_case, hide_requested) in [
+            ("success", true, "frozen", true),
+            ("empty", false, "live", false),
+            ("live-hidden-success", false, "live", true),
+            ("error", true, "freeze-failed", true),
+            ("capture-failed", true, "frozen", true),
+            ("cancelled", true, "frozen", true),
+            ("retry", true, "frozen", true),
         ] {
+            config.update(|settings| {
+                settings.screenshot.hide_desktop_icons = hide_requested;
+            });
+            let hide_desktop_icons =
+                crate::capture::desktop_icons::should_hide_for_capture(&config);
             let captures = scratch.join(format!("{module}-{name}"));
             std::fs::create_dir_all(&captures).unwrap();
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&serde_json::json!({
                     "freeze": freeze_case,
+                    "expectDesktopHidden": hide_desktop_icons,
+                    "frozenDesktopIcon": hide_desktop_icons && freeze,
                     "rect": SELECTED_RECT,
                     "windowId": null,
                     "analysis": module,
-                    "outcome": name,
+                    "outcome": if name == "live-hidden-success" { "success" } else { name },
                 }))
                 .unwrap(),
             )
@@ -66,9 +76,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             let sentinel = format!("clipboard before {module} {name}");
             take_notifications();
             cx.update(|cx| {
-                crate::state::state(cx).config.update(|config| {
-                    config.storage.screenshots_path = captures.to_string_lossy().into_owned();
-                    config.screenshot.freeze_screen = freeze;
+                config.update(|settings| {
+                    settings.storage.screenshots_path = captures.to_string_lossy().into_owned();
+                    settings.screenshot.freeze_screen = freeze;
+                    settings.screenshot.hide_desktop_icons = hide_desktop_icons;
                 });
                 ClipboardService::write_text(cx, sentinel.clone());
                 crate::capture::start_area_selection(intent, cx);
@@ -85,7 +96,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 !cx.update(crate::capture::overlay::parity_is_active),
                 "{module}-{name}: selector must close"
             );
-            let succeeded = matches!(name, "success" | "retry");
+            let succeeded = matches!(name, "success" | "live-hidden-success" | "retry");
             assert_eq!(
                 cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
                 Some(if succeeded {
@@ -96,7 +107,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 "{module}-{name}: clipboard outcome"
             );
             let notification = match name {
-                "success" | "retry" => Some((copied, true)),
+                "success" | "live-hidden-success" | "retry" => Some((copied, true)),
                 "empty" => Some((empty, false)),
                 "error" => Some((failed, false)),
                 "capture-failed" => {
@@ -124,6 +135,81 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 "analysis must not enter screenshot history"
             );
             let calls: Vec<_> = calls(output).into_iter().skip(before).collect();
+            let call_index = |module: &str, method: &str| {
+                calls
+                    .iter()
+                    .position(|call| call["module"] == module && call["method"] == method)
+            };
+            let hide_index = call_index("desktop-helper", "hide");
+            let freeze_index = call_index("freeze-screen", "freeze");
+            let release_index = call_index("freeze-screen", "release");
+            let show_index = call_index("desktop-helper", "show");
+            if hide_desktop_icons {
+                let hide_index = hide_index.expect("analysis must hide icons before selection");
+                assert!(
+                    show_index.is_some(),
+                    "{module}-{name}: desktop icons must be restored"
+                );
+                if name == "cancelled" {
+                    let freeze_index = freeze_index
+                        .expect("frozen analysis selection must freeze before cancellation");
+                    assert!(hide_index < freeze_index);
+                    assert!(
+                        call_index("screenshot", "capture-area").is_none(),
+                        "{module}-{name}: cancelling must not capture pixels"
+                    );
+                    assert!(release_index.is_some());
+                } else if freeze_case == "frozen" {
+                    let freeze_index =
+                        freeze_index.expect("frozen analysis must freeze after hiding icons");
+                    assert!(hide_index < freeze_index);
+                    let release_index =
+                        release_index.expect("the frozen analysis selection must be released");
+                    let capture_index = call_index("screenshot", "capture-area")
+                        .expect("analysis must capture the selected pixels");
+                    assert_eq!(
+                        calls[capture_index]["params"]["cached"], true,
+                        "{module}-{name}: hidden-icon frozen analysis must use the frozen cache"
+                    );
+                    assert!(
+                        freeze_index < capture_index
+                            && capture_index < release_index
+                            && release_index < show_index.unwrap(),
+                        "{module}-{name}: expected hide, freeze, capture, release and icon restore order"
+                    );
+                } else if freeze_case == "freeze-failed" {
+                    let freeze_index =
+                        freeze_index.expect("analysis must attempt its configured freeze");
+                    let release_index =
+                        release_index.expect("failed freeze must be released before live capture");
+                    let capture_index = call_index("screenshot", "capture-area")
+                        .expect("analysis must capture after freeze failure");
+                    assert!(
+                        hide_index < freeze_index
+                            && freeze_index < release_index
+                            && release_index < capture_index
+                            && capture_index < show_index.unwrap(),
+                        "{module}-{name}: failed freeze must release before live capture and icon restore"
+                    );
+                    assert_eq!(
+                        calls[capture_index]["params"]["cached"], false,
+                        "{module}-{name}: failed freeze must fall back to live pixels"
+                    );
+                } else {
+                    let capture_index = call_index("screenshot", "capture-area")
+                        .expect("analysis must capture the selected pixels");
+                    assert!(
+                        hide_index < capture_index && capture_index < show_index.unwrap(),
+                        "{module}-{name}: expected hide, live capture and icon restore order"
+                    );
+                    assert!(freeze_index.is_none());
+                    assert!(release_index.is_none());
+                    assert_eq!(
+                        calls[capture_index]["params"]["cached"], false,
+                        "{module}-{name}: hidden-icon live capture must not use the frozen cache"
+                    );
+                }
+            }
             assert_eq!(
                 calls
                     .iter()
@@ -148,6 +234,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             }
         }
     }
+    config.update(|settings| {
+        settings.storage.screenshots_path = original_config.storage.screenshots_path.clone();
+        settings.screenshot.freeze_screen = original_config.screenshot.freeze_screen;
+        settings.screenshot.hide_desktop_icons = original_config.screenshot.hide_desktop_icons;
+    });
     println!(
         "OCR/QR capture, clipboard, temporary-file cleanup, errors, cancellation and retry passed"
     );
