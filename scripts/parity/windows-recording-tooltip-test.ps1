@@ -3742,8 +3742,51 @@ try {
     $handoffSelectionProcess = [uint32]0
     [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handoffSelectionHit, [ref]$handoffSelectionProcess)
     if ($handoffSelectionProcess -ne [uint32]$handoffApplication.Id -or [PoratakeTooltipProbe]::GetAncestor($handoffSelectionHit, 2) -ne $handoffOverlay) { throw 'Native hit testing at the record-area drag did not reach the isolated GPUI selector.' }
-    [void][PoratakeTooltipProbe]::SetForegroundWindow($handoffOverlay)
-    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffOverlay } 3000 'The record-area selector did not become the foreground input target.' | Out-Null
+    $script:handoffForegroundClock = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:handoffForegroundLastRequestAt = -250
+    $script:handoffForegroundDiagnostic = [ordered]@{
+        expectedOverlayHwnd = $handoffOverlay.ToInt64()
+        applicationProcessId = $handoffApplication.Id
+        initialRequestSucceeded = [PoratakeTooltipProbe]::SetForegroundWindow($handoffOverlay)
+        foregroundHwnd = $null
+        foregroundRootHwnd = $null
+        recoveryRequests = 0
+        lastRecoverySucceeded = $null
+        competingWindow = $null
+        failure = $null
+    }
+    $handoffForegroundReady = Wait-Until {
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+        $script:handoffForegroundDiagnostic.foregroundHwnd = $foreground.ToInt64()
+        $script:handoffForegroundDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+        if ($foreground -eq $handoffOverlay -or $foregroundRoot -eq $handoffOverlay) { return $true }
+        $script:handoffForegroundDiagnostic.failure = 'foreground-not-recording-overlay-or-owned-child'
+        if ($script:handoffForegroundClock.ElapsedMilliseconds - $script:handoffForegroundLastRequestAt -lt 250) { return $null }
+        $script:handoffForegroundLastRequestAt = $script:handoffForegroundClock.ElapsedMilliseconds
+        $script:handoffForegroundDiagnostic.recoveryRequests++
+        $script:handoffForegroundDiagnostic.competingWindow = Get-WindowIdentity $foreground
+        $script:handoffForegroundDiagnostic.lastRecoverySucceeded = [PoratakeTooltipProbe]::SetForegroundWindow($handoffOverlay)
+        $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+        $foregroundRoot = if ($foreground -eq [IntPtr]::Zero) { [IntPtr]::Zero } else { [PoratakeTooltipProbe]::GetAncestor($foreground, 2) }
+        $script:handoffForegroundDiagnostic.foregroundHwnd = $foreground.ToInt64()
+        $script:handoffForegroundDiagnostic.foregroundRootHwnd = $foregroundRoot.ToInt64()
+        if ($foreground -eq $handoffOverlay -or $foregroundRoot -eq $handoffOverlay) {
+            $script:handoffForegroundDiagnostic.failure = $null
+            return $true
+        }
+        $script:handoffForegroundDiagnostic.competingWindow = Get-WindowIdentity $foreground
+        return $null
+    } 5000 $null
+    if (-not $handoffForegroundReady) {
+        $script:handoffForegroundDiagnostic.failure = 'foreground-timeout'
+        $handoffForegroundDiagnosticPath = Join-Path $evidenceRoot 'recording-handoff-foreground-diagnostic.json'
+        [System.IO.File]::WriteAllText($handoffForegroundDiagnosticPath, ($script:handoffForegroundDiagnostic | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        throw "The record-area selector was hit-testable but did not become the foreground input target: $($script:handoffForegroundDiagnostic | ConvertTo-Json -Compress -Depth 8); diagnostic=$handoffForegroundDiagnosticPath"
+    }
+    if ($script:handoffForegroundDiagnostic.recoveryRequests -gt 0) {
+        Write-Host "Record-area selector foreground accepted after $($script:handoffForegroundDiagnostic.recoveryRequests) bounded re-requests."
+    }
     [PoratakeTooltipProbe]::Drag($handoffSelectionStart.X, $handoffSelectionStart.Y, $handoffSelectionEnd.X, $handoffSelectionEnd.Y)
     $handoffControl = Wait-Until {
         foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$handoffApplication.Id)) {
