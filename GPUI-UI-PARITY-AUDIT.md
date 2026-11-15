@@ -1653,19 +1653,23 @@ readers can see an incomplete write, and a process or power failure can still
 leave a partial destination with an undiscovered temporary backup. macOS and
 Linux use same-file recovery for returned write failures as well; 13 standalone
 Linux filesystem tests passed in WSL, and the integrated Linux job passed in
-[hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43605856597). The
-macOS ACL tests still need hosted verification. The next [hosted run](https://github.com/Porabuild/Poratake/actions/runs/43610852822)
-passed Clippy, but both ACL fixtures failed to parse before reaching the recovery
-path. Their test input syntax has been corrected. Unix recovery is not crash-atomic,
+[hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43605856597). Both
+macOS ACL fixtures passed in [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43613554180),
+including inherited ACL removal and an Everyone delete-child grant. Unix recovery is not crash-atomic,
 and it refuses overwrites where a private backup cannot be secured. This includes
 some writable ACL-managed directories owned by another user; write-only existing
 files also fail before modification because they cannot be backed up.
 A hosted Windows scratch probe found that unprivileged `ReplaceFileW` removed a
 seeded audit ACE, so it is not used for this save path.
 
-The same run stopped the native Windows attachment test before capture: another
+[An earlier run](https://github.com/Porabuild/Poratake/actions/runs/43610852822)
+stopped the native Windows attachment test before capture: another
 runner window covered the fixture after the editor hid. The test now places the
-fixture directly below the selector and still needs hosted verification.
+fixture directly below the selector.
+The [next run](https://github.com/Porabuild/Poratake/actions/runs/43613554180)
+reached the first live attachment but stopped at the owned Save dialog because
+its filename control was not exposed by the test's UI Automation query. The
+test now uses the dialog's filename shortcut and requires the exact output path.
 
 The [Windows run at `50f9db03`](https://github.com/Porabuild/Poratake/actions/runs/43603549394)
 stopped before the visual matrix: its pre-marker preview comparison counted 493

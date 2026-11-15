@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('inspect', 'select-item', 'set-save-name')]
+    [ValidateSet('inspect', 'select-item')]
     [string]$VideoExportButtonAction,
     [long]$VideoEditorWindowHandle,
     [string]$VideoExportButtonResultPath,
@@ -7,7 +7,6 @@ param(
     [long]$NativeDialogHandle,
     [string]$ExpectedFixtureBaseName,
     [string]$ExpectedStateBaseName,
-    [string]$SaveDialogFileName,
     [int]$VideoExportButtonTimeoutMilliseconds = 12000
 )
 
@@ -298,50 +297,6 @@ public static class PoratakeVideoExportDpi {
                 dpiContext = $helperContext.ToInt64()
                 dpiAware = $dpiAware
             }
-        } else {
-            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($NativeDialogHandle))
-            $editCondition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::Edit
-            )
-            $edits = $rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
-            $inventory = [System.Collections.Generic.List[object]]::new()
-            $candidates = [System.Collections.Generic.List[object]]::new()
-            foreach ($edit in $edits) {
-                try { $current = $edit.Current } catch { continue }
-                $bounds = $current.BoundingRectangle
-                $valuePattern = $null
-                try { $valuePattern = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern) } catch { }
-                $metadata = @{
-                    name = $current.Name
-                    automationId = $current.AutomationId
-                    className = $current.ClassName
-                    isEnabled = $current.IsEnabled
-                    isOffscreen = $current.IsOffscreen
-                    supportsValuePattern = $null -ne $valuePattern
-                    value = if ($null -ne $valuePattern) { $valuePattern.Current.Value } else { $null }
-                    bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }
-                }
-                [void]$inventory.Add($metadata)
-                $isFileName = $current.AutomationId -ceq '1001' -or $current.Name -match '^File name:?$'
-                if ($isFileName -and $current.IsEnabled -and -not $current.IsOffscreen -and $null -ne $valuePattern) {
-                    [void]$candidates.Add(@{ element = $edit; pattern = $valuePattern; metadata = $metadata })
-                }
-            }
-            if ($candidates.Count -ne 1) {
-                $result = @{ set = $false; requestedName = $SaveDialogFileName; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
-                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
-                throw "The Save Screenshot dialog did not expose exactly one writable file-name Edit control. Matches=$($candidates.Count)."
-            }
-            $candidate = $candidates[0]
-            $candidate.pattern.SetValue($SaveDialogFileName)
-            $readBack = $candidate.pattern.Current.Value
-            if ($readBack -cne $SaveDialogFileName) {
-                $result = @{ set = $false; requestedName = $SaveDialogFileName; actualName = $readBack; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
-                [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 8), [System.Text.UTF8Encoding]::new($false))
-                throw "The Save Screenshot dialog file-name value did not read back exactly: $readBack"
-            }
-            $result = @{ set = $true; requestedName = $SaveDialogFileName; actualName = $readBack; automationId = $candidate.metadata.automationId; dpiContext = $helperContext.ToInt64(); dpiAware = $dpiAware; edits = @($inventory.ToArray()) }
         }
         [System.IO.File]::WriteAllText($VideoExportButtonResultPath, ($result | ConvertTo-Json -Compress -Depth 4), [System.Text.UTF8Encoding]::new($false))
         exit 0
@@ -934,49 +889,18 @@ function Get-VideoEditorButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
     }
 }
 
-function Set-EditorSaveDialogFileName([IntPtr]$dialog, [string]$fileName, [string]$resultPath) {
-    if ([System.IO.File]::Exists($resultPath)) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction Stop }
-    $stdout = [System.IO.Path]::ChangeExtension($resultPath, '.stdout.log')
-    $stderr = [System.IO.Path]::ChangeExtension($resultPath, '.stderr.log')
-    $arguments = @(
-        '-NoProfile',
-        '-File',
-        "`"$PSCommandPath`"",
-        '-VideoExportButtonAction',
-        'set-save-name',
-        '-NativeDialogHandle',
-        [string]$dialog.ToInt64(),
-        '-SaveDialogFileName',
-        "`"$fileName`"",
-        '-VideoExportButtonResultPath',
-        "`"$resultPath`""
-    )
-    $helper = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -WorkingDirectory $root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
-    try {
-        if (-not $helper.WaitForExit(15000)) {
-            $helper.Kill()
-            if (-not $helper.WaitForExit(3000)) { throw 'The owned UI Automation helper did not exit after its bounded timeout.' }
-            throw 'The owned UI Automation helper timed out while setting the Save Screenshot file name.'
-        }
-        if ($helper.ExitCode -ne 0) {
-            $detail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
-            throw "The owned UI Automation helper could not set the Save Screenshot file name: $detail"
-        }
-        if (-not [System.IO.File]::Exists($resultPath)) { throw 'The UI Automation helper produced no Save Screenshot file-name evidence.' }
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
-        if (-not $result.dpiAware -or -not $result.set -or $result.actualName -cne $fileName) { throw 'The Save Screenshot file name did not pass UI Automation readback.' }
-        Write-Host "Save Screenshot file name set and verified as $fileName."
-    } finally {
-        if (-not $helper.HasExited) {
-            try {
-                $helper.Kill()
-                if (-not $helper.WaitForExit(3000)) { $script:safeToDeleteProfile = $false }
-            } catch {
-                if (-not $helper.HasExited) { $script:safeToDeleteProfile = $false }
-            }
-        }
-        $helper.Dispose()
+function Set-EditorSaveDialogFileName([IntPtr]$dialog, [string]$fileName) {
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($dialog)) { throw 'The owned Save Screenshot dialog closed before its file name was set.' }
+    $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+    if ($foreground -ne $dialog -and [PoratakeTooltipProbe]::GetAncestor($foreground, 2) -ne $dialog) {
+        throw 'The owned Save Screenshot dialog lost foreground before its file name was set.'
     }
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.SendKeys]::SendWait('%n')
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [System.Windows.Forms.SendKeys]::SendWait($fileName)
+    if (-not [PoratakeTooltipProbe]::IsWindowVisible($dialog)) { throw 'The owned Save Screenshot dialog closed while setting its file name.' }
+    Write-Host "Entered unique Save Screenshot file name $fileName using the dialog keyboard accelerator."
 }
 
 function Select-OpenDialogItem([IntPtr]$dialog, [string]$fixtureBaseName, [string]$stateBaseName, [string]$resultPath) {
@@ -1830,7 +1754,7 @@ function Save-WorkflowEditorOutput([IntPtr]$editorHandle, [PoratakeTooltipProbe+
     if ([System.IO.File]::Exists($expectedPath)) { throw "$label unique output path already exists." }
     $button = Get-VideoEditorButtonReadiness $editorHandle $editorBounds $proofPath 'Save'
     $dialog = Open-EditorOwnedDialog $editorHandle $button.button.bounds 'Save Screenshot'
-    Set-EditorSaveDialogFileName $dialog $fileName ([System.IO.Path]::ChangeExtension($proofPath, '.filename.json'))
+    Set-EditorSaveDialogFileName $dialog $fileName
     [PoratakeTooltipProbe]::PressKey(0x0D)
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($dialog) } 10000 "$label save dialog did not close after accepting the test-owned output path." | Out-Null
     Wait-Until {

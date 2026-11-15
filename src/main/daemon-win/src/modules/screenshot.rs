@@ -46,7 +46,7 @@ fn capture_area(request: &Request) -> Reply {
     let window_id = wire.window_id;
     let path = wire.path.to_string_lossy().into_owned();
 
-    crate::trace::trace("capture-area entered cached={cached}");
+    crate::trace::trace(&format!("capture-area entered cached={cached}"));
 
     spawn_capture(request_id, path, move || {
         crate::trace::trace("capture() entered");
