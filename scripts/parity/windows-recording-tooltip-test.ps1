@@ -346,11 +346,14 @@ $videoStdoutPath = Join-Path $videoProfileRoot 'stdout.log'
 $videoStderrPath = Join-Path $videoProfileRoot 'stderr.log'
 $handoffStdoutPath = Join-Path $handoffProfileRoot 'stdout.log'
 $handoffStderrPath = Join-Path $handoffProfileRoot 'stderr.log'
+$handoffFreezeControlStdoutPath = Join-Path $handoffProfileRoot 'freeze-control-stdout.log'
+$handoffFreezeControlStderrPath = Join-Path $handoffProfileRoot 'freeze-control-stderr.log'
 $application = $null
 $previewApplication = $null
 $workflowApplication = $null
 $reopenApplication = $null
 $videoApplication = $null
+$handoffFreezeControlApplication = $null
 $handoffApplication = $null
 $previousProfile = $env:PORATAKE_CONFIG_DIR
 $previousDaemonPath = $env:PORATAKE_DAEMON_PATH
@@ -387,6 +390,7 @@ $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerT
 $captureRoot = Join-Path $evidenceRoot 'captures'
 $workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
 $handoffTracePath = Join-Path $evidenceRoot 'recording-handoff-daemon-trace.log'
+$handoffFreezeControlTracePath = Join-Path $evidenceRoot 'recording-handoff-freeze-control-trace.log'
 $previewTooltipProofPath = Join-Path $evidenceRoot 'capture-preview-native-tooltip-paint.png'
 $systemAudioFixturePath = Join-Path $evidenceRoot 'native-system-audio-fixture.m4a'
 $systemAudioProofPath = Join-Path $evidenceRoot 'native-system-audio-preview-export.json'
@@ -3733,6 +3737,74 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $handoffProfileRoot 'config.json'), $handoffConfig, [System.Text.UTF8Encoding]::new($false))
     $handoffLoadedConfig = Get-Content -LiteralPath (Join-Path $handoffProfileRoot 'config.json') -Raw | ConvertFrom-Json -ErrorAction Stop
     if (-not $handoffLoadedConfig.screenshot.freezeScreen) { throw 'The isolated direct-recording profile did not enable Freeze Screen.' }
+
+    $handoffPreviousProfile = $env:PORATAKE_CONFIG_DIR
+    $handoffPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
+    $handoffPreviousTracePath = $env:PORATAKE_TRACE_FILE
+    try {
+        $env:PORATAKE_CONFIG_DIR = $handoffProfileRoot
+        $env:PORATAKE_DAEMON_PATH = $daemonExecutable
+        $env:PORATAKE_TRACE_FILE = $handoffFreezeControlTracePath
+        $handoffFreezeControlApplication = Start-Process -FilePath $executable -ArgumentList @('--intent', 'capture-area') -WorkingDirectory $root -RedirectStandardOutput $handoffFreezeControlStdoutPath -RedirectStandardError $handoffFreezeControlStderrPath -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $handoffPreviousProfile) { Remove-Item Env:PORATAKE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:PORATAKE_CONFIG_DIR = $handoffPreviousProfile }
+        if ($null -eq $handoffPreviousDaemonPath) { Remove-Item Env:PORATAKE_DAEMON_PATH -ErrorAction SilentlyContinue } else { $env:PORATAKE_DAEMON_PATH = $handoffPreviousDaemonPath }
+        if ($null -eq $handoffPreviousTracePath) { Remove-Item Env:PORATAKE_TRACE_FILE -ErrorAction SilentlyContinue } else { $env:PORATAKE_TRACE_FILE = $handoffPreviousTracePath }
+    }
+    if (-not $handoffFreezeControlApplication) { throw 'Could not launch the isolated Freeze Screen positive control.' }
+    Capture-OwnedDaemonChildren $handoffFreezeControlApplication
+    $handoffFreezeControlState = Wait-Until {
+        if ($handoffFreezeControlApplication.HasExited) { throw 'The Freeze Screen positive-control app exited before its selector appeared.' }
+        Capture-OwnedDaemonChildren $handoffFreezeControlApplication
+        $daemon = @($ownedDaemons | Where-Object { $_.ParentProcessId -eq $handoffFreezeControlApplication.Id } | Select-Object -First 1)
+        if ($daemon.Count -ne 1) { return $null }
+        $selector = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlApplication.Id) | Where-Object {
+            [PoratakeTooltipProbe]::IsWindowVisible($_) -and [PoratakeTooltipProbe]::WindowText($_) -ceq 'Poratake capture overlay'
+        } | Select-Object -First 1)
+        if ($selector.Count -ne 1) { return $null }
+        $freezeWindows = @([PoratakeTooltipProbe]::Windows([uint32]$daemon[0].ProcessId) | Where-Object {
+            [PoratakeTooltipProbe]::IsWindowVisible($_) -and [PoratakeTooltipProbe]::ClassName($_) -ceq 'PoratakeFreezeOverlay'
+        })
+        if ($freezeWindows.Count -lt 1) { return $null }
+        if (-not (Test-Path -LiteralPath $handoffFreezeControlTracePath)) { return $null }
+        $lines = @(Get-Content -LiteralPath $handoffFreezeControlTracePath)
+        if (-not ($lines | Where-Object { $_ -match 'route freeze-screen freeze$' })) { return $null }
+        return @{ Selector = $selector[0]; Daemon = $daemon[0]; FreezeWindows = $freezeWindows; Trace = $lines }
+    } 20000 'The app did not load the enabled Freeze Screen setting and show its daemon-owned frozen overlay.'
+    if (-not $handoffFreezeControlState) { throw 'The Freeze Screen positive-control state was incomplete.' }
+    $handoffPositiveFreezeRequests = @($handoffFreezeControlState.Trace | Where-Object { $_ -match 'route freeze-screen freeze$' })
+    if ($handoffPositiveFreezeRequests.Count -ne 1) { throw "The positive-control trace expected one freeze request, observed $($handoffPositiveFreezeRequests.Count)." }
+    Write-Host "Freeze Screen positive control passed: the isolated app requested a freeze and daemon $($handoffFreezeControlState.Daemon.ProcessId) created $($handoffFreezeControlState.FreezeWindows.Count) visible freeze overlay(s)."
+    if (-not [PoratakeTooltipProbe]::SetForegroundWindow($handoffFreezeControlState.Selector)) { throw 'Could not foreground the Freeze Screen positive-control selector for cancellation.' }
+    Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $handoffFreezeControlState.Selector } 3000 'The Freeze Screen positive-control selector did not become the foreground input target.' | Out-Null
+    [PoratakeTooltipProbe]::PressKey(0x1B)
+    Wait-Until {
+        $selectorVisible = [PoratakeTooltipProbe]::IsWindowVisible($handoffFreezeControlState.Selector)
+        $freezeVisible = @([PoratakeTooltipProbe]::Windows([uint32]$handoffFreezeControlState.Daemon.ProcessId) | Where-Object {
+            [PoratakeTooltipProbe]::IsWindowVisible($_) -and [PoratakeTooltipProbe]::ClassName($_) -ceq 'PoratakeFreezeOverlay'
+        }).Count -gt 0
+        if ($selectorVisible -or $freezeVisible) { return $null }
+        $lines = if (Test-Path -LiteralPath $handoffFreezeControlTracePath) { @(Get-Content -LiteralPath $handoffFreezeControlTracePath) } else { @() }
+        if (-not ($lines | Where-Object { $_ -match 'route freeze-screen release$' })) { return $null }
+        return $true
+    } 10000 'Cancelling the Freeze Screen positive control did not release its daemon overlay.' | Out-Null
+    Capture-OwnedDaemonChildren $handoffFreezeControlApplication
+    $handoffFreezeControlParentId = $handoffFreezeControlApplication.Id
+    if (-not $handoffFreezeControlApplication.HasExited) {
+        $handoffFreezeControlApplication.Kill()
+        if (-not $handoffFreezeControlApplication.WaitForExit(5000)) { throw 'The Freeze Screen positive-control app did not exit.' }
+    }
+    $handoffFreezeDaemon = $handoffFreezeControlState.Daemon.Process
+    $handoffFreezeDaemon.Refresh()
+    if (-not $handoffFreezeDaemon.HasExited) {
+        $identity = Get-CimInstance Win32_Process -Filter "ProcessId = $($handoffFreezeControlState.Daemon.ProcessId)" -ErrorAction Stop
+        $imagePath = [System.IO.Path]::GetFullPath($handoffFreezeDaemon.MainModule.FileName)
+        $created = [datetime]$identity.CreationDate
+        $sameIdentity = $identity.Name -eq 'poratake-daemon.exe' -and [int]$identity.ParentProcessId -eq $handoffFreezeControlParentId -and $imagePath -ieq $handoffFreezeControlState.Daemon.ImagePath -and $imagePath -in $daemonCandidates -and $handoffFreezeDaemon.StartTime -eq $handoffFreezeControlState.Daemon.StartTime -and [Math]::Abs(($handoffFreezeDaemon.StartTime - $created).TotalSeconds) -le 1
+        if (-not $sameIdentity) { $safeToDeleteProfile = $false; throw 'The positive-control daemon identity changed before cleanup.' }
+        $handoffFreezeDaemon.Kill()
+        if (-not $handoffFreezeDaemon.WaitForExit(5000)) { throw 'The Freeze Screen positive-control daemon did not exit after release.' }
+    }
     $handoffPreviousProfile = $env:PORATAKE_CONFIG_DIR
     $handoffPreviousDaemonPath = $env:PORATAKE_DAEMON_PATH
     $handoffPreviousTracePath = $env:PORATAKE_TRACE_FILE
@@ -4367,6 +4439,9 @@ try {
         @{ Source = $handoffStdoutPath; Name = 'recording-handoff-stdout.log' },
         @{ Source = $handoffStderrPath; Name = 'recording-handoff-stderr.log' },
         @{ Source = $handoffTracePath; Name = 'recording-handoff-daemon-trace.log' },
+        @{ Source = $handoffFreezeControlStdoutPath; Name = 'recording-handoff-freeze-control-stdout.log' },
+        @{ Source = $handoffFreezeControlStderrPath; Name = 'recording-handoff-freeze-control-stderr.log' },
+        @{ Source = $handoffFreezeControlTracePath; Name = 'recording-handoff-freeze-control-daemon-trace.log' },
         @{ Source = $videoStdoutPath; Name = 'video-editor-stdout.log' },
         @{ Source = $videoStderrPath; Name = 'video-editor-stderr.log' }
     )) {
@@ -4409,8 +4484,9 @@ try {
     Capture-OwnedDaemonChildren $workflowApplication
     Capture-OwnedDaemonChildren $reopenApplication
     Capture-OwnedDaemonChildren $videoApplication
+    Capture-OwnedDaemonChildren $handoffFreezeControlApplication
     Capture-OwnedDaemonChildren $handoffApplication
-    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication)) {
+    foreach ($ownedApplication in @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffFreezeControlApplication, $handoffApplication)) {
         if ($ownedApplication -and -not $ownedApplication.HasExited) {
             try {
                 $ownedApplication.Kill()
@@ -4420,7 +4496,7 @@ try {
             }
         }
     }
-    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
+    $ownedApplicationIds = @($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffFreezeControlApplication, $handoffApplication) | Where-Object { $_ } | ForEach-Object { $_.Id }
     foreach ($owned in $ownedDaemons) {
         $process = $owned.Process
         if (-not $process.HasExited) {
@@ -4452,7 +4528,7 @@ try {
     $resolvedWorkflowProfile = [System.IO.Path]::GetFullPath($workflowProfileRoot)
     $resolvedVideoProfile = [System.IO.Path]::GetFullPath($videoProfileRoot)
     $resolvedHandoffProfile = [System.IO.Path]::GetFullPath($handoffProfileRoot)
-    if (@($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
+    if (@($application, $previewApplication, $workflowApplication, $reopenApplication, $videoApplication, $handoffFreezeControlApplication, $handoffApplication) | Where-Object { $_ -and -not $_.HasExited }) { $safeToDeleteProfile = $false }
     foreach ($owned in $ownedDaemons) {
         if (-not $owned.Process.HasExited) { $safeToDeleteProfile = $false }
         $owned.Process.Dispose()
