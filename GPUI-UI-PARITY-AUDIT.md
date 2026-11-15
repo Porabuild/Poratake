@@ -17,7 +17,7 @@ required work for this pass. Minor antialiasing differences and Linux-only
 enhancements are deferred unless they expose a critical shared defect or have a
 small verified fix. Exhaustive states for every control remain deferred.
 
-Each gate counts once only when its stated evidence exists. As of 2026-11-14,
+Each gate counts once only when its stated evidence exists. As of 2026-11-15,
 seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
@@ -29,12 +29,16 @@ remaining effort. Partial work does not count as a completed gate.
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
 | Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
 | Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Open   | All active jobs passed at `a2cea4c5`. Windows passed at `5f50562a`, but macOS failed Clippy; the correction and attachment tests need CI on the current PR head.            |
+| Hosted code-and-baseline CI          | Open   | All active jobs passed at `71ec03ef`; verify the current PR head before completion.                                                                                         |
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
 | macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.          |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                      |
+
+[Hosted CI at `71ec03ef`](https://github.com/Porabuild/Poratake/actions/runs/43662801738)
+passed all active jobs, including the native workflows and Windows visual matrix;
+Windows packaging was skipped.
 
 [Hosted Windows CI at `badb3d5b`](https://github.com/Porabuild/Poratake/actions/runs/43402764907)
 passed native recording with programmatic cuts and annotation, and compared three
