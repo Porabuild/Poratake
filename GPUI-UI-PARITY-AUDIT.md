@@ -1801,6 +1801,9 @@ for 4K, and 283 ms versus 561 ms for 8K. Normal and blurred thumbnail bytes
 matched the previous path in the tested fixtures. Peak measured allocation was
 approximately unchanged; these measurements exclude GPUI upload and full-app
 interaction, so they do not establish end-to-end responsiveness.
+Failed screenshot or recording deletion now reports an error and retains the
+preview. A Windows headless button test covers failure and successful deletion;
+native interaction remains unverified.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

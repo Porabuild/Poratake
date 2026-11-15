@@ -160,6 +160,8 @@ fn chip<T: NativeTooltipHost>(
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id = id.into();
+    #[cfg(all(test, any(windows, target_os = "macos")))]
+    let debug_selector = format!("{id}-tooltip-trigger");
     let surface = theme.background.opacity(0.8);
     let foreground = theme.foreground;
     let button = Button::new(id.clone())
@@ -208,8 +210,10 @@ fn chip<T: NativeTooltipHost>(
                 let hover_tooltip = tooltip.to_string();
                 let hover_key = id.clone();
                 let press_key = hover_key.clone();
-                let trigger = div()
-                    .id((id.clone(), "preview-native-tooltip"))
+                let trigger = div().id((id.clone(), "preview-native-tooltip"));
+                #[cfg(test)]
+                let trigger = trigger.debug_selector(move || debug_selector.clone());
+                let trigger = trigger
                     .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         this.preview_tooltip_hover(
                             &hover_key,

@@ -1596,14 +1596,6 @@ fn report_copy_failure(cx: &mut App, message: &str) {
     crate::windows::toast::Toast::show(cx, "Copy failed", message.to_string());
 }
 
-fn delete_capture(path: &Path) {
-    crate::history_store::delete_path(path, crate::history_store::HistoryItemType::Screenshot);
-}
-
-fn delete_recording(project: &Path) {
-    crate::history_store::delete_path(project, crate::history_store::HistoryItemType::Video);
-}
-
 fn begin_remove_preview(
     view: &mut CapturePreviewWindow,
     id: u64,
@@ -2046,10 +2038,23 @@ impl CapturePreviewWindow {
                                     if gated {
                                         return;
                                     }
-                                    if is_video {
-                                        delete_recording(&path);
+                                    let kind = if is_video {
+                                        crate::history_store::HistoryItemType::Video
                                     } else {
-                                        delete_capture(&path);
+                                        crate::history_store::HistoryItemType::Screenshot
+                                    };
+                                    if !crate::history_store::delete_path(&path, kind) {
+                                        let message = if is_video {
+                                            "Could not delete the recording."
+                                        } else {
+                                            "Could not delete the screenshot."
+                                        };
+                                        crate::windows::toast::Toast::show(
+                                            cx,
+                                            "Delete failed",
+                                            message,
+                                        );
+                                        return;
                                     }
                                     let _ = preview_entity.update(cx, |view, cx| {
                                         begin_remove_preview(
@@ -2687,6 +2692,173 @@ impl CapturePreviewWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn failed_preview_deletion_reports_error_and_keeps_the_preview(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        const CHILD: &str = "PORATAKE_TEST_CAPTURE_PREVIEW_DELETE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "windows::capture_preview::tests::failed_preview_deletion_reports_error_and_keeps_the_preview",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("RUST_BACKTRACE", "1")
+                .env(crate::config::store::CONFIG_DIR_ENV, directory.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let config_path = crate::config::store::config_dir().join("config.json");
+        let config = Arc::new(crate::config::store::ConfigStore::load_at(config_path).unwrap());
+        config.update(|settings| {
+            settings.preview.auto_dismiss = false;
+            settings.preview.corner = "bottom-right".into();
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+        });
+        let now = Instant::now();
+        let preview = |id, kind, path| CapturePreview {
+            id,
+            kind,
+            path,
+            image: None,
+            thumbnail_loading: false,
+            thumbnail_cancel: None,
+            thumbnail_generation: 0,
+            #[cfg(all(test, feature = "parity"))]
+            thumbnail_ready: None,
+            blurred: None,
+            video: None,
+            export_cancel: None,
+            hover_progress: 0.0,
+            last_frame: None,
+            hovered: false,
+            busy: false,
+            completed: None,
+            export_progress: None,
+            dismiss_token: Arc::new(AtomicU64::new(0)),
+            entered_at: now,
+            layout_y: None,
+            layout_animation: None,
+            dismiss_animation: None,
+        };
+        let notifications = crate::system::notification::capture_for_test();
+        let screenshot_path = crate::config::store::config_dir().join("capture.png");
+        std::fs::create_dir(&screenshot_path).unwrap();
+        let recording_path = crate::config::store::config_dir().join("Recording.poratake");
+        std::fs::write(&recording_path, b"not a project directory").unwrap();
+        let preview = cx.update(|cx| {
+            cx.new(|_| CapturePreviewWindow {
+                previews: vec![preview(1, PreviewKind::Screenshot, screenshot_path.clone())],
+                revealed: true,
+                layout_generation: 0,
+                display_menu: crate::ui::menu::MenuHandle::new(),
+                native_tooltip_status: NativeTooltipStatus::default(),
+                #[cfg(windows)]
+                native_tooltip: None,
+                _display_observer: None,
+            })
+        });
+        let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview {
+            preview: preview.clone(),
+        });
+        visual.simulate_resize(size(px(208.), px(604.)));
+        visual.settle();
+
+        for (kind, file_path) in [
+            (PreviewKind::Screenshot, screenshot_path.clone()),
+            (PreviewKind::Video, recording_path.clone()),
+        ] {
+            preview.update(visual, |view, _| {
+                view.previews[0].kind = kind;
+                view.previews[0].path = file_path.clone();
+                view.previews[0].video = None;
+                view.previews[0].image = None;
+            });
+            visual.settle();
+            visual.simulate_mouse_move(
+                gpui::point(px(100.), px(500.)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            assert!(preview.update(visual, |view, _| view.previews[0].hovered));
+            visual.executor().advance_clock(Duration::from_millis(250));
+            visual.settle();
+            let delete_bounds = visual
+                .debug_bounds("preview-delete-1-tooltip-trigger")
+                .expect("Delete control must render while the preview is hovered");
+            assert!(
+                delete_bounds.origin.x >= px(160.) && delete_bounds.origin.y >= px(450.),
+                "Delete control unexpectedly laid out at {:?}",
+                delete_bounds
+            );
+            visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+            visual.settle();
+
+            assert!(
+                file_path.exists(),
+                "failed deletion must keep the source path"
+            );
+            assert_eq!(
+                preview.update(visual, |view, _| {
+                    (
+                        view.previews.len(),
+                        view.previews[0].dismiss_animation.is_none(),
+                    )
+                }),
+                (1, true),
+                "failed deletion must keep its preview mounted and actionable"
+            );
+            assert_eq!(
+                *notifications.borrow(),
+                ["Delete failed"],
+                "failed deletion must show user-visible feedback"
+            );
+            notifications.borrow_mut().clear();
+        }
+
+        let successful_capture = crate::config::store::config_dir().join("successful.png");
+        image::RgbaImage::new(32, 24)
+            .save(&successful_capture)
+            .unwrap();
+        preview.update(visual, |view, _| {
+            let preview = &mut view.previews[0];
+            preview.kind = PreviewKind::Screenshot;
+            preview.path = successful_capture.clone();
+            preview.image = None;
+        });
+        visual.settle();
+        let delete_point = gpui::point(px(100.), px(500.));
+        visual.simulate_mouse_move(delete_point, None, gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+        let delete_bounds = visual
+            .debug_bounds("preview-delete-1-tooltip-trigger")
+            .expect("Delete control must render while the preview is hovered");
+        visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.settle();
+        assert!(!successful_capture.exists());
+        assert!(preview.update(visual, |view, _| {
+            view.previews[0].dismiss_animation.is_some()
+        }));
+        assert!(notifications.borrow().is_empty());
+        visual.update(|window, _| window.remove_window());
+    }
 
     #[cfg(windows)]
     fn preview_open_failure_context(
