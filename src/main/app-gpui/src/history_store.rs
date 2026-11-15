@@ -711,7 +711,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn valid_history_symlink_keeps_link_and_updates_its_target() {
-        use std::os::unix::fs::{symlink, symlink_metadata, PermissionsExt};
+        use std::os::unix::fs::{symlink, PermissionsExt};
 
         let directory = tempfile::tempdir().unwrap();
         let profile = directory.path().join("linked-profile");
@@ -727,7 +727,10 @@ mod tests {
         assert_eq!(load_history_from(&link).unwrap(), previous);
         save_history_to(&link, &next).unwrap();
 
-        assert!(symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert_eq!(load_history_from(&target).unwrap(), next);
         assert_eq!(
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
