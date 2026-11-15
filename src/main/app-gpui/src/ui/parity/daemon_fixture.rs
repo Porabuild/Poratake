@@ -85,6 +85,7 @@ pub fn run() {
     protocol::send_event("system:ready", None);
     let mut frozen = false;
     let mut frozen_desktop_icons_hidden = false;
+    let mut freeze_release_failed = false;
     let mut timer_visible = false;
     let mut scrolling = false;
     let mut desktop_show_held = false;
@@ -146,7 +147,35 @@ pub fn run() {
                 }
             }
             ("freeze-screen", "release") => {
+                let fixture = capture_fixture(&output);
+                if fixture["releaseFailure"] == "once" && !freeze_release_failed {
+                    freeze_release_failed = true;
+                    std::fs::write(
+                        Path::new(&output).join("freeze-release-failed.json"),
+                        serde_json::to_vec(&json!({
+                            "frozen": frozen,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    protocol::respond_error(
+                        &request.id,
+                        "FIXTURE_ERROR",
+                        "Fixture first release failure",
+                    );
+                    continue;
+                }
                 frozen = false;
+                if freeze_release_failed && fixture["releaseFailure"] == "once" {
+                    std::fs::write(
+                        Path::new(&output).join("freeze-release-succeeded.json"),
+                        serde_json::to_vec(&json!({
+                            "frozen": frozen,
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
                 json!({"frozen": false})
             }
             ("desktop-helper", "hide") => {

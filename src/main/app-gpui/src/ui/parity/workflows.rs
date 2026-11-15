@@ -9,8 +9,8 @@ use crate::editor::window::EditorWindow;
 use crate::history_store::{HistoryItem, HistoryItemType};
 
 use super::{
-    capture, click, click_measured, event, hover, point, px, settle, size, HeadlessAppContext,
-    Modifiers, Path,
+    capture, click, click_measured, event, hover, point, px, settle, size, take_notifications,
+    HeadlessAppContext, Modifiers, Path,
 };
 
 #[cfg(windows)]
@@ -863,6 +863,129 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             }
         }
     }
+
+    let service_config = cx.update(|cx| crate::state::state(cx).config.clone());
+    let previous_capture_settings = service_config.get();
+    let captures = scratch.join("freeze-release-retry");
+    std::fs::create_dir_all(&captures).unwrap();
+    let release_failed_state = output.join("freeze-release-failed.json");
+    let release_succeeded_state = output.join("freeze-release-succeeded.json");
+    for path in [&release_failed_state, &release_succeeded_state] {
+        let _ = std::fs::remove_file(path);
+    }
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "frozen",
+            "releaseFailure": "once",
+            "rect": SELECTED_RECT,
+            "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let release_retry_before = super::daemon_fixture::calls(output).len();
+    take_notifications();
+    cx.update(|cx| {
+        service_config.update(|config| {
+            config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+            config.screenshot.freeze_screen = true;
+            config.screenshot.hide_desktop_icons = false;
+            config.screenshot.show_preview = true;
+            config.screenshot.capture_to_clipboard = false;
+            config.screenshot.auto_copy_to_clipboard = false;
+        });
+        crate::capture::start_area_capture(cx);
+    });
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    assert!(!cx.update(crate::capture::overlay::parity_is_active));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&release_failed_state).unwrap())
+            .unwrap()["frozen"],
+        true,
+        "the fake daemon must retain its frozen state after the first release failure"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(&release_succeeded_state).unwrap()
+        )
+        .unwrap()["frozen"],
+        false,
+        "the immediate retry must release the daemon's frozen state"
+    );
+    assert!(
+        take_notifications().is_empty(),
+        "successful release retry must not surface a capture failure"
+    );
+    let release_retry_calls = super::daemon_fixture::calls(output);
+    let release_retry_calls = &release_retry_calls[release_retry_before..];
+    let freeze_index = release_retry_calls
+        .iter()
+        .position(|call| call["module"] == "freeze-screen" && call["method"] == "freeze")
+        .expect("the screenshot selection must freeze first");
+    let capture_index = release_retry_calls
+        .iter()
+        .position(|call| call["module"] == "screenshot" && call["method"] == "capture-area")
+        .expect("the screenshot must be captured");
+    assert_eq!(release_retry_calls[capture_index]["params"]["cached"], true);
+    let releases: Vec<_> = release_retry_calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| call["module"] == "freeze-screen" && call["method"] == "release")
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        releases.len(),
+        2,
+        "the failed release must be retried immediately"
+    );
+    assert!(
+        freeze_index < capture_index && capture_index < releases[0] && releases[0] < releases[1]
+    );
+    verify_saved_capture(
+        cx,
+        output,
+        &captures,
+        (SELECTED_RECT, [64, 112, 192, 255]),
+        "post-capture freeze release retry",
+    );
+    let next_selector_before = super::daemon_fixture::calls(output).len();
+    cx.update(|cx| {
+        crate::capture::start_area_selection(
+            crate::capture::intent::CaptureIntent::ScrollCapture,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(crate::capture::overlay::active_intents_for_test),
+        [crate::capture::intent::CaptureIntent::ScrollCapture],
+        "a live selector must open after release retry succeeds"
+    );
+    assert!(
+        !super::daemon_fixture::calls(output)[next_selector_before..]
+            .iter()
+            .any(|call| call["module"] == "freeze-screen" && call["method"] == "freeze")
+    );
+    cx.update(crate::capture::overlay::close_all);
+    cx.run_until_parked();
+    service_config.update(|config| {
+        config.storage.screenshots_path =
+            previous_capture_settings.storage.screenshots_path.clone();
+        config.screenshot.freeze_screen = previous_capture_settings.screenshot.freeze_screen;
+        config.screenshot.hide_desktop_icons =
+            previous_capture_settings.screenshot.hide_desktop_icons;
+        config.screenshot.show_preview = previous_capture_settings.screenshot.show_preview;
+        config.screenshot.capture_to_clipboard =
+            previous_capture_settings.screenshot.capture_to_clipboard;
+        config.screenshot.auto_copy_to_clipboard =
+            previous_capture_settings.screenshot.auto_copy_to_clipboard;
+    });
+    println!("post-capture release failure was retried before the next live selector opened");
+
     let calls: Vec<serde_json::Value> =
         std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
             .unwrap()
@@ -880,6 +1003,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             "capture-area",
             "capture-window",
             "capture-window",
+            "capture-area",
             "capture-area",
             "capture-area",
             "capture-area",
