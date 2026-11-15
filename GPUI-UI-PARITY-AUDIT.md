@@ -1125,6 +1125,10 @@ Bugs fixed in this pass:
   The token now remains pending, with an immediate retry and notification if it
   still fails. Isolated tests cover the shared capture/release path, replacement
   generations and live-selector retry; native failure behavior remains unverified.
+  The coordinator-level fake-daemon retry passed in both light and dark profiles
+  in [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43679096462).
+  That run failed its baseline state-list check because the test emitted an
+  unintended extra image; the diagnostic is now written outside that list.
   A successful release also clears the matching cached-generation state. A
   reservation racing the release RPC can still observe the old generation;
   the daemon falls back to live pixels if its cache is empty, and no incorrect

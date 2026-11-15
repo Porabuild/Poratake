@@ -947,7 +947,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
     );
     verify_saved_capture(
         cx,
-        output,
+        scratch,
         &captures,
         (SELECTED_RECT, [64, 112, 192, 255]),
         "post-capture freeze release retry",
