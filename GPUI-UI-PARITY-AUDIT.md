@@ -1871,8 +1871,8 @@ History writes are not crash-atomic; readers outside the GPUI process may observ
 a partial write.
 GPUI's automatic history-limit eviction can still remove old files before a
 failed index save, and simultaneous writes from the two shells are not coordinated.
-A failed history update after renaming a recording can leave the old path in the
-index without notifying the user.
+A failed history update after renaming a recording now warns that the index may
+retain the old path; isolated tests cover write failure and untracked recordings.
 
 A zero-padding framed attachment also matches CPU preview and export over a
 rectangle and blackout crossing the primary-image seam. A positive control checks

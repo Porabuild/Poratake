@@ -2570,12 +2570,33 @@ impl VideoEditorWindow {
             );
         }
         crate::thumbnails::rekey(&old_path, &new_path);
-        crate::history_store::update_item_path(&old_path, &new_path);
+        let history_update = crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
         self.rename_error = None;
         self.persist(cx);
         self.load_preview(cx);
         cx.notify();
+        match history_update {
+            crate::history_store::UpdatePathOutcome::Updated
+            | crate::history_store::UpdatePathOutcome::Untracked => {}
+            crate::history_store::UpdatePathOutcome::UpdatedWithBackupWarning(path) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History recovery copy remains",
+                    format!("The recording was renamed, but the recovery copy remains at {path}"),
+                );
+            }
+            crate::history_store::UpdatePathOutcome::HistoryUnavailable(error)
+            | crate::history_store::UpdatePathOutcome::PersistenceFailed(error) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History update failed",
+                    format!(
+                        "The recording was renamed, but history may still reference its previous path: {error}"
+                    ),
+                );
+            }
+        }
     }
 
     pub fn cancel_export(&mut self, cx: &mut Context<Self>) {

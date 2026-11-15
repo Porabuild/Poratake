@@ -41,6 +41,15 @@ pub enum DeleteOutcome {
     NotFound,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpdatePathOutcome {
+    Updated,
+    UpdatedWithBackupWarning(String),
+    Untracked,
+    HistoryUnavailable(String),
+    PersistenceFailed(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClearOutcome {
     pub retained: Vec<HistoryItem>,
@@ -324,29 +333,38 @@ pub fn update_editor_state_by_path(path: &Path, state: Value) -> bool {
     }
 }
 
-pub fn update_item_path(old_path: &Path, new_path: &Path) -> bool {
+pub fn update_item_path(old_path: &Path, new_path: &Path) -> UpdatePathOutcome {
     let _lock = HISTORY_MUTATION_LOCK.lock();
+    update_item_path_with(&history_file_path(), old_path, new_path, save_history_to)
+}
+
+fn update_item_path_with(
+    history_path: &Path,
+    old_path: &Path,
+    new_path: &Path,
+    save: impl FnOnce(&Path, &[HistoryItem]) -> io::Result<Option<String>>,
+) -> UpdatePathOutcome {
     let old_path = old_path.to_string_lossy();
-    let history_path = history_file_path();
-    let mut items = match load_history_from(&history_path) {
+    let mut items = match load_history_from(history_path) {
         Ok(items) => items,
         Err(error) => {
             eprintln!("[history] failed to load before updating path: {error}");
-            return false;
+            return UpdatePathOutcome::HistoryUnavailable(error.to_string());
         }
     };
     let Some(item) = items.iter_mut().find(|item| item.original_path == old_path) else {
-        return false;
+        return UpdatePathOutcome::Untracked;
     };
     item.original_path = new_path.to_string_lossy().to_string();
-    match save_history_to(&history_path, &items) {
-        Ok(warning) => {
-            log_backup_warning(warning.as_deref());
-            true
+    match save(history_path, &items) {
+        Ok(Some(warning)) => {
+            log_backup_warning(Some(&warning));
+            UpdatePathOutcome::UpdatedWithBackupWarning(warning)
         }
+        Ok(None) => UpdatePathOutcome::Updated,
         Err(error) => {
             eprintln!("[history] failed to persist updated path: {error}");
-            false
+            UpdatePathOutcome::PersistenceFailed(error.to_string())
         }
     }
 }
@@ -646,6 +664,48 @@ mod tests {
             Some("recovery-copy.json")
         );
         assert!(!source.exists());
+    }
+
+    #[test]
+    fn tracked_rename_write_failure_keeps_old_history_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_path = directory.path().join("Old.poratake");
+        let new_path = directory.path().join("New.poratake");
+        let previous = vec![item("recording", &old_path)];
+        save_history_to(&history_path, &previous).unwrap();
+        let original = fs::read(&history_path).unwrap();
+
+        let outcome = update_item_path_with(&history_path, &old_path, &new_path, |_, _| {
+            Err(io::Error::other("injected history write failure"))
+        });
+
+        assert_eq!(
+            outcome,
+            UpdatePathOutcome::PersistenceFailed("injected history write failure".into())
+        );
+        assert_eq!(fs::read(&history_path).unwrap(), original);
+        assert_eq!(load_history_from(&history_path).unwrap(), previous);
+    }
+
+    #[test]
+    fn untracked_rename_does_not_attempt_history_persistence() {
+        use std::cell::Cell;
+
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_path = directory.path().join("Untracked.poratake");
+        let new_path = directory.path().join("Renamed.poratake");
+        let save_called = Cell::new(false);
+
+        let outcome = update_item_path_with(&history_path, &old_path, &new_path, |_, _| {
+            save_called.set(true);
+            Ok(None)
+        });
+
+        assert_eq!(outcome, UpdatePathOutcome::Untracked);
+        assert!(!save_called.get());
+        assert!(!history_path.exists());
     }
 
     #[cfg(unix)]
