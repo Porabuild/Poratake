@@ -1,8 +1,11 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use xcb::{Xid as _, x};
@@ -130,6 +133,603 @@ fn read(reader: &mut BufReader<std::process::ChildStdout>) -> serde_json::Value 
 
 fn named_window(connection: &xcb::Connection, root: x::Window, name: &[u8]) -> x::Window {
     find_named_window(connection, root, name).expect("named X11 window")
+}
+
+struct TestDirectory(std::path::PathBuf);
+
+impl TestDirectory {
+    fn new() -> Self {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "poratake-x11-recording-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("create X11 recording test directory");
+        Self(path)
+    }
+
+    fn path(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct DaemonProcess {
+    child: Child,
+    stdin: ChildStdin,
+    messages: Receiver<serde_json::Value>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl DaemonProcess {
+    fn start(ffmpeg_path: &std::path::Path, raw_sink_path: &std::path::Path) -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_poratake-daemon-linux"))
+            .process_group(0)
+            .args(["--session", "x11"])
+            .env("PORATAKE_FFMPEG_PATH", ffmpeg_path)
+            .env("PORATAKE_TEST_RAW_SINK", raw_sink_path)
+            .env(
+                "PORATAKE_TEST_PROXY_BIN",
+                std::env::current_exe().expect("test binary path"),
+            )
+            .env("PORATAKE_TEST_PROXY_READY", raw_sink_path)
+            .env(
+                "PORATAKE_TEST_FIRST_FRAME_BYTES",
+                (640 * 480 * 4).to_string(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn Linux daemon");
+        let stdin = child.stdin.take().expect("daemon stdin");
+        let stdout = child.stdout.take().expect("daemon stdout");
+        let (sender, messages) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(message) = serde_json::from_str(&line)
+                    && sender.send(message).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self {
+            child,
+            stdin,
+            messages,
+            reader: Some(reader),
+        }
+    }
+
+    fn wait_for(
+        &self,
+        timeout: Duration,
+        mut matches: impl FnMut(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let message = self
+                .messages
+                .recv_timeout(remaining)
+                .expect("timed out waiting for daemon message");
+            if matches(&message) {
+                return message;
+            }
+        }
+    }
+
+    fn wait_for_id(&self, id: &str) -> serde_json::Value {
+        self.wait_for(Duration::from_secs(10), |message| message["id"] == id)
+    }
+
+    fn wait_for_exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().expect("poll daemon exit") {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "daemon did not exit in time");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+fn frame_count(path: &std::path::Path, frame_len: usize) -> usize {
+    std::fs::read(path)
+        .map(|bytes| bytes.len() / frame_len)
+        .unwrap_or_default()
+}
+
+fn wait_for_file(path: &std::path::Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "proxy did not report readiness");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_raw_frame(
+    path: &std::path::Path,
+    frame_width: usize,
+    frame_height: usize,
+    first_frame: usize,
+    expected_pixels: &[(u32, u32, [u8; 4])],
+) -> usize {
+    let frame_len = frame_width * frame_height * 4;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let bytes = std::fs::read(path).unwrap_or_default();
+        for (index, frame) in bytes.chunks_exact(frame_len).enumerate().skip(first_frame) {
+            if expected_pixels.iter().all(|(x, y, expected)| {
+                let offset = ((*y as usize * frame_width) + *x as usize) * 4;
+                frame[offset..offset + 4] == expected[..]
+            }) {
+                return index;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected raw frame was not captured"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+#[ignore = "requires an X11 display"]
+fn daemon_records_x11_window_frames_and_cursor_across_lifecycle() {
+    let directory = TestDirectory::new();
+    let fake_ffmpeg = directory.path("ffmpeg-sink");
+    let raw_sink = directory.path("recording.rgba");
+    let output_path = directory.path("recording.mp4");
+    std::fs::write(
+        &fake_ffmpeg,
+        "#!/bin/sh\nif [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-encoders\" ]; then\n  printf '%s\\n' ' V..... libx264 fake encoder'\n  exit 0\nfi\ncat > \"$PORATAKE_TEST_RAW_SINK\"\n",
+    )
+    .expect("write fake FFmpeg sink");
+    let mut permissions = std::fs::metadata(&fake_ffmpeg)
+        .expect("fake FFmpeg metadata")
+        .permissions();
+    use std::os::unix::fs::PermissionsExt as _;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_ffmpeg, permissions).expect("make fake FFmpeg executable");
+
+    let (connection, screen_number) =
+        xcb::Connection::connect_with_extensions(None, &[xcb::Extension::Test], &[])
+            .expect("connect to X11");
+    let screen = connection
+        .get_setup()
+        .roots()
+        .nth(screen_number as usize)
+        .expect("X11 screen");
+    let frame: x::Window = connection.generate_id();
+    let client: x::Window = connection.generate_id();
+    connection
+        .check_request(connection.send_request_checked(&x::CreateWindow {
+            depth: x::COPY_FROM_PARENT as u8,
+            wid: frame,
+            parent: screen.root(),
+            x: 20,
+            y: 30,
+            width: 80,
+            height: 40,
+            border_width: 0,
+            class: x::WindowClass::InputOutput,
+            visual: screen.root_visual(),
+            value_list: &[x::Cw::BackPixel(0x0000_0000)],
+        }))
+        .expect("create outer frame");
+    connection
+        .check_request(connection.send_request_checked(&x::CreateWindow {
+            depth: x::COPY_FROM_PARENT as u8,
+            wid: client,
+            parent: frame,
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 40,
+            border_width: 0,
+            class: x::WindowClass::InputOutput,
+            visual: screen.root_visual(),
+            value_list: &[x::Cw::BackPixel(0x00ff_0000)],
+        }))
+        .expect("create recording client window");
+    connection.send_request(&x::MapWindow { window: client });
+    connection.send_request(&x::MapWindow { window: frame });
+    connection.send_request(&x::ClearArea {
+        exposures: false,
+        window: client,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize recording window");
+
+    let mut daemon = DaemonProcess::start(&fake_ffmpeg, &raw_sink);
+    assert_eq!(
+        daemon.wait_for(Duration::from_secs(5), |message| message["data"]["backend"]
+            == "x11")["data"]["backend"],
+        "x11"
+    );
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({
+            "id": "record-window",
+            "module": "screen-recorder",
+            "method": "start",
+            "params": {
+                "windowId": i64::from(client.resource_id()),
+                "frameRate": 15,
+                "keyboardEnabled": false,
+                "includeAudio": false,
+                "micEnabled": false,
+                "cameraEnabled": false,
+                "outputPath": output_path
+            }
+        }),
+    );
+    let started = daemon.wait_for_id("record-window");
+    assert_eq!(started["result"]["success"], true);
+    assert_eq!(started["result"]["state"], "recording");
+
+    let frame_len = 80 * 40 * 4;
+    let captured = wait_for_raw_frame(&raw_sink, 80, 40, 0, &[(40, 20, [255, 0, 0, 255])]);
+
+    connection.send_request(&x::ConfigureWindow {
+        window: frame,
+        value_list: &[x::ConfigWindow::X(100), x::ConfigWindow::Y(100)],
+    });
+    connection.send_request(&x::ChangeWindowAttributes {
+        window: client,
+        value_list: &[x::Cw::BackPixel(0x0012_3456)],
+    });
+    connection.send_request(&x::ClearArea {
+        exposures: false,
+        window: client,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize moved window");
+    let moved_frame = wait_for_raw_frame(
+        &raw_sink,
+        80,
+        40,
+        captured + 1,
+        &[(40, 20, [0x12, 0x34, 0x56, 255])],
+    );
+
+    connection.send_request(&x::ConfigureWindow {
+        window: frame,
+        value_list: &[x::ConfigWindow::Width(40), x::ConfigWindow::Height(40)],
+    });
+    connection.send_request(&x::ConfigureWindow {
+        window: client,
+        value_list: &[x::ConfigWindow::Width(40), x::ConfigWindow::Height(40)],
+    });
+    connection.send_request(&x::ChangeWindowAttributes {
+        window: client,
+        value_list: &[x::Cw::BackPixel(0x0000_ff00)],
+    });
+    connection.send_request(&x::ClearArea {
+        exposures: false,
+        window: client,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize resized window");
+    wait_for_raw_frame(
+        &raw_sink,
+        80,
+        40,
+        moved_frame + 1,
+        &[
+            (10, 20, [0, 0, 0, 255]),
+            (40, 20, [0, 255, 0, 255]),
+            (70, 20, [0, 0, 0, 255]),
+        ],
+    );
+
+    click_at(&connection, screen.root(), 120, 120);
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize recorded click");
+
+    let covering: x::Window = connection.generate_id();
+    connection
+        .check_request(connection.send_request_checked(&x::CreateWindow {
+            depth: x::COPY_FROM_PARENT as u8,
+            wid: covering,
+            parent: screen.root(),
+            x: 100,
+            y: 100,
+            width: 40,
+            height: 40,
+            border_width: 0,
+            class: x::WindowClass::InputOutput,
+            visual: screen.root_visual(),
+            value_list: &[x::Cw::BackPixel(0x0000_00ff)],
+        }))
+        .expect("create occluding window");
+    let before_occlusion = frame_count(&raw_sink, frame_len);
+    connection.send_request(&x::MapWindow { window: covering });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize occluding window");
+    let occluded_frame = wait_for_raw_frame(
+        &raw_sink,
+        80,
+        40,
+        before_occlusion,
+        &[(40, 20, [0, 255, 0, 255])],
+    );
+
+    let before_remap = occluded_frame + 1;
+    connection.send_request(&x::UnmapWindow { window: client });
+    connection.send_request(&x::ChangeWindowAttributes {
+        window: client,
+        value_list: &[x::Cw::BackPixel(0x00ff_ffff)],
+    });
+    connection.send_request(&x::MapWindow { window: client });
+    connection.send_request(&x::ClearArea {
+        exposures: false,
+        window: client,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize remapped client window");
+    wait_for_raw_frame(
+        &raw_sink,
+        80,
+        40,
+        before_remap,
+        &[
+            (10, 20, [0, 0, 0, 255]),
+            (40, 20, [255, 255, 255, 255]),
+            (70, 20, [0, 0, 0, 255]),
+        ],
+    );
+
+    connection.send_request(&x::DestroyWindow { window: frame });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize closed recording window");
+    let target_closed = daemon.wait_for(Duration::from_secs(5), |message| {
+        message["event"] == "screen-recorder:error" && message["data"]["code"] == "TARGET_CLOSED"
+    });
+    assert_eq!(target_closed["data"]["code"], "TARGET_CLOSED");
+
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({
+            "id": "stop-recording",
+            "module": "screen-recorder",
+            "method": "stop"
+        }),
+    );
+    let stopped = daemon.wait_for_id("stop-recording");
+    assert_eq!(stopped["result"]["success"], true);
+    assert_eq!(
+        stopped["result"]["outputPath"],
+        output_path.to_string_lossy().as_ref()
+    );
+    let cursor_path = std::path::PathBuf::from(
+        stopped["result"]["cursorPath"]
+            .as_str()
+            .expect("cursor sidecar path"),
+    );
+    let cursor: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(cursor_path).expect("read cursor sidecar"))
+            .expect("parse cursor sidecar");
+    assert_eq!(cursor["recordingArea"]["width"], 80);
+    assert_eq!(cursor["recordingArea"]["height"], 40);
+    let events = cursor["events"].as_array().expect("cursor events");
+    for event_type in ["down", "up"] {
+        let event = events
+            .iter()
+            .find(|event| event["type"] == event_type)
+            .expect("recorded click event");
+        assert!((event["x"].as_f64().expect("cursor x") - 0.5).abs() < 1e-12);
+        assert!((event["y"].as_f64().expect("cursor y") - 0.5).abs() < 1e-12);
+    }
+    let raw_frames = std::fs::read(&raw_sink).expect("read raw frame sink");
+    assert!(!raw_frames.is_empty());
+    assert_eq!(raw_frames.len() % frame_len, 0);
+
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({"id": "quit", "module": "system", "method": "quit"}),
+    );
+    let status = daemon.wait_for_exit();
+    assert!(status.success(), "daemon exited after quit with {status}");
+}
+
+#[test]
+#[ignore = "test-owned non-reading encoder proxy"]
+fn blocked_encoder_proxy_reads_one_frame_then_stalls() {
+    use std::io::Read as _;
+
+    let frame_bytes = std::env::var("PORATAKE_TEST_FIRST_FRAME_BYTES")
+        .expect("frame byte count")
+        .parse::<usize>()
+        .expect("valid frame byte count");
+    let pipe_capacity = unsafe { libc::fcntl(0, libc::F_GETPIPE_SZ) };
+    assert!(pipe_capacity > 0);
+    assert!(frame_bytes > pipe_capacity as usize);
+
+    let mut first_frame = vec![0; frame_bytes];
+    std::io::stdin()
+        .read_exact(&mut first_frame)
+        .expect("read initial raw frame");
+    let ready = std::env::var_os("PORATAKE_TEST_PROXY_READY").expect("proxy marker path");
+    let mut available = 0;
+    let marker_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let result = unsafe { libc::ioctl(0, libc::FIONREAD, &mut available) };
+        assert_eq!(result, 0, "query queued raw bytes");
+        if available >= pipe_capacity {
+            break;
+        }
+        assert!(
+            Instant::now() < marker_deadline,
+            "encoder pipe did not fill"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::fs::write(ready, b"full").expect("write blocked-pipe marker");
+    let mut pipe = libc::pollfd {
+        fd: 0,
+        events: 0,
+        revents: 0,
+    };
+    let hangup_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let result = unsafe { libc::poll(&mut pipe, 1, 100) };
+        assert!(result >= 0, "wait for daemon to close encoder pipe");
+        if pipe.revents & libc::POLLHUP != 0 {
+            break;
+        }
+        assert!(Instant::now() < hangup_deadline, "encoder pipe stayed open");
+    }
+}
+
+#[test]
+#[ignore = "requires an X11 display"]
+fn daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked() {
+    let directory = TestDirectory::new();
+    let fake_ffmpeg = directory.path("ffmpeg-proxy");
+    let ready = directory.path("proxy-ready");
+    let output_path = directory.path("blocked.mp4");
+    let frame_bytes = 640 * 480 * 4;
+    std::fs::write(
+        &fake_ffmpeg,
+        "#!/bin/sh\nif [ \"$1\" = \"-hide_banner\" ] && [ \"$2\" = \"-encoders\" ]; then\n  printf '%s\\n' ' V..... libx264 fake encoder'\n  exit 0\nfi\nexec \"$PORATAKE_TEST_PROXY_BIN\" --ignored --exact blocked_encoder_proxy_reads_one_frame_then_stalls --nocapture\n",
+    )
+    .expect("write non-reading FFmpeg proxy");
+    let mut permissions = std::fs::metadata(&fake_ffmpeg)
+        .expect("fake FFmpeg metadata")
+        .permissions();
+    use std::os::unix::fs::PermissionsExt as _;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_ffmpeg, permissions).expect("make fake FFmpeg executable");
+
+    let (connection, screen_number) =
+        xcb::Connection::connect_with_extensions(None, &[], &[]).expect("connect to X11");
+    let screen = connection
+        .get_setup()
+        .roots()
+        .nth(screen_number as usize)
+        .expect("X11 screen");
+    let window: x::Window = connection.generate_id();
+    connection
+        .check_request(connection.send_request_checked(&x::CreateWindow {
+            depth: x::COPY_FROM_PARENT as u8,
+            wid: window,
+            parent: screen.root(),
+            x: 40,
+            y: 50,
+            width: 640,
+            height: 480,
+            border_width: 0,
+            class: x::WindowClass::InputOutput,
+            visual: screen.root_visual(),
+            value_list: &[x::Cw::BackPixel(0x0000_ff00)],
+        }))
+        .expect("create blocked-write target window");
+    connection.send_request(&x::MapWindow { window });
+    connection
+        .wait_for_reply(connection.send_request(&x::GetInputFocus {}))
+        .expect("synchronize target window");
+
+    let mut daemon = DaemonProcess::start(&fake_ffmpeg, &ready);
+    assert_eq!(
+        daemon.wait_for(Duration::from_secs(5), |message| {
+            message["data"]["backend"] == "x11"
+        })["data"]["backend"],
+        "x11"
+    );
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({
+            "id": "start-blocked",
+            "module": "screen-recorder",
+            "method": "start",
+            "params": {
+                "windowId": i64::from(window.resource_id()),
+                "frameRate": 240,
+                "keyboardEnabled": false,
+                "includeAudio": false,
+                "micEnabled": false,
+                "cameraEnabled": false,
+                "outputPath": output_path
+            }
+        }),
+    );
+    let started = daemon.wait_for_id("start-blocked");
+    assert_eq!(started["result"]["success"], true);
+    wait_for_file(&ready, Duration::from_secs(5));
+
+    let stop_started = Instant::now();
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({
+            "id": "stop-blocked",
+            "module": "screen-recorder",
+            "method": "stop"
+        }),
+    );
+    let stopped = daemon.wait_for_id("stop-blocked");
+    let stop_elapsed = stop_started.elapsed();
+    assert_eq!(stopped["error"]["code"], "STOP_FAILED");
+    assert!(stop_elapsed >= Duration::from_secs(2));
+
+    send(
+        &mut daemon.stdin,
+        serde_json::json!({"id": "quit", "module": "system", "method": "quit"}),
+    );
+    let status = daemon.wait_for_exit();
+    assert!(status.success(), "daemon exited after quit with {status}");
+    assert_eq!(std::fs::metadata(&ready).expect("proxy marker").len(), 4);
+    assert!(frame_bytes > 4096);
 }
 
 #[test]
@@ -789,7 +1389,8 @@ fn daemon_lists_and_captures_an_x11_window() {
     );
     assert_eq!(read(&mut reader)["success"], true);
     drop(stdin);
-    assert!(child.wait().expect("wait for daemon").success());
+    let status = child.wait().expect("wait for daemon");
+    assert!(status.success(), "daemon exited after quit with {status}");
     connection.send_request(&x::FreeGc { gc: wallpaper_gc });
     connection.send_request(&x::FreePixmap { pixmap: wallpaper });
     for path in [

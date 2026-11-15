@@ -34,6 +34,8 @@ const SELECT_TRIGGER_PADDING_Y: f32 = 8.0;
 const COMPACT_SELECT_PADDING_Y: f32 = 4.0;
 const MENU_MIN_WIDTH: f32 = 128.0;
 const MENU_MAX_HEIGHT: f32 = 420.0;
+pub(crate) const MENU_PANEL_PADDING: f32 = 6.0;
+pub(crate) const MENU_ROW_HEIGHT: f32 = 36.0;
 
 fn component_themes(vars: &ThemeVars) -> ComponentThemes {
     ComponentThemes::default()
@@ -94,8 +96,8 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     .panel_min_width(gpui::px(MENU_MIN_WIDTH))
                     .panel_max_height(gpui::px(MENU_MAX_HEIGHT))
                     .panel_gap(gpui::px(0.0))
-                    .panel_padding(gpui::px(6.0))
-                    .row_height(gpui::px(36.0))
+                    .panel_padding(gpui::px(MENU_PANEL_PADDING))
+                    .row_height(gpui::px(MENU_ROW_HEIGHT))
                     .row_padding_x(gpui::px(10.0))
                     .row_padding_y(gpui::px(6.0))
                     .row_text_size(gpui::px(14.0))
@@ -145,9 +147,10 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                     "overlay-trigger",
                     ButtonStyle::default()
                         .size(herogpui::Size::Sm)
-                        .foreground(ComponentColor::Literal(crate::ui::colors::white(0.85)))
-                        .hover_foreground(ComponentColor::Literal(crate::ui::colors::white(1.0)))
-                        .hover_bg(ComponentColor::Literal(crate::ui::colors::white(0.15)))
+                        .foreground(ComponentColor::Literal(vars.foreground.opacity(0.85)))
+                        .hover_foreground(ComponentColor::Foreground)
+                        .hover_bg(ComponentColor::Literal(vars.foreground.opacity(0.15)))
+                        .pressed_bg(ComponentColor::Literal(vars.foreground.opacity(0.25)))
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS))
                         .style(|el| {
                             use gpui::Styled;
@@ -207,6 +210,9 @@ fn component_themes(vars: &ThemeVars) -> ComponentThemes {
                 .recipe(
                     "overlay",
                     ButtonStyle::default()
+                        .foreground(ComponentColor::Literal(vars.foreground.opacity(0.85)))
+                        .hover_foreground(ComponentColor::Foreground)
+                        .hover_bg(ComponentColor::Literal(vars.foreground.opacity(0.15)))
                         .radius(gpui::px(crate::ui::chrome::OVERLAY_BUTTON_RADIUS)),
                 )
                 .recipe(

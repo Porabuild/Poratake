@@ -53,10 +53,8 @@ impl CaptureIntent {
         matches!(self, Self::Screenshot | Self::Timer | Self::ScrollCapture)
     }
 
-    /// Scroll selection always runs over live pixels (`scroll-capture/index.ts`
-    /// passes `freeze: false`); every other flow honors the freeze setting.
     pub fn allows_freeze(self) -> bool {
-        !matches!(self, Self::ScrollCapture)
+        !matches!(self, Self::ScrollCapture | Self::Recording)
     }
 }
 
@@ -82,10 +80,10 @@ mod tests {
     }
 
     #[test]
-    fn scroll_selection_always_runs_over_live_pixels() {
+    fn scroll_and_direct_recording_selection_use_live_pixels() {
         assert!(!CaptureIntent::ScrollCapture.allows_freeze());
+        assert!(!CaptureIntent::Recording.allows_freeze());
         assert!(CaptureIntent::Screenshot.allows_freeze());
-        assert!(CaptureIntent::Recording.allows_freeze());
         assert!(CaptureIntent::EditorAttach.allows_freeze());
     }
 

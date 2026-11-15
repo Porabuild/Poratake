@@ -3036,8 +3036,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-windows"
 version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5141a3db59bab761a16ab19529fe4117a86e91922e8fc00af6dfc4829cb1744d"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3246,8 +3244,6 @@ dependencies = [
 [[package]]
 name = "herogpui-components"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd78c10af90c2d67398c921dfc7a8de9fa36a187a6cb201fc55e1188ee688ff5"
 dependencies = [
  "gpui-pre",
  "herogpui-core",

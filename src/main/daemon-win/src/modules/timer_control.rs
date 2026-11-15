@@ -24,10 +24,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, HWND_TOPMOST, KillTimer, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOSIZE, SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
-    ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    SetWindowTextW, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONDOWN, WM_PAINT, WM_TIMER,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, w};
 
 const CLASS_NAME: &str = "PoratakeTimerControl";
 const CORNER_RADIUS: i32 = 10;
@@ -205,6 +205,7 @@ fn show_panel(
     let radius = scale_for_dpi(CORNER_RADIUS, dpi) * 2;
 
     unsafe {
+        let _ = SetWindowTextW(window, w!("Poratake timer capture"));
         let _ = SetWindowPos(
             window,
             Some(HWND_TOPMOST),

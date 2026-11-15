@@ -1,6 +1,7 @@
-use super::recorder_types::{CaptureRect, RecorderError, StagedAsset, fit_rect};
+use super::recorder_types::{CaptureRect, RecorderError, StagedAsset};
 use super::window_selector::window_bounds;
 use crate::time_format::format_system_time;
+use poratake_daemon_common::geometry::fit_rect;
 use serde::Serialize;
 use std::ffi::c_void;
 use std::fs::File;

@@ -62,6 +62,7 @@ interface SvgAnnotationsOverlayProps {
   editingTextId: string | null;
   zoom?: number;
   activeTool?: ToolType;
+  showBlackoutFill?: boolean;
 }
 
 interface MarqueeState {
@@ -121,6 +122,7 @@ const SvgAnnotationsOverlay = forwardRef<
       onTextDoubleClick,
       zoom = 1,
       activeTool = 'select',
+      showBlackoutFill = false,
     },
     ref
   ) => {
@@ -690,7 +692,11 @@ const SvgAnnotationsOverlay = forwardRef<
         case 'number':
           return renderNumber({ annotation: ann, ...commonProps });
         case 'redact':
-          return renderRedact({ annotation: ann, ...commonProps });
+          return renderRedact({
+            annotation: ann,
+            ...commonProps,
+            showBlackoutFill,
+          });
         default:
           return null;
       }

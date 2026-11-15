@@ -30,6 +30,7 @@ pub struct SheetState<'a> {
     pub has_layers: bool,
     pub preset_id: &'a str,
     pub draft: Option<&'a BackgroundDraft>,
+    pub background_picker_open: bool,
     pub previews: &'a BackgroundPreviews,
     pub preset_draft: Option<PresetDraftView<'a>>,
     pub closing: bool,
@@ -53,7 +54,14 @@ pub fn render(
 
     if let Some(draft) = state.draft {
         return sheet_shell(
-            background_editor_panel(draft, handlers, &theme, window, cx),
+            background_editor_panel(
+                draft,
+                state.background_picker_open,
+                handlers,
+                &theme,
+                window,
+                cx,
+            ),
             state.closing,
             &theme,
         );
@@ -190,6 +198,7 @@ fn sheet_shell(content: AnyElement, closing: bool, theme: &ThemeVars) -> AnyElem
 /// colors, angle, palette picker, live preview) or picks a custom image.
 fn background_editor_panel(
     draft: &BackgroundDraft,
+    background_picker_open: bool,
     handlers: &EditorHandlers,
     theme: &ThemeVars,
     window: &mut Window,
@@ -234,7 +243,7 @@ fn background_editor_panel(
     } else {
         panel.child(editor_image(draft, handlers, theme))
     };
-    let save_disabled = !is_gradient && draft.image_url.is_none();
+    let save_disabled = background_picker_open || (!is_gradient && draft.image_url.is_none());
     panel
         .child(
             div()

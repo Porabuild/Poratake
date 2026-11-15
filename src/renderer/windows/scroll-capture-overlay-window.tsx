@@ -26,18 +26,23 @@ function ScrollCapturePreview({
     height: params.area.height,
   };
 
+  const previewWidth = Math.min(PREVIEW_WIDTH, params.displayBounds.width);
   const previewAspectRatio =
     state.previewWidth && state.previewHeight
       ? state.previewWidth / state.previewHeight
       : null;
   const previewHeight = previewAspectRatio
-    ? Math.min(PREVIEW_WIDTH / previewAspectRatio, PREVIEW_MAX_HEIGHT)
+    ? Math.min(
+        previewWidth / previewAspectRatio,
+        PREVIEW_MAX_HEIGHT,
+        params.displayBounds.height
+      )
     : 0;
   const spaceRight = params.displayBounds.width - (area.x + area.width);
   const previewLeft =
-    spaceRight >= PREVIEW_WIDTH + PREVIEW_GAP
+    spaceRight >= previewWidth + PREVIEW_GAP
       ? area.x + area.width + PREVIEW_GAP
-      : Math.max(0, area.x - PREVIEW_WIDTH - PREVIEW_GAP);
+      : Math.max(0, area.x - previewWidth - PREVIEW_GAP);
 
   return (
     <div className="pointer-events-none fixed inset-0 overflow-hidden select-none">
@@ -77,8 +82,11 @@ function ScrollCapturePreview({
           className="absolute overflow-hidden rounded-lg bg-black/40 shadow-2xl"
           style={{
             left: previewLeft,
-            top: area.y,
-            width: PREVIEW_WIDTH,
+            top: Math.max(
+              0,
+              Math.min(area.y, params.displayBounds.height - previewHeight)
+            ),
+            width: previewWidth,
             height: previewHeight,
           }}
         >

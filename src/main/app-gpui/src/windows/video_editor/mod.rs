@@ -30,6 +30,11 @@ const ACTIVE_PREVIEW_SIZES: [(u32, u32); 7] = [
 const INITIAL_PREVIEW_QUALITY: usize = 3;
 const PREVIEW_QUALITY_RAISE_FRAMES: u16 = 120;
 const SIDEBAR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
+const VIDEO_EDITOR_DEFAULT_WIDTH: f32 = 1280.0;
+const VIDEO_EDITOR_DEFAULT_HEIGHT: f32 = 800.0;
+const VIDEO_EDITOR_MIN_WIDTH: f32 = 1200.0;
+const VIDEO_EDITOR_MIN_HEIGHT: f32 = 750.0;
+const VIDEO_EDITOR_WORK_AREA_GAP: f32 = 20.0;
 /// Playback pulls one composed frame per tick; the composition is software
 /// rasterized, so this is a preview rate rather than the export frame rate.
 use std::cell::RefCell;
@@ -129,6 +134,7 @@ enum TranscriptionEvent {
 pub struct VideoEditorWindow {
     path: Option<PathBuf>,
     state: VideoEditorState,
+    camera_segments_initialized: bool,
     history: Vec<VideoEditorState>,
     future: Vec<VideoEditorState>,
     pixels_per_second: f32,
@@ -137,6 +143,7 @@ pub struct VideoEditorWindow {
     is_scrubbing: bool,
     is_cut_tool_active: bool,
     is_exporting: bool,
+    is_file_dialog_open: bool,
     export_progress: f32,
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
@@ -207,6 +214,7 @@ pub struct VideoEditorWindow {
     sidebar_resize: Option<(f32, f32)>,
     sidebar_animation_generation: u64,
     sidebar_closing: bool,
+    bounds_sub: Option<gpui::Subscription>,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
@@ -217,34 +225,62 @@ pub struct VideoEditorWindow {
 impl VideoEditorWindow {
     pub fn open(cx: &mut App, path: Option<String>) {
         registry::open_or_activate(RegistryKind::VideoEditor, cx, move |cx| {
-            let available = cx
-                .displays()
-                .first()
-                .map(|display| display.bounds().size)
-                .unwrap_or_else(|| size(px(1280.0), px(800.0)));
-            let bounds = Bounds::centered(
-                None,
-                size(
-                    px(1280.0).min(available.width - px(100.0)),
-                    px(800.0).min(available.height - px(100.0)),
-                ),
-                cx,
+            let display = cx
+                .primary_display()
+                .or_else(|| cx.displays().into_iter().next());
+            let work_area = display
+                .as_ref()
+                .map(|display| crate::system::work_area::work_area(display.as_ref()))
+                .unwrap_or(Bounds {
+                    origin: gpui::point(px(0.0), px(0.0)),
+                    size: size(
+                        px(VIDEO_EDITOR_DEFAULT_WIDTH),
+                        px(VIDEO_EDITOR_DEFAULT_HEIGHT),
+                    ),
+                });
+            let (bounds, min_size) = video_editor_window_geometry(
+                work_area,
+                crate::config::window_state::get(crate::config::window_state::VIDEO_EDITOR),
             );
-            cx.open_window(
-                crate::windows::app_window_options(bounds, Some(size(px(1200.0), px(750.0)))),
-                |window, cx| {
-                    let view = cx.new(|cx| {
-                        let mut editor = Self::new(path.map(PathBuf::from), cx);
-                        editor.load_preview(cx);
-                        editor.load_desktop_wallpaper(cx);
-                        editor.request_audio_sync(cx);
-                        editor
-                    });
-                    let focus = view.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    view
-                },
-            )
+            let bounds = display
+                .as_ref()
+                .map(|display| {
+                    crate::system::work_area::local_window_bounds(bounds, display.as_ref())
+                })
+                .unwrap_or(bounds);
+            let mut options = crate::windows::app_window_options(bounds, Some(min_size));
+            options.display_id = display.map(|display| display.id());
+            cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut editor = Self::new(path.map(PathBuf::from), cx);
+                    editor.load_preview(cx);
+                    editor.load_desktop_wallpaper(cx);
+                    editor.request_audio_sync(cx);
+                    editor
+                });
+                view.update(cx, |editor, cx| {
+                    let mut last_size = window.bounds().size;
+                    editor.bounds_sub =
+                        Some(cx.observe_window_bounds(window, move |_, window, _| {
+                            if !should_persist_video_editor_size(
+                                &mut last_size,
+                                window.bounds().size,
+                                window.is_maximized(),
+                            ) {
+                                return;
+                            }
+                            let size = window.bounds().size;
+                            crate::config::window_state::set(
+                                crate::config::window_state::VIDEO_EDITOR,
+                                f32::from(size.width),
+                                f32::from(size.height),
+                            );
+                        }));
+                });
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                view
+            })
             .ok()
             .map(Into::into)
         });
@@ -254,7 +290,10 @@ impl VideoEditorWindow {
         let has_saved_state = path
             .as_deref()
             .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
-        let mut state = path.as_deref().map(model::load_state).unwrap_or_default();
+        let (mut state, camera_segments_initialized) = path
+            .as_deref()
+            .map(model::load_state_with_camera_segments_presence)
+            .unwrap_or_default();
         if !has_saved_state {
             let recording = crate::state::state(cx).config.get().recording;
             state.camera_style.mirrored = recording.camera.flipped;
@@ -272,25 +311,6 @@ impl VideoEditorWindow {
                         state.ui.sidebar_tab = "zoom".to_string();
                     }
                 }
-            }
-        }
-        // A recording whose camera was toggled on and off records its
-        // on-periods in `camera.json`; the first open turns them into timeline
-        // segments, the same way `useCameraSegments` seeds itself.
-        if state.camera_segments.is_empty() {
-            if let Some(meta) = path
-                .as_deref()
-                .and_then(crate::video::sidecars::load_camera_meta)
-            {
-                let total = model::total_duration(
-                    &state.segments,
-                    state.source_duration.unwrap_or(meta.duration),
-                );
-                state.camera_segments = crate::video::sidecars::map_visible_ranges_to_segments(
-                    meta.visible_ranges.as_deref(),
-                    &state.segments,
-                    total,
-                );
             }
         }
         styles::normalize_export_settings(&mut state.export_settings);
@@ -315,6 +335,7 @@ impl VideoEditorWindow {
         Self {
             path,
             state,
+            camera_segments_initialized,
             history: Vec::new(),
             future: Vec::new(),
             pixels_per_second,
@@ -323,6 +344,7 @@ impl VideoEditorWindow {
             is_scrubbing: false,
             is_cut_tool_active: false,
             is_exporting: false,
+            is_file_dialog_open: false,
             export_progress: 0.0,
             selected_clip: None,
             menu: MenuHandle::new(),
@@ -386,6 +408,7 @@ impl VideoEditorWindow {
             sidebar_resize: None,
             sidebar_animation_generation: 0,
             sidebar_closing: false,
+            bounds_sub: None,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
@@ -394,8 +417,8 @@ impl VideoEditorWindow {
 
     /// Asks for a destination and renders the timeline to it. Every frame goes
     /// through the composition engine the preview uses.
-    pub fn start_export(&mut self, cx: &mut Context<Self>) {
-        if self.is_exporting {
+    pub fn start_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting || self.is_file_dialog_open {
             return;
         }
         let Some(project) = self.path.clone() else {
@@ -421,7 +444,7 @@ impl VideoEditorWindow {
             true => saved_directory,
             false => suggested.parent().unwrap_or(&project).to_path_buf(),
         };
-        let Some(output) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .add_filter(filter_name, extensions)
             .set_file_name(
                 suggested
@@ -430,16 +453,42 @@ impl VideoEditorWindow {
                     .unwrap_or(if is_gif { "export.gif" } else { "export.mp4" }),
             )
             .set_directory(&directory)
-            .save_file()
-        else {
+            .set_parent(window);
+        let config = crate::state::state(cx).config.clone();
+        self.is_file_dialog_open = true;
+
+        cx.spawn(async move |entity, cx| {
+            let Some(file) = dialog.save_file().await else {
+                let _ = entity.update(cx, |this, cx| {
+                    this.finish_export_dialog(None, project, state, is_gif, cx);
+                });
+                return;
+            };
+            let output = file.path().to_path_buf();
+            let _ = entity.update(cx, |this, cx| {
+                if let Some(parent) = output.parent() {
+                    let parent = parent.to_string_lossy().to_string();
+                    config.update(move |config| config.save_locations.video = parent);
+                }
+                this.finish_export_dialog(Some(output), project, state, is_gif, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn finish_export_dialog(
+        &mut self,
+        output: Option<PathBuf>,
+        project: PathBuf,
+        state: VideoEditorState,
+        is_gif: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_file_dialog_open = false;
+        let Some(output) = output else {
+            cx.notify();
             return;
         };
-        if let Some(parent) = output.parent() {
-            let parent = parent.to_string_lossy().to_string();
-            crate::state::state(cx)
-                .config
-                .update(move |config| config.save_locations.video = parent);
-        }
         let output = match is_gif
             && !output
                 .extension()
@@ -448,7 +497,46 @@ impl VideoEditorWindow {
             true => output.with_extension("gif"),
             false => output,
         };
+        self.start_export_to_path(project, output, state, cx);
+    }
 
+    fn choose_file(
+        &mut self,
+        dialog: rfd::AsyncFileDialog,
+        cx: &mut Context<Self>,
+        on_selected: impl FnOnce(&mut Self, PathBuf, &mut Context<Self>) + Send + 'static,
+    ) {
+        if self.is_file_dialog_open {
+            return;
+        }
+        self.is_file_dialog_open = true;
+        cx.spawn(async move |entity, cx| {
+            let path = dialog
+                .pick_file()
+                .await
+                .map(|file| file.path().to_path_buf());
+            let _ = entity.update(cx, move |this, cx| {
+                this.is_file_dialog_open = false;
+                if let Some(path) = path {
+                    on_selected(this, path, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn start_export_to_path(
+        &mut self,
+        project: PathBuf,
+        output: PathBuf,
+        state: VideoEditorState,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_exporting {
+            return;
+        }
         self.is_exporting = true;
         self.export_error = None;
         self.export_completed_at = None;
@@ -486,6 +574,14 @@ impl VideoEditorWindow {
                 .await;
 
             let user_cancelled = was_cancelled.load(Ordering::Relaxed);
+            let result = if user_cancelled {
+                if let Ok(path) = result {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err("the export was cancelled".to_string())
+            } else {
+                result
+            };
             let failure = match (&result, user_cancelled) {
                 (Err(error), false) => Some(error.clone()),
                 _ => None,
@@ -509,25 +605,34 @@ impl VideoEditorWindow {
             }
             let output = result.ok();
             let _ = entity.update(cx, |this, cx| {
-                this.is_exporting = false;
-                this.export_progress = 0.0;
-                this.displayed_progress = 0.0;
-                this.export_started_at = None;
-                this.export_remaining = None;
-                this.export_error = failure.map(SharedString::from);
-                if output.is_some() {
-                    this.export_completed_at = Some(cx.background_executor().now());
-                    this.schedule_export_completion_clear(cx);
-                }
-                if this.upload_to_cloud {
-                    if let Some(path) = output {
-                        this.upload_export(path, cx);
-                    }
-                }
-                cx.notify();
+                this.finish_export(failure, output, cx);
             });
         })
         .detach();
+    }
+
+    fn finish_export(
+        &mut self,
+        failure: Option<String>,
+        output: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_exporting = false;
+        self.export_progress = 0.0;
+        self.displayed_progress = 0.0;
+        self.export_started_at = None;
+        self.export_remaining = None;
+        self.export_error = failure.map(SharedString::from);
+        if output.is_some() {
+            self.export_completed_at = Some(cx.background_executor().now());
+            self.schedule_export_completion_clear(cx);
+        }
+        if self.upload_to_cloud {
+            if let Some(path) = output {
+                self.upload_export(path, cx);
+            }
+        }
+        cx.notify();
     }
 
     fn upload_export(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -564,7 +669,10 @@ impl VideoEditorWindow {
                 .timer(Duration::from_millis(100))
                 .await;
             let running = entity.update(cx, |this, cx| {
-                if !this.is_exporting {
+                if !this.is_exporting
+                    || !Arc::ptr_eq(&progress, &this.export_progress_permille)
+                    || this.export_cancelled.load(Ordering::Relaxed)
+                {
                     return false;
                 }
                 this.export_progress = progress.load(Ordering::Relaxed) as f32 / 1000.0;
@@ -710,7 +818,7 @@ impl VideoEditorWindow {
                     let image = guard
                         .compose(time, max_dimensions)
                         .as_ref()
-                        .and_then(preview::to_render_image);
+                        .and_then(preview::to_render_image_opaque);
                     (image, started.elapsed())
                 })
                 .await;
@@ -823,24 +931,40 @@ impl VideoEditorWindow {
     /// a saved project's value is authoritative because trims and speed changes
     /// are expressed against it.
     fn adopt_source_duration(&mut self, duration: f64, cx: &mut Context<Self>) {
-        if !duration.is_finite() || duration <= 0.0 {
+        let saved_duration_was_missing = self.state.source_duration.is_none();
+        let has_saved_state = self
+            .path
+            .as_deref()
+            .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
+        let Some(changes) = model::normalize_loaded_state(
+            self.path.as_deref(),
+            &mut self.state,
+            duration,
+            !self.camera_segments_initialized,
+        ) else {
+            return;
+        };
+        self.camera_segments_initialized = true;
+        let tracks_changed = if changes.source_duration_changed {
+            self.path
+                .as_deref()
+                .is_some_and(|project| materialize_builtin_audio_tracks(&mut self.state, project))
+        } else {
+            false
+        };
+        if !changes.source_duration_changed
+            && !changes.segments_changed
+            && !changes.camera_segments_changed
+            && !tracks_changed
+        {
             return;
         }
-        if self.state.source_duration.is_some() {
-            return;
+        if tracks_changed
+            && (!has_saved_state || (saved_duration_was_missing && !changes.segments_changed))
+        {
+            self.persist(cx);
         }
-        self.state.source_duration = Some(duration);
-        // `initializeDocument({ segments: defaultSegments })` when there is no
-        // saved project: one segment covering the whole recording. Without it
-        // the ruler is drawn over an empty lane.
-        if self.state.segments.is_empty() {
-            self.state.segments = vec![model::Segment::spanning(duration)];
-        }
-        if let Some(project) = self.path.clone() {
-            if materialize_builtin_audio_tracks(&mut self.state, &project) {
-                self.persist(cx);
-            }
-        }
+        self.sync_preview_state(cx);
         self.request_audio_sync(cx);
         cx.notify();
     }
@@ -863,6 +987,7 @@ impl VideoEditorWindow {
     {
         let before = self.state.clone();
         mutate(&mut self.state);
+        self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.state == before {
             return;
         }
@@ -908,6 +1033,7 @@ impl VideoEditorWindow {
             self.request_frame(cx);
             return;
         }
+        self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.history.len() >= UNDO_HISTORY_LIMIT {
             self.history.remove(0);
         }
@@ -938,7 +1064,11 @@ impl VideoEditorWindow {
                 };
                 let mut written = this.state.clone();
                 written.saved_at = chrono::Utc::now().to_rfc3339();
-                model::save_state(&path, &written);
+                model::save_state_with_camera_segments_presence(
+                    &path,
+                    &written,
+                    this.camera_segments_initialized,
+                );
                 this.state.saved_at = written.saved_at;
             });
         })
@@ -950,6 +1080,7 @@ impl VideoEditorWindow {
             return;
         };
         previous.export_settings = self.state.export_settings.clone();
+        self.camera_segments_initialized |= previous.camera_segments != self.state.camera_segments;
         self.future
             .push(std::mem::replace(&mut self.state, previous));
         self.persist(cx);
@@ -963,6 +1094,7 @@ impl VideoEditorWindow {
             return;
         };
         next.export_settings = self.state.export_settings.clone();
+        self.camera_segments_initialized |= next.camera_segments != self.state.camera_segments;
         self.history.push(std::mem::replace(&mut self.state, next));
         self.persist(cx);
         self.sync_preview_state(cx);
@@ -1000,6 +1132,7 @@ impl VideoEditorWindow {
             }
         }
         self.state = state;
+        self.camera_segments_initialized = true;
         self.history.clear();
         self.future.clear();
         self.selected_clip = None;
@@ -1163,10 +1296,10 @@ impl VideoEditorWindow {
         let Some(project) = self.path.clone() else {
             return;
         };
+        self.audio_generation += 1;
         if !self.preview_audio.needs_rebuild(&self.state) {
             return;
         }
-        self.audio_generation += 1;
         let generation = self.audio_generation;
         let inputs = crate::video::preview_audio::RebuildInputs::capture(
             &project,
@@ -1728,32 +1861,31 @@ impl VideoEditorWindow {
     }
 
     /// Imports a `.json` or `.srt` transcript.
-    pub fn import_subtitles(&mut self, cx: &mut Context<Self>) {
+    pub fn import_subtitles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Import Subtitle Data")
             .add_filter("Transcripts", &["json", "srt"])
-            .pick_file()
-        else {
-            return;
-        };
-        match crate::video::transcription::import_from(&project, &source) {
-            Ok(data) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Subtitles imported",
-                    format!("{} segments loaded.", data.segments.len()),
-                );
-                self.refresh_subtitle_count();
-                self.reload_preview(cx);
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            match crate::video::transcription::import_from(&project, &source) {
+                Ok(data) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Subtitles imported",
+                        format!("{} segments loaded.", data.segments.len()),
+                    );
+                    this.refresh_subtitle_count();
+                    this.reload_preview(cx);
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Import failed", &error);
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Import failed", &error);
-            }
-        }
-        cx.notify();
+            cx.notify();
+        });
     }
 
     pub fn delete_subtitles(&mut self, cx: &mut Context<Self>) {
@@ -1775,22 +1907,27 @@ impl VideoEditorWindow {
 
     /// Copies a picked audio file into the project and lays it on the music
     /// track at the playhead.
-    pub fn add_music_track(&mut self, cx: &mut Context<Self>) {
+    pub fn add_music_track(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = crate::video::music::pick_file() else {
-            return;
-        };
-        match crate::video::music::add(&project, &source, self.playhead) {
-            Ok(track) => {
-                self.selected_clip = Some(SharedString::from(track.id.clone()));
-                self.commit(cx, move |state| state.music_tracks.push(track));
+        let timeline_start = self.playhead;
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Add Music")
+            .add_filter("Audio Files", &crate::video::music::SUPPORTED_EXTENSIONS)
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            match crate::video::music::add(&project, &source, timeline_start) {
+                Ok(track) => {
+                    this.selected_clip = Some(SharedString::from(track.id.clone()));
+                    this.commit(cx, move |state| state.music_tracks.push(track));
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Could not add music", &error);
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Could not add music", &error);
-            }
-        }
+            cx.notify();
+        });
     }
 
     /// Removes a music track, deleting its file once nothing else uses it.
@@ -1861,23 +1998,28 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn pick_custom_cursor(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = crate::editor::background::pick_image() {
-            self.update_cursor(cx, move |style| style.custom_cursor_image = Some(path));
-        }
+    pub fn pick_custom_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = crate::editor::background::image_picker(window);
+        self.choose_file(dialog, cx, |this, path, cx| {
+            this.update_cursor(cx, move |style| {
+                style.custom_cursor_image = Some(path.to_string_lossy().to_string())
+            });
+        });
     }
 
     pub fn clear_custom_cursor(&mut self, cx: &mut Context<Self>) {
         self.update_cursor(cx, |style| style.custom_cursor_image = None);
     }
 
-    pub fn pick_first_frame(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = crate::editor::background::pick_image() {
-            self.update_first_frame(cx, move |settings| {
+    pub fn pick_first_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = crate::editor::background::image_picker(window);
+        self.choose_file(dialog, cx, |this, path, cx| {
+            let path = path.to_string_lossy().to_string();
+            this.update_first_frame(cx, move |settings| {
                 settings.image_data = Some(path);
                 settings.enabled = true;
             });
-        }
+        });
     }
 
     pub fn clear_first_frame(&mut self, cx: &mut Context<Self>) {
@@ -1887,32 +2029,31 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn import_cursor_data(&mut self, cx: &mut Context<Self>) {
+    pub fn import_cursor_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self.path.clone() else {
             return;
         };
-        let Some(source) = rfd::FileDialog::new()
+        let dialog = rfd::AsyncFileDialog::new()
             .set_title("Import Cursor Data")
             .add_filter("Cursor data", &["json"])
-            .pick_file()
-        else {
-            return;
-        };
-        let dest = crate::video::project::cursor_path(&project);
-        match std::fs::copy(&source, &dest) {
-            Ok(_) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Cursor data imported",
-                    "The cursor track was replaced.",
-                );
-                self.reload_preview(cx);
+            .set_parent(window);
+        self.choose_file(dialog, cx, move |this, source, cx| {
+            let dest = crate::video::project::cursor_path(&project);
+            match std::fs::copy(&source, &dest) {
+                Ok(_) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Cursor data imported",
+                        "The cursor track was replaced.",
+                    );
+                    this.reload_preview(cx);
+                }
+                Err(error) => {
+                    crate::windows::toast::Toast::show(cx, "Import failed", error.to_string());
+                }
             }
-            Err(error) => {
-                crate::windows::toast::Toast::show(cx, "Import failed", error.to_string());
-            }
-        }
-        cx.notify();
+            cx.notify();
+        });
     }
 
     #[allow(dead_code)]
@@ -2429,23 +2570,50 @@ impl VideoEditorWindow {
             );
         }
         crate::thumbnails::rekey(&old_path, &new_path);
-        crate::history_store::update_item_path(&old_path, &new_path);
+        let history_update = crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
         self.rename_error = None;
         self.persist(cx);
         self.load_preview(cx);
         cx.notify();
+        match history_update {
+            crate::history_store::UpdatePathOutcome::Updated
+            | crate::history_store::UpdatePathOutcome::Untracked => {}
+            crate::history_store::UpdatePathOutcome::UpdatedWithBackupWarning(path) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History recovery copy remains",
+                    format!("The recording was renamed, but the recovery copy remains at {path}"),
+                );
+            }
+            crate::history_store::UpdatePathOutcome::HistoryUnavailable(error)
+            | crate::history_store::UpdatePathOutcome::PersistenceFailed(error) => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "History update failed",
+                    format!(
+                        "The recording was renamed, but history may still reference its previous path: {error}"
+                    ),
+                );
+            }
+        }
     }
 
     pub fn cancel_export(&mut self, cx: &mut Context<Self>) {
+        if !self.is_exporting {
+            return;
+        }
         self.export_cancelled.store(true, Ordering::Relaxed);
-        self.is_exporting = false;
-        self.export_progress = 0.0;
-        self.displayed_progress = 0.0;
-        self.export_started_at = None;
-        self.export_remaining = None;
         self.export_error = None;
         self.export_completed_at = None;
+        cx.notify();
+    }
+
+    #[cfg(all(feature = "parity", windows))]
+    pub(crate) fn begin_export_for_parity(&mut self, cx: &mut Context<Self>) {
+        self.is_exporting = true;
+        self.export_progress = 0.4;
+        self.displayed_progress = 0.4;
         cx.notify();
     }
 
@@ -2782,14 +2950,28 @@ impl VideoEditorWindow {
             return;
         }
 
-        if !crate::history_store::delete_path(&path, crate::history_store::HistoryItemType::Video) {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Delete failed",
-                "The recording could not be deleted",
-            );
-            return;
-        }
+        let (history_update_error, backup_warning) = match crate::history_store::delete_path(
+            &path,
+            crate::history_store::HistoryItemType::Video,
+        ) {
+            crate::history_store::DeleteOutcome::Deleted => (None, None),
+            crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                (None, Some(path))
+            }
+            crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                (Some(error), None)
+            }
+            crate::history_store::DeleteOutcome::SourceDeletionFailed
+            | crate::history_store::DeleteOutcome::HistoryUnavailable
+            | crate::history_store::DeleteOutcome::NotFound => {
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Delete failed",
+                    "The recording could not be deleted",
+                );
+                return;
+            }
+        };
         let notify = crate::state::state(cx)
             .config
             .get()
@@ -2797,7 +2979,21 @@ impl VideoEditorWindow {
             .show_deletion_notifications;
         window.remove_window();
         registry::close(RegistryKind::VideoEditor, cx);
-        if notify {
+        if let Some(path) = backup_warning {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        } else if let Some(error) = history_update_error {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                format!(
+                    "The recording was deleted, but its history entry may return after restart: {error}"
+                ),
+            );
+        } else if notify {
             cx.defer(|cx| {
                 crate::windows::toast::Toast::show(
                     cx,
@@ -3481,6 +3677,7 @@ impl VideoEditorWindow {
         let body = match owner {
             title_bar::EXPORT_POPOVER_ID => title_bar::export_popover(
                 self.is_export_complete(cx),
+                self.export_cancelled.load(Ordering::Relaxed),
                 self.displayed_progress,
                 SharedString::from(format!(
                     "{} elapsed",
@@ -3721,6 +3918,47 @@ fn materialize_builtin_audio_tracks(
     added
 }
 
+fn video_editor_window_geometry(
+    work_area: Bounds<gpui::Pixels>,
+    saved_size: Option<(f32, f32)>,
+) -> (Bounds<gpui::Pixels>, gpui::Size<gpui::Pixels>) {
+    let area_width = f32::from(work_area.size.width);
+    let area_height = f32::from(work_area.size.height);
+    let max_width = (area_width - VIDEO_EDITOR_WORK_AREA_GAP * 2.0).max(1.0);
+    let max_height = (area_height - VIDEO_EDITOR_WORK_AREA_GAP * 2.0).max(1.0);
+    let (preferred_width, preferred_height) = saved_size
+        .filter(|(width, height)| {
+            width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
+        })
+        .unwrap_or((VIDEO_EDITOR_DEFAULT_WIDTH, VIDEO_EDITOR_DEFAULT_HEIGHT));
+    let width = preferred_width.min(max_width);
+    let height = preferred_height.min(max_height);
+    let bounds = Bounds {
+        origin: gpui::point(
+            work_area.origin.x + px(((area_width - width) / 2.0).max(0.0)),
+            work_area.origin.y + px(((area_height - height) / 2.0).max(0.0)),
+        ),
+        size: size(px(width), px(height)),
+    };
+    let min_size = size(
+        px(VIDEO_EDITOR_MIN_WIDTH.min(width)),
+        px(VIDEO_EDITOR_MIN_HEIGHT.min(height)),
+    );
+    (bounds, min_size)
+}
+
+fn should_persist_video_editor_size(
+    last_size: &mut gpui::Size<gpui::Pixels>,
+    current_size: gpui::Size<gpui::Pixels>,
+    is_maximized: bool,
+) -> bool {
+    if is_maximized || *last_size == current_size {
+        return false;
+    }
+    *last_size = current_size;
+    true
+}
+
 fn sidebar_animation_visibility(open: bool, delta: f32) -> f32 {
     if open {
         return delta;
@@ -3757,6 +3995,73 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
 }
 
 #[cfg(test)]
+mod window_geometry_tests {
+    use super::*;
+
+    fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<gpui::Pixels> {
+        Bounds {
+            origin: gpui::point(px(x), px(y)),
+            size: size(px(width), px(height)),
+        }
+    }
+
+    #[test]
+    fn fits_the_editor_and_minimum_size_inside_a_small_work_area() {
+        let work_area = bounds(0.0, 0.0, 1024.0, 728.0);
+        let (editor, minimum) = video_editor_window_geometry(work_area, None);
+
+        assert_eq!(editor.size, size(px(984.0), px(688.0)));
+        assert_eq!(minimum, editor.size);
+        assert!(editor.left() >= work_area.left());
+        assert!(editor.top() >= work_area.top());
+        assert!(editor.right() <= work_area.right());
+        assert!(editor.bottom() <= work_area.bottom());
+    }
+
+    #[test]
+    fn preserves_a_saved_size_that_fits_a_normal_work_area() {
+        let work_area = bounds(-1920.0, 24.0, 1920.0, 1056.0);
+        let (editor, minimum) = video_editor_window_geometry(work_area, Some((1600.0, 900.0)));
+
+        assert_eq!(editor.size, size(px(1600.0), px(900.0)));
+        assert_eq!(
+            minimum,
+            size(px(VIDEO_EDITOR_MIN_WIDTH), px(VIDEO_EDITOR_MIN_HEIGHT))
+        );
+        assert!(editor.left() >= work_area.left());
+        assert!(editor.top() >= work_area.top());
+        assert!(editor.right() <= work_area.right());
+        assert!(editor.bottom() <= work_area.bottom());
+    }
+
+    #[test]
+    fn persists_changed_bounds_but_ignores_initial_and_maximized_bounds() {
+        let opening_size = size(px(984.0), px(688.0));
+        let mut last_size = opening_size;
+        assert!(!should_persist_video_editor_size(
+            &mut last_size,
+            opening_size,
+            false
+        ));
+        assert!(should_persist_video_editor_size(
+            &mut last_size,
+            size(px(800.0), px(600.0)),
+            false
+        ));
+        assert!(!should_persist_video_editor_size(
+            &mut last_size,
+            size(px(1800.0), px(1000.0)),
+            true
+        ));
+        assert!(should_persist_video_editor_size(
+            &mut last_size,
+            opening_size,
+            false
+        ));
+    }
+}
+
+#[cfg(test)]
 mod keyboard_demo_tests {
     use super::*;
     use crate::ui::chrome;
@@ -3767,6 +4072,594 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn loaded_empty_timeline_uses_saved_duration_without_rewriting_project_on_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Legacy.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let saved_state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.state.segments.is_empty());
+                editor.adopt_source_duration(12.0, cx);
+                assert_eq!(editor.state.source_duration, Some(8.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(8.0)]);
+                assert_eq!(editor.total_duration(), 8.0);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&project), saved_state);
+    }
+
+    #[herogpui::test]
+    fn loaded_timeline_keeps_valid_edits_and_uses_decoded_duration_when_saved_duration_is_invalid(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Edited.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let valid = model::Segment {
+            id: "kept-edit".into(),
+            original_start: 1.0,
+            original_end: 3.0,
+            trim_min_start: 0.5,
+            trim_max_end: 3.5,
+            speed: Some(1.5),
+        };
+        let zoom = model::ZoomSegment {
+            id: "kept-zoom".into(),
+            start_time: 1.0,
+            end_time: 2.0,
+            ..model::ZoomSegment::default()
+        };
+        let saved_state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: vec![
+                valid.clone(),
+                model::Segment {
+                    id: "negative-start".into(),
+                    original_start: -1.0,
+                    original_end: 2.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "past-end".into(),
+                    original_start: 7.0,
+                    original_end: 9.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "reversed".into(),
+                    original_start: 5.0,
+                    original_end: 4.0,
+                    ..model::Segment::default()
+                },
+            ],
+            zoom_segments: vec![zoom.clone()],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(12.0, cx);
+                assert_eq!(editor.state.source_duration, Some(8.0));
+                assert_eq!(editor.state.segments, [valid]);
+                assert_eq!(editor.state.zoom_segments, [zoom]);
+                assert_eq!(editor.total_duration(), 2.0 / 1.5);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&project), saved_state);
+
+        let invalid_project = directory.path().join("InvalidDuration.poratake");
+        std::fs::create_dir(&invalid_project).unwrap();
+        let invalid_saved_state = VideoEditorState {
+            source_duration: Some(-1.0),
+            segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&invalid_project, &invalid_saved_state);
+        let invalid = cx
+            .add_window(|_, cx| VideoEditorWindow::new_for_test(Some(invalid_project.clone()), cx));
+        invalid
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(6.0, cx);
+                assert_eq!(editor.state.source_duration, Some(6.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(6.0)]);
+            })
+            .unwrap();
+        assert_eq!(model::load_state(&invalid_project), invalid_saved_state);
+    }
+
+    #[herogpui::test]
+    fn invalid_saved_duration_with_audio_sidecar_is_recovered_without_rewriting_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("InvalidDurationWithAudio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join(crate::video::project::SYSTEM_AUDIO),
+            b"fixture audio",
+        )
+        .unwrap();
+        let saved_state = VideoEditorState {
+            source_duration: Some(-1.0),
+            segments: vec![model::Segment::spanning(3.0)],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let state_path = crate::video::project::editor_state_path(&project);
+        let original_bytes = std::fs::read(&state_path).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(6.0, cx);
+                assert_eq!(editor.state.source_duration, Some(6.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(3.0)]);
+                assert!(editor
+                    .state
+                    .music_tracks
+                    .iter()
+                    .any(|track| track.source == crate::video::audio_tracks::SYSTEM_SOURCE));
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+
+        assert_eq!(std::fs::read(state_path).unwrap(), original_bytes);
+        assert_eq!(model::load_state(&project), saved_state);
+    }
+
+    #[herogpui::test]
+    fn camera_ranges_map_after_timeline_normalization_and_preserve_saved_camera_edits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("CameraRanges.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let valid = model::Segment {
+            id: "valid-later".into(),
+            original_start: 1.0,
+            original_end: 3.0,
+            trim_min_start: 1.0,
+            trim_max_end: 3.0,
+            speed: None,
+        };
+        let saved_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![
+                model::Segment {
+                    id: "invalid-leading".into(),
+                    original_start: -1.0,
+                    original_end: 0.5,
+                    ..model::Segment::default()
+                },
+                valid.clone(),
+            ],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+        let state_path = crate::video::project::editor_state_path(&project);
+        let mut legacy_state = serde_json::to_value(&saved_state).unwrap();
+        legacy_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let original_state_bytes = serde_json::to_vec_pretty(&legacy_state).unwrap();
+        std::fs::write(&state_path, &original_state_bytes).unwrap();
+        let camera_meta = crate::video::project::camera_meta_path(&project);
+        let camera_meta_contents =
+            r#"{"duration":4.0,"visibleRanges":[{"start":1.25,"end":1.75}]}"#;
+        std::fs::write(&camera_meta, camera_meta_contents).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.segments, [valid]);
+                assert_eq!(
+                    editor.state.camera_segments,
+                    [model::CameraSegment {
+                        id: "camera-0-0".into(),
+                        start_time: 0.25,
+                        end_time: 0.75,
+                    }]
+                );
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_state_bytes);
+        assert_eq!(
+            std::fs::read(&camera_meta).unwrap(),
+            camera_meta_contents.as_bytes()
+        );
+
+        let edited_project = directory.path().join("SavedCameraEdits.poratake");
+        std::fs::create_dir(&edited_project).unwrap();
+        let saved_camera_edit = model::CameraSegment {
+            id: "user-camera-edit".into(),
+            start_time: 0.4,
+            end_time: 1.2,
+        };
+        let edited_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: vec![saved_camera_edit.clone()],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&edited_project, &edited_state);
+        let edited_state_path = crate::video::project::editor_state_path(&edited_project);
+        let edited_state_bytes = std::fs::read(&edited_state_path).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&edited_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let edited = cx
+            .add_window(|_, cx| VideoEditorWindow::new_for_test(Some(edited_project.clone()), cx));
+        edited
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.camera_segments, [saved_camera_edit]);
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&edited_state_path).unwrap(),
+            edited_state_bytes
+        );
+        assert_eq!(model::load_state(&edited_project), edited_state);
+
+        let empty_project = directory.path().join("SavedEmptyCameraTrack.poratake");
+        std::fs::create_dir(&empty_project).unwrap();
+        let empty_state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: Vec::new(),
+            ..VideoEditorState::default()
+        };
+        model::save_state(&empty_project, &empty_state);
+        let empty_state_path = crate::video::project::editor_state_path(&empty_project);
+        let empty_state_bytes = std::fs::read(&empty_state_path).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&empty_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let empty =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(empty_project.clone()), cx));
+        empty
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert!(editor.state.camera_segments.is_empty());
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&empty_state_path).unwrap(), empty_state_bytes);
+
+        let edit_project = directory.path().join("CameraEditedDuringLoad.poratake");
+        std::fs::create_dir(&edit_project).unwrap();
+        let mut missing_camera_state = serde_json::to_value(VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            ..VideoEditorState::default()
+        })
+        .unwrap();
+        missing_camera_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let state_path = crate::video::project::editor_state_path(&edit_project);
+        let original_state_bytes = serde_json::to_vec_pretty(&missing_camera_state).unwrap();
+        std::fs::write(&state_path, &original_state_bytes).unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&edit_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let editing =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(edit_project.clone()), cx));
+        editing
+            .update(cx, |editor, _, cx| {
+                editor.add_clip(TrackKind::Camera, 0.5, 1.0, cx);
+                assert_eq!(editor.state.camera_segments.len(), 1);
+                editor.undo(cx);
+                assert!(editor.state.camera_segments.is_empty());
+                editor.adopt_source_duration(4.0, cx);
+                assert!(editor.state.camera_segments.is_empty());
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_state_bytes);
+
+        let persisted_project = directory.path().join("CameraNotLoadedYet.poratake");
+        std::fs::create_dir(&persisted_project).unwrap();
+        let mut legacy_state = serde_json::to_value(VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            ..VideoEditorState::default()
+        })
+        .unwrap();
+        legacy_state
+            .as_object_mut()
+            .unwrap()
+            .remove("cameraSegments");
+        let persisted_state_path = crate::video::project::editor_state_path(&persisted_project);
+        std::fs::write(
+            &persisted_state_path,
+            serde_json::to_vec_pretty(&legacy_state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::video::project::camera_meta_path(&persisted_project),
+            camera_meta_contents,
+        )
+        .unwrap();
+        let before_adoption = cx.add_window(|_, cx| {
+            VideoEditorWindow::new_for_test(Some(persisted_project.clone()), cx)
+        });
+        before_adoption
+            .update(cx, |editor, _, cx| editor.toggle_sidebar(cx))
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let persisted_value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&persisted_state_path).unwrap()).unwrap();
+        assert!(persisted_value.get("cameraSegments").is_none());
+        assert_eq!(persisted_value["ui"]["sidebarOpen"], false);
+        let persisted_bytes = std::fs::read(&persisted_state_path).unwrap();
+        let reopened = cx.add_window(|_, cx| {
+            VideoEditorWindow::new_for_test(Some(persisted_project.clone()), cx)
+        });
+        reopened
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(
+                    editor.state.camera_segments,
+                    [model::CameraSegment {
+                        id: "camera-0-0".into(),
+                        start_time: 1.25,
+                        end_time: 1.75,
+                    }]
+                );
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&persisted_state_path).unwrap(),
+            persisted_bytes
+        );
+    }
+
+    #[herogpui::test]
+    fn new_project_persists_materialized_builtin_audio_with_default_timeline(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("NewWithAudio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join(crate::video::project::SYSTEM_AUDIO), []).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.state.segments.is_empty());
+                assert!(editor.state.music_tracks.is_empty());
+                editor.adopt_source_duration(4.0, cx);
+                assert_eq!(editor.state.source_duration, Some(4.0));
+                assert_eq!(editor.state.segments, [model::Segment::spanning(4.0)]);
+                assert_eq!(editor.state.music_tracks.len(), 1);
+                assert_eq!(editor.state.music_tracks[0].source, "system");
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+
+        let saved = model::load_state(&project);
+        assert_eq!(saved.source_duration, Some(4.0));
+        assert_eq!(saved.segments, [model::Segment::spanning(4.0)]);
+        assert_eq!(saved.music_tracks.len(), 1);
+        assert_eq!(saved.music_tracks[0].source, "system");
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn loaded_invalid_leading_timeline_segment_updates_preview_and_export(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::video::encoder::{Encoder, Settings};
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("LegacyPreview.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = crate::video::project::recording_video_path(&project);
+        let mut encoder = Encoder::create(
+            &recording,
+            Settings {
+                width: 320,
+                height: 180,
+                frame_rate: 12,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..12 {
+            encoder
+                .write_frame([24, 220, 24, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        for _ in 0..12 {
+            encoder
+                .write_frame([24, 24, 220, 255].repeat(320 * 180))
+                .unwrap();
+        }
+        encoder.finish().unwrap();
+
+        let saved_state = VideoEditorState {
+            source_duration: Some(2.0),
+            segments: vec![
+                model::Segment {
+                    id: "invalid-leading".into(),
+                    original_start: -1.0,
+                    original_end: 1.0,
+                    ..model::Segment::default()
+                },
+                model::Segment {
+                    id: "valid-later".into(),
+                    original_start: 1.0,
+                    original_end: 2.0,
+                    trim_min_start: 1.0,
+                    trim_max_end: 2.0,
+                    speed: None,
+                },
+            ],
+            wallpaper: styles::VideoWallpaperSettings {
+                enabled: false,
+                ..styles::VideoWallpaperSettings::default()
+            },
+            export_settings: styles::ExportSettings {
+                resolution: "original".into(),
+                frame_rate: "12".into(),
+                ..styles::ExportSettings::default()
+            },
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &saved_state);
+
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+
+        let (state, preview_pixels, dimensions) = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let image = editor.preview_image().expect("normalized video preview");
+                (
+                    editor.state.clone(),
+                    image.as_bytes(0).expect("preview pixels").to_vec(),
+                    editor.composition_size.expect("composition dimensions"),
+                )
+            })
+        });
+        assert_eq!(state.source_duration, Some(2.0));
+        assert_eq!(state.segments.len(), 1);
+        assert_eq!(state.segments[0].id, "valid-later");
+        assert_eq!(state.segments[0].original_start, 1.0);
+        assert_eq!(state.segments[0].original_end, 2.0);
+        assert_eq!(dimensions, (320.0, 180.0));
+        let center_pixel = (90 * 320 + 160) * 4;
+        assert!(preview_pixels[center_pixel + 2] > 160);
+        assert!(preview_pixels[center_pixel + 1] < 90);
+        assert_eq!(model::load_state(&project), saved_state);
+
+        let output = directory.path().join("legacy-preview-export.mp4");
+        crate::video::export::run(
+            crate::video::export::Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = crate::video::decoder::VideoDecoder::open(&output)
+            .unwrap()
+            .frame_at(0.0)
+            .expect("exported timeline frame");
+        assert_eq!((exported.width, exported.height), (320, 180));
+        assert!(exported.bgra[center_pixel + 2] > 160);
+        assert!(exported.bgra[center_pixel + 1] < 90);
+        let channel_error: u64 = preview_pixels
+            .iter()
+            .zip(exported.bgra.iter())
+            .map(|(preview, exported)| u64::from(preview.abs_diff(*exported)))
+            .sum();
+        let mean_error = channel_error as f64 / preview_pixels.len() as f64;
+        assert!(
+            mean_error < 5.0,
+            "filtered timeline preview/export error {mean_error}"
+        );
+    }
+
+    #[herogpui::test]
+    fn cancelling_export_destination_clears_dialog_without_starting_worker(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let project = dir.path().join("recording.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.is_file_dialog_open = true;
+                let state = editor.state.clone();
+                editor.finish_export_dialog(None, project, state, false, cx);
+                assert!(!editor.is_file_dialog_open);
+                assert!(!editor.is_exporting);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn undo_while_audio_is_building_keeps_the_restored_timeline(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let project = dir.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(3.0);
+                editor.state.segments = vec![model::Segment::spanning(3.0)];
+                let inputs = crate::video::preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                );
+                let built = crate::video::preview_audio::build_stems(inputs);
+                editor.preview_audio.install(built, &editor.state, 0.0);
+                assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+
+                editor.commit(cx, |state| state.segments[0].original_end = 2.0);
+                editor.undo(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.state.segments[0].original_end, 3.0);
+                assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+            })
+            .unwrap();
     }
 
     #[herogpui::test]
@@ -3989,12 +4882,492 @@ mod keyboard_demo_tests {
                 editor.cancel_export(cx);
 
                 assert!(editor.export_cancelled.load(Ordering::Relaxed));
-                assert!(!editor.is_exporting);
+                assert!(
+                    editor.is_exporting,
+                    "the worker must finish before another export starts"
+                );
                 assert_eq!(editor.export_error(), None, "a cancel is not a failure");
                 assert!(!editor.is_export_complete(cx));
-                assert_eq!(editor.displayed_progress, 0.0);
+                assert_eq!(editor.displayed_progress, 0.4);
             })
             .expect("update editor");
+    }
+
+    #[herogpui::test]
+    fn cancelling_export_replaces_the_action_with_an_in_bounds_status(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.ui.sidebar_open = true;
+            editor.state.ui.sidebar_tab = "export".into();
+            editor.is_exporting = true;
+            editor
+        });
+        cx.refresh().unwrap();
+        assert!(cx.debug_bounds("video-export-panel").is_some());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.cancel_export(cx);
+                assert!(editor.is_exporting);
+            });
+        });
+        cx.refresh().unwrap();
+        let status = cx.debug_bounds("video-export-canceling").unwrap();
+        let panel = cx.debug_bounds("video-export-panel").unwrap();
+        assert!(status.origin.x >= panel.origin.x && status.origin.y >= panel.origin.y);
+        assert!(status.origin.x + status.size.width <= panel.origin.x + panel.size.width);
+        assert!(status.origin.y + status.size.height <= panel.origin.y + panel.size.height);
+    }
+
+    #[herogpui::test]
+    fn export_video_button_fits_the_small_work_area_window(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let (bounds, _) = video_editor_window_geometry(
+            Bounds {
+                origin: gpui::point(px(0.0), px(0.0)),
+                size: size(px(1024.0), px(728.0)),
+            },
+            None,
+        );
+        let mut window_handle = None;
+        let (_editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.ui.sidebar_open = true;
+            editor.state.ui.sidebar_tab = "export".into();
+            window_handle = Some(window.window_handle());
+            editor
+        });
+
+        let window_handle = window_handle.unwrap();
+        cx.simulate_window_resize(window_handle, bounds.size);
+        cx.refresh().unwrap();
+        let button = cx.debug_bounds("video-export-start").unwrap();
+        let viewport = cx
+            .update_window(window_handle, |_, window, _| window.viewport_size())
+            .unwrap();
+        assert_eq!(viewport, bounds.size);
+        assert!(button.size.width > px(0.0) && button.size.height > px(0.0));
+        assert!(button.left() >= px(0.0));
+        assert!(button.top() >= px(0.0));
+        assert!(button.right() <= viewport.width);
+        assert!(button.bottom() <= viewport.height);
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn drawing_tool_ui_edit_survives_reopen_and_matches_export(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let notifications = crate::system::notification::capture_for_test();
+        let project = dir.path().join("Drawing workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = project::recording_video_path(&project);
+        std::fs::write(
+            &recording,
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let source_info = crate::video::decoder::VideoDecoder::open(&recording)
+            .expect("open recording fixture")
+            .info();
+        let mut initial_state = model::VideoEditorState {
+            source_duration: Some(source_info.duration),
+            segments: vec![model::Segment::spanning(source_info.duration)],
+            ..model::VideoEditorState::default()
+        };
+        initial_state.export_settings.resolution = "original".into();
+        initial_state.export_settings.frame_rate = "10".into();
+        initial_state.export_settings.open_in_finder = false;
+        model::save_state(&recording, &initial_state);
+
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+        let original_preview = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                editor
+                    .preview_image()
+                    .expect("loaded editor preview")
+                    .as_bytes(0)
+                    .expect("preview pixels")
+                    .to_vec()
+            })
+        });
+
+        let drawing_shortcut = cx.update(|_, app| {
+            crate::state::state(app)
+                .config
+                .get()
+                .shortcuts
+                .video_editor_sidebar
+                .drawing
+                .clone()
+        });
+        cx.press(&drawing_shortcut);
+        assert_eq!(
+            cx.update(|_, app| editor.update(app, |editor, _| editor.active_tab())),
+            SidebarTab::Drawing
+        );
+        let cell_bounds = cx.expect("drawing-tool-rectangle-cell");
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let sidebar_state = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                (
+                    editor.state.ui.sidebar_open,
+                    editor.sidebar_closing,
+                    editor.sidebar_animation_generation,
+                )
+            })
+        });
+        assert!(
+            cell_bounds.left() >= px(0.0)
+                && cell_bounds.top() >= px(0.0)
+                && cell_bounds.right() <= viewport.width
+                && cell_bounds.bottom() <= viewport.height,
+            "Drawing tool cell {cell_bounds:?} is outside viewport {viewport:?}; sidebar={sidebar_state:?}"
+        );
+        let tool_center = cell_bounds.center();
+        cx.simulate_mouse_move(tool_center, None, gpui::Modifiers::none());
+        cx.settle();
+        cx.simulate_mouse_down(
+            tool_center,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        cx.simulate_mouse_up(
+            tool_center,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let active_after_up = cx.update(|_, app| {
+            editor.update(app, |editor, _| editor.drawing_tools.active_tool.clone())
+        });
+        assert_eq!(
+            active_after_up,
+            "rectangle",
+            "rectangle press was not activated: viewport={viewport:?}, cell={cell_bounds:?}, sidebar={sidebar_state:?}"
+        );
+        let (start, end, composition) = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let content = editor.preview_content_rect().expect("preview bounds");
+                let composition = editor.composition_size.expect("composition size");
+                (
+                    gpui::point(
+                        px(content.x + content.width * 0.25),
+                        px(content.y + content.height * 0.25),
+                    ),
+                    gpui::point(
+                        px(content.x + content.width * 0.55),
+                        px(content.y + content.height * 0.55),
+                    ),
+                    composition,
+                )
+            })
+        });
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.run_until_parked();
+
+        let edited_preview = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                assert_eq!(editor.drawing_tools.active_tool, "select");
+                assert_eq!(editor.state.drawing_segments.len(), 1);
+                assert_eq!(editor.state.drawing_segments[0].annotations.len(), 1);
+                editor
+                    .preview_image()
+                    .expect("composed edited preview")
+                    .as_bytes(0)
+                    .expect("edited preview pixels")
+                    .to_vec()
+            })
+        });
+        assert_eq!(edited_preview.len(), original_preview.len());
+        let decoded = crate::video::decoder::VideoDecoder::open(&recording)
+            .unwrap()
+            .info();
+        assert_eq!(
+            (decoded.width, decoded.height),
+            (source_info.width, source_info.height)
+        );
+
+        let annotation_bounds = cx.update(|_, app| {
+            editor.update(app, |editor, _| {
+                let segment = &editor.state.drawing_segments[0];
+                let crate::editor::annotations::Annotation::Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } = &segment.annotations[0]
+                else {
+                    panic!("UI gesture did not create a rectangle")
+                };
+                (
+                    (*x * source_info.width as f64 / composition.0) as usize,
+                    (*y * source_info.height as f64 / composition.1) as usize,
+                    ((*x + *width) * source_info.width as f64 / composition.0) as usize,
+                    ((*y + *height) * source_info.height as f64 / composition.1) as usize,
+                )
+            })
+        });
+        let mut changed_roi_pixels = 0usize;
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(source_info.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(source_info.width as usize)
+            {
+                let pixel = (y * source_info.width as usize + x) * 4;
+                if (0..3).any(|channel| {
+                    original_preview[pixel + channel].abs_diff(edited_preview[pixel + channel]) > 24
+                }) {
+                    changed_roi_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            changed_roi_pixels > 20,
+            "UI annotation did not change its preview ROI"
+        );
+
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let saved_state = model::load_state(&recording);
+        assert_eq!(saved_state.drawing_segments.len(), 1);
+        assert_eq!(saved_state.drawing_segments[0].annotations.len(), 1);
+        assert!(matches!(
+            saved_state.drawing_segments[0].annotations[0],
+            crate::editor::annotations::Annotation::Rectangle { .. }
+        ));
+
+        let (reopened, cx) = cx.cx.add_window_view(|window, cx| {
+            window.set_scale_factor(1.0);
+            let mut editor = VideoEditorWindow::new_for_test(Some(project.clone()), cx);
+            editor.load_preview(cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.run_until_parked();
+        cx.settle();
+        let reopened_preview = cx.update(|_, app| {
+            reopened.update(app, |editor, _| {
+                assert_eq!(editor.state, saved_state);
+                editor
+                    .preview_image()
+                    .expect("reopened editor preview")
+                    .as_bytes(0)
+                    .expect("reopened preview pixels")
+                    .to_vec()
+            })
+        });
+        assert_eq!(reopened_preview, edited_preview);
+
+        let output = dir.path().join("edited.mp4");
+        cx.update(|_, app| {
+            reopened.update(app, |editor, cx| {
+                editor.start_export_to_path(
+                    project.clone(),
+                    output.clone(),
+                    editor.state.clone(),
+                    cx,
+                );
+            })
+        });
+        cx.run_until_parked();
+        reopened.update(&mut cx.cx, |editor, _| {
+            assert!(!editor.is_exporting);
+            assert!(editor.export_error.is_none());
+            assert!(editor.export_completed_at.is_some());
+        });
+        assert_eq!(&*notifications.borrow(), &["Export Complete"]);
+
+        let exported =
+            crate::video::decoder::VideoDecoder::open(&output).expect("decode UI-edited export");
+        let frame = exported.frame_at(0.0).expect("exported first frame");
+        assert_eq!(
+            (frame.width, frame.height),
+            (source_info.width, source_info.height)
+        );
+        assert_eq!(frame.bgra.len(), reopened_preview.len());
+        let mut roi_error = 0u64;
+        let mut roi_samples = 0u64;
+        let mean_error = frame
+            .bgra
+            .iter()
+            .zip(&reopened_preview)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum::<u64>() as f64
+            / reopened_preview.len() as f64;
+        assert!(
+            mean_error < 8.0,
+            "reopened preview/export mean error {mean_error}"
+        );
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(frame.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(frame.width as usize)
+            {
+                let pixel = (y * frame.width as usize + x) * 4;
+                for channel in 0..4 {
+                    roi_error += u64::from(
+                        frame.bgra[pixel + channel].abs_diff(reopened_preview[pixel + channel]),
+                    );
+                    roi_samples += 1;
+                }
+            }
+        }
+        let roi_mean_error = roi_error as f64 / roi_samples as f64;
+        assert!(
+            roi_mean_error < 8.0,
+            "reopened preview/export annotation ROI mean error {roi_mean_error}"
+        );
+        let mut changed_export_roi_pixels = 0usize;
+        for y in annotation_bounds.1.saturating_sub(8)
+            ..(annotation_bounds.3 + 8).min(frame.height as usize)
+        {
+            for x in annotation_bounds.0.saturating_sub(8)
+                ..(annotation_bounds.2 + 8).min(frame.width as usize)
+            {
+                let pixel = (y * frame.width as usize + x) * 4;
+                if (0..3).any(|channel| {
+                    frame.bgra[pixel + channel].abs_diff(original_preview[pixel + channel]) > 24
+                }) {
+                    changed_export_roi_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            changed_export_roi_pixels > 20,
+            "exported video does not contain the UI drawing edit"
+        );
+        let mut changed_preview_pixels = 0usize;
+        let mut edited_error = 0u64;
+        let mut original_error = 0u64;
+        for pixel in (0..frame.bgra.len()).step_by(4) {
+            if !(0..3).any(|channel| {
+                reopened_preview[pixel + channel].abs_diff(original_preview[pixel + channel]) > 24
+            }) {
+                continue;
+            }
+            changed_preview_pixels += 1;
+            for channel in 0..3 {
+                edited_error += u64::from(
+                    frame.bgra[pixel + channel].abs_diff(reopened_preview[pixel + channel]),
+                );
+                original_error += u64::from(
+                    frame.bgra[pixel + channel].abs_diff(original_preview[pixel + channel]),
+                );
+            }
+        }
+        assert!(
+            changed_preview_pixels > 20,
+            "edited preview has too few changed pixels to verify the export"
+        );
+        let changed_samples = (changed_preview_pixels * 3) as f64;
+        let edited_mean_error = edited_error as f64 / changed_samples;
+        let original_mean_error = original_error as f64 / changed_samples;
+        eprintln!(
+            "UI drawing mask preview/export RGB MAE: edited={edited_mean_error:.2}, original={original_mean_error:.2}, pixels={changed_preview_pixels}"
+        );
+        assert!(
+            edited_mean_error < 32.0,
+            "decoded export differs from edited preview on changed pixels: MAE={edited_mean_error:.2}"
+        );
+        assert!(
+            edited_mean_error + 8.0 < original_mean_error,
+            "decoded export changed pixels do not favor the edited preview: edited MAE={edited_mean_error:.2}, original MAE={original_mean_error:.2}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn cancelled_export_finishes_before_a_retry_can_start(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let notifications = crate::system::notification::capture_for_test();
+        let project = dir.path().join("Cancel workflow.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let output = dir.path().join("retry.mp4");
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        let first = window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(2.);
+                editor.state.segments = vec![model::Segment::spanning(2.)];
+                editor.state.wallpaper.enabled = false;
+                editor.state.export_settings.resolution = "original".into();
+                editor.state.export_settings.frame_rate = "10".into();
+                editor.state.export_settings.open_in_finder = false;
+                let state = editor.state.clone();
+                editor.start_export_to_path(project.clone(), output.clone(), state.clone(), cx);
+                let first = editor.export_cancelled.clone();
+                editor.cancel_export(cx);
+                editor.start_export_to_path(project.clone(), output.clone(), state, cx);
+                assert!(Arc::ptr_eq(&first, &editor.export_cancelled));
+                assert!(editor.is_exporting);
+                first
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_exporting);
+                assert!(editor.export_error.is_none());
+                assert!(editor.export_completed_at.is_none());
+            })
+            .unwrap();
+        assert!(!output.exists());
+        assert!(notifications.borrow().is_empty());
+
+        window
+            .update(cx, |editor, _, cx| {
+                editor.start_export_to_path(
+                    project.clone(),
+                    output.clone(),
+                    editor.state.clone(),
+                    cx,
+                );
+                assert!(!Arc::ptr_eq(&first, &editor.export_cancelled));
+                assert!(editor.is_exporting);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_exporting);
+                assert!(editor.export_error.is_none());
+                assert!(editor.export_completed_at.is_some());
+            })
+            .unwrap();
+        assert!(crate::video::decoder::VideoDecoder::open(&output)
+            .unwrap()
+            .frame_at(0.)
+            .is_some());
+        assert_eq!(&*notifications.borrow(), &["Export Complete"]);
     }
 
     #[herogpui::test]

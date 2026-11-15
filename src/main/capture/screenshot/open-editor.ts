@@ -7,6 +7,7 @@ import {
   clipboard,
   Notification,
 } from 'electron';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -315,10 +316,17 @@ export function openClipboardInEditor(): void {
     return;
   }
 
-  const tempDir = os.tmpdir();
-  const tempFile = path.join(tempDir, `poratake-clipboard-${Date.now()}.png`);
-
-  fs.writeFileSync(tempFile, image.toPNG());
+  const bytes = image.toPNG();
+  let tempFile: string;
+  while (true) {
+    tempFile = path.join(os.tmpdir(), `poratake-clipboard-${randomUUID()}.png`);
+    try {
+      fs.writeFileSync(tempFile, bytes, { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
 
   openScreenshotEditor(tempFile);
 }

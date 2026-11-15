@@ -15,18 +15,14 @@ use crate::ui::menu::{MenuBuilder, MenuEntry, MenuItem};
 use crate::video::project::RecordingFeatures;
 use crate::windows::history::model::format_relative_time;
 use crate::windows::history::HistoryWindow;
-use herogpui::components::{Button, Variant};
+use herogpui::components::{Button, TooltipPlacement, Variant};
 
-const POPOVER_WIDTH: f32 = 400.0;
-const CONTENT_PADDING: f32 = 12.0;
-const GRID_GAP: f32 = 12.0;
-/// `grid grid-cols-2 gap-3` inside `p-3`. The keyboard-selection ring is
-/// `ring-2 ring-offset-1`, i.e. a box shadow, so it takes no layout room and
-/// the columns are exactly half the padded width.
-pub const GRID_CARD_WIDTH: f32 = (POPOVER_WIDTH - CONTENT_PADDING * 2.0 - GRID_GAP) / 2.0;
-const GRID_THUMB_HEIGHT: f32 = GRID_CARD_WIDTH * 9.0 / 16.0;
 const LIST_THUMB_WIDTH: f32 = 80.0;
 const LIST_THUMB_HEIGHT: f32 = 48.0;
+const LIST_COMPACT_WIDTH: f32 = 320.0;
+const LIST_META_MIN_WIDTH: f32 = 90.0;
+const LIST_ROW_PADDING: f32 = 8.0;
+const LIST_ROW_GAP: f32 = 12.0;
 /// `h-4 w-4` in the grid card, `h-3 w-3` in the list row.
 const GRID_SPINNER: f32 = 16.0;
 const LIST_SPINNER: f32 = 12.0;
@@ -138,6 +134,7 @@ fn overlay_action(
     icon: &'static str,
     tooltip: &'static str,
     danger: bool,
+    placement: TooltipPlacement,
     on_click: impl Fn(&mut HistoryWindow, &mut Window, &mut Context<HistoryWindow>) + 'static,
     cx: &mut Context<HistoryWindow>,
 ) -> AnyElement {
@@ -151,12 +148,14 @@ fn overlay_action(
     let foreground = white(1.0);
     let resting = black(0.6);
     herogpui::components::Tooltip::new(tooltip)
+        .placement(placement)
         .child(
             Button::new(id)
                 .variant(Variant::Ghost)
                 .is_icon_only(true)
                 .aria_label(tooltip)
                 .height(px(chrome::HISTORY_ITEM_ACTION_SIZE))
+                .width(px(chrome::HISTORY_ITEM_ACTION_SIZE))
                 .bg(resting)
                 .text_color(foreground)
                 .hover_bg(surface_hover)
@@ -169,18 +168,32 @@ fn overlay_action(
         .into_any_element()
 }
 
-pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn grid_card(
+    view: &ItemView,
+    width: f32,
+    columns: usize,
+    cx: &mut Context<HistoryWindow>,
+) -> AnyElement {
     let theme = view.theme;
     let index = view.index;
     let id = view.item.id.clone();
     let show_actions = view.hovered || view.selected;
+    let actions_selector = format!("history-grid-actions-{id}");
+    let tooltip_placement = if columns == 1 {
+        TooltipPlacement::Top
+    } else if index.is_multiple_of(columns) {
+        TooltipPlacement::TopStart
+    } else {
+        TooltipPlacement::TopEnd
+    };
 
+    let height = width * 9.0 / 16.0;
     let mut media = div()
         .relative()
-        .w(px(GRID_CARD_WIDTH))
-        .h(px(GRID_THUMB_HEIGHT))
+        .w(px(width))
+        .h(px(height))
         .overflow_hidden()
-        .child(view.thumbnail_element(GRID_CARD_WIDTH, GRID_THUMB_HEIGHT));
+        .child(view.thumbnail_element(width, height));
 
     if view.is_video() {
         media = media.child(
@@ -231,11 +244,15 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
 
     let card = div()
         .id(view.element_id("history-card"))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("history-card-{id}")
+        })
         .relative()
         .when(view.selected, |el| {
             el.shadow(selection_shadow(theme.primary))
         })
-        .w(px(GRID_CARD_WIDTH))
+        .w(px(width))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -260,54 +277,78 @@ pub fn grid_card(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement
                 .child(format_relative_time(view.item.timestamp, view.now_ms)),
         )
         .when(show_actions, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .top(px(4.0))
-                    .right(px(4.0))
-                    .flex()
-                    .gap(px(4.0))
-                    .child(overlay_action(
-                        view.element_id("history-reveal"),
-                        "folder-open",
-                        "Show in folder",
-                        false,
-                        move |this, _window, cx| {
-                            this.reveal_index(index, cx);
-                        },
-                        cx,
-                    ))
-                    .child(overlay_action(
-                        view.element_id("history-delete"),
-                        "trash-2",
-                        "Delete",
-                        true,
-                        move |this, _window, cx| {
-                            this.delete_index(index, cx);
-                        },
-                        cx,
-                    )),
-            )
+            let actions = div()
+                .debug_selector(move || actions_selector.clone())
+                .absolute()
+                .top(px(4.0))
+                .right(px(if columns == 1 { 8.0 } else { 4.0 }))
+                .flex()
+                .gap(px(4.0))
+                .child(overlay_action(
+                    view.element_id("history-reveal"),
+                    "folder-open",
+                    "Show in folder",
+                    false,
+                    tooltip_placement,
+                    move |this, _window, cx| {
+                        this.reveal_index(index, cx);
+                    },
+                    cx,
+                ))
+                .child(overlay_action(
+                    view.element_id("history-delete"),
+                    "trash-2",
+                    "Delete",
+                    true,
+                    tooltip_placement,
+                    move |this, _window, cx| {
+                        this.delete_index(index, cx);
+                    },
+                    cx,
+                ));
+            #[cfg(feature = "parity")]
+            let actions = actions.on_children_prepainted(|bounds, _, _| {
+                crate::ui::parity::record("history-grid-actions", bounds);
+            });
+            el.child(actions)
         });
 
     with_item_menu(view, card, cx)
 }
 
-pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement {
+pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) -> AnyElement {
     let theme = view.theme;
     let index = view.index;
     let id = view.item.id.clone();
     let show_actions = view.hovered || view.selected;
     let is_video = view.is_video();
+    let label_selector = format!("history-row-label-{id}");
+    let thumb_selector = format!("history-row-thumb-{id}");
+    let actions_selector = format!("history-row-actions-{id}");
+    let features_selector = format!("history-row-features-{id}");
+    let compact = width < LIST_COMPACT_WIDTH;
+    let content_width =
+        (width - chrome::HISTORY_CONTENT_PAD * 2.0 - LIST_ROW_PADDING * 2.0).max(0.0);
+    let min_thumb = chrome::HISTORY_ITEM_ACTION_SIZE * 2.0 + 8.0;
+    let stacked = compact && content_width < min_thumb + LIST_ROW_GAP + LIST_META_MIN_WIDTH;
+    let thumb_width = if stacked {
+        content_width.min(LIST_THUMB_WIDTH)
+    } else if compact {
+        (content_width - LIST_ROW_GAP - LIST_META_MIN_WIDTH).clamp(0.0, LIST_THUMB_WIDTH)
+    } else {
+        LIST_THUMB_WIDTH
+    };
+    let thumb_height = LIST_THUMB_HEIGHT * thumb_width / LIST_THUMB_WIDTH;
 
     let mut thumb = div()
+        .debug_selector(move || thumb_selector.clone())
         .relative()
-        .w(px(LIST_THUMB_WIDTH))
-        .h(px(LIST_THUMB_HEIGHT))
+        .w(px(thumb_width))
+        .h(px(thumb_height))
         .flex_shrink_0()
         .overflow_hidden()
         .rounded(px(chrome::RADIUS_MD))
-        .child(view.thumbnail_element(LIST_THUMB_WIDTH, LIST_THUMB_HEIGHT));
+        .child(view.thumbnail_element(thumb_width, thumb_height));
 
     if is_video {
         thumb = thumb.child(
@@ -331,8 +372,43 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
         );
     }
 
+    if compact && show_actions {
+        let actions = div()
+            .debug_selector(move || actions_selector.clone())
+            .absolute()
+            .top(px(2.0))
+            .left(px(2.0))
+            .flex()
+            .gap(px(4.0))
+            .child(overlay_action(
+                view.element_id("history-row-reveal"),
+                "folder-open",
+                "Show in folder",
+                false,
+                TooltipPlacement::TopStart,
+                move |this, _window, cx| this.reveal_index(index, cx),
+                cx,
+            ))
+            .child(overlay_action(
+                view.element_id("history-row-delete"),
+                "trash-2",
+                "Delete",
+                true,
+                TooltipPlacement::TopStart,
+                move |this, _window, cx| this.delete_index(index, cx),
+                cx,
+            ));
+        #[cfg(feature = "parity")]
+        let actions = actions.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("history-row-actions", bounds);
+        });
+        thumb = thumb.child(actions);
+    }
+
     let mut meta = div()
         .flex()
+        .flex_wrap()
+        .max_w_full()
         .items_center()
         .gap(px(6.0))
         .text_size(px(chrome::HISTORY_ITEM_TEXT))
@@ -342,7 +418,10 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
     if is_video {
         let features = view.feature_icons();
         if !features.is_empty() {
-            let mut icons = div().flex().gap(px(2.0));
+            let mut icons = div()
+                .debug_selector(move || features_selector.clone())
+                .flex()
+                .gap(px(2.0));
             for icon in features {
                 icons = icons.child(icon_element(icon, px(10.0)));
             }
@@ -352,14 +431,18 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
 
     let mut row = div()
         .id(view.element_id("history-row"))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("history-row-{id}")
+        })
         .when(view.selected, |el| {
             el.shadow(selection_shadow(theme.primary))
         })
         .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(12.0))
-        .p(px(8.0))
+        .when(stacked, |el| el.flex_col().items_start())
+        .when(!stacked, |el| el.flex_row().items_center())
+        .gap(px(LIST_ROW_GAP))
+        .p(px(LIST_ROW_PADDING))
         .rounded(px(chrome::RADIUS_LG))
         .bg(if view.hovered {
             theme.muted_background
@@ -378,6 +461,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 .flex_col()
                 .flex_1()
                 .min_w_0()
+                .when(stacked, |el| el.w_full())
                 .gap(px(2.0))
                 .child(
                     div()
@@ -395,6 +479,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                         )
                         .child(
                             div()
+                                .debug_selector(move || label_selector.clone())
                                 .truncate()
                                 .text_size(px(chrome::HISTORY_ITEM_TEXT))
                                 .font_weight(gpui::FontWeight::MEDIUM)
@@ -405,7 +490,7 @@ pub fn list_row(view: &ItemView, cx: &mut Context<HistoryWindow>) -> AnyElement 
                 .child(meta),
         );
 
-    if show_actions {
+    if show_actions && !compact {
         row = row
             .child(
                 Button::new(view.element_id("history-row-reveal"))

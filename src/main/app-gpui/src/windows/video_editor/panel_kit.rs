@@ -593,13 +593,34 @@ pub fn tertiary_button(
     cx: &mut Context<VideoEditorWindow>,
     on_click: impl Fn(&mut VideoEditorWindow, &mut Context<VideoEditorWindow>) + 'static,
 ) -> AnyElement {
+    tertiary_window_button(
+        id,
+        label,
+        icon,
+        disabled,
+        theme,
+        cx,
+        move |this, _window, cx| on_click(this, cx),
+    )
+}
+
+pub fn tertiary_window_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    icon: &'static str,
+    disabled: bool,
+    theme: &ThemeVars,
+    cx: &mut Context<VideoEditorWindow>,
+    on_click: impl Fn(&mut VideoEditorWindow, &mut gpui::Window, &mut Context<VideoEditorWindow>)
+        + 'static,
+) -> AnyElement {
     let _ = theme;
     rows::icon_text_button(id, label, icon, 14.0, 8.0)
         .variant(Variant::Tertiary)
         .recipe("compact")
         .is_disabled(disabled)
         .full_width(true)
-        .on_press(cx.listener(move |this, _event, _window, cx| on_click(this, cx)))
+        .on_press(cx.listener(move |this, _event, window, cx| on_click(this, window, cx)))
         .into_any_element()
 }
 

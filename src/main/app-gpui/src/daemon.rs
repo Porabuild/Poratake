@@ -48,8 +48,22 @@ const RESTART_BACKOFF_BASE_MS: u64 = 1_000;
 pub type EventHandler = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 struct Pending {
-    sender: SyncSender<std::result::Result<Value, String>>,
+    sender: SyncSender<std::result::Result<Value, DaemonRpcError>>,
 }
+
+#[derive(Debug)]
+pub struct DaemonRpcError {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for DaemonRpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DaemonRpcError {}
 
 #[derive(Clone)]
 pub struct DaemonHandle {
@@ -167,6 +181,11 @@ impl DaemonHandle {
         }
     }
 
+    #[cfg(all(test, windows))]
+    pub(crate) fn emit_for_test(&self, event: &str) {
+        self.inner.dispatch_event(event, &Value::Null);
+    }
+
     fn insert_event_handler(&self, handler: EventHandler) -> u64 {
         let id = self
             .inner
@@ -181,6 +200,9 @@ impl DaemonHandle {
     }
 
     fn ensure_running(&self) -> Result<()> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(anyhow!("Daemon is shutting down"));
+        }
         if !self.is_running() {
             self.start()?;
         }
@@ -190,11 +212,12 @@ impl DaemonHandle {
     /// Starts the daemon and waits for its `system:ready` event.
     pub fn start(&self) -> Result<()> {
         let _lifecycle = self.inner.lifecycle.lock();
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(anyhow!("Daemon is shutting down"));
+        }
         if self.inner.child.lock().is_some() {
             return Ok(());
         }
-
-        self.inner.shutting_down.store(false, Ordering::SeqCst);
 
         let mut command = Command::new(&self.inner.binary_path);
         #[cfg(target_os = "linux")]
@@ -409,7 +432,7 @@ impl DaemonHandle {
 
         match rx.recv_timeout(timeout) {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(anyhow!("{message}")),
+            Ok(Err(error)) => Err(anyhow::Error::new(error)),
             Err(RecvTimeoutError::Timeout) => {
                 self.inner.pending.lock().remove(&id);
                 Err(anyhow!("Request timeout: {module}.{method}"))
@@ -430,7 +453,7 @@ impl DaemonHandle {
         let (_, rx) = self.begin_call(module, method, params)?;
         match rx.recv() {
             Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(anyhow!("{message}")),
+            Ok(Err(error)) => Err(anyhow::Error::new(error)),
             Err(_) => Err(anyhow!("Request dropped: {module}.{method}")),
         }
     }
@@ -440,7 +463,7 @@ impl DaemonHandle {
         module: &str,
         method: &str,
         params: Option<Value>,
-    ) -> Result<(String, Receiver<std::result::Result<Value, String>>)> {
+    ) -> Result<(String, Receiver<std::result::Result<Value, DaemonRpcError>>)> {
         let id = format!("req-{}", self.inner.next_id.fetch_add(1, Ordering::SeqCst));
         let request = json!({
             "id": id,
@@ -449,7 +472,8 @@ impl DaemonHandle {
             "params": params.unwrap_or(Value::Null),
         });
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<Value, String>>(1);
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<std::result::Result<Value, DaemonRpcError>>(1);
         self.inner
             .pending
             .lock()
@@ -753,6 +777,28 @@ pub struct ScrollCaptureClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<ScrollCaptureMethod>>>> = std::cell::RefCell::default();
+}
+
+#[cfg(test)]
+pub(crate) fn capture_auto_scroll_for_test(
+) -> std::rc::Rc<std::cell::RefCell<Vec<ScrollCaptureMethod>>> {
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    TEST_AUTO_SCROLL_CALLS.with_borrow_mut(|capture| *capture = std::rc::Rc::downgrade(&calls));
+    calls
+}
+
+#[cfg(test)]
+fn record_auto_scroll_for_test(method: ScrollCaptureMethod) -> bool {
+    let Some(calls) = TEST_AUTO_SCROLL_CALLS.with_borrow(|capture| capture.upgrade()) else {
+        return false;
+    };
+    calls.borrow_mut().push(method);
+    true
+}
+
 impl ScrollCaptureClient<'_> {
     pub fn start(&self, request: &ScrollCaptureStartRequest) -> Result<()> {
         self.daemon.ensure_running()?;
@@ -765,34 +811,47 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    pub fn finish(
+    pub fn finish_with_started(
         &self,
         request: &ScrollCaptureFinishRequest,
+        started: impl FnOnce(),
     ) -> Result<ScrollCaptureFinishResult> {
         self.daemon.ensure_running()?;
-        let response = self.daemon.call(
+        let (_, response) = self.daemon.begin_call(
             SCROLL_CAPTURE_MODULE,
             ScrollCaptureMethod::Finish.id(),
             Some(serde_json::to_value(request)?),
         )?;
+        started();
+        let response = response
+            .recv()
+            .map_err(|_| anyhow!("Request dropped: {SCROLL_CAPTURE_MODULE}.finish"))?
+            .map_err(anyhow::Error::new)?;
         serde_json::from_value(response).map_err(Into::into)
     }
 
-    pub fn cancel(&self) -> Result<()> {
+    pub fn cancel_without_timeout(&self) -> Result<()> {
         if !self.daemon.is_running() {
             return Ok(());
         }
-        self.daemon
-            .call(
-                SCROLL_CAPTURE_MODULE,
-                ScrollCaptureMethod::Cancel.id(),
-                None,
-            )
-            .map(|_| ())
+        let (_, response) = self.daemon.begin_call(
+            SCROLL_CAPTURE_MODULE,
+            ScrollCaptureMethod::Cancel.id(),
+            None,
+        )?;
+        response
+            .recv()
+            .map_err(|_| anyhow!("Request dropped: {SCROLL_CAPTURE_MODULE}.cancel"))?
+            .map_err(|message| anyhow!("{message}"))?;
+        Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     pub fn start_auto_scroll(&self) -> Result<()> {
+        #[cfg(test)]
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll) {
+            return Ok(());
+        }
         self.daemon.ensure_running()?;
         self.daemon
             .call(
@@ -803,8 +862,12 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
+        #[cfg(test)]
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll) {
+            return Ok(());
+        }
         self.daemon.ensure_running()?;
         self.daemon
             .call(
@@ -836,13 +899,15 @@ pub struct FreezeScreenClient<'a> {
 impl FreezeScreenClient<'_> {
     pub fn freeze(&self) -> Result<()> {
         self.daemon.ensure_running()?;
-        self.daemon
-            .call(
-                FREEZE_SCREEN_MODULE,
-                FreezeScreenMethod::Freeze.id(),
-                Some(json!({})),
-            )
-            .map(|_| ())
+        let response = self.daemon.call(
+            FREEZE_SCREEN_MODULE,
+            FreezeScreenMethod::Freeze.id(),
+            Some(json!({})),
+        )?;
+        match response.get("frozen").and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            _ => Err(anyhow!("Screen freezing is unavailable")),
+        }
     }
 
     pub fn release(&self) -> Result<()> {
@@ -1029,7 +1094,15 @@ impl DaemonInner {
                     .and_then(Value::as_str)
                     .unwrap_or("Unknown error")
                     .to_string();
-                Err(message_text)
+                let code = error
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
+                Err(DaemonRpcError {
+                    code,
+                    message: message_text,
+                })
             };
             // Ignore send failures when the caller already timed out.
             match pending.sender.try_send(outcome) {
@@ -1086,7 +1159,10 @@ impl DaemonInner {
     fn reject_all_pending(&self, message: &str) {
         let mut pending = self.pending.lock();
         for (_, entry) in pending.drain() {
-            let _ = entry.sender.try_send(Err(message.to_string()));
+            let _ = entry.sender.try_send(Err(DaemonRpcError {
+                code: "DAEMON_UNAVAILABLE".into(),
+                message: message.to_string(),
+            }));
         }
     }
 }
@@ -1136,9 +1212,37 @@ mod tests {
     }
 
     #[test]
+    fn stopped_daemon_does_not_restart_for_a_late_request() {
+        let daemon = DaemonHandle::with_binary(PathBuf::from("unused"));
+        daemon.stop();
+        let error = daemon.desktop_helper().hide().unwrap_err().to_string();
+        assert_eq!(error, "Daemon is shutting down");
+        assert!(!daemon.is_running());
+    }
+
+    #[test]
     fn recording_overlay_is_exposed_only_through_the_typed_client() {
         let _ = DaemonHandle::recording_overlay;
         let _ = RecordingOverlayClient::show_window;
         let _ = RecordingOverlayClient::hide;
+    }
+
+    #[test]
+    fn rpc_error_code_survives_transport_for_typed_recovery() {
+        let daemon = DaemonHandle::with_binary(PathBuf::from("unused"));
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        daemon
+            .inner
+            .pending
+            .lock()
+            .insert("retryable-finish".into(), Pending { sender: tx });
+
+        daemon.inner.handle_line(
+            r#"{"id":"retryable-finish","success":false,"error":{"code":"STITCH_RETRYABLE","message":"could not start worker"}}"#,
+        );
+
+        let error = rx.recv().unwrap().unwrap_err();
+        assert_eq!(error.code, "STITCH_RETRYABLE");
+        assert_eq!(error.message, "could not start worker");
     }
 }

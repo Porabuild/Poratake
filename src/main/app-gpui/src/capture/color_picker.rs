@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, AnyElement, Pixels, Point, Styled};
+use gpui::{div, prelude::*, px, AnyElement, Element, Pixels, Point, Styled};
 use herogpui::gpui;
 
 use crate::capture::selection;
@@ -30,10 +30,111 @@ fn pixel_color(pixel: image::Rgba<u8>) -> gpui::Hsla {
 
 pub const HINT: &str = "Click to copy \u{b7} Esc to cancel";
 
+struct PickerCard {
+    pointer: Point<Pixels>,
+    child: AnyElement,
+}
+
+impl gpui::IntoElement for PickerCard {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for PickerCard {
+    type RequestLayoutState = gpui::LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        let child = self.child.request_layout(window, cx);
+        let style = gpui::Style {
+            position: gpui::Position::Absolute,
+            display: gpui::Display::Flex,
+            ..Default::default()
+        };
+        (window.request_layout(style, [child], cx), child)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<Pixels>,
+        child: &mut Self::RequestLayoutState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        let size = window.layout_bounds(*child).size;
+        let viewport = window.viewport_size();
+        let offset = px(20.0);
+        let place = |pointer: Pixels, length: Pixels, extent: Pixels| {
+            let after = pointer + offset;
+            let before = pointer - offset - length;
+            let after_overflow = (after + length - extent).max(px(0.0));
+            let before_overflow = (px(0.0) - before).max(px(0.0));
+            let (preferred, overflow) = if after_overflow <= before_overflow {
+                (after, after_overflow)
+            } else {
+                (before, before_overflow)
+            };
+            (
+                preferred.max(px(0.0)).min((extent - length).max(px(0.0))),
+                preferred,
+                overflow,
+            )
+        };
+        let (mut x, preferred_x, overflow_x) = place(self.pointer.x, size.width, viewport.width);
+        let (mut y, preferred_y, overflow_y) = place(self.pointer.y, size.height, viewport.height);
+        if self.pointer.x >= x
+            && self.pointer.x <= x + size.width
+            && self.pointer.y >= y
+            && self.pointer.y <= y + size.height
+        {
+            if overflow_x <= overflow_y {
+                x = preferred_x;
+            } else {
+                y = preferred_y;
+            }
+        }
+        window.with_element_offset(gpui::point(x, y) - bounds.origin, |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
 pub fn render(
     frame: &image::RgbaImage,
     pointer: Point<Pixels>,
-    viewport: gpui::Size<Pixels>,
+    window: &gpui::Window,
     theme: &crate::theme::vars::ThemeVars,
 ) -> AnyElement {
     const GRID: i32 = 15;
@@ -47,9 +148,8 @@ pub fn render(
     const HINT_ROW: f32 = 16.0;
     const HINT_GAP: f32 = 4.0;
     const CARD_WIDTH: f32 = 196.0;
-    const CARD_HEIGHT: f32 = PADDING * 2.0 + SIZE + SWATCH_GAP + SWATCH_ROW + HINT_GAP + HINT_ROW;
-    const OFFSET: f32 = 20.0;
 
+    let viewport = window.viewport_size();
     let logical = selection::Size {
         width: f32::from(viewport.width),
         height: f32::from(viewport.height),
@@ -57,19 +157,6 @@ pub fn render(
     let (sample_x, sample_y) = frame_point(frame, pointer, logical);
     let pixel = frame.get_pixel(sample_x, sample_y);
     let hex = format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2]);
-    let pointer_x = f32::from(pointer.x);
-    let pointer_y = f32::from(pointer.y);
-    let card_x = if pointer_x + OFFSET + CARD_WIDTH > logical.width {
-        pointer_x - OFFSET - CARD_WIDTH
-    } else {
-        pointer_x + OFFSET
-    };
-    let card_y = if pointer_y + OFFSET + CARD_HEIGHT > logical.height {
-        pointer_y - OFFSET - CARD_HEIGHT
-    } else {
-        pointer_y + OFFSET
-    };
-
     let mut loupe = div()
         .relative()
         .flex()
@@ -93,6 +180,19 @@ pub fn render(
         }
         loupe = loupe.child(cells);
     }
+    let marker_origin = window.pixel_snap(px(HALF as f32 * CELL));
+    let marker_size = window.pixel_snap(px(CELL));
+    let outline_width = window.pixel_snap(px(1.0));
+    loupe = loupe.child(
+        div()
+            .absolute()
+            .left(marker_origin - outline_width)
+            .top(marker_origin - outline_width)
+            .w(marker_size + outline_width * 2.0)
+            .h(marker_size + outline_width * 2.0)
+            .border_1()
+            .border_color(crate::ui::colors::black(0.4)),
+    );
     loupe = loupe.child(
         div()
             .absolute()
@@ -100,20 +200,17 @@ pub fn render(
             .top(px(HALF as f32 * CELL))
             .size(px(CELL))
             .border_1()
-            .border_color(crate::ui::colors::white(0.9))
-            .shadow(vec![gpui::BoxShadow {
-                color: crate::ui::colors::black(0.4),
-                offset: gpui::point(px(0.0), px(0.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(1.0),
-                inset: false,
-            }]),
+            .border_color(crate::ui::colors::white(0.9)),
     );
 
-    div()
-        .absolute()
-        .left(px(card_x.max(0.0)))
-        .top(px(card_y.max(0.0)))
+    let loupe_container = div().flex().justify_center().child(loupe);
+    #[cfg(feature = "parity")]
+    let loupe_container = loupe_container.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("color-picker-loupe", bounds);
+    });
+
+    let card = div()
+        .debug_selector(|| "color-picker-card".to_string())
         .w(px(CARD_WIDTH))
         .rounded(px(chrome::RADIUS_2XL))
         .border_2()
@@ -121,7 +218,7 @@ pub fn render(
         .bg(theme.muted_background.opacity(0.95))
         .p(px(PADDING))
         .shadow_2xl()
-        .child(div().flex().justify_center().child(loupe))
+        .child(loupe_container)
         .child(
             div()
                 .mt(px(SWATCH_GAP))
@@ -154,8 +251,19 @@ pub fn render(
                 .text_size(px(HINT_SIZE))
                 .text_color(theme.muted_foreground)
                 .child(HINT),
-        )
-        .into_any_element()
+        );
+
+    let wrapper = div().child(card);
+    #[cfg(feature = "parity")]
+    let wrapper = wrapper.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("color-picker-card", bounds);
+    });
+
+    PickerCard {
+        pointer,
+        child: wrapper.into_any_element(),
+    }
+    .into_any_element()
 }
 
 #[cfg(test)]
@@ -192,5 +300,133 @@ mod tests {
             frame_point(&frame, gpui::point(px(800.0), px(600.0)), viewport),
             (1599, 1199)
         );
+    }
+
+    #[herogpui::test]
+    fn picker_card_stays_inside_display_edges(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        struct Scene {
+            frame: image::RgbaImage,
+            pointer: Point<Pixels>,
+            clicks: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+
+        impl gpui::Render for Scene {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                let clicks = self.clicks.clone();
+                div()
+                    .relative()
+                    .size_full()
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
+                        clicks.set(clicks.get() + 1);
+                    })
+                    .child(super::render(
+                        &self.frame,
+                        self.pointer,
+                        window,
+                        &crate::theme::vars::active_theme(cx),
+                    ))
+            }
+        }
+
+        let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (scene, visual) = herogpui::test::open_window(cx, |_, _| Scene {
+            frame: image::RgbaImage::from_pixel(800, 600, image::Rgba([64, 112, 192, 255])),
+            pointer: gpui::point(px(0.), px(0.)),
+            clicks: clicks.clone(),
+        });
+        for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            visual.simulate_scale_factor_change(scale);
+            visual.simulate_resize(gpui::size(px(400.), px(300.)));
+            for x in [
+                0.,
+                100.,
+                190.,
+                ((190. * scale).round() + 1.) / scale,
+                200.,
+                ((400. * scale).round() - 1.) / scale,
+                399.,
+            ] {
+                for y in [
+                    0.,
+                    100.,
+                    120.,
+                    ((120. * scale).round() + 1.) / scale,
+                    150.,
+                    ((300. * scale).round() - 1.) / scale,
+                    299.,
+                ] {
+                    visual.update(|_, cx| {
+                        scene.update(cx, |scene, cx| {
+                            scene.pointer = gpui::point(px(x), px(y));
+                            cx.notify();
+                        });
+                    });
+                    let card = visual.expect("color-picker-card");
+                    assert_eq!(visual.update(|window, _| window.scale_factor()), scale);
+                    assert!(
+                        card.left() >= px(0.)
+                            && card.top() >= px(0.)
+                            && card.right() <= px(400.)
+                            && card.bottom() <= px(300.),
+                        "scale {scale}, pointer ({x}, {y}): card {card:?}"
+                    );
+                    assert!(
+                        px(x) < card.left()
+                            || px(x) > card.right()
+                            || px(y) < card.top()
+                            || px(y) > card.bottom(),
+                        "scale {scale}, pointer ({x}, {y}) is covered by card {card:?}"
+                    );
+                    if x == 0. {
+                        assert!(card.left() >= px(19.));
+                    }
+                    if x == 399. {
+                        assert!(card.right() <= px(380.));
+                    }
+                    if y == 0. {
+                        assert!(card.top() >= px(19.));
+                    }
+                    if y == 299. {
+                        assert!(card.bottom() <= px(280.));
+                    }
+                }
+            }
+            visual.simulate_resize(gpui::size(px(200.), px(180.)));
+            visual.update(|_, cx| {
+                scene.update(cx, |scene, cx| {
+                    scene.pointer = gpui::point(px(100.), px(90.));
+                    cx.notify();
+                });
+            });
+            let card = visual.expect("color-picker-card");
+            assert!(
+                card.right() <= px(81.)
+                    || card.left() >= px(119.)
+                    || card.bottom() <= px(71.)
+                    || card.top() >= px(109.),
+                "scale {scale}, pointer (100, 90) is covered by card {card:?}"
+            );
+            assert!(
+                card.left() >= px(0.)
+                    && card.right() <= px(200.)
+                    && card.top() >= px(109.)
+                    && card.top() <= px(111.),
+                "scale {scale}, no-fit fallback clips more than necessary: {card:?}"
+            );
+        }
+        visual.simulate_resize(gpui::size(px(400.), px(300.)));
+        let card = visual.expect("color-picker-card");
+        visual.simulate_mouse_down(
+            card.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert_eq!(clicks.get(), 1);
     }
 }

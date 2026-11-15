@@ -256,8 +256,16 @@ fn initial_pressure(points: &[StrokePoint], simulate: bool, size: f64) -> f64 {
 }
 
 fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
+    outline_points_with_limit(points, options, None).unwrap_or_default()
+}
+
+fn outline_points_with_limit(
+    points: &[StrokePoint],
+    options: &Options,
+    max_vertices: Option<usize>,
+) -> Option<Vec<Vec2>> {
     if points.is_empty() || options.size <= 0.0 {
-        return Vec::new();
+        return Some(Vec::new());
     }
 
     let total_length = points[points.len() - 1].running_length;
@@ -277,6 +285,7 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
     let mut previous_left = points[0].point;
     let mut previous_right = previous_left;
     let mut is_previous_point_sharp_corner = false;
+    let mut vertex_count = 0;
 
     for index in 0..points.len() {
         let StrokePoint {
@@ -330,9 +339,14 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
             let mut temporary_right = previous_right;
             while t <= 1.0 {
                 temporary_left = rot_around(sub(point, offset), point, FIXED_PI * t);
-                left.push(temporary_left);
+                if !push_outline_point(&mut left, temporary_left, &mut vertex_count, max_vertices) {
+                    return None;
+                }
                 temporary_right = rot_around(add(point, offset), point, FIXED_PI * -t);
-                right.push(temporary_right);
+                if !push_outline_point(&mut right, temporary_right, &mut vertex_count, max_vertices)
+                {
+                    return None;
+                }
                 t += step;
             }
             previous_left = temporary_left;
@@ -347,8 +361,19 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
 
         if is_last_point {
             let offset = mul(per(vector), radius);
-            left.push(sub(point, offset));
-            right.push(add(point, offset));
+            if !push_outline_point(
+                &mut left,
+                sub(point, offset),
+                &mut vertex_count,
+                max_vertices,
+            ) || !push_outline_point(
+                &mut right,
+                add(point, offset),
+                &mut vertex_count,
+                max_vertices,
+            ) {
+                return None;
+            }
             continue;
         }
 
@@ -356,13 +381,17 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
 
         let temporary_left = sub(point, offset);
         if index <= 1 || dist2(previous_left, temporary_left) > min_distance {
-            left.push(temporary_left);
+            if !push_outline_point(&mut left, temporary_left, &mut vertex_count, max_vertices) {
+                return None;
+            }
             previous_left = temporary_left;
         }
 
         let temporary_right = add(point, offset);
         if index <= 1 || dist2(previous_right, temporary_right) > min_distance {
-            right.push(temporary_right);
+            if !push_outline_point(&mut right, temporary_right, &mut vertex_count, max_vertices) {
+                return None;
+            }
             previous_right = temporary_right;
         }
 
@@ -381,7 +410,19 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
     let mut end_cap: Vec<Vec2> = Vec::new();
 
     if points.len() == 1 {
-        return draw_dot(first_point, first_radius.unwrap_or(radius));
+        if max_vertices.is_some_and(|max| start_cap_vertex_count() > max) {
+            return None;
+        }
+        return Some(draw_dot(first_point, first_radius.unwrap_or(radius)));
+    }
+
+    let start_cap_count = right.first().map_or(0, |_| start_cap_vertex_count());
+    let end_cap_count = end_cap_vertex_count();
+    let total_vertices = vertex_count
+        .checked_add(start_cap_count)
+        .and_then(|count| count.checked_add(end_cap_count))?;
+    if max_vertices.is_some_and(|max| total_vertices > max) {
+        return None;
     }
 
     if let Some(first_right) = right.first().copied() {
@@ -397,7 +438,59 @@ fn outline_points(points: &[StrokePoint], options: &Options) -> Vec<Vec2> {
     outline.extend(end_cap);
     outline.extend(right);
     outline.extend(start_cap);
-    outline
+    debug_assert_eq!(outline.len(), total_vertices);
+    Some(outline)
+}
+
+fn push_outline_point(
+    points: &mut Vec<Vec2>,
+    point: Vec2,
+    count: &mut usize,
+    max_vertices: Option<usize>,
+) -> bool {
+    if max_vertices.is_some_and(|max| *count >= max) {
+        return false;
+    }
+    points.push(point);
+    *count += 1;
+    true
+}
+
+fn start_cap_vertex_count() -> usize {
+    let step = 1.0 / START_CAP_SEGMENTS as f64;
+    let mut t = step;
+    let mut count = 0;
+    while t <= 1.0 {
+        count += 1;
+        t += step;
+    }
+    count
+}
+
+fn end_cap_vertex_count() -> usize {
+    let step = 1.0 / END_CAP_SEGMENTS as f64;
+    let mut t = step;
+    let mut count = 0;
+    while t < 1.0 {
+        count += 1;
+        t += step;
+    }
+    count
+}
+
+pub(crate) fn stroke_outline_limited(
+    points: &[f64],
+    options: &Options,
+    max_vertices: usize,
+) -> Option<Vec<Vec2>> {
+    let coordinates = points
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| (pair[0], pair[1]))
+        .collect::<Vec<_>>();
+    let stroke_points = stroke_points(&coordinates, options);
+    outline_points_with_limit(&stroke_points, options, Some(max_vertices))
 }
 
 /// `getStroke` — the polygon that surrounds `points`.
@@ -449,6 +542,81 @@ mod tests {
             max - min
         };
         assert!(thickness(10.0) > thickness(3.0));
+    }
+
+    #[test]
+    fn capped_outline_matches_the_uncapped_renderer_when_it_fits() {
+        let flat: Vec<f64> = (0..4_096)
+            .flat_map(|index| {
+                let x = index as f64 * 0.5;
+                [x, 40.0 + (x / 80.0).sin() * 12.0]
+            })
+            .collect();
+        let points: Vec<Vec2> = flat
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| (pair[0], pair[1]))
+            .collect();
+        let options = Options::for_pen(8.0);
+        let expected = stroke(&points, &options);
+        let actual = stroke_outline_limited(&flat, &options, expected.len())
+            .expect("the exact outline fits its vertex limit");
+        assert_eq!(actual, expected);
+        assert!(stroke_outline_limited(&flat, &options, expected.len() - 1).is_none());
+    }
+
+    #[test]
+    fn capped_outline_matches_empty_single_and_two_point_outputs() {
+        let options = Options::for_pen(8.0);
+        for flat in [Vec::new(), vec![10.0, 20.0], vec![10.0, 20.0, 40.0, 60.0]] {
+            let points: Vec<Vec2> = flat
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| (pair[0], pair[1]))
+                .collect();
+            let expected = stroke(&points, &options);
+            assert_eq!(
+                stroke_outline_limited(&flat, &options, expected.len()),
+                Some(expected.clone())
+            );
+            if !expected.is_empty() {
+                assert!(stroke_outline_limited(&flat, &options, expected.len() - 1).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn capped_outline_matches_duplicate_only_output_and_boundary() {
+        let flat = [12.0, 18.0].repeat(32);
+        let options = Options::for_pen(6.0);
+        let points: Vec<Vec2> = flat
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| (pair[0], pair[1]))
+            .collect();
+        let expected = stroke(&points, &options);
+        assert_eq!(
+            stroke_outline_limited(&flat, &options, expected.len()),
+            Some(expected.clone())
+        );
+        assert!(stroke_outline_limited(&flat, &options, expected.len() - 1).is_none());
+    }
+
+    #[test]
+    fn capped_outline_stops_a_serpentine_at_its_vertex_limit() {
+        let flat: Vec<f64> = (0..4_096)
+            .flat_map(|index| {
+                if index % 2 == 0 {
+                    [10.0, 10.0]
+                } else {
+                    [90.0, 90.0]
+                }
+            })
+            .collect();
+        assert!(stroke_outline_limited(&flat, &Options::for_pen(8.0), 65_536).is_none());
     }
 
     #[test]

@@ -1,0 +1,318 @@
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use gpui::{
+    div, img, point, prelude::*, px, size, AtlasKey, AtlasTile, Bounds, Context, DevicePixels,
+    Empty, GpuSpecs, Platform, PlatformAtlas, PlatformHeadlessRenderer, PlatformWindow, Render,
+    Scene, Size, Window, WindowHandle, WindowId, WindowKind, WindowParams,
+};
+use herogpui::gpui;
+use raw_window_handle::RawWindowHandle;
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, EnumThreadWindows, PeekMessageW, PostQuitMessage, SendMessageW,
+    TranslateMessage, MSG, PM_REMOVE, WM_QUIT, WM_SIZE,
+};
+
+static BASELINE_PROFILE: OnceLock<String> = OnceLock::new();
+
+pub(super) fn baseline_profile() -> &'static str {
+    BASELINE_PROFILE
+        .get()
+        .expect("the visual renderer is initialized")
+}
+
+fn profile_name(specs: &GpuSpecs) -> anyhow::Result<String> {
+    let device = specs
+        .device_name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    anyhow::ensure!(
+        !device.is_empty(),
+        "the renderer has no baseline device name"
+    );
+    let kind = if specs.is_software_emulated {
+        "software"
+    } else {
+        "hardware"
+    };
+    Ok(format!("{kind}-{device}"))
+}
+
+pub(super) fn create(
+    platform: &Rc<dyn Platform>,
+) -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let handle = WindowHandle::<Empty>::new(WindowId::from(id));
+    let window = platform.open_window(
+        handle.into(),
+        WindowParams {
+            bounds: Bounds::new(point(px(0.), px(0.)), size(px(64.), px(64.))),
+            titlebar: None,
+            kind: WindowKind::PopUp,
+            is_movable: false,
+            app_owns_titlebar_drag: false,
+            is_resizable: false,
+            is_minimizable: false,
+            focus: false,
+            show: false,
+            icon: None,
+            display_id: None,
+            app_id: None,
+            window_min_size: None,
+        },
+    )?;
+    if id == 1 {
+        let specs = window
+            .gpu_specs()
+            .ok_or_else(|| anyhow::anyhow!("the visual renderer did not report its device"))?;
+        let profile = profile_name(&specs)?;
+        println!("Visual renderer: {profile}; {specs:?}");
+        let output = std::env::var("PORATAKE_PARITY_OUTPUT")?;
+        std::fs::write(
+            std::path::Path::new(&output).join("renderer.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"profile": &profile, "gpu": specs}))?,
+        )?;
+        BASELINE_PROFILE.set(profile).unwrap();
+    }
+    #[allow(clippy::arc_with_non_send_sync)]
+    let atlas = Arc::new(TrackingAtlas {
+        inner: window.sprite_atlas(),
+        keys: parking_lot::Mutex::new(HashSet::new()),
+    });
+    Ok(Some(Box::new(Renderer {
+        window: Some(window),
+        atlas,
+    })))
+}
+
+struct Renderer {
+    window: Option<Box<dyn PlatformWindow>>,
+    atlas: Arc<TrackingAtlas>,
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        drop(self.window.take());
+        let mut message = MSG::default();
+        unsafe {
+            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                if message.message == WM_QUIT {
+                    PostQuitMessage(message.wParam.0 as i32);
+                    break;
+                }
+                let _ = TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+}
+
+struct TrackingAtlas {
+    inner: Arc<dyn PlatformAtlas>,
+    keys: parking_lot::Mutex<HashSet<AtlasKey>>,
+}
+
+impl PlatformAtlas for TrackingAtlas {
+    fn get_or_insert_with<'a>(
+        &self,
+        key: AtlasKey,
+        build: &mut dyn FnMut() -> anyhow::Result<
+            Option<(Size<DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
+        >,
+    ) -> anyhow::Result<Option<AtlasTile>> {
+        let tile = self.inner.get_or_insert_with(key.clone(), build)?;
+        if tile.is_some() {
+            self.keys.lock().insert(key);
+        }
+        Ok(tile)
+    }
+
+    fn remove(&self, key: &AtlasKey) {
+        self.inner.remove(key);
+        self.keys.lock().remove(key);
+    }
+
+    fn contains(&self, key: &AtlasKey) -> bool {
+        self.keys.lock().contains(key)
+    }
+}
+
+impl Renderer {
+    fn resize(&mut self, target: Size<DevicePixels>) -> anyhow::Result<()> {
+        let handle = self
+            .window
+            .as_ref()
+            .unwrap()
+            .window_handle()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            anyhow::bail!("the DirectX renderer requires a Win32 window");
+        };
+        let hwnd = HWND(handle.hwnd.get() as *mut _);
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_SIZE,
+                Some(WPARAM(0)),
+                Some(LPARAM(
+                    ((target.height.0 as u32) << 16 | target.width.0 as u32) as isize,
+                )),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl PlatformHeadlessRenderer for Renderer {
+    fn render_scene_to_image(
+        &mut self,
+        scene: &Scene,
+        target: Size<DevicePixels>,
+    ) -> anyhow::Result<image::RgbaImage> {
+        self.resize(target)?;
+        self.window.as_ref().unwrap().render_to_image(scene)
+    }
+
+    fn render_scene(&mut self, scene: &Scene, target: Size<DevicePixels>) -> anyhow::Result<()> {
+        self.resize(target)?;
+        self.window.as_ref().unwrap().draw(scene);
+        Ok(())
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        self.atlas.clone()
+    }
+}
+
+pub(super) fn verify_image_sampling(
+    cx: &mut super::HeadlessAppContext,
+    output: &std::path::Path,
+    scale: f32,
+) {
+    let window_count = thread_window_count();
+    let images = [[64, 80, 240, 255], [255, 255, 255, 255]].map(|color| {
+        Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(image::RgbaImage::from_pixel(16, 16, image::Rgba(color)))
+        ]))
+    });
+    let probe = cx
+        .open_window(size(px(640.), px(360.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|_| ImageSamplingProbe { images })
+        })
+        .unwrap();
+    let probe = probe.into();
+    assert_eq!(thread_window_count(), window_count + 1);
+    super::settle(cx, probe);
+    let bounds = super::measured("atlas-images", 0);
+    for (actual, expected) in [
+        (bounds.left(), 20.25),
+        (bounds.top(), 20.25),
+        (bounds.size.width, 275.2),
+        (bounds.size.height, 275.2),
+    ] {
+        assert!(
+            (f32::from(actual) - expected).abs() * scale <= 0.501,
+            "atlas image metric {actual:?} differs from {expected} at scale {scale}; {bounds:?}"
+        );
+    }
+    let image = cx.capture_screenshot(probe).unwrap();
+    image.save(output.join("image-atlas-sampling.png")).unwrap();
+    for x in [
+        (f32::from(bounds.center().x) * scale).floor() as u32,
+        (f32::from(bounds.right()) * scale).floor() as u32 - 3,
+    ] {
+        for fraction in [0.25, 0.5, 0.75] {
+            let y = ((f32::from(bounds.top()) + f32::from(bounds.size.height) * fraction) * scale)
+                .floor() as u32;
+            let pixel = image.get_pixel(x, y);
+            assert!(
+                pixel.0[..3]
+                    .iter()
+                    .zip([240_u8, 80, 64])
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                "an image must not sample neighbouring atlas tiles at ({x}, {y}): {pixel:?}"
+            );
+        }
+    }
+    cx.update_window(probe, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        thread_window_count(),
+        window_count,
+        "the hidden renderer window must be destroyed after its test window closes"
+    );
+    println!("scaled image sampling stayed inside its atlas tile");
+}
+
+fn thread_window_count() -> usize {
+    unsafe extern "system" fn count_window(_: HWND, count: LPARAM) -> BOOL {
+        unsafe { *(count.0 as *mut usize) += 1 };
+        BOOL(1)
+    }
+    let mut count = 0;
+    unsafe {
+        let _ = EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(count_window),
+            LPARAM(&mut count as *mut usize as isize),
+        );
+    }
+    count
+}
+
+struct ImageSamplingProbe {
+    images: [Arc<gpui::RenderImage>; 2],
+}
+
+impl Render for ImageSamplingProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .relative()
+            .bg(gpui::black())
+            .children(self.images.iter().enumerate().map(|(index, image)| {
+                img(image.clone())
+                    .absolute()
+                    .left(px(20.25 + index as f32 * 320.))
+                    .top(px(20.25))
+                    .w(px(275.2))
+                    .h(px(275.2))
+            }))
+            .on_children_prepainted(|bounds, _, _| super::record("atlas-images", bounds))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_profiles_are_path_safe_and_separate_software() {
+        let mut specs = GpuSpecs {
+            device_name: "../../NVIDIA/GeForce RTX 5080".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            profile_name(&specs).unwrap(),
+            "hardware-nvidia-geforce-rtx-5080"
+        );
+        specs.is_software_emulated = true;
+        assert_eq!(
+            profile_name(&specs).unwrap(),
+            "software-nvidia-geforce-rtx-5080"
+        );
+        specs.device_name = "../..\\".into();
+        assert!(profile_name(&specs).is_err());
+    }
+}

@@ -107,7 +107,7 @@ export function buildMuxAudioFilter(
   let head: string;
   if (trackCount > 1) {
     filters.push(
-      `${labels.join('')}amix=inputs=${trackCount}:duration=longest[mix]`
+      `${labels.join('')}amix=inputs=${trackCount}:duration=longest:normalize=0[mix]`
     );
     head = '[mix]';
   } else {

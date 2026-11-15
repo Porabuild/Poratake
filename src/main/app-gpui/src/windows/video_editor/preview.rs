@@ -192,6 +192,17 @@ fn to_pixmap(frame: &DecodedFrame) -> Option<Pixmap> {
 
 /// Converts a composed pixmap into the straight-alpha BGRA image GPUI paints.
 pub fn to_render_image(pixmap: &Pixmap) -> Option<Arc<gpui::RenderImage>> {
+    to_render_image_with_alpha(pixmap, true)
+}
+
+pub fn to_render_image_opaque(pixmap: &Pixmap) -> Option<Arc<gpui::RenderImage>> {
+    to_render_image_with_alpha(pixmap, false)
+}
+
+fn to_render_image_with_alpha(
+    pixmap: &Pixmap,
+    preserve_alpha: bool,
+) -> Option<Arc<gpui::RenderImage>> {
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
     for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
@@ -212,7 +223,7 @@ pub fn to_render_image(pixmap: &Pixmap) -> Option<Arc<gpui::RenderImage>> {
                 unpremultiply(pixel[2]),
                 unpremultiply(pixel[1]),
                 unpremultiply(pixel[0]),
-                alpha,
+                if preserve_alpha { alpha } else { 255 },
             ]),
         );
     }
@@ -252,9 +263,16 @@ mod tests {
     #[test]
     fn a_composed_pixmap_converts_to_a_bgra_image() {
         let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
-        pixmap.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 255));
+        pixmap.fill(tiny_skia::Color::from_rgba8(200, 100, 50, 128));
         let image = to_render_image(&pixmap).expect("image");
         assert_eq!(image.size(0).width.0, 1);
+        let pixels = image.as_bytes(0).expect("pixels");
+        assert_eq!(pixels[3], 128);
+
+        let opaque = to_render_image_opaque(&pixmap).expect("opaque image");
+        let opaque_pixels = opaque.as_bytes(0).expect("opaque pixels");
+        assert_eq!(&pixels[..3], &opaque_pixels[..3]);
+        assert_eq!(opaque_pixels[3], 255);
     }
 
     #[test]

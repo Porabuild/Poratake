@@ -69,6 +69,7 @@ export function prepareOverlayWindow(
   method: 'hideWindowWithoutTransitions' | 'showWindowWithoutTransitions'
 ): Promise<void> {
   if (window.isDestroyed()) return Promise.resolve();
+  const visibilityVersion = overlayVisibilityVersions.get(window);
 
   if (!isWindows) {
     if (method === 'hideWindowWithoutTransitions') {
@@ -87,6 +88,13 @@ export function prepareOverlayWindow(
     .call('area-selector', method, { windowHandle: nativeWindowHandle(window) })
     .then(() => undefined)
     .catch(error => {
+      if (
+        method === 'hideWindowWithoutTransitions' &&
+        !window.isDestroyed() &&
+        overlayVisibilityVersions.get(window) === visibilityVersion
+      ) {
+        window.hide();
+      }
       console.error(`Failed to apply overlay window ${method}:`, error);
     });
 }

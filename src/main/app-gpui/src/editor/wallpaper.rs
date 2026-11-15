@@ -85,14 +85,61 @@ impl Default for WallpaperSettings {
 }
 
 impl WallpaperSettings {
+    pub fn for_scale(&self, scale: f64) -> Self {
+        let mut settings = self.clone();
+        settings.padding = (settings.padding * scale).round();
+        settings.corners = (settings.corners * scale).round();
+        settings.inset = (settings.inset * scale).round();
+        settings.spacing = (settings.spacing * scale).round();
+        settings.background_blur *= scale;
+        settings
+    }
+
     /// A capture with attached layers is framed as one group, so the wallpaper
     /// is active even without a background or padding.
     pub fn is_active_with_layers(&self, has_layers: bool) -> bool {
-        self.is_active() || has_layers
+        self.is_active(has_layers) || has_layers
     }
 
-    pub fn is_active(&self) -> bool {
-        self.gradient.is_some() || self.background_image.is_some() || self.padding > 0.0
+    pub fn is_active(&self, has_layers: bool) -> bool {
+        self.gradient.is_some()
+            || self.background_image.is_some()
+            || self.padding > 0.0
+            || (!self.balance && self.inset <= 0.0 && (self.corners > 0.0 || self.shadow > 0.0))
+            || (!has_layers
+                && self.balance
+                && self.inset <= 0.0
+                && self.corners <= 0.0
+                && self.shadow <= 0.0)
+            || (!has_layers
+                && self.inset > 0.0
+                && (!self.balance || (self.corners <= 0.0 && self.shadow <= 0.0))
+                && crate::render::window_frame::theme(&self.window_frame.style).is_none())
+            || self.layer_inset(has_layers) > 0.0
+            || crate::render::window_frame::theme(&self.window_frame.style).is_some()
+    }
+
+    pub fn layer_inset(&self, has_layers: bool) -> f64 {
+        let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
+        if has_layers && (!self.balance || framed || (self.corners <= 0.0 && self.shadow <= 0.0)) {
+            self.inset.max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn supports_edge_preview(&self, has_layers: bool) -> bool {
+        let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
+        if has_layers && self.balance {
+            return !framed && self.corners <= 0.0 && self.shadow <= 0.0;
+        }
+        if has_layers && !framed {
+            return true;
+        }
+        !self.balance
+            && self.inset <= 0.0
+            && ((framed && !has_layers && self.corners <= 0.0)
+                || (!framed && (has_layers || self.corners > 0.0 || self.shadow > 0.0)))
     }
 
     /// Selecting a gradient with no padding yet opens the frame up, matching
@@ -120,6 +167,15 @@ impl WallpaperSettings {
     pub fn has_background(&self) -> bool {
         self.gradient.is_some() || self.background_image.is_some()
     }
+}
+
+pub fn native_scale(image_width: f64, image_height: f64, scale_factor: f64) -> f64 {
+    if image_width <= 0.0 || image_height <= 0.0 {
+        return 1.0;
+    }
+    let display_width = (image_width / scale_factor).floor().max(1.0);
+    let display_height = (image_height / scale_factor).floor().max(1.0);
+    (image_width / display_width).max(image_height / display_height)
 }
 
 pub const BLUR_MAX: f64 = 100.0;
@@ -305,6 +361,21 @@ pub fn parse_aspect_ratio(value: &str) -> Option<(f64, f64)> {
     (width > 0.0 && height > 0.0).then_some((width, height))
 }
 
+pub fn balanced_size(
+    width: f64,
+    height: f64,
+    crop: Option<(f32, f32, f32, f32)>,
+    has_layers: bool,
+) -> (f64, f64) {
+    if let (false, Some((left, top, right, bottom))) = (has_layers, crop) {
+        return (
+            width - f64::from(left + right),
+            height - f64::from(top + bottom),
+        );
+    }
+    (width, height)
+}
+
 /// The canvas size and the inner image rect for a wallpaper composition. A
 /// window frame adds its title bar above the image, so the frame is part of the
 /// content the padding surrounds.
@@ -312,10 +383,25 @@ pub fn layout(
     settings: &WallpaperSettings,
     image_width: f64,
     image_height: f64,
+    frame_scale: f64,
+    has_layers: bool,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
-    let padding = settings.padding.max(0.0);
-    let title_bar =
-        crate::render::window_frame::title_bar_height(&settings.window_frame.style, 1.0);
+    let inset = if !has_layers
+        && (!settings.balance
+            || (settings.corners <= 0.0
+                && settings.shadow <= 0.0
+                && crate::render::window_frame::theme(&settings.window_frame.style).is_none()))
+    {
+        settings.inset.max(0.0)
+    } else {
+        0.0
+    };
+    let padding = settings.padding.max(0.0) + inset;
+    let title_bar = if has_layers {
+        0.0
+    } else {
+        crate::render::window_frame::title_bar_height(&settings.window_frame.style, frame_scale)
+    };
     let content_height = image_height + title_bar;
     let mut canvas_width = image_width + padding * 2.0;
     let mut canvas_height = content_height + padding * 2.0;
@@ -331,11 +417,7 @@ pub fn layout(
     }
 
     let x = (canvas_width - image_width) / 2.0;
-    let y = if settings.balance {
-        (canvas_height - content_height) / 2.0
-    } else {
-        ((canvas_height - content_height) / 2.0).min(padding)
-    };
+    let y = (canvas_height - content_height) / 2.0;
 
     (
         (canvas_width, canvas_height),
@@ -346,6 +428,37 @@ pub fn layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_padding_effects_activate_single_image_inset() {
+        let mut settings = WallpaperSettings {
+            corners: 20.0,
+            ..WallpaperSettings::default()
+        };
+        assert!(settings.is_active(false));
+        settings.balance = true;
+        assert!(!settings.is_active(false));
+        settings.balance = false;
+        settings.inset = 10.0;
+        assert!(settings.is_active(false));
+        settings.padding = 1.0;
+        assert!(settings.is_active(false));
+        settings = WallpaperSettings {
+            balance: true,
+            ..WallpaperSettings::default()
+        };
+        assert!(settings.is_active(false));
+        assert!(!settings.is_active(true));
+        settings.inset = 10.0;
+        assert!(settings.is_active(false));
+        assert!(settings.is_active(true));
+        assert_eq!(
+            layout(&settings, 100.0, 80.0, 1.0, false),
+            ((120.0, 100.0), (10.0, 10.0, 100.0, 80.0))
+        );
+        assert_eq!(settings.layer_inset(true), 10.0);
+        assert!(settings.supports_edge_preview(true));
+    }
 
     #[test]
     fn a_preset_name_is_trimmed_and_an_empty_one_is_rejected() {
@@ -409,7 +522,7 @@ mod tests {
             padding: 40.0,
             ..WallpaperSettings::default()
         };
-        let ((width, height), (x, y, w, h)) = layout(&settings, 200.0, 100.0);
+        let ((width, height), (x, y, w, h)) = layout(&settings, 200.0, 100.0, 1.0, false);
         assert_eq!((width, height), (280.0, 180.0));
         assert_eq!((x, y, w, h), (40.0, 40.0, 200.0, 100.0));
     }
@@ -424,7 +537,7 @@ mod tests {
             ..WallpaperSettings::default()
         };
         let ((width, height), (_, _, image_width, content_height)) =
-            layout(&settings, 200.0, 100.0);
+            layout(&settings, 200.0, 100.0, 1.0, false);
         assert_eq!((width, height), (220.0, 148.0));
         assert_eq!(image_width, 200.0);
         assert_eq!(content_height, 128.0);
@@ -437,9 +550,26 @@ mod tests {
             aspect_ratio: "16:9".into(),
             ..WallpaperSettings::default()
         };
-        let ((width, height), _) = layout(&settings, 100.0, 100.0);
+        let ((width, height), _) = layout(&settings, 100.0, 100.0, 1.0, false);
         assert!(width > height);
         assert!((width / height - 16.0 / 9.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_tall_fixed_ratio_centers_the_image_and_window_frame() {
+        for (style, y) in [("none", 26.0), ("windows-dark", 12.0)] {
+            let settings = WallpaperSettings {
+                inset: 6.0,
+                aspect_ratio: "1:1".into(),
+                window_frame: WindowFrameSettings {
+                    style: style.into(),
+                },
+                ..WallpaperSettings::default()
+            };
+            let ((width, height), (x, actual_y, _, _)) = layout(&settings, 100.0, 60.0, 1.0, false);
+            assert_eq!((width, height), (112.0, 112.0));
+            assert_eq!((x, actual_y), (6.0, y));
+        }
     }
 
     #[test]

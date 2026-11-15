@@ -111,6 +111,38 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Poratake is built on Electron 43.4.0 under the MIT License. Electron's license and the licenses of Chromium and its bundled components are distributed with every packaged build (`LICENSE.electron.txt` and `LICENSES.chromium.html` in the application resources).
 
+## SuperFastHash
+
+The GPUI shell adapts Paul Hsieh’s SuperFastHash, as used by Chromium 150.0.7871.224, to identify Windows displays consistently with Electron.
+
+Paul Hsieh OLD BSD license
+
+Copyright (c) 2010, Paul Hsieh
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+- Neither my name, Paul Hsieh, nor the names of any other contributors to the
+  code use may not be used to endorse or promote products derived from this
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## Native daemons
 
 The macOS Swift daemon uses only Apple system frameworks and has no third-party dependencies.
@@ -132,6 +164,8 @@ rqrr additionally contains code derived from quirc under the ISC License:
 Copyright (C) 2010-2012 Daniel Beer &lt;dlbeer@gmail.com&gt;
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies. THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The shared QR decoder's local thresholding is adapted from [ZXing's HybridBinarizer](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/main/java/com/google/zxing/common/HybridBinarizer.java) at commit `56b8a9a7b53392097891463023a26c406b422225`, Copyright 2009 ZXing authors, licensed Apache-2.0. Poratake translated the algorithm to Rust in 2026. The unmodified upstream license is bundled as `licenses/ZXing-LICENSE.txt`. The regression fixture `src/main/daemon-win/tests/fixtures/qr-window.png` is a grayscale Poratake window capture displaying ZXing's [QR photograph](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/1.png) from the same revision and license. The test-only `qr-uneven-light.png` is a grayscale conversion of [another photograph](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/15.png) from that revision. The test-only `qr-small-block.png` and `qr-large-block.png` are framed grayscale adaptations of [9.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/9.png) and [15.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/15.png), respectively, from the same revision and license. The test-only `qr-region-histogram.png`, `qr-region-original.png` and `qr-region-framed.png` are grayscale adaptations of [14.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/14.png), [16.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/16.png) and [17.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/17.png), respectively, from the same revision and license. The test-only `qr-region-coarse.png` and `qr-region-medium.png` are framed grayscale adaptations of [19.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/19.png) and [20.png](https://github.com/zxing/zxing/blob/56b8a9a7b53392097891463023a26c406b422225/core/src/test/resources/blackbox/qrcode-1/20.png), respectively, from the same revision and license.
 
 foldhash is licensed under the Zlib License (Copyright (c) 2024 Orson Peters).
 
@@ -183,7 +217,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are published as version 0.15.1 on crates.io ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.1)); all four registry packages and their checksums are locked in `src/main/Cargo.lock`. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` are published as version 0.15.1 on crates.io ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.1)); their versions are locked in `src/main/Cargo.lock`. `herogpui-components` is vendored from its published archive (SHA-256 `fd78c10af90c2d67398c921dfc7a8de9fa36a187a6cb201fc55e1188ee688ff5`) in `vendor/herogpui-components`. Poratake modifies `src/select.rs` to preserve focus-ring gutters inside virtual select viewports and handle accessibility expansion actions, `src/dropdown.rs` to preserve focus-ring space when scrolling menu rows, `src/slider.rs` to handle accessibility value actions, and `src/util.rs` to release keyboard press state when focus moves to a menu. The original LICENSE, NOTICE and icon licenses remain in that directory. The other three crates retain their registry checksums. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
 ```text
 HeroGPUI
@@ -254,6 +288,8 @@ SOFTWARE.
 ```
 
 The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.11 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-bench-metrics`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-ios`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. GPUI itself links ICU4X `icu_segmenter` and `icu_segmenter_data` 2.4.0 (Unicode-3.0). On macOS the GPUI crates also link `mach2` 0.6.0 (BSD-2-Clause OR MIT OR Apache-2.0) and `objc2-core-text`, `objc2-core-video`, `objc2-metal`, `objc2-quartz-core`, `objc2-security`, and `objc2-uniform-type-identifiers` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
+
+The Windows backend is vendored as `vendor/gpui-pre-windows` from the published `gpui-pre-windows` 0.3.11 archive (SHA-256 `5141a3db59bab761a16ab19529fe4117a86e91922e8fc00af6dfc4829cb1744d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/shaders.hlsl` to clamp image sampling to each atlas tile's texel centers, preventing neighboring images from bleeding into scaled captures. It also modifies `src/clipboard.rs` to provide a Windows bitmap alongside PNG and correctly read bitmap headers with embedded color masks. In `src/events.rs`, mouse-leave handling updates GPUI's pointer position and dispatches mouse-exit input so hover handlers clear correctly across client and nonclient boundaries. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre-windows/LICENSE-APACHE`.
 
 HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.4.0, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_locale_fallback`, `icu_locale_fallback_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.4.0, `icu_time_data` 2.4.0, and `icu_pattern` 0.5.1 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, and `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense).
 

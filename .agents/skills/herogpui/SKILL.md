@@ -23,6 +23,8 @@ Use the existing exact registry version in `src/main/Cargo.toml`. The bundled re
 - Start with [the local LLM component reference](references/llms.txt). Search for the relevant component or API instead of reading the whole reference.
 - When modifying HeroGPUI itself, use its [workflow](references/agents/workflow.md), [component implementation](references/agents/components.md), [parity audits](references/agents/parity.md), and [gallery verification](references/agents/gallery.md) guides. Their paths and commands refer to the HeroGPUI checkout; Poratake's own repository instructions govern work here.
 - Resolve implementation paths from the pinned dependency's `manifest_path` in `cargo metadata --locked --manifest-path src/main/Cargo.toml --format-version 1` when source inspection is needed.
+- Poratake patches the existing GPUI 0.3.11 Windows backend from `vendor/gpui-pre-windows` to clamp image sampling inside atlas tiles. Keep this source patch when updating dependency pins until its regression passes against an upstream replacement; the other GPUI crates remain registry dependencies.
+- HeroGPUI components 0.15.1 also resolve to `vendor/herogpui-components`, where the virtual Select viewport preserves focus-ring gutters. The other HeroGPUI crates retain their exact registry version. Preserve this patch until the submenu focus regression passes against its upstream replacement.
 
 ## CRITICAL: Theme-first appearance
 

@@ -32,11 +32,7 @@ pub fn bindings(config: &SettingsConfig) -> Vec<(Intent, String)> {
         (Intent::RecordScreen, shortcuts.recording.screen.clone()),
     ]
     .into_iter()
-    .filter(|(intent, _)| {
-        intent
-            .feature()
-            .is_none_or(crate::system::capabilities::is_supported)
-    })
+    .filter(|(intent, _)| intent.is_supported())
     .filter(|(_, value)| !value.trim().is_empty())
     .collect()
 }
@@ -208,6 +204,7 @@ mod tests {
         let config = SettingsConfig::default();
         let bindings = bindings(&config);
         assert!(bindings.iter().all(|(_, value)| !value.is_empty()));
+        assert!(bindings.iter().all(|(intent, _)| intent.is_supported()));
         assert!(bindings
             .iter()
             .any(|(intent, _)| *intent == Intent::CaptureArea));

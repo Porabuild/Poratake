@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { getConfig } from '@/main/settings';
-import { generateScreenshotPath } from './utils.ts';
+import { captureScreenshotToUniqueFile } from './utils.ts';
 import type { AreaSelection } from '@/types/area.ts';
 import {
   finalizeCapture,
@@ -11,6 +11,7 @@ import {
   captureRegionToFile,
   captureWindowByIdToFile,
 } from '@/main/capture/screenshot/native-capture';
+import type { CaptureFailureHandler } from '@/main/capture/screenshot/native-capture';
 import {
   hideDesktopIcons,
   showDesktopIcons,
@@ -35,10 +36,11 @@ interface AreaRect {
 function captureRegion(
   rect: AreaRect,
   screenshotPath: string,
+  onFailure: CaptureFailureHandler,
   options?: CaptureAreaOptions
 ): Promise<boolean> {
   if (options?.windowId !== undefined && !options.cached) {
-    return captureWindowByIdToFile(options.windowId, screenshotPath);
+    return captureWindowByIdToFile(options.windowId, screenshotPath, onFailure);
   }
 
   if (
@@ -49,17 +51,19 @@ function captureRegion(
     return captureFrozenWindowToFile(
       options.windowBounds,
       screenshotPath,
-      options.windowId
+      options.windowId,
+      onFailure
     );
   }
 
   if (options?.cached === undefined) {
-    return captureRegionToFile(rect, screenshotPath);
+    return captureRegionToFile(rect, screenshotPath, { onFailure });
   }
 
   return captureRegionToFile(rect, screenshotPath, {
     cached: options.cached,
     ...(options.windowId === undefined ? {} : { windowId: options.windowId }),
+    onFailure,
   });
 }
 
@@ -84,11 +88,13 @@ export async function captureArea(
     height: area.height,
   };
 
-  let preparation: ReturnType<typeof prepareScreenshotPreview> = null;
+  const preparation: { current: ReturnType<typeof prepareScreenshotPreview> } =
+    {
+      current: null,
+    };
 
   try {
     const config = getConfig();
-    const screenshotPath = generateScreenshotPath();
     const shouldHideIcons =
       config.screenshot.hideDesktopIcons &&
       isDesktopIconsSupported() &&
@@ -99,37 +105,33 @@ export async function captureArea(
     }
 
     let restoreIcons: Promise<boolean> | null = null;
-    let captured: boolean;
     try {
-      const capture = captureRegion(rect, screenshotPath, options);
-      preparation = prepareScreenshotPreview();
-      captured = await capture;
-      restoreIcons = shouldHideIcons ? showDesktopIcons('capture') : null;
-    } catch (error) {
-      if (shouldHideIcons) {
-        await showDesktopIcons('capture');
-      }
-      throw error;
-    }
-
-    if (!captured) {
-      await restoreIcons;
-      return null;
-    }
-
-    try {
-      if (!fs.existsSync(screenshotPath)) {
+      const screenshotPath = await captureScreenshotToUniqueFile(
+        async (temporaryPath, started, failed) => {
+          const path = temporaryPath();
+          const capture = captureRegion(rect, path, failed, options);
+          started();
+          preparation.current = prepareScreenshotPreview();
+          const captured = await capture;
+          restoreIcons = shouldHideIcons ? showDesktopIcons('capture') : null;
+          if (!captured || !fs.existsSync(path)) return false;
+          await options?.onCaptured?.();
+          return true;
+        }
+      );
+      if (!screenshotPath) {
         return null;
       }
 
-      await options?.onCaptured?.();
-      await finalizeCapture(screenshotPath, preparation);
+      await finalizeCapture(screenshotPath, preparation.current);
 
       return screenshotPath;
     } finally {
-      await restoreIcons;
+      if (shouldHideIcons) {
+        await (restoreIcons ?? showDesktopIcons('capture'));
+      }
     }
   } finally {
-    preparation?.dispose();
+    preparation.current?.dispose();
   }
 }

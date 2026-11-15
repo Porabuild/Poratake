@@ -102,17 +102,371 @@ pub fn detect_payload_from_greyscale(pixels: &[u8], width: usize, height: usize)
     if width == 0 || height == 0 || pixels.len() < width.saturating_mul(height) {
         return String::new();
     }
+    if pixels[..width * height]
+        .iter()
+        .all(|&pixel| pixel == pixels[0])
+    {
+        return String::new();
+    }
 
-    let mut image =
-        rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| pixels[y * width + x]);
-    for grid in image.detect_grids() {
-        if let Ok((_meta, content)) = grid.decode()
-            && !content.is_empty()
-        {
-            return content;
+    let mut candidates = Vec::new();
+    let payload = detect_in_region(
+        pixels,
+        width,
+        height,
+        &[
+            ThresholdPass::Adaptive,
+            ThresholdPass::Local(8),
+            ThresholdPass::Histogram,
+            ThresholdPass::Local(4),
+            ThresholdPass::Local(16),
+        ],
+        Some(&mut candidates),
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+
+    let mut remaining = width * height;
+    for (left, top, right, bottom) in candidates {
+        let margin = (right - left).max(bottom - top) / 4;
+        let left = left.saturating_sub(margin);
+        let top = top.saturating_sub(margin);
+        let right = right.saturating_add(margin).min(width);
+        let bottom = bottom.saturating_add(margin).min(height);
+        let region_width = right - left;
+        let region_height = bottom - top;
+        let size = region_width * region_height;
+        if size > remaining {
+            continue;
+        }
+        let mut region = Vec::new();
+        if region.try_reserve_exact(size).is_err() {
+            continue;
+        }
+        remaining -= size;
+        for y in top..bottom {
+            region.extend_from_slice(&pixels[y * width + left..y * width + right]);
+        }
+        let payload = detect_in_region(
+            &region,
+            region_width,
+            region_height,
+            &[
+                ThresholdPass::Histogram,
+                ThresholdPass::Local(12),
+                ThresholdPass::Local(16),
+            ],
+            None,
+        );
+        if !payload.is_empty() {
+            return payload;
+        }
+    }
+    let payload = detect_in_region(
+        pixels,
+        width,
+        height,
+        &[
+            ThresholdPass::LocalWithPreflight(24),
+            ThresholdPass::LocalWithPreflight(10),
+        ],
+        None,
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+
+    let (minimum, maximum) = pixels[..width * height]
+        .iter()
+        .fold((u8::MAX, u8::MIN), |(minimum, maximum), &pixel| {
+            (minimum.min(pixel), maximum.max(pixel))
+        });
+    let range = maximum - minimum;
+    if range == 0 || range > 127 {
+        return String::new();
+    }
+
+    let mut normalized = Vec::new();
+    if normalized.try_reserve_exact(width * height).is_err() {
+        return String::new();
+    }
+    normalized.extend(
+        pixels[..width * height]
+            .iter()
+            .map(|&pixel| ((u16::from(pixel - minimum) * 255) / u16::from(range)) as u8),
+    );
+    let mut candidates = Vec::new();
+    let payload = detect_in_region(
+        &normalized,
+        width,
+        height,
+        &[
+            ThresholdPass::LocalWithPreflight(8),
+            ThresholdPass::LocalWithPreflight(10),
+            ThresholdPass::LocalWithPreflight(12),
+            ThresholdPass::LocalWithPreflight(20),
+        ],
+        Some(&mut candidates),
+    );
+    if !payload.is_empty() {
+        return payload;
+    }
+    if candidates.is_empty() {
+        return String::new();
+    }
+    detect_payload_from_greyscale(&normalized, width, height)
+}
+
+#[cfg(feature = "qrcode-decode")]
+#[derive(Clone, Copy)]
+enum ThresholdPass {
+    Adaptive,
+    Histogram,
+    Local(usize),
+    LocalWithPreflight(usize),
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn detect_in_region(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    passes: &[ThresholdPass],
+    mut candidates: Option<&mut Vec<(usize, usize, usize, usize)>>,
+) -> String {
+    for &pass in passes {
+        let mut image = match pass {
+            ThresholdPass::Adaptive => {
+                rqrr::PreparedImage::prepare_from_greyscale(width, height, |x, y| {
+                    pixels[y * width + x]
+                })
+            }
+            ThresholdPass::Local(block) | ThresholdPass::LocalWithPreflight(block) => {
+                if width < block * 5 || height < block * 5 {
+                    continue;
+                }
+                let thresholds = local_thresholds(pixels, width, height, block);
+                let columns = width.div_ceil(block);
+                if matches!(pass, ThresholdPass::LocalWithPreflight(_))
+                    && !has_finder_transitions(pixels, width, height, block, &thresholds)
+                {
+                    continue;
+                }
+                rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                    pixels[y * width + x] <= thresholds[(y / block) * columns + x / block]
+                })
+            }
+            ThresholdPass::Histogram => {
+                let mut histogram = [0u64; 256];
+                for &pixel in &pixels[..width * height] {
+                    histogram[pixel as usize] += 1;
+                }
+                let total = (width * height) as f64;
+                let sum: f64 = histogram
+                    .iter()
+                    .enumerate()
+                    .map(|(value, count)| value as f64 * *count as f64)
+                    .sum();
+                let mut lower_count = 0.0;
+                let mut lower_sum = 0.0;
+                let mut best = 0.0;
+                let mut threshold = None;
+                for (value, count) in histogram.iter().enumerate() {
+                    lower_count += *count as f64;
+                    lower_sum += value as f64 * *count as f64;
+                    if lower_count == 0.0 {
+                        continue;
+                    }
+                    let upper_count = total - lower_count;
+                    if upper_count == 0.0 {
+                        break;
+                    }
+                    let difference = lower_sum / lower_count - (sum - lower_sum) / upper_count;
+                    let variance = lower_count * upper_count * difference * difference;
+                    if variance > best {
+                        best = variance;
+                        threshold = Some(value as u8);
+                    }
+                }
+                let Some(threshold) = threshold else {
+                    continue;
+                };
+                rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                    pixels[y * width + x] <= threshold
+                })
+            }
+        };
+        for grid in image.detect_grids() {
+            if let Ok((_meta, content)) = grid.decode()
+                && !content.is_empty()
+            {
+                return content;
+            }
+            if let Some(candidates) = candidates.as_deref_mut()
+                && candidates.len() < 8
+            {
+                let left = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.x.max(0) as usize)
+                    .min()
+                    .unwrap()
+                    .min(width);
+                let top = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.y.max(0) as usize)
+                    .min()
+                    .unwrap()
+                    .min(height);
+                let right = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.x.max(0) as usize)
+                    .max()
+                    .unwrap()
+                    .saturating_add(1)
+                    .min(width);
+                let bottom = grid
+                    .bounds
+                    .iter()
+                    .map(|point| point.y.max(0) as usize)
+                    .max()
+                    .unwrap()
+                    .saturating_add(1)
+                    .min(height);
+                if left >= right || top >= bottom {
+                    continue;
+                }
+                let area = (right - left) * (bottom - top);
+                let duplicate = candidates.iter().any(|&(x0, y0, x1, y1)| {
+                    let overlap = right.min(x1).saturating_sub(left.max(x0))
+                        * bottom.min(y1).saturating_sub(top.max(y0));
+                    overlap * 4 >= area.min((x1 - x0) * (y1 - y0)) * 3
+                });
+                if !duplicate {
+                    candidates.push((left, top, right, bottom));
+                }
+            }
         }
     }
     String::new()
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn has_finder_transitions(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    block: usize,
+    thresholds: &[u8],
+) -> bool {
+    let columns = width.div_ceil(block);
+    for y in 0..height {
+        let mut last = pixels[y * width] <= thresholds[(y / block) * columns];
+        let mut changes = 0;
+        for x in 1..width {
+            let black = pixels[y * width + x] <= thresholds[(y / block) * columns + x / block];
+            if black != last {
+                changes += 1;
+                last = black;
+                if changes >= 4 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/*
+ * Copyright 2009 ZXing authors
+ * Modified 2026 for Poratake: adapted local thresholding to Rust.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#[cfg(feature = "qrcode-decode")]
+fn local_thresholds(pixels: &[u8], width: usize, height: usize, block: usize) -> Vec<u8> {
+    let columns = width.div_ceil(block);
+    let rows = height.div_ceil(block);
+    let mut black_points = vec![0u8; columns * rows];
+    for block_y in 0..rows {
+        let top = (block_y * block).min(height - block);
+        for block_x in 0..columns {
+            let left = (block_x * block).min(width - block);
+            let mut sum = 0u32;
+            let mut minimum = 255u8;
+            let mut maximum = 0u8;
+            for y in top..top + block {
+                for x in left..left + block {
+                    let pixel = pixels[y * width + x];
+                    sum += u32::from(pixel);
+                    minimum = minimum.min(pixel);
+                    maximum = maximum.max(pixel);
+                }
+            }
+            let mut value = (sum / (block * block) as u32) as u8;
+            if maximum - minimum <= 24 {
+                value = minimum / 2;
+                if block_y > 0 && block_x > 0 {
+                    let neighbor = ((u16::from(black_points[(block_y - 1) * columns + block_x])
+                        + 2 * u16::from(black_points[block_y * columns + block_x - 1])
+                        + u16::from(black_points[(block_y - 1) * columns + block_x - 1]))
+                        / 4) as u8;
+                    if minimum < neighbor {
+                        value = neighbor;
+                    }
+                }
+            }
+            black_points[block_y * columns + block_x] = value;
+        }
+    }
+    smooth_black_points(&black_points, columns, rows)
+}
+
+#[cfg(feature = "qrcode-decode")]
+fn smooth_black_points(black_points: &[u8], columns: usize, rows: usize) -> Vec<u8> {
+    let mut thresholds = vec![0; columns * rows];
+    let mut column_sums = vec![0u16; columns];
+    for y in 0..5 {
+        for x in 0..columns {
+            column_sums[x] += u16::from(black_points[y * columns + x]);
+        }
+    }
+    let mut previous_y = 2;
+    for block_y in 0..rows {
+        let center_y = block_y.clamp(2, rows - 3);
+        if center_y > previous_y {
+            for x in 0..columns {
+                column_sums[x] -= u16::from(black_points[(center_y - 3) * columns + x]);
+                column_sums[x] += u16::from(black_points[(center_y + 2) * columns + x]);
+            }
+            previous_y = center_y;
+        }
+        let mut sum: u16 = column_sums[..5].iter().sum();
+        let mut previous_x = 2;
+        for block_x in 0..columns {
+            let center_x = block_x.clamp(2, columns - 3);
+            if center_x > previous_x {
+                sum -= column_sums[center_x - 3];
+                sum += column_sums[center_x + 2];
+                previous_x = center_x;
+            }
+            thresholds[block_y * columns + block_x] = (sum / 25) as u8;
+        }
+    }
+    thresholds
 }
 
 pub fn image_buffer_size(width: u32, height: u32) -> Result<usize, &'static str> {
@@ -193,6 +547,143 @@ mod tests {
         let pixels = vec![0u8; 4];
         assert_eq!(detect_payload_from_greyscale(&pixels, 0, 0), "");
         assert_eq!(detect_payload_from_greyscale(&pixels, 10, 10), "");
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn black_point_smoothing_matches_each_clamped_five_by_five_average() {
+        for columns in 5..=17 {
+            for rows in 5..=17 {
+                for pattern in 0..3 {
+                    let points: Vec<_> = (0..columns * rows)
+                        .map(|index| match pattern {
+                            0 => 255,
+                            1 => (((index * 71) ^ ((index / columns) * 43)) % 256) as u8,
+                            _ => {
+                                if (index % columns + index / columns) % 2 == 0 {
+                                    0
+                                } else {
+                                    255
+                                }
+                            }
+                        })
+                        .collect();
+                    let expected: Vec<_> = (0..rows)
+                        .flat_map(|y| {
+                            let points = &points;
+                            (0..columns).map(move |x| {
+                                let center_x = x.clamp(2, columns - 3);
+                                let center_y = y.clamp(2, rows - 3);
+                                let sum: u16 = points
+                                    .chunks_exact(columns)
+                                    .skip(center_y - 2)
+                                    .take(5)
+                                    .flat_map(|row| &row[center_x - 2..=center_x + 2])
+                                    .map(|&value| u16::from(value))
+                                    .sum();
+                                (sum / 25) as u8
+                            })
+                        })
+                        .collect();
+                    assert_eq!(smooth_black_points(&points, columns, rows), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_keeps_patterns_at_image_edges() {
+        let thresholds = [127; 8];
+        for row in [
+            [0, 255, 0, 0, 0, 255, 0, 255],
+            [255, 0, 255, 0, 0, 0, 255, 0],
+            [0, 255, 0, 0, 0, 255, 0, 0],
+        ] {
+            assert!(has_finder_transitions(&row, 8, 1, 1, &thresholds));
+        }
+        let rows = [
+            0, 255, 0, 255, 255, 255, 255, 255, 255, 0, 255, 0, 0, 0, 0, 0,
+        ];
+        assert!(!has_finder_transitions(&rows, 8, 2, 1, &[127; 16]));
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_uses_each_blocks_threshold() {
+        let pixels = [128; 10];
+        assert!(has_finder_transitions(
+            &pixels,
+            10,
+            1,
+            2,
+            &[127, 128, 127, 128, 127]
+        ));
+        assert!(!has_finder_transitions(&pixels, 10, 1, 2, &[128; 5]));
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn finder_transition_preflight_skips_a_gradient_without_grids() {
+        let (width, height) = (240, 120);
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|index| ((index % width) * 255 / (width - 1)) as u8)
+            .collect();
+        for block in [10, 24] {
+            let thresholds = local_thresholds(&pixels, width, height, block);
+            assert!(!has_finder_transitions(
+                &pixels,
+                width,
+                height,
+                block,
+                &thresholds
+            ));
+            let columns = width.div_ceil(block);
+            let mut image = rqrr::PreparedImage::prepare_from_bitmap(width, height, |x, y| {
+                pixels[y * width + x] <= thresholds[(y / block) * columns + x / block]
+            });
+            assert!(image.detect_grids().is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn returns_no_payload_for_uniform_images_at_block_boundaries() {
+        for (width, height) in [
+            (1, 1),
+            (19, 21),
+            (20, 20),
+            (21, 25),
+            (39, 65),
+            (40, 40),
+            (41, 47),
+            (79, 81),
+            (80, 80),
+            (81, 87),
+        ] {
+            for value in [0, 127, 255] {
+                assert_eq!(
+                    detect_payload_from_greyscale(&vec![value; width * height], width, height),
+                    "",
+                    "{width}x{height}, grayscale {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "qrcode-decode")]
+    fn returns_no_payload_for_low_contrast_screen_without_qr() {
+        let (width, height) = (320, 180);
+        let mut pixels = vec![120u8; width * height];
+        for y in 15..165 {
+            for x in 15..305 {
+                if y % 50 < 32 && x % 100 < 75 {
+                    pixels[y * width + x] = 100;
+                }
+            }
+        }
+        assert_eq!(detect_payload_from_greyscale(&pixels, width, height), "");
     }
 
     #[test]

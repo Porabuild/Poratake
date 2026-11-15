@@ -121,11 +121,14 @@ impl RebuildInputs {
     ) -> Self {
         let sources = audio_tracks::Sources::resolve(project);
         let duration = timeline_duration(state);
-        let keyboard = (VolumeSource::Keyboard.resolve(state) > 0.0).then(|| KeyboardRequest {
-            segments: state.segments.clone(),
-            sound_type: state.audio_style.keyboard_sound_type.clone(),
-            duration,
-        });
+        let keyboard = state
+            .audio_style
+            .keyboard_sound_enabled
+            .then(|| KeyboardRequest {
+                segments: state.segments.clone(),
+                sound_type: state.audio_style.keyboard_sound_type.clone(),
+                duration,
+            });
         Self {
             project: project.to_path_buf(),
             stems: audio_tracks::stems(&sources, state, state.source_duration.unwrap_or(0.0)),
@@ -599,7 +602,7 @@ mod tests {
         state.audio_style.keyboard_sound_volume = 0.0;
         assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
             .keyboard
-            .is_none());
+            .is_some());
     }
 
     #[test]

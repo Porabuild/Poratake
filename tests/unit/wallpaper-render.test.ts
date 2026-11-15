@@ -77,6 +77,7 @@ describe('renderWallpaperComposite', () => {
     });
 
     expect(ctx.createLinearGradient).not.toHaveBeenCalled();
+    expect(ctx.fillRect).not.toHaveBeenCalled();
     expect(ctx.roundRect).toHaveBeenCalledWith(20, 20, 800, 600, 16);
     expect(ctx.drawImage).toHaveBeenCalledWith(
       expect.anything(),
@@ -133,5 +134,20 @@ describe('renderWallpaperComposite', () => {
 
     expect(result.width).toBe(800 + 64);
     expect(result.height).toBe(600 + 64);
+  });
+
+  it('scales odd-sized captures at fractional display scales', async () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1.25 });
+
+    const result = await renderWallpaperComposite(createImageStub(641, 361), {
+      gradient: null,
+      padding: 50,
+      corners: 12,
+      shadow: 0,
+    });
+
+    expect(result.width).toBe(767);
+    expect(result.height).toBe(487);
+    expect(ctx.roundRect).toHaveBeenCalledWith(63, 63, 641, 361, 15);
   });
 });

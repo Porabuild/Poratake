@@ -5,6 +5,10 @@ const mockExistsSync = vi.fn(() => true);
 const mockReadFileSync = vi.fn(() => Buffer.from('image-bytes'));
 const mockWriteFileSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockOpenSync = vi.fn().mockReturnValue(7);
+const mockCloseSync = vi.fn();
+const mockLink = vi.fn();
+const mockUnlink = vi.fn();
 const mockClipboardWriteImage = vi.fn();
 const mockGetAllDisplays = vi.fn();
 const mockAddToHistory = vi.fn();
@@ -42,6 +46,13 @@ vi.mock('fs', () => ({
     readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
     writeFileSync: (...a: unknown[]) => mockWriteFileSync(...a),
     mkdirSync: (...a: unknown[]) => mockMkdirSync(...a),
+    openSync: (...a: unknown[]) => mockOpenSync(...a),
+    closeSync: (...a: unknown[]) => mockCloseSync(...a),
+    constants: { COPYFILE_EXCL: 1 },
+    promises: {
+      link: (...a: unknown[]) => mockLink(...a),
+      unlink: (...a: unknown[]) => mockUnlink(...a),
+    },
   },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
   readFileSync: (...a: unknown[]) => mockReadFileSync(...a),
@@ -127,8 +138,26 @@ vi.mock('@/main/capture/screenshot/native-capture', () => ({
 const mockCaptureWindowToFile = vi.fn();
 
 vi.mock('@/main/capture/area-overlay', () => ({
-  captureAreaToFile: (...a: unknown[]) => mockCaptureAreaToFile(...a),
-  captureWindowToFile: (...a: unknown[]) => mockCaptureWindowToFile(...a),
+  captureAreaToFile: (
+    filePath: string | (() => string),
+    started: () => void,
+    failed: (completed: boolean) => void
+  ) =>
+    mockCaptureAreaToFile(
+      typeof filePath === 'function' ? filePath() : filePath,
+      started,
+      failed
+    ),
+  captureWindowToFile: (
+    filePath: string | (() => string),
+    started: () => void,
+    failed: (completed: boolean) => void
+  ) =>
+    mockCaptureWindowToFile(
+      typeof filePath === 'function' ? filePath() : filePath,
+      started,
+      failed
+    ),
   selectAreaWithOverlay: vi.fn(),
 }));
 
@@ -269,7 +298,8 @@ describe('screenshot on Windows', () => {
       expect(mockSelectDisplay).not.toHaveBeenCalled();
       expect(mockCaptureDisplayToFile).toHaveBeenCalledWith(
         cursorDisplay,
-        expect.any(String)
+        expect.any(String),
+        expect.any(Function)
       );
       expect(mockClipboardWriteImage).toHaveBeenCalled();
     });
@@ -291,7 +321,8 @@ describe('screenshot on Windows', () => {
       expect(mockDisplayFromSelection).toHaveBeenCalledWith(selection);
       expect(mockCaptureDisplayToFile).toHaveBeenCalledWith(
         secondDisplay,
-        expect.any(String)
+        expect.any(String),
+        expect.any(Function)
       );
     });
 
@@ -314,7 +345,8 @@ describe('screenshot on Windows', () => {
 
       expect(mockCaptureDisplayToFile).toHaveBeenCalledWith(
         cursorDisplay,
-        expect.any(String)
+        expect.any(String),
+        expect.any(Function)
       );
     });
 
@@ -433,6 +465,7 @@ describe('screenshot on Windows', () => {
 
       expect(mockCaptureWindowToFile).toHaveBeenCalledWith(
         expect.any(String),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(mockClipboardWriteImage).toHaveBeenCalled();

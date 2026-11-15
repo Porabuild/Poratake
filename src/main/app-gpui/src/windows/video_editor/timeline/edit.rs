@@ -198,8 +198,12 @@ pub fn split_all(state: &mut VideoEditorState, cut_time: f64, cut_video_time: f6
     let mut changed = split_video(&mut state.segments, cut_video_time);
     changed |= split_ranges(&mut state.zoom_segments, cut_time);
     changed |= split_ranges(&mut state.camera_segments, cut_time);
-    changed |= split_ranges(&mut state.drawing_segments, cut_time);
-    changed |= split_music(&mut state.music_tracks, cut_time);
+    while split_ranges(&mut state.drawing_segments, cut_time) {
+        changed = true;
+    }
+    while split_music(&mut state.music_tracks, cut_time) {
+        changed = true;
+    }
     changed
 }
 
@@ -365,6 +369,61 @@ mod tests {
         assert!(split_all(&mut state, 4.0, 4.0));
         assert_eq!(state.segments.len(), 2);
         assert_eq!(state.zoom_segments.len(), 2);
+    }
+
+    #[test]
+    fn cutting_all_splits_overlapping_audio_and_drawing_clips() {
+        let mut state = VideoEditorState {
+            segments: vec![segment("v", 0.0, 10.0)],
+            drawing_segments: vec![
+                DrawingSegment {
+                    id: "drawing-a".into(),
+                    start_time: 0.0,
+                    end_time: 10.0,
+                    ..DrawingSegment::default()
+                },
+                DrawingSegment {
+                    id: "drawing-b".into(),
+                    start_time: 1.0,
+                    end_time: 8.0,
+                    ..DrawingSegment::default()
+                },
+            ],
+            music_tracks: vec![
+                MusicTrack {
+                    id: "system".into(),
+                    source: "system".into(),
+                    start_time: 0.0,
+                    end_time: 10.0,
+                    original_duration: 10.0,
+                    ..MusicTrack::default()
+                },
+                MusicTrack {
+                    id: "mic".into(),
+                    source: "mic".into(),
+                    start_time: 0.0,
+                    end_time: 10.0,
+                    original_duration: 20.0,
+                    speed: 2.0,
+                    ..MusicTrack::default()
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        assert!(split_all(&mut state, 4.0, 4.0));
+        assert_eq!(state.drawing_segments.len(), 4);
+        assert_eq!(state.music_tracks.len(), 4);
+        for pair in state.drawing_segments.as_chunks::<2>().0 {
+            assert_eq!(pair[0].end_time, 4.0);
+            assert_eq!(pair[1].start_time, 4.0);
+        }
+        for (pair, speed) in state.music_tracks.as_chunks::<2>().0.iter().zip([1.0, 2.0]) {
+            assert_eq!(pair[0].end_time, 4.0);
+            assert_eq!(pair[0].trim_end, 6.0 * speed);
+            assert_eq!(pair[1].start_time, 4.0);
+            assert_eq!(pair[1].trim_start, 4.0 * speed);
+            assert_eq!(pair[0].source, pair[1].source);
+        }
     }
 
     #[test]

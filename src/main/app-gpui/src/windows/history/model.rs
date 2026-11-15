@@ -111,13 +111,6 @@ impl HistoryLayout {
         }
     }
 
-    pub fn columns(self) -> usize {
-        match self {
-            Self::Grid => GRID_COLUMNS,
-            Self::List => 1,
-        }
-    }
-
     pub fn toggle_icon(self) -> &'static str {
         match self {
             Self::Grid => "layout-list",

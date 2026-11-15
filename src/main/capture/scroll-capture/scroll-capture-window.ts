@@ -51,7 +51,17 @@ function computeControlBounds(
       : Math.max(0, area.y - CONTROL_GAP - CONTROL_HEIGHT);
 
   return {
-    x: params.displayBounds.x + Math.round(centerX - CONTROL_WIDTH / 2),
+    x:
+      params.displayBounds.x +
+      Math.round(
+        Math.max(
+          0,
+          Math.min(
+            centerX - CONTROL_WIDTH / 2,
+            params.displayBounds.width - CONTROL_WIDTH
+          )
+        )
+      ),
     y: params.displayBounds.y + Math.round(top),
     width: CONTROL_WIDTH,
     height: CONTROL_HEIGHT,

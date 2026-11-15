@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { AreaOverlayToolbar } from '@/types/area-overlay';
+
+const allInOneToolbar = {
+  kind: 'all-in-one',
+  recordingEnabled: true,
+  ocrEnabled: true,
+  activeMode: 'screenshot',
+  activeTarget: 'area',
+} satisfies AreaOverlayToolbar;
 
 const mockGetAllDisplays = vi.fn();
 const mockGetCursorScreenPoint = vi.fn();
@@ -7,6 +16,10 @@ const mockGetDisplayMatching = vi.fn();
 const mockDaemonCall = vi.fn();
 const mockGlobalShortcutRegister = vi.fn();
 const mockGlobalShortcutUnregister = vi.fn();
+const mockHideDesktopIcons = vi.fn();
+const mockShowDesktopIcons = vi.fn();
+const mockShouldHideDesktopIcons = vi.fn();
+const mockShowTransientNotification = vi.fn();
 const mockPlatform = vi.hoisted(() => ({
   isWindows: true,
   isMac: false,
@@ -17,6 +30,21 @@ const ipcHandlers = new Map<string, (event: unknown, data?: unknown) => void>();
 const overlayWindows: MockBrowserWindow[] = [];
 const loadHandlers = new Map<number, () => void>();
 const commandLineSwitches = new Set<string>();
+const iconLifecycle: string[] = [];
+const frozenBackgroundPixel = [64, 112, 192, 255];
+const desktopIconPixel = [0, 0, 0, 255];
+let captureHideCount = 0;
+let desktopIconsHidden = false;
+let frozenFramePixel: number[] | null = null;
+let freezeFails = false;
+let releaseFailuresRemaining = 0;
+let holdNextFreeze = false;
+let completePendingFreeze: (() => void) | null = null;
+let holdNextWindowHide = false;
+let completePendingWindowHide: (() => void) | null = null;
+let hideResult = true;
+let restoreResult = true;
+let pendingHide: (() => void) | null = null;
 
 class MockBrowserWindow {
   static nextWebContentsId = 1;
@@ -121,6 +149,20 @@ vi.mock('@/main/capture/freeze-screen/preference', () => ({
   isFreezeScreenEnabled: () => true,
 }));
 
+vi.mock('@/main/capture/desktop-icons', () => ({
+  hideDesktopIcons: (...a: unknown[]) => mockHideDesktopIcons(...a),
+  showDesktopIcons: (...a: unknown[]) => mockShowDesktopIcons(...a),
+}));
+
+vi.mock('@/main/capture/desktop-icons/preference', () => ({
+  shouldHideDesktopIconsForCapture: () => mockShouldHideDesktopIcons(),
+}));
+
+vi.mock('@/main/utils/notification', () => ({
+  showTransientNotification: (...a: unknown[]) =>
+    mockShowTransientNotification(...a),
+}));
+
 vi.mock('@/main/daemon', () => ({
   daemon: { call: (...a: unknown[]) => mockDaemonCall(...a) },
 }));
@@ -157,13 +199,65 @@ describe('interactive area overlay', () => {
     overlayWindows.length = 0;
     loadHandlers.clear();
     commandLineSwitches.clear();
+    iconLifecycle.length = 0;
+    captureHideCount = 0;
+    desktopIconsHidden = false;
+    frozenFramePixel = null;
+    freezeFails = false;
+    releaseFailuresRemaining = 0;
+    holdNextFreeze = false;
+    completePendingFreeze = null;
+    holdNextWindowHide = false;
+    completePendingWindowHide = null;
+    hideResult = true;
+    restoreResult = true;
+    pendingHide = null;
     mockPlatform.isWindows = true;
     mockPlatform.isMac = false;
     mockGetAllDisplays.mockReturnValue([primary, secondary]);
     mockGetCursorScreenPoint.mockReturnValue({ x: 10, y: 10 });
     mockGetDisplayNearestPoint.mockReturnValue(primary);
+    mockShouldHideDesktopIcons.mockReturnValue(true);
+    mockHideDesktopIcons.mockImplementation(async () => {
+      iconLifecycle.push('hide');
+      captureHideCount += 1;
+      desktopIconsHidden = true;
+      if (pendingHide) {
+        await new Promise<void>(resolve => {
+          pendingHide = resolve;
+        });
+      }
+      return hideResult;
+    });
+    mockShowDesktopIcons.mockImplementation(async () => {
+      iconLifecycle.push('show');
+      captureHideCount = Math.max(0, captureHideCount - 1);
+      if (restoreResult) desktopIconsHidden = captureHideCount > 0;
+      return restoreResult;
+    });
     mockDaemonCall.mockImplementation(
-      (_module: string, method: string, params: { windowHandle?: string }) => {
+      (module: string, method: string, params: { windowHandle?: string }) => {
+        if (module === 'freeze-screen' && method === 'freeze') {
+          iconLifecycle.push('freeze');
+          frozenFramePixel = desktopIconsHidden
+            ? frozenBackgroundPixel
+            : desktopIconPixel;
+          if (freezeFails) return Promise.reject(new Error('freeze failed'));
+          if (holdNextFreeze) {
+            holdNextFreeze = false;
+            return new Promise(resolve => {
+              completePendingFreeze = () => resolve({ frozen: true });
+            });
+          }
+          return Promise.resolve({ frozen: true });
+        }
+        if (module === 'freeze-screen' && method === 'release') {
+          iconLifecycle.push('release');
+          if (releaseFailuresRemaining > 0) {
+            releaseFailuresRemaining -= 1;
+            return Promise.reject(new Error('release failed'));
+          }
+        }
         if (method === 'showWindowWithoutTransitions') {
           const window = overlayWindows.find(
             item => item.webContents.id.toString() === params.windowHandle
@@ -174,6 +268,15 @@ describe('interactive area overlay', () => {
           const window = overlayWindows.find(
             item => item.webContents.id.toString() === params.windowHandle
           );
+          if (holdNextWindowHide) {
+            holdNextWindowHide = false;
+            return new Promise(resolve => {
+              completePendingWindowHide = () => {
+                if (window) window.visible = false;
+                resolve({ disabled: true });
+              };
+            });
+          }
           if (window) window.visible = false;
         }
         return Promise.resolve({ disabled: true });
@@ -231,6 +334,732 @@ describe('interactive area overlay', () => {
 
     module.cancelOverlaySelection();
     await session;
+  });
+
+  it('freezes all-in-one pixels without icons and restores icons before revealing', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    let iconsHiddenWhenRecordingModeSelected: boolean | null = null;
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: { ...allInOneToolbar, activeMode: 'record' },
+      callbacks: {
+        onToolbarAction: action => {
+          if (
+            action.action === 'select-capture-mode' &&
+            action.mode === 'record'
+          ) {
+            iconsHiddenWhenRecordingModeSelected = desktopIconsHidden;
+          }
+        },
+      },
+    });
+    await settle();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show']);
+    expect(frozenFramePixel).toEqual(frozenBackgroundPixel);
+    expect(desktopIconsHidden).toBe(false);
+
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    fire('area-overlay:toolbar', windowFor(0).webContents.id, {
+      action: 'select-capture-mode',
+      mode: 'record',
+    });
+
+    expect(iconsHiddenWhenRecordingModeSelected).toBe(false);
+    expect(frozenFramePixel).toEqual(frozenBackgroundPixel);
+    expect(iconLifecycle.filter(call => call === 'freeze')).toHaveLength(1);
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('releases its hide reference without freezing when icon hiding fails', async () => {
+    hideResult = false;
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(desktopIconsHidden).toBe(false);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not hide desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores icons after a failed freeze and opens on the live screen', async () => {
+    freezeFails = true;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show']);
+    expect(desktopIconsHidden).toBe(false);
+    fire('area-overlay:ready', windowFor(0).webContents.id);
+    expect(windowFor(0).showInactive).toHaveBeenCalled();
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('releases a frozen frame when icon restoration fails', async () => {
+    restoreResult = false;
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases an in-flight icon hide when the all-in-one overlay is cancelled', async () => {
+    pendingHide = () => {};
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const canceled = module.cancelOverlaySelection();
+    pendingHide?.();
+    await canceled;
+    expect(await session).toBeNull();
+    await settle();
+
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(desktopIconsHidden).toBe(false);
+  });
+
+  it('keeps an existing capture hide while snapshotting all-in-one pixels', async () => {
+    captureHideCount = 1;
+    desktopIconsHidden = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show']);
+    expect(frozenFramePixel).toEqual(frozenBackgroundPixel);
+    expect(captureHideCount).toBe(1);
+    expect(desktopIconsHidden).toBe(true);
+
+    module.cancelOverlaySelection();
+    await session;
+    await mockShowDesktopIcons('capture');
+  });
+
+  it('hides icons around a later all-in-one freeze transition', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    await module.setOverlayFreeze(true);
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show']);
+    expect(frozenFramePixel).toEqual(frozenBackgroundPixel);
+    expect(desktopIconsHidden).toBe(false);
+
+    module.cancelOverlaySelection();
+    await session;
+  });
+
+  it('closes the all-in-one session when a later freeze cannot hide icons', async () => {
+    hideResult = false;
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+    await settle();
+
+    await module.setOverlayFreeze(true);
+
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(desktopIconsHidden).toBe(false);
+    expect(module.isOverlayActive()).toBe(false);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not hide desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+    expect(await session).toBeNull();
+  });
+
+  it('releases a later frozen frame when restoring icons fails', async () => {
+    restoreResult = false;
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+    await settle();
+
+    await module.setOverlayFreeze(true);
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a cancelled freeze transition before starting a replacement session', async () => {
+    releaseFailuresRemaining = 2;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const module = await import('@/main/capture/area-overlay');
+    const first = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    expect(completePendingFreeze).toBeTypeOf('function');
+
+    const cancellation = module.cancelOverlaySelection();
+    const replacement = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    expect(iconLifecycle).toEqual(['hide', 'freeze']);
+
+    completePendingFreeze?.();
+    await transition;
+    await cancellation;
+    await settle();
+
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'release',
+      'release',
+      'hide',
+      'freeze',
+      'show',
+    ]);
+    expect(mockShowTransientNotification).not.toHaveBeenCalled();
+    module.cancelOverlaySelection();
+    await Promise.all([first, replacement]);
+  });
+
+  it('blocks replacement and reports when stale-frame release retries all fail', async () => {
+    releaseFailuresRemaining = 3;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const module = await import('@/main/capture/area-overlay');
+    const first = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    const canceled = module.cancelOverlaySelection();
+    const replacement = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    completePendingFreeze?.();
+    await transition;
+    await canceled;
+
+    expect(await first).toBeNull();
+    expect(await replacement).toBeNull();
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'release',
+      'release',
+    ]);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not release frozen screen'
+    );
+    expect(iconLifecycle.filter(call => call === 'freeze')).toHaveLength(1);
+  });
+
+  it('blocks replacement after repeated stale-frame release failures', async () => {
+    releaseFailuresRemaining = 3;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const module = await import('@/main/capture/area-overlay');
+    const first = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    const canceled = module.cancelOverlaySelection();
+    const replacement = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    completePendingFreeze?.();
+    await transition;
+    await canceled;
+
+    expect(await first).toBeNull();
+    expect(await replacement).toBeNull();
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'release',
+      'release',
+    ]);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not release frozen screen'
+    );
+    expect(iconLifecycle.filter(call => call === 'freeze')).toHaveLength(1);
+  });
+
+  it('releases the initial frozen frame and reports icon restoration failure after cancellation', async () => {
+    holdNextFreeze = true;
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+    await settle();
+    expect(completePendingFreeze).toBeTypeOf('function');
+    const canceled = module.cancelOverlaySelection();
+
+    restoreResult = false;
+    completePendingFreeze?.();
+    await canceled;
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an initial confirmed selection when startup icon hiding fails', async () => {
+    pendingHide = () => {};
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    expect(pendingHide).toBeTypeOf('function');
+    module.confirmOverlaySelection();
+
+    hideResult = false;
+    pendingHide?.();
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not hide desktop icons'
+    );
+  });
+
+  it('rejects an initial confirmed selection when startup icon restoration fails', async () => {
+    holdNextFreeze = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    module.confirmOverlaySelection();
+
+    restoreResult = false;
+    completePendingFreeze?.();
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+  });
+
+  it('rejects an initial confirmed selection when the stale frozen frame cannot be released', async () => {
+    releaseFailuresRemaining = 2;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    holdNextFreeze = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    module.confirmOverlaySelection();
+
+    completePendingFreeze?.();
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'release',
+    ]);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not release frozen screen'
+    );
+    expect(mockShowTransientNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a safe live selection after successfully releasing a stale startup frame', async () => {
+    holdNextFreeze = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    module.confirmOverlaySelection();
+
+    completePendingFreeze?.();
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(false);
+    expect(selection?.rect).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    await selection?.release();
+  });
+
+  it('releases a pending transition frame and reports icon restoration failure after cancellation', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const onCancelled = vi.fn();
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+      callbacks: { onCancelled },
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    expect(completePendingFreeze).toBeTypeOf('function');
+    const canceled = module.cancelOverlaySelection();
+
+    restoreResult = false;
+    completePendingFreeze?.();
+    await transition;
+    await canceled;
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+    expect(onCancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report hide failure when the pending session was cancelled', async () => {
+    pendingHide = () => {};
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    const canceled = module.cancelOverlaySelection();
+    hideResult = false;
+    pendingHide?.();
+    await transition;
+    await canceled;
+    expect(await session).toBeNull();
+
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(mockShowTransientNotification).not.toHaveBeenCalled();
+  });
+
+  it('rejects a confirmed live selection when pending icon hiding fails', async () => {
+    pendingHide = () => {};
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    module.confirmOverlaySelection();
+    hideResult = false;
+    pendingHide?.();
+    await transition;
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual(['hide', 'show']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not hide desktop icons'
+    );
+  });
+
+  it('rejects a confirmed live selection when pending icon restoration fails', async () => {
+    holdNextFreeze = true;
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    module.confirmOverlaySelection();
+    restoreResult = false;
+    completePendingFreeze?.();
+    await transition;
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not restore desktop icons'
+    );
+  });
+
+  it('waits for a confirmed selection until its pending freeze is released', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    let selectionResolved = false;
+    void session.then(() => {
+      selectionResolved = true;
+    });
+    module.confirmOverlaySelection();
+    await settle();
+
+    expect(selectionResolved).toBe(false);
+
+    completePendingFreeze?.();
+    await transition;
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(false);
+    expect(selection?.rect).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    await selection?.release();
+  });
+
+  it('does not resolve a live confirmation until the overlay hide finishes', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    holdNextWindowHide = true;
+    let selectionResolved = false;
+    void session.then(() => {
+      selectionResolved = true;
+    });
+    module.confirmOverlaySelection();
+    await settle();
+    expect(completePendingWindowHide).toBeTypeOf('function');
+
+    completePendingFreeze?.();
+    await transition;
+    await settle();
+    expect(selectionResolved).toBe(false);
+
+    completePendingWindowHide?.();
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(false);
+    expect(selection?.rect).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show', 'release']);
+    await selection?.release();
+  });
+
+  it('waits for the overlay hide before resolving an ordinary live confirmation', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    holdNextWindowHide = true;
+    let selectionResolved = false;
+    void session.then(() => {
+      selectionResolved = true;
+    });
+
+    module.confirmOverlaySelection();
+    await settle();
+
+    expect(completePendingWindowHide).toBeTypeOf('function');
+    expect(selectionResolved).toBe(false);
+
+    completePendingWindowHide?.();
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(false);
+    expect(selection?.rect).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+    await selection?.release();
+  });
+
+  it('keeps a confirmed frozen frame until its consumer releases it', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    module.confirmOverlaySelection();
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(true);
+    const replacement = module.startInteractiveOverlay({
+      freeze: true,
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+    expect(iconLifecycle).toEqual(['hide', 'freeze', 'show']);
+
+    await selection?.release();
+    await settle();
+
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'hide',
+      'freeze',
+      'show',
+    ]);
+    module.cancelOverlaySelection();
+    await replacement;
+  });
+
+  it('returns null when a live confirmation cannot release a pending frozen frame', async () => {
+    releaseFailuresRemaining = 2;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: false,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    holdNextFreeze = true;
+    const transition = module.setOverlayFreeze(true);
+    await settle();
+    module.confirmOverlaySelection();
+    completePendingFreeze?.();
+    await transition;
+
+    expect(await session).toBeNull();
+    expect(iconLifecycle).toEqual([
+      'hide',
+      'freeze',
+      'show',
+      'release',
+      'release',
+    ]);
+    expect(mockShowTransientNotification).toHaveBeenCalledWith(
+      'Capture Failed',
+      'Could not release frozen screen'
+    );
+    expect(mockShowTransientNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an owned frozen frame when enabling freeze is already a no-op', async () => {
+    const module = await import('@/main/capture/area-overlay');
+    const session = module.startInteractiveOverlay({
+      freeze: true,
+      preset: { x: 10, y: 20, width: 300, height: 200 },
+      toolbar: allInOneToolbar,
+    });
+    await settle();
+
+    const disable = module.setOverlayFreeze(false);
+    const enable = module.setOverlayFreeze(true);
+    module.confirmOverlaySelection();
+    await Promise.all([disable, enable]);
+    const selection = await session;
+
+    expect(selection?.frozen).toBe(true);
+    expect(frozenFramePixel).toEqual(frozenBackgroundPixel);
+    expect(iconLifecycle.filter(call => call === 'freeze')).toHaveLength(1);
+    await selection?.release();
   });
 
   it('mounts scroll capture with area selection inside its renderer', async () => {

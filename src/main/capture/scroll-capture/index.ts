@@ -1,4 +1,5 @@
 import { screen } from 'electron';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import { daemon } from '@/main/daemon';
 import { getConfig } from '@/main/settings';
@@ -7,7 +8,10 @@ import {
   showDesktopIcons,
 } from '@/main/capture/desktop-icons';
 import { shouldHideDesktopIconsForCapture } from '@/main/capture/desktop-icons/preference';
-import { generateScreenshotPath } from '@/main/capture/screenshot/utils';
+import {
+  generateScreenshotPath,
+  publishScreenshot,
+} from '@/main/capture/screenshot/utils';
 import {
   finalizeCapture,
   prepareScreenshotPreview,
@@ -34,6 +38,7 @@ import type { AreaSelection } from '@/types/area';
 import type { AutoScrollSpeed } from '@/types/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
 import { isWindows } from '@/main/utils/platform';
+import { showNotification } from '@/main/utils/notification';
 
 let activeCapture: Promise<void> | null = null;
 let cancelActiveCapture: (() => Promise<void>) | null = null;
@@ -59,6 +64,7 @@ export async function startScrollCapture(): Promise<void> {
   } finally {
     if (activeCapture === capture) {
       activeCapture = null;
+      cancelActiveCapture = null;
     }
   }
 }
@@ -74,6 +80,7 @@ async function runScrollCapture(): Promise<void> {
   return new Promise<void>(resolve => {
     let resolved = false;
     let cancelled = false;
+    let discardFinishOutput = false;
     let overlayActive = false;
     let areaSelected = false;
     let autoScrolling = false;
@@ -85,7 +92,12 @@ async function runScrollCapture(): Promise<void> {
     let previewHeight: number | null = null;
     let eventHandler: ((event: string, data: unknown) => void) | null = null;
     let finishInFlight: Promise<void> | null = null;
+    let finishRequestInFlight = false;
+    let cancellationRequest: Promise<unknown> | null = null;
+    let cancellationInFlight: Promise<void> | null = null;
     let finishPreparation: ReturnType<typeof prepareScreenshotPreview> = null;
+    let outputPromoted = false;
+    let publishing = false;
 
     const disposeFinishPreparation = () => {
       finishPreparation?.dispose();
@@ -104,54 +116,150 @@ async function runScrollCapture(): Promise<void> {
       if (shouldHideIcons) {
         await showDesktopIcons('capture');
       }
-      cancelActiveCapture = null;
     };
 
-    const finishCapture = async (outputPath: string) => {
+    const finishCapture = async (outputPath: string, temporaryPath: string) => {
       if (resolved) return;
       resolved = true;
 
-      await cleanup();
-      if (cancelled) {
-        disposeFinishPreparation();
+      try {
+        await cleanup();
+        if (cancelled) {
+          disposeFinishPreparation();
+          return;
+        }
+
+        publishing = true;
+        let publishedPath: string;
+        try {
+          publishedPath = await publishScreenshot(temporaryPath, outputPath);
+        } finally {
+          publishing = false;
+        }
+        outputPromoted = true;
+        const preparation = finishPreparation;
+        finishPreparation = null;
+        await handleCaptureComplete(publishedPath, preparation);
+      } finally {
         resolve();
-        return;
       }
-
-      const preparation = finishPreparation;
-      finishPreparation = null;
-      await handleCaptureComplete(outputPath, preparation);
-      resolve();
     };
 
-    const cancelCapture = async () => {
+    const cancelCapture = (
+      requestDaemon = false,
+      discardOutput = requestDaemon
+    ): Promise<void> => {
+      if (publishing) return finishInFlight ?? Promise.resolve();
       cancelled = true;
+      discardFinishOutput ||= discardOutput;
       disposeFinishPreparation();
-      if (resolved) return;
+      if (cancellationInFlight) return cancellationInFlight;
+      if (resolved) return finishInFlight ?? Promise.resolve();
       resolved = true;
 
-      await cleanup();
-      resolve();
+      const pending = requestDaemon
+        ? (() => {
+            cancellationRequest = finishRequestInFlight
+              ? daemon.call('scroll-capture', 'cancel', undefined, null)
+              : daemon.call('scroll-capture', 'cancel');
+            return Promise.allSettled([
+              ...(finishRequestInFlight && finishInFlight
+                ? [finishInFlight]
+                : []),
+              cancellationRequest,
+            ]).then(results => {
+              const failure = results.find(
+                result => result.status === 'rejected'
+              );
+              if (failure?.status === 'rejected') throw failure.reason;
+            });
+          })()
+        : finishRequestInFlight && finishInFlight
+          ? finishInFlight
+          : Promise.resolve();
+      cancellationInFlight = (async () => {
+        try {
+          const results = await Promise.allSettled([cleanup(), pending]);
+          const failure = results.find(result => result.status === 'rejected');
+          if (failure?.status === 'rejected') {
+            console.error(
+              'Scroll capture cancellation failed:',
+              failure.reason
+            );
+          }
+        } finally {
+          cancellationInFlight = null;
+          resolve();
+        }
+      })();
+      return cancellationInFlight;
     };
 
     const requestCaptureFinish = (): Promise<void> => {
       if (finishInFlight) return finishInFlight;
+      if (resolved) return Promise.resolve();
 
       finishInFlight = (async () => {
         const outputPath = generateScreenshotPath();
-        const finish = daemon.call<{
-          success: boolean;
-          outputPath: string;
-        }>('scroll-capture', 'finish', { outputPath });
-        finishPreparation = prepareScreenshotPreview();
+        const temporaryPath = `${outputPath}.${randomUUID()}.tmp.png`;
+        let retryableFinish = false;
+        try {
+          finishRequestInFlight = true;
+          const finish = daemon.call<{ success: boolean }>(
+            'scroll-capture',
+            'finish',
+            { outputPath: temporaryPath },
+            null
+          );
+          finishPreparation = prepareScreenshotPreview();
 
-        const result = await finish;
-        if (result?.success) {
-          await finishCapture(result.outputPath);
-          return;
+          let result: { success: boolean };
+          try {
+            result = await finish;
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              (error as Error & { code?: string }).code === 'STITCH_RETRYABLE'
+            ) {
+              retryableFinish = true;
+              if (!cancelled && !resolved) {
+                showNotification(
+                  'Scroll Capture Ready to Retry',
+                  'Choose Done to retry stitching or Cancel to discard the capture.'
+                );
+              }
+              return;
+            }
+            throw error;
+          } finally {
+            finishRequestInFlight = false;
+          }
+          if (result?.success) {
+            await finishCapture(outputPath, temporaryPath);
+            return;
+          }
+
+          if (!resolved) await cancelCapture();
+        } finally {
+          try {
+            if (discardFinishOutput) {
+              await cancellationRequest?.catch(() => {});
+            }
+            if (!outputPromoted && fs.existsSync(temporaryPath)) {
+              if (retryableFinish || discardFinishOutput) {
+                fs.unlinkSync(temporaryPath);
+              } else {
+                console.error('Scroll capture retained at:', temporaryPath);
+                showNotification(
+                  'Scroll Capture Not Saved',
+                  `Capture data may be available at ${temporaryPath}`
+                );
+              }
+            }
+          } catch (error) {
+            console.error('Failed to handle temporary scroll capture:', error);
+          }
         }
-
-        await cancelCapture();
       })().finally(() => {
         disposeFinishPreparation();
         finishInFlight = null;
@@ -178,6 +286,7 @@ async function runScrollCapture(): Promise<void> {
     const handleAction = async (action: ScrollCaptureAction) => {
       try {
         if (action === 'toggle-auto-scroll') {
+          if (finishInFlight || resolved) return;
           await daemon.call(
             'scroll-capture',
             autoScrolling ? 'stopAutoScroll' : 'startAutoScroll'
@@ -185,12 +294,7 @@ async function runScrollCapture(): Promise<void> {
         } else if (action === 'done') {
           await requestCaptureFinish();
         } else if (action === 'cancel') {
-          const cancellation = cancelCapture();
-          try {
-            await daemon.call('scroll-capture', 'cancel');
-          } finally {
-            await cancellation;
-          }
+          await cancelCapture(true);
         }
       } catch (error) {
         console.error('Scroll capture action failed:', error);
@@ -225,7 +329,7 @@ async function runScrollCapture(): Promise<void> {
       }
     };
 
-    cancelActiveCapture = cancelCapture;
+    cancelActiveCapture = () => cancelCapture(true);
 
     eventHandler = async (event: string, data: unknown) => {
       if (!event.startsWith('scroll-capture:')) return;
@@ -243,7 +347,30 @@ async function runScrollCapture(): Promise<void> {
       }
 
       if (eventType === 'cancelled') {
-        await cancelCapture();
+        await cancelCapture(false, true);
+        return;
+      }
+
+      if (eventType === 'scroll-ended' && !resolved && !finishInFlight) {
+        autoScrolling = false;
+        pushState();
+        const reason = (data as { reason?: unknown } | null)?.reason;
+        let message: string | undefined;
+        switch (reason) {
+          case 'no-overlap':
+            message =
+              'The latest frame could not be aligned. You can save the captured portion.';
+            break;
+          case 'capture-error':
+            message =
+              'A frame could not be captured. You can save the captured portion.';
+            break;
+          case 'input-error':
+            message =
+              'Scrolling could not be continued. You can save the captured portion.';
+            break;
+        }
+        if (message) showNotification('Scroll Capture Stopped', message);
         return;
       }
 
@@ -391,13 +518,15 @@ export async function cancelScrollCapture(): Promise<void> {
     cancelOverlaySelection(true);
   }
 
-  const cancellation = cancelActiveCapture?.();
   try {
+    if (cancelActiveCapture) {
+      await cancelActiveCapture();
+      return;
+    }
     await daemon.call('scroll-capture', 'cancel');
   } catch (error) {
     console.error('Failed to cancel scroll capture:', error);
   }
-  await cancellation;
 }
 
 export default startScrollCapture;

@@ -155,9 +155,10 @@ describe('NativeDaemon on unsupported platforms', () => {
 
   it('call rejects with a platform error', async () => {
     const { daemon } = await import('@/main/daemon');
-    await expect(daemon.call('ocr', 'recognize')).rejects.toThrow(
-      'Daemon not supported on this platform: ocr.recognize'
-    );
+    await expect(daemon.call('ocr', 'recognize')).rejects.toMatchObject({
+      message: 'Daemon not supported on this platform: ocr.recognize',
+      code: 'DAEMON_UNAVAILABLE',
+    });
   });
 });
 

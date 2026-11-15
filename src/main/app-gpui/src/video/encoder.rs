@@ -5,7 +5,9 @@
 //! a channel.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 /// The audio format every mixed track is resampled to before encoding.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
@@ -41,10 +43,15 @@ enum Command {
 }
 
 pub struct Encoder {
-    commands: Sender<Command>,
+    commands: Option<Sender<Command>>,
     settings: Settings,
     frames_written: u64,
+    cancelled: Arc<AtomicBool>,
+    child: ChildSlot,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
+
+type ChildSlot = Arc<Mutex<Option<std::process::Child>>>;
 
 impl Encoder {
     /// Creates the output file. Blocking, so callers run it on the background
@@ -53,21 +60,38 @@ impl Encoder {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let owned = path.to_path_buf();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let child = Arc::new(Mutex::new(None));
+        let worker_child = child.clone();
 
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("video-encoder".into())
-            .spawn(move || backend::run(owned, settings, command_rx, ready_tx))
+            .spawn(move || {
+                backend::run(
+                    owned,
+                    settings,
+                    command_rx,
+                    ready_tx,
+                    worker_cancelled,
+                    worker_child,
+                )
+            })
             .map_err(|error| format!("could not start the encoder: {error}"))?;
 
+        let encoder = Self {
+            commands: Some(command_tx),
+            settings,
+            frames_written: 0,
+            cancelled,
+            child,
+            worker: Some(worker),
+        };
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .map_err(|_| "the encoder did not start".to_string())??;
 
-        Ok(Self {
-            commands: command_tx,
-            settings,
-            frames_written: 0,
-        })
+        Ok(encoder)
     }
 
     /// Appends one composed frame. `bgra` must be `width * height * 4` bytes.
@@ -84,6 +108,8 @@ impl Encoder {
         let time = self.frames_written as i64 * duration;
         self.frames_written += 1;
         self.commands
+            .as_ref()
+            .unwrap()
             .send(Command::Video {
                 bgra,
                 time,
@@ -101,6 +127,8 @@ impl Encoder {
         let frames = pcm.len() as i64 / frame_bytes;
         let duration = frames * UNITS_PER_SECOND / AUDIO_SAMPLE_RATE as i64;
         self.commands
+            .as_ref()
+            .unwrap()
             .send(Command::Audio {
                 pcm,
                 time,
@@ -111,14 +139,103 @@ impl Encoder {
 
     /// Finalizes the file. Consuming the encoder guarantees no frame can be
     /// appended after the container is closed.
+    #[cfg(all(test, windows))]
     pub fn finish(self) -> Result<(), String> {
+        self.finish_cancellable(&|| false)
+    }
+
+    pub fn finish_cancellable(self, should_cancel: &dyn Fn() -> bool) -> Result<(), String> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.commands
+            .as_ref()
+            .unwrap()
             .send(Command::Finish { reply: reply_tx })
             .map_err(|_| "the encoder stopped".to_string())?;
-        reply_rx
-            .recv_timeout(std::time::Duration::from_secs(120))
-            .map_err(|_| "the encoder did not finish".to_string())?
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if should_cancel() {
+                return Err("the export was cancelled".to_string());
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("the encoder did not finish".to_string());
+            }
+            match reply_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(25))) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the encoder stopped".to_string());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
+        }
+        self.commands.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn register_child(
+    slot: &ChildSlot,
+    mut child: std::process::Child,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let mut slot = slot.lock().unwrap();
+    if cancelled.load(Ordering::Acquire) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("the export was cancelled".to_string());
+    }
+    *slot = Some(child);
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn stop_child(slot: &ChildSlot) {
+    if let Some(mut child) = slot.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn wait_for_child(
+    slot: &ChildSlot,
+    timeout: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut guard = slot.lock().unwrap();
+        let child = guard.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                guard.take();
+                return Some(status);
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {}
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                guard.take();
+                return None;
+            }
+        }
+        drop(guard);
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
@@ -138,6 +255,8 @@ mod backend {
         settings: Settings,
         commands: Receiver<Command>,
         ready: Sender<Result<(), String>>,
+        cancelled: Arc<AtomicBool>,
+        _child: ChildSlot,
     ) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -150,7 +269,7 @@ mod backend {
             match open_writer(&path, settings) {
                 Ok((writer, video_stream, audio_stream)) => {
                     let _ = ready.send(Ok(()));
-                    pump(writer, video_stream, audio_stream, commands);
+                    pump(writer, video_stream, audio_stream, commands, &cancelled);
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -167,9 +286,13 @@ mod backend {
         video_stream: u32,
         audio_stream: Option<u32>,
         commands: Receiver<Command>,
+        cancelled: &AtomicBool,
     ) {
         let mut failure = None;
         while let Ok(command) = commands.recv() {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             match command {
                 Command::Video {
                     bgra,
@@ -404,6 +527,8 @@ mod backend {
         settings: Settings,
         commands: Receiver<Command>,
         ready: Sender<Result<(), String>>,
+        cancelled: Arc<AtomicBool>,
+        child: ChildSlot,
     ) {
         let ffmpeg = crate::video::ffmpeg_path();
         if !ffmpeg.is_file() {
@@ -420,10 +545,12 @@ mod backend {
         ));
         let _ = ready.send(Ok(()));
 
-        let mut child = None;
         let mut input = None;
         let mut failure = None;
         while let Ok(command) = commands.recv() {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             match command {
                 Command::Audio {
                     pcm,
@@ -444,7 +571,7 @@ mod backend {
                     if failure.is_some() {
                         continue;
                     }
-                    if child.is_none() {
+                    if input.is_none() {
                         match start(
                             &ffmpeg,
                             &path,
@@ -452,7 +579,10 @@ mod backend {
                             settings.has_audio.then_some(audio_path.as_path()),
                         ) {
                             Ok((process, stdin)) => {
-                                child = Some(process);
+                                if let Err(error) = register_child(&child, process, &cancelled) {
+                                    failure = Some(error);
+                                    continue;
+                                }
                                 input = Some(stdin);
                             }
                             Err(error) => {
@@ -475,10 +605,14 @@ mod backend {
                 }
                 Command::Finish { reply } => {
                     drop(input.take());
-                    let result = match (failure.take(), child.take()) {
-                        (Some(error), _) => Err(error),
-                        (None, Some(process)) => finish(process),
-                        (None, None) => Err("no video frames were written".to_string()),
+                    let has_child = child.lock().unwrap().is_some();
+                    let result = match (failure.take(), has_child) {
+                        (Some(error), _) => {
+                            stop_child(&child);
+                            Err(error)
+                        }
+                        (None, true) => finish(&child),
+                        (None, false) => Err("no video frames were written".to_string()),
                     };
                     let _ = std::fs::remove_file(&audio_path);
                     let _ = reply.send(result);
@@ -486,10 +620,7 @@ mod backend {
                 }
             }
         }
-        if let Some(mut process) = child {
-            let _ = process.kill();
-            let _ = process.wait();
-        }
+        stop_child(&child);
         let _ = std::fs::remove_file(audio_path);
     }
 
@@ -572,16 +703,32 @@ mod backend {
         Ok((child, input))
     }
 
-    fn finish(process: Child) -> Result<(), String> {
-        let output = process
-            .wait_with_output()
-            .map_err(|error| format!("FFmpeg wait failed: {error}"))?;
-        if output.status.success() {
+    fn finish(child: &ChildSlot) -> Result<(), String> {
+        let stderr = child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|process| process.stderr.take());
+        let reader = stderr.map(|mut stderr| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = stderr.read_to_end(&mut bytes);
+                bytes
+            })
+        });
+        let status = wait_for_child(child, std::time::Duration::from_secs(120));
+        let stderr = reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let Some(status) = status else {
+            return Err("FFmpeg did not finish".to_string());
+        };
+        if status.success() {
             return Ok(());
         }
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
         Err(if detail.is_empty() {
-            format!("FFmpeg exited with {}", output.status)
+            format!("FFmpeg exited with {status}")
         } else {
             detail
         })
@@ -594,7 +741,7 @@ mod backend {
 
     use std::io::Write;
     use std::process::Command as StdCommand;
-    use std::process::{Child, ChildStdin, Stdio};
+    use std::process::{ChildStdin, Stdio};
     use std::sync::{Arc, Mutex};
 
     use poratake_daemon_common::ffmpeg;
@@ -607,7 +754,7 @@ mod backend {
 
     struct Session {
         ffmpeg: PathBuf,
-        child: Child,
+        child: ChildSlot,
         stdin: ChildStdin,
         output: PathBuf,
         video_temp: PathBuf,
@@ -622,7 +769,13 @@ mod backend {
         /// Spawns the video-only encode. The composed frames stream through
         /// stdin while audio accumulates beside it; [`Self::finalize`] muxes
         /// the two into the output file.
-        fn start(ffmpeg: PathBuf, path: &Path, settings: Settings) -> Result<Self, String> {
+        fn start(
+            ffmpeg: PathBuf,
+            path: &Path,
+            settings: Settings,
+            child: ChildSlot,
+            cancelled: &AtomicBool,
+        ) -> Result<Self, String> {
             let directory = path.parent().unwrap_or_else(|| Path::new("."));
             let video_temp = staged_path(directory, path, "video");
             let audio_temp = settings
@@ -639,7 +792,7 @@ mod backend {
                 settings.bitrate,
             )));
             args.push("-y".into());
-            let mut child = StdCommand::new(&ffmpeg)
+            let mut process = StdCommand::new(&ffmpeg)
                 .args(&args)
                 .arg(&video_temp)
                 .stdin(Stdio::piped())
@@ -647,14 +800,15 @@ mod backend {
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|error| format!("could not spawn the export encoder: {error}"))?;
-            let stdin = child
+            let stdin = process
                 .stdin
                 .take()
                 .ok_or("the export encoder has no stdin")?;
-            let stderr = child
+            let stderr = process
                 .stderr
                 .take()
                 .ok_or("the export encoder has no stderr")?;
+            register_child(&child, process, cancelled)?;
             let stderr_tail = ffmpeg::spawn_stderr_tail(stderr, |_| {});
             let audio_file = match &audio_temp {
                 Some(audio_temp) => Some(
@@ -693,12 +847,30 @@ mod backend {
                 .map_err(|_| "could not stage export audio".to_string())
         }
 
+        fn abort(self) {
+            let Session {
+                child,
+                stdin,
+                video_temp,
+                audio_temp,
+                audio_file,
+                ..
+            } = self;
+            drop(stdin);
+            drop(audio_file);
+            stop_child(&child);
+            let _ = std::fs::remove_file(video_temp);
+            if let Some(audio_temp) = audio_temp {
+                let _ = std::fs::remove_file(audio_temp);
+            }
+        }
+
         /// Closes the inputs, muxes audio in when present, and moves the
         /// result onto the output path.
-        fn finalize(self) -> Result<(), String> {
+        fn finalize(self, cancelled: &AtomicBool) -> Result<(), String> {
             let Session {
                 ffmpeg,
-                mut child,
+                child,
                 stdin,
                 output,
                 video_temp,
@@ -714,14 +886,14 @@ mod backend {
                     let _ = std::fs::remove_file(audio_temp);
                 }
             };
-            ffmpeg::wait_for_exit(&mut child, FINALIZE_TIMEOUT)
-                .then_some(())
-                .ok_or_else(|| {
-                    format!(
-                        "the export encoder did not finish: {}",
-                        stderr_tail.lock().unwrap()
-                    )
-                })?;
+            let finished = wait_for_child(&child, FINALIZE_TIMEOUT).is_some();
+            if !finished || cancelled.load(Ordering::Acquire) {
+                remove_staged_files(&video_temp, &audio_temp);
+                return Err(format!(
+                    "the export encoder did not finish: {}",
+                    stderr_tail.lock().unwrap()
+                ));
+            }
             let Some(audio_temp) = audio_temp else {
                 let moved = std::fs::rename(&video_temp, &output)
                     .map_err(|error| format!("could not finalize the export: {error}"));
@@ -770,21 +942,30 @@ mod backend {
             };
             // The muxer's stderr is the only place a mux failure explains
             // itself; capture it for the error message before waiting.
-            let mut mux_error = String::new();
-            if let Some(stderr) = mux.stderr.take() {
-                use std::io::BufRead;
-                for line in std::io::BufReader::new(stderr)
-                    .lines()
-                    .map_while(Result::ok)
-                {
-                    if !line.is_empty() {
-                        mux_error = line;
-                    }
+            let reader = mux.stderr.take().map(|stderr| {
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    std::io::BufReader::new(stderr)
+                        .lines()
+                        .map_while(Result::ok)
+                        .filter(|line| !line.is_empty())
+                        .last()
+                        .unwrap_or_default()
+                })
+            });
+            if let Err(error) = register_child(&child, mux, cancelled) {
+                if let Some(reader) = reader {
+                    let _ = reader.join();
                 }
+                remove_staged_files(&video_temp, &Some(audio_temp));
+                return Err(error);
             }
-            let finished = ffmpeg::wait_for_exit(&mut mux, FINALIZE_TIMEOUT);
+            let finished = wait_for_child(&child, FINALIZE_TIMEOUT).is_some();
+            let mux_error = reader
+                .and_then(|reader| reader.join().ok())
+                .unwrap_or_default();
             remove_staged_files(&video_temp, &Some(audio_temp));
-            if !finished {
+            if !finished || cancelled.load(Ordering::Acquire) {
                 return Err(format!("the export muxer did not finish: {mux_error}"));
             }
             Ok(())
@@ -806,6 +987,8 @@ mod backend {
         settings: Settings,
         commands: Receiver<Command>,
         ready: Sender<Result<(), String>>,
+        cancelled: Arc<AtomicBool>,
+        child: ChildSlot,
     ) {
         let Some(ffmpeg) = ffmpeg::resolve_h264() else {
             let _ = ready.send(Err(
@@ -815,7 +998,7 @@ mod backend {
             ));
             return;
         };
-        let mut session = match Session::start(ffmpeg, &path, settings) {
+        let mut session = match Session::start(ffmpeg, &path, settings, child, &cancelled) {
             Ok(session) => session,
             Err(error) => {
                 let _ = ready.send(Err(error));
@@ -825,6 +1008,9 @@ mod backend {
         let _ = ready.send(Ok(()));
 
         while let Ok(command) = commands.recv() {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             let outcome = match command {
                 // Raw-video timestamps come from the frame rate, so the
                 // timeline offsets the other platforms use are not needed.
@@ -845,16 +1031,18 @@ mod backend {
                     session.write_audio(&pcm)
                 }
                 Command::Finish { reply } => {
-                    let _ = reply.send(session.finalize());
-                    break;
+                    let _ = reply.send(session.finalize(&cancelled));
+                    return;
                 }
             };
             if outcome.is_err() {
                 // The encode is broken; drain the channel so a dropped
                 // Encoder cannot deadlock a caller still sending.
-                let _ = session.child.kill();
-                let _ = session.child.wait();
+                stop_child(&session.child);
                 while let Ok(command) = commands.recv() {
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
                     match command {
                         Command::Finish { reply } => {
                             let _ = reply.send(Err(outcome.err().unwrap_or_default()));
@@ -864,8 +1052,241 @@ mod backend {
                         Command::Audio { pcm, .. } => drop(pcm),
                     }
                 }
+                session.abort();
                 return;
             }
+        }
+        session.abort();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn abort_reaps_the_child_and_removes_staged_files() {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = directory.path().join("ffmpeg");
+            std::fs::write(
+                &fake,
+                "#!/bin/sh\nfor arg in \"$@\"; do output=\"$arg\"; done\nprintf running > \"$output\"\nprintf %s $$ > \"$output.pid\"\nexec cat >/dev/null\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = directory.path().join("output.mp4");
+            let video = staged_path(directory.path(), &output, "video");
+            let audio = staged_path(directory.path(), &output, "audio");
+            let pid_file = directory.path().join(".output.mp4.poratake-video.tmp.pid");
+            let mut session = Session::start(
+                fake,
+                &output,
+                Settings {
+                    width: 2,
+                    height: 2,
+                    frame_rate: 25,
+                    bitrate: 1_000_000,
+                    has_audio: true,
+                },
+                Arc::new(Mutex::new(None)),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            session.write_video(&[0; 16]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let pid: i32 = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                {
+                    break pid;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            assert!(video.is_file());
+            assert!(audio.is_file());
+            session.abort();
+            assert!(!video.exists());
+            assert!(!audio.exists());
+            assert!(!output.exists());
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            assert_eq!(unsafe { kill(pid, 0) }, -1);
+        }
+
+        #[test]
+        fn cancelling_unblocks_a_child_that_does_not_read_frames() {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = directory.path().join("ffmpeg");
+            std::fs::write(
+                &fake,
+                "#!/bin/sh\nfor arg in \"$@\"; do output=\"$arg\"; done\nprintf %s $$ > \"$output.pid\"\nexec sleep 30\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = directory.path().join("output.mp4");
+            let pid_file = directory.path().join(".output.mp4.poratake-video.tmp.pid");
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let child = Arc::new(Mutex::new(None));
+            let settings = Settings {
+                width: 1024,
+                height: 1024,
+                frame_rate: 25,
+                bitrate: 1_000_000,
+                has_audio: false,
+            };
+            let mut session =
+                Session::start(fake, &output, settings, child.clone(), &cancelled).unwrap();
+            let worker = std::thread::Builder::new()
+                .name("cancel-encoder".into())
+                .spawn(move || {
+                    let _ = session.write_video(&vec![0; 1024 * 1024 * 4]);
+                    session.abort();
+                })
+                .unwrap();
+            let (commands, _receiver) = mpsc::channel();
+            let encoder = Encoder {
+                commands: Some(commands),
+                settings,
+                frames_written: 0,
+                cancelled,
+                child,
+                worker: Some(worker),
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let pid: i32 = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                {
+                    break pid;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            loop {
+                let blocked =
+                    std::fs::read_dir("/proc/self/task")
+                        .unwrap()
+                        .flatten()
+                        .any(|entry| {
+                            let path = entry.path();
+                            std::fs::read_to_string(path.join("comm"))
+                                .unwrap_or_default()
+                                .trim()
+                                == "cancel-encoder"
+                                && std::fs::read_to_string(path.join("wchan"))
+                                    .unwrap_or_default()
+                                    .contains("pipe_write")
+                        });
+                if blocked {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            let (done_tx, done_rx) = mpsc::channel();
+            let caller = std::thread::spawn(move || {
+                drop(encoder);
+                done_tx.send(()).unwrap();
+            });
+            let stopped = done_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .is_ok();
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            if !stopped {
+                unsafe { kill(pid, 9) };
+            }
+            caller.join().unwrap();
+            assert!(stopped, "cancellation must stop the blocked child");
+            assert!(!output.exists());
+        }
+
+        #[test]
+        fn cancelling_during_mux_stops_the_child_and_removes_staged_files() {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = directory.path().join("ffmpeg");
+            std::fs::write(
+                &fake,
+                "#!/bin/sh\nfor arg in \"$@\"; do output=\"$arg\"; done\ncase \"$output\" in\n  *.poratake-video.tmp) cat >/dev/null; printf video > \"$output\" ;;\n  *) printf partial > \"$output\"; printf %s $$ > \"$output.pid\"; exec sleep 30 ;;\nesac\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = directory.path().join("output.mp4");
+            let video = staged_path(directory.path(), &output, "video");
+            let audio = staged_path(directory.path(), &output, "audio");
+            let pid_file = directory.path().join("output.mp4.pid");
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let child = Arc::new(Mutex::new(None));
+            let settings = Settings {
+                width: 2,
+                height: 2,
+                frame_rate: 25,
+                bitrate: 1_000_000,
+                has_audio: true,
+            };
+            let mut session =
+                Session::start(fake, &output, settings, child.clone(), &cancelled).unwrap();
+            session.write_video(&[0; 16]).unwrap();
+            session.write_audio(&[0; 8]).unwrap();
+            let (commands, receiver) = mpsc::channel();
+            let worker_cancelled = cancelled.clone();
+            let worker = std::thread::spawn(move || {
+                if let Ok(Command::Finish { reply }) = receiver.recv() {
+                    let _ = reply.send(session.finalize(&worker_cancelled));
+                } else {
+                    session.abort();
+                }
+            });
+            let encoder = Encoder {
+                commands: Some(commands),
+                settings,
+                frames_written: 0,
+                cancelled,
+                child,
+                worker: Some(worker),
+            };
+            let requested = Arc::new(AtomicBool::new(false));
+            let worker_requested = requested.clone();
+            let (done_tx, done_rx) = mpsc::channel();
+            let caller = std::thread::spawn(move || {
+                let result =
+                    encoder.finish_cancellable(&|| worker_requested.load(Ordering::Acquire));
+                done_tx.send(result).unwrap();
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let pid: Option<i32> = loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                {
+                    break Some(pid);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::yield_now();
+            };
+            requested.store(true, Ordering::Release);
+            let result = done_rx.recv_timeout(std::time::Duration::from_secs(3));
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            if result.is_err() {
+                if let Some(pid) = pid {
+                    unsafe { kill(pid, 9) };
+                }
+            }
+            caller.join().unwrap();
+            let pid = pid.expect("mux process started");
+            assert!(result.unwrap().unwrap_err().contains("cancelled"));
+            assert_eq!(unsafe { kill(pid, 0) }, -1);
+            assert!(!video.exists());
+            assert!(!audio.exists());
         }
     }
 }
@@ -880,7 +1301,7 @@ mod tests {
         // live encoder thread.
         let (commands, _receiver) = mpsc::channel();
         let mut encoder = Encoder {
-            commands,
+            commands: Some(commands),
             settings: Settings {
                 width: 4,
                 height: 4,
@@ -889,6 +1310,9 @@ mod tests {
                 has_audio: false,
             },
             frames_written: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            worker: None,
         };
         assert!(encoder.write_frame(vec![0; 8]).is_err());
         assert!(encoder.write_frame(vec![0; 64]).is_ok());
@@ -898,7 +1322,7 @@ mod tests {
     fn frame_times_advance_by_the_frame_duration() {
         let (commands, receiver) = mpsc::channel();
         let mut encoder = Encoder {
-            commands,
+            commands: Some(commands),
             settings: Settings {
                 width: 2,
                 height: 2,
@@ -907,6 +1331,9 @@ mod tests {
                 has_audio: false,
             },
             frames_written: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            worker: None,
         };
         encoder.write_frame(vec![0; 16]).expect("first");
         encoder.write_frame(vec![0; 16]).expect("second");
@@ -922,7 +1349,7 @@ mod tests {
     fn audio_durations_follow_the_sample_count() {
         let (commands, receiver) = mpsc::channel();
         let encoder = Encoder {
-            commands,
+            commands: Some(commands),
             settings: Settings {
                 width: 2,
                 height: 2,
@@ -931,6 +1358,9 @@ mod tests {
                 has_audio: true,
             },
             frames_written: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            worker: None,
         };
         // One second of stereo 16-bit at 48 kHz.
         let pcm = vec![0u8; AUDIO_SAMPLE_RATE as usize * 4];
@@ -948,7 +1378,7 @@ mod tests {
     fn empty_audio_is_dropped() {
         let (commands, receiver) = mpsc::channel();
         let encoder = Encoder {
-            commands,
+            commands: Some(commands),
             settings: Settings {
                 width: 2,
                 height: 2,
@@ -957,8 +1387,72 @@ mod tests {
                 has_audio: true,
             },
             frames_written: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            worker: None,
         };
         encoder.write_audio(Vec::new(), 0).expect("empty");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn cancellation_waits_for_the_encoder_worker_to_release_its_output() {
+        let (commands, receiver) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (stopping_tx, stopping_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = std::thread::spawn(move || {
+            let Command::Finish { reply } = receiver.recv().unwrap() else {
+                panic!("expected finish");
+            };
+            started_tx.send(()).unwrap();
+            while !worker_cancelled.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            stopping_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _ = reply.send(Ok(()));
+        });
+        let encoder = Encoder {
+            commands: Some(commands),
+            settings: Settings {
+                width: 2,
+                height: 2,
+                frame_rate: 25,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+            frames_written: 0,
+            cancelled,
+            child: Arc::new(Mutex::new(None)),
+            worker: Some(worker),
+        };
+        let request = Arc::new(AtomicBool::new(false));
+        let cancel_request = request.clone();
+        let caller = std::thread::spawn(move || {
+            let result = encoder.finish_cancellable(&|| cancel_request.load(Ordering::Acquire));
+            result_tx.send(result).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        request.store(true, Ordering::Release);
+        stopping_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_tx.send(()).unwrap();
+        assert!(result_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap_err()
+            .contains("cancelled"));
+        caller.join().unwrap();
     }
 }

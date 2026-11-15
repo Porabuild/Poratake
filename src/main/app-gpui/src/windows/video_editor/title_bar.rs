@@ -176,6 +176,7 @@ fn export_indicator(
 
 pub fn export_popover(
     complete: bool,
+    cancelling: bool,
     progress: f32,
     elapsed: SharedString,
     remaining: SharedString,
@@ -202,6 +203,14 @@ pub fn export_popover(
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .child("Export Complete"),
                 ),
+        );
+    }
+    if cancelling {
+        return card.child(
+            div()
+                .text_size(px(chrome::TEXT_SM))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child("Canceling..."),
         );
     }
     card.child(

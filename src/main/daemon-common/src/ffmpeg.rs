@@ -101,13 +101,11 @@ pub fn spawn_stderr_tail(
     tail
 }
 
-/// Waits up to `timeout` for a child to exit on its own, killing it past the
-/// deadline; returns whether it exited by itself.
 pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return true,
+            Ok(Some(status)) => return status.success(),
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();

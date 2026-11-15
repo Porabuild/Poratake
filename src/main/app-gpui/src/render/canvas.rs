@@ -8,11 +8,13 @@
 use std::sync::Arc;
 
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
-    PixmapRef, Rect, Shader, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, PathStroker, Pixmap,
+    PixmapPaint, PixmapRef, Rect, Shader, Stroke, Transform,
 };
 
 use crate::render::blur;
+
+pub const MAX_SHADOW_SURFACE_SIZE: u32 = 16_384;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
@@ -46,6 +48,7 @@ pub struct Canvas {
     state: State,
     stack: Vec<State>,
     shadow_scale: f32,
+    patch_path_anchor: Option<((f32, f32), (f32, f32))>,
 }
 
 impl Canvas {
@@ -59,6 +62,7 @@ impl Canvas {
             state: State::root(),
             stack: Vec::new(),
             shadow_scale: 1.0,
+            patch_path_anchor: None,
         }
     }
 
@@ -74,12 +78,24 @@ impl Canvas {
         &self.pixmap
     }
 
+    pub fn pixmap_mut(&mut self) -> &mut Pixmap {
+        &mut self.pixmap
+    }
+
     pub fn into_pixmap(self) -> Pixmap {
         self.pixmap
     }
 
     pub fn transform(&self) -> Transform {
         self.state.transform
+    }
+
+    pub fn set_patch_path_anchor(
+        &mut self,
+        composition_origin: (f32, f32),
+        crop_origin: (f32, f32),
+    ) {
+        self.patch_path_anchor = Some((composition_origin, crop_origin));
     }
 
     pub fn global_alpha(&self) -> f32 {
@@ -232,18 +248,35 @@ impl Canvas {
                 stroke.width * self.device_scale(),
             );
             self.draw_shadow_of(bounds, shadow, |canvas| {
-                canvas.stroke_path_raw(path, Color::from_rgba8(0, 0, 0, 255), stroke);
+                canvas.stroke_path_raw(path, Color::from_rgba8(0, 0, 0, 255), stroke, false);
             });
         }
-        self.stroke_path_raw(path, color, stroke);
+        self.stroke_path_raw(path, color, stroke, self.state.shadow.is_none());
     }
 
-    fn stroke_path_raw(&mut self, path: &Path, color: Color, stroke: &Stroke) {
+    fn stroke_path_raw(&mut self, path: &Path, color: Color, stroke: &Stroke, anchored: bool) {
         let color = crate::render::color::with_alpha(color, self.state.alpha);
         if color.alpha() <= 0.0 || stroke.width <= 0.0 {
             return;
         }
         let paint = paint_for(Shader::SolidColor(color), BlendMode::SourceOver);
+        if anchored && self.patch_path_anchor.is_some() && stroke.dash.is_none() {
+            let resolution_scale = PathStroker::compute_resolution_scale(&self.state.transform);
+            if stroke.width * resolution_scale > 1.0 {
+                if let Some(outline) = path.stroke(stroke, resolution_scale) {
+                    if let Some(path) = self.patch_path(&outline) {
+                        self.pixmap.fill_path(
+                            &path,
+                            &paint,
+                            FillRule::Winding,
+                            Transform::identity(),
+                            self.state.clip.as_deref(),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         self.pixmap.stroke_path(
             path,
             &paint,
@@ -251,6 +284,25 @@ impl Canvas {
             self.state.transform,
             self.state.clip.as_deref(),
         );
+    }
+
+    fn patch_path(&self, path: &Path) -> Option<Path> {
+        let (composition_origin, crop_origin) = self.patch_path_anchor?;
+        let transform = self.state.transform;
+        let full_transform = Transform::from_row(
+            transform.sx,
+            transform.ky,
+            transform.kx,
+            transform.sy,
+            composition_origin.0 + (transform.tx + crop_origin.0),
+            composition_origin.1 + (transform.ty + crop_origin.1),
+        );
+        path.clone()
+            .transform(full_transform)?
+            .transform(Transform::from_translate(
+                -(composition_origin.0 + crop_origin.0),
+                -(composition_origin.1 + crop_origin.1),
+            ))
     }
 
     /// Draws `source` with its top-left at the user-space origin, scaled to
@@ -418,7 +470,11 @@ impl Canvas {
         let top = (bounds.top() - pad).floor();
         let width = (bounds.width() + pad * 2.0).ceil() as u32;
         let height = (bounds.height() + pad * 2.0).ceil() as u32;
-        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+        if width == 0
+            || height == 0
+            || width > MAX_SHADOW_SURFACE_SIZE
+            || height > MAX_SHADOW_SURFACE_SIZE
+        {
             return;
         }
 
@@ -429,7 +485,7 @@ impl Canvas {
         draw(&mut offscreen);
 
         let mut mask = offscreen.into_pixmap();
-        blur::blur(&mut mask, sigma);
+        blur::blur_alpha(&mut mask, sigma);
         tint(&mut mask, shadow.color);
 
         let paint = PixmapPaint {
@@ -554,6 +610,229 @@ pub fn rounded_rect_path(x: f32, y: f32, width: f32, height: f32, radius: f32) -
     builder.finish()
 }
 
+pub fn paint_rounded_shadow(
+    canvas: &mut Canvas,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Shadow,
+    fill: Color,
+) -> Option<()> {
+    let (x, y, width, height) = rect;
+    let path = rounded_rect_path(x, y, width, height, radius)?;
+    let spread = blur::box_radius(blur::sigma_for_shadow_blur(shadow.blur)) as u32 * 3 + 2;
+    let full_shadow_fits = (path.bounds().width() + spread as f32 * 2.0).ceil()
+        <= MAX_SHADOW_SURFACE_SIZE as f32
+        && (path.bounds().height() + spread as f32 * 2.0).ceil() <= MAX_SHADOW_SURFACE_SIZE as f32;
+    let outer = spread + shadow.offset_x.abs().max(shadow.offset_y.abs()).ceil() as u32 + 2;
+    let inner = radius.min(width / 2.0).min(height / 2.0).max(0.0).ceil() as u32 + outer;
+    let max_content = (inner * 2 + 1) as f32;
+    let content_width = width.min(max_content + width.fract());
+    let content_height = height.min(max_content + height.fract());
+    let fraction_x = x - x.floor();
+    let fraction_y = y - y.floor();
+    let patch_width = (fraction_x + content_width).ceil() as u32 + outer * 2;
+    let patch_height = (fraction_y + content_height).ceil() as u32 + outer * 2;
+    let target_width = (fraction_x + width).ceil() as u32 + outer * 2;
+    let target_height = (fraction_y + height).ceil() as u32 + outer * 2;
+    if canvas.transform() != Transform::identity()
+        || canvas.shadow_scale != 1.0
+        || (full_shadow_fits
+            && u64::from(patch_width) * u64::from(patch_height) * 2
+                >= u64::from(target_width) * u64::from(target_height))
+    {
+        canvas.save();
+        canvas.set_shadow(Some(shadow));
+        canvas.fill_path(&path, fill, FillRule::Winding);
+        canvas.restore();
+        return Some(());
+    }
+
+    let mut patch = Canvas::new(patch_width, patch_height)?;
+    let patch_path = rounded_rect_path(
+        outer as f32 + fraction_x,
+        outer as f32 + fraction_y,
+        content_width,
+        content_height,
+        radius,
+    )?;
+    patch.set_shadow(Some(shadow));
+    patch.fill_path(&patch_path, Color::TRANSPARENT, FillRule::Winding);
+    let patch = patch.into_pixmap();
+    let cap_x = (outer + inner).min(patch_width / 2);
+    let cap_y = (outer + inner).min(patch_height / 2);
+    let source_x = [0, cap_x, patch_width - cap_x, patch_width];
+    let source_y = [0, cap_y, patch_height - cap_y, patch_height];
+    let target_x = [0, cap_x, target_width - cap_x, target_width];
+    let target_y = [0, cap_y, target_height - cap_y, target_height];
+    let mut tiles = Vec::with_capacity(9);
+    for row in 0..3 {
+        for column in 0..3 {
+            let tile_width = source_x[column + 1] - source_x[column];
+            let tile_height = source_y[row + 1] - source_y[row];
+            if tile_width == 0 || tile_height == 0 {
+                continue;
+            }
+            let tile = patch.clone_rect(tiny_skia::IntRect::from_xywh(
+                source_x[column] as i32,
+                source_y[row] as i32,
+                tile_width,
+                tile_height,
+            )?)?;
+            tiles.push((tile, column, row));
+        }
+    }
+    canvas.save();
+    canvas.set_shadow(None);
+    for (tile, column, row) in tiles {
+        canvas.draw_pixmap_nearest(
+            tile.as_ref(),
+            x.floor() - outer as f32 + target_x[column] as f32,
+            y.floor() - outer as f32 + target_y[row] as f32,
+            (target_x[column + 1] - target_x[column]) as f32,
+            (target_y[row + 1] - target_y[row]) as f32,
+        );
+    }
+    canvas.fill_path(&path, fill, FillRule::Winding);
+    canvas.restore();
+    Some(())
+}
+
+pub struct PreviewEdge {
+    pub x: u32,
+    pub y: u32,
+    pub pixels: Pixmap,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn preview_clip_edges(
+    backdrop: &Pixmap,
+    x: f64,
+    y: f64,
+    content_width: f64,
+    content_height: f64,
+    title_height: f64,
+    radius: f64,
+    border_style: Option<(f64, Color)>,
+) -> Option<Vec<PreviewEdge>> {
+    let stroke_width = border_style.map_or(0.0, |(width, _)| width);
+    let stroke = stroke_width / 2.0;
+    let left = (x - stroke).floor().max(0.0) as u32;
+    let top = (y - stroke).floor().max(0.0) as u32;
+    let right = (x + content_width + stroke)
+        .ceil()
+        .min(backdrop.width() as f64) as u32;
+    let bottom = (y + title_height + content_height + stroke)
+        .ceil()
+        .min(backdrop.height() as f64) as u32;
+    let width = right.checked_sub(left)?;
+    let height = bottom.checked_sub(top)?;
+    let edge = (radius + stroke_width + 2.0).ceil().max(1.0) as u32;
+    let top_height = edge.min(height);
+    let bottom_height = edge.min(height - top_height);
+    let middle_height = height - top_height - bottom_height;
+    let left_width = edge.min(width);
+    let right_width = edge.min(width - left_width);
+    let tiles = if border_style.is_some() {
+        [
+            (left, top, width, top_height),
+            (left, bottom - bottom_height, width, bottom_height),
+            (left, top + top_height, left_width, middle_height),
+            (
+                right - right_width,
+                top + top_height,
+                right_width,
+                middle_height,
+            ),
+        ]
+    } else {
+        [
+            (left, top, left_width, top_height),
+            (right - right_width, top, right_width, top_height),
+            (left, bottom - bottom_height, left_width, bottom_height),
+            (
+                right - right_width,
+                bottom - bottom_height,
+                right_width,
+                bottom_height,
+            ),
+        ]
+    };
+    let path = rounded_rect_path(
+        x as f32,
+        y as f32,
+        content_width as f32,
+        (content_height + title_height) as f32,
+        radius as f32,
+    )?;
+    let mut clip = Mask::new(backdrop.width(), backdrop.height())?;
+    clip.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    let (border, border_color) = if let Some((stroke_width, color)) = border_style {
+        let mut border = Canvas::new(backdrop.width(), backdrop.height())?;
+        border.stroke_path(
+            &path,
+            Color::from_rgba8(255, 255, 255, 255),
+            &Stroke {
+                width: stroke_width as f32,
+                ..Stroke::default()
+            },
+        );
+        let color = color.to_color_u8();
+        (Some(border), [color.red(), color.green(), color.blue()])
+    } else {
+        (None, [0, 0, 0])
+    };
+    let mut edges = Vec::new();
+    for (tile_x, tile_y, tile_width, tile_height) in tiles {
+        if tile_width == 0 || tile_height == 0 {
+            continue;
+        }
+        let mut overlay = Pixmap::new(tile_width, tile_height)?;
+        for row in 0..tile_height as usize {
+            for column in 0..tile_width as usize {
+                let source = ((tile_y as usize + row) * backdrop.width() as usize
+                    + tile_x as usize
+                    + column)
+                    * 4;
+                let target = (row * tile_width as usize + column) * 4;
+                if backdrop.data()[source + 3] != 255 {
+                    return None;
+                }
+                let pixel_x = tile_x as usize + column;
+                let pixel_y = tile_y as usize + row;
+                let in_content = (pixel_x as f64) >= x
+                    && (pixel_x as f64) < x + content_width
+                    && (pixel_y as f64) >= y + title_height
+                    && (pixel_y as f64) < y + title_height + content_height;
+                let clip_alpha = if in_content {
+                    u32::from(clip.data()[source / 4])
+                } else {
+                    0
+                };
+                let border_alpha = border
+                    .as_ref()
+                    .map_or(0, |border| u32::from(border.pixmap().data()[source + 3]));
+                let background_alpha = ((255 - border_alpha) * (255 - clip_alpha) + 127) / 255;
+                let alpha = (border_alpha + background_alpha).min(255) as u8;
+                let mut pixel = [0, 0, 0, alpha];
+                for channel in 0..3 {
+                    pixel[channel] = ((u32::from(border_color[channel]) * border_alpha
+                        + u32::from(backdrop.data()[source + channel]) * background_alpha
+                        + 127)
+                        / 255)
+                        .min(u32::from(alpha)) as u8;
+                }
+                overlay.data_mut()[target..target + 4].copy_from_slice(&pixel);
+            }
+        }
+        edges.push(PreviewEdge {
+            x: tile_x,
+            y: tile_y,
+            pixels: overlay,
+        });
+    }
+    Some(edges)
+}
+
 pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
     if radius <= 0.0 {
         return None;
@@ -567,9 +846,155 @@ pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn tiled_rounded_shadows_match_fractional_full_rasterization() {
+        for (x, y, width, height, radius) in [
+            (40.25, 39.75, 700.75, 100.25, 23.5),
+            (-5.25, 30.5, 720.5, 130.75, 16.5),
+            (20.5, -3.75, 130.25, 700.75, 70.0),
+            (12.75, 9.25, 770.5, 160.5, 0.0),
+        ] {
+            for background in [Color::TRANSPARENT, Color::from_rgba8(36, 104, 172, 255)] {
+                let shadow = crate::editor::export::image_shadow(50.0).unwrap();
+                let fill = Color::from_rgba8(18, 32, 46, 255);
+                let mut expected = Canvas::new(800, 800).unwrap();
+                let mut actual = Canvas::new(800, 800).unwrap();
+                expected.fill_all(background);
+                actual.fill_all(background);
+                let path = rounded_rect_path(x, y, width, height, radius).unwrap();
+                expected.set_shadow(Some(shadow));
+                expected.fill_path(&path, fill, FillRule::Winding);
+                paint_rounded_shadow(&mut actual, (x, y, width, height), radius, shadow, fill)
+                    .unwrap();
+                assert!(
+                    expected
+                        .pixmap()
+                        .data()
+                        .iter()
+                        .zip(actual.pixmap().data())
+                        .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
+                    "{x},{y} {width}x{height}, radius {radius}, background {background:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transformed_rounded_shadows_use_the_full_rasterizer() {
+        for (transformed, shadow_scale) in [(true, 1.0), (false, 1.5), (true, 1.5)] {
+            let shadow = crate::editor::export::image_shadow(50.0).unwrap();
+            let mut expected = Canvas::new(800, 400).unwrap();
+            let mut actual = Canvas::new(800, 400).unwrap();
+            for canvas in [&mut expected, &mut actual] {
+                if transformed {
+                    canvas.translate(6.0, 4.0);
+                    canvas.scale(1.1, 1.2);
+                }
+                canvas.set_shadow_scale(shadow_scale);
+            }
+            let rect = (40.0, 40.0, 600.0, 200.0);
+            let path = rounded_rect_path(rect.0, rect.1, rect.2, rect.3, 24.0).unwrap();
+            expected.set_shadow(Some(shadow));
+            expected.fill_path(&path, Color::WHITE, FillRule::Winding);
+            paint_rounded_shadow(&mut actual, rect, 24.0, shadow, Color::WHITE).unwrap();
+            assert_eq!(actual.pixmap().data(), expected.pixmap().data());
+        }
+    }
+
+    #[test]
+    fn preview_edges_match_rounded_image_clipping() {
+        for (width, height, radius) in [(64, 40, 18.0), (10, 10, 20.0), (1, 1, 5.0)] {
+            let source = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    (x * 3) as u8,
+                    (y * 5) as u8,
+                    160,
+                    if (x + y) % 3 == 0 { 128 } else { 255 },
+                ])
+            });
+            let image = crate::editor::export::from_rgba(&source).unwrap();
+            let mut expected = Canvas::new(96, 80).unwrap();
+            expected.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            expected.clip_path(
+                &rounded_rect_path(15.0, 10.0, width as f32, height as f32, radius).unwrap(),
+                FillRule::Winding,
+            );
+            expected.draw_pixmap(image.as_ref(), 15.0, 10.0, width as f32, height as f32);
+            let mut actual = Canvas::new(96, 80).unwrap();
+            actual.fill_all(Color::from_rgba8(36, 104, 172, 255));
+            let edges = preview_clip_edges(
+                actual.pixmap(),
+                15.0,
+                10.0,
+                f64::from(width),
+                f64::from(height),
+                0.0,
+                f64::from(radius),
+                None,
+            )
+            .unwrap();
+            actual.draw_pixmap(image.as_ref(), 15.0, 10.0, width as f32, height as f32);
+            for edge in edges {
+                actual.draw_pixmap(
+                    edge.pixels.as_ref(),
+                    edge.x as f32,
+                    edge.y as f32,
+                    edge.pixels.width() as f32,
+                    edge.pixels.height() as f32,
+                );
+            }
+            assert!(
+                actual
+                    .pixmap()
+                    .data()
+                    .iter()
+                    .zip(expected.pixmap().data())
+                    .all(|(actual, expected)| actual.abs_diff(*expected) <= 2),
+                "{width}x{height}, radius {radius}"
+            );
+        }
+    }
+
     fn alpha_at(canvas: &Canvas, x: u32, y: u32) -> u8 {
         let index = ((y * canvas.width() + x) * 4 + 3) as usize;
         canvas.pixmap().data()[index]
+    }
+
+    #[test]
+    fn shadow_blur_approximates_electron() {
+        let mut worst = (0, 0., 0, 0, 0);
+        for (blur, expected) in [
+            (2., [0, 0, 0, 0, 17, 79, 255, 255, 79, 17, 0, 0, 0, 0]),
+            (10., [0, 0, 7, 47, 98, 117, 255, 255, 117, 98, 35, 4, 0, 0]),
+            (
+                20.,
+                [7, 15, 44, 83, 112, 122, 255, 255, 122, 112, 74, 37, 12, 5],
+            ),
+            (
+                40.,
+                [37, 50, 72, 94, 107, 111, 255, 255, 111, 107, 89, 68, 47, 35],
+            ),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.set_shadow(Some(Shadow {
+                color: Color::BLACK,
+                blur,
+                offset_x: 0.,
+                offset_y: 0.,
+            }));
+            canvas.fill_rect(Rect::from_xywh(32., 32., 64., 64.).unwrap(), Color::WHITE);
+            for (x, expected) in [12, 16, 22, 27, 30, 31, 32, 64, 96, 97, 101, 106, 112, 116]
+                .into_iter()
+                .zip(expected)
+            {
+                let actual = alpha_at(&canvas, x, 64);
+                let difference = actual.abs_diff(expected);
+                if difference > worst.0 {
+                    worst = (difference, blur, x, actual, expected);
+                }
+            }
+        }
+        assert!(worst.0 <= 4, "{worst:?}");
     }
 
     #[test]

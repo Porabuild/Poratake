@@ -54,6 +54,7 @@
     "test:react-compiler": "bun scripts/check-react-compiler.mjs",
     "test:coverage": "vitest run --coverage",
     "test:daemon-win": "bun scripts/check-daemon-win.mjs",
+    "test:visual": "bun scripts/parity/visual.mjs",
     "checks": "bun run check:daemon-contract && bun run typecheck && bun run lint && bun run format:check && bun run test:react-compiler && bun run test:run && bun run test:daemon-win"
   },
   "dependencies": {

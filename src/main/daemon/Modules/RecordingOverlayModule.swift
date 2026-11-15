@@ -8,6 +8,7 @@ class RecordingOverlayModule: Module {
     private var highlightWindow: RecordingOverlayWindow?
     private var highlightTimer: Timer?
     private var highlightWindowID: CGWindowID?
+    private var presentationGeneration = WindowPresentationGeneration()
 
     private static let highlightThickness: CGFloat = 1
     private static let highlightGap: CGFloat = 1
@@ -43,11 +44,17 @@ class RecordingOverlayModule: Module {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            let visible = self.showWindowHighlight(
-                windowID: CGWindowID(windowId),
-                color: color
-            )
-            self.respond(id: requestId, result: ["visible": visible])
+            Task { @MainActor in
+                do {
+                    let visible = try await self.showWindowHighlight(
+                        windowID: CGWindowID(windowId),
+                        color: color
+                    )
+                    self.respond(id: requestId, result: ["visible": visible])
+                } catch {
+                    self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
+                }
+            }
         }
     }
 
@@ -63,23 +70,35 @@ class RecordingOverlayModule: Module {
         
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.showOverlay(x: x, y: y, width: width, height: height)
-            self.respond(id: requestId, result: ["visible": true])
+            Task { @MainActor in
+                do {
+                    let visible = try await self.showOverlay(x: x, y: y, width: width, height: height)
+                    self.respond(id: requestId, result: ["visible": visible])
+                } catch {
+                    self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
+                }
+            }
         }
     }
     
     private func handleHide(requestId: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.hideOverlay()
-            self.respond(id: requestId, result: ["visible": false])
+            Task { @MainActor in
+                await self.hideOverlay()
+                self.respond(id: requestId, result: ["visible": false])
+            }
         }
     }
     
     /// Frames the recorded window from the outside and keeps up with it, so it
     /// stays obvious which window the recording is following.
-    private func showWindowHighlight(windowID: CGWindowID, color: NSColor) -> Bool {
-        hideOverlay()
+    @MainActor
+    private func showWindowHighlight(windowID: CGWindowID, color: NSColor) async throws -> Bool {
+        let generation = presentationGeneration.begin()
+        removeOverlayWindows()
+        await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
+        guard presentationGeneration.isCurrent(generation) else { return false }
 
         guard windowBounds(of: windowID) != nil else { return false }
 
@@ -102,9 +121,37 @@ class RecordingOverlayModule: Module {
             radius: Self.highlightRadius,
             color: color
         )
+        window.alphaValue = 0
 
         highlightWindow = window
         highlightWindowID = windowID
+        window.orderFrontRegardless()
+        guard RecordingCaptureWindowRegistry.shared.register(window) != nil else {
+            highlightWindow = nil
+            highlightWindowID = nil
+            window.orderOut(nil)
+            throw RecordingCaptureFilterError.unavailableWindowNumber
+        }
+        do {
+            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+        } catch {
+            guard presentationGeneration.isCurrent(generation), highlightWindow === window else { return false }
+            RecordingCaptureWindowRegistry.shared.unregister(window)
+            highlightWindow = nil
+            highlightWindowID = nil
+            window.orderOut(nil)
+            try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            throw error
+        }
+        guard presentationGeneration.isCurrent(generation), highlightWindow === window else {
+            if highlightWindow !== window {
+                window.orderOut(nil)
+                RecordingCaptureWindowRegistry.shared.unregister(window)
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            }
+            return false
+        }
+        window.alphaValue = 1
         followHighlight()
 
         // AppKit has no cross-application window-move notification without the
@@ -113,17 +160,28 @@ class RecordingOverlayModule: Module {
             withTimeInterval: Self.highlightInterval,
             repeats: true
         ) { [weak self] _ in
-            self?.followHighlight()
+            Task { @MainActor in
+                self?.followHighlight()
+            }
         }
 
         return true
     }
 
+    @MainActor
     private func followHighlight() {
         guard let window = highlightWindow, let windowID = highlightWindowID else { return }
 
         guard let bounds = windowBounds(of: windowID) else {
             window.orderOut(nil)
+            RecordingCaptureWindowRegistry.shared.unregister(window)
+            highlightWindow = nil
+            highlightWindowID = nil
+            highlightTimer?.invalidate()
+            highlightTimer = nil
+            Task { @MainActor in
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            }
             return
         }
 
@@ -142,6 +200,7 @@ class RecordingOverlayModule: Module {
         window.orderFrontRegardless()
     }
 
+    @MainActor
     private func windowBounds(of windowID: CGWindowID) -> CGRect? {
         guard let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
                 as? [[String: Any]],
@@ -156,8 +215,12 @@ class RecordingOverlayModule: Module {
         return rect
     }
 
-    private func showOverlay(x: Int, y: Int, width: Int, height: Int) {
-        hideOverlay()
+    @MainActor
+    private func showOverlay(x: Int, y: Int, width: Int, height: Int) async throws -> Bool {
+        let generation = presentationGeneration.begin()
+        removeOverlayWindows()
+        await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
+        guard presentationGeneration.isCurrent(generation) else { return false }
         
         let mainScreenHeight = NSScreen.screens.first?.frame.height ?? 0
         let cocoaY = mainScreenHeight - CGFloat(y) - CGFloat(height)
@@ -169,6 +232,8 @@ class RecordingOverlayModule: Module {
             height: CGFloat(height)
         )
         
+        var newWindows: [RecordingOverlayWindow] = []
+        var newOverlayViews: [NSScreen: RecordingOverlayView] = [:]
         for screen in NSScreen.screens {
             let window = RecordingOverlayWindow(
                 contentRect: screen.frame,
@@ -200,16 +265,58 @@ class RecordingOverlayModule: Module {
             }
             
             window.contentView = overlayView
+            window.alphaValue = 0
+            newWindows.append(window)
+            newOverlayViews[screen] = overlayView
             window.orderFrontRegardless()
-            
-            windows.append(window)
-            overlayViews[screen] = overlayView
+            guard RecordingCaptureWindowRegistry.shared.register(window) != nil else {
+                for createdWindow in newWindows {
+                    createdWindow.orderOut(nil)
+                    RecordingCaptureWindowRegistry.shared.unregister(createdWindow)
+                }
+                throw RecordingCaptureFilterError.unavailableWindowNumber
+            }
         }
+        windows = newWindows
+        overlayViews = newOverlayViews
+
+        do {
+            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+        } catch {
+            guard presentationGeneration.isCurrent(generation), windows.elementsEqual(newWindows, by: { $0 === $1 }) else { return false }
+            removeOverlayWindows()
+            try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            throw error
+        }
+        guard presentationGeneration.isCurrent(generation), windows.elementsEqual(newWindows, by: { $0 === $1 }) else {
+            if !windows.elementsEqual(newWindows, by: { $0 === $1 }) {
+                for window in newWindows {
+                    window.orderOut(nil)
+                    RecordingCaptureWindowRegistry.shared.unregister(window)
+                }
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            }
+            return false
+        }
+        for window in newWindows {
+            window.alphaValue = 1
+            window.orderFrontRegardless()
+        }
+        return true
     }
     
-    private func hideOverlay() {
+    @MainActor
+    private func hideOverlay() async {
+        presentationGeneration.cancel()
+        removeOverlayWindows()
+        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+    }
+
+    @MainActor
+    private func removeOverlayWindows() {
         for window in windows {
             window.orderOut(nil)
+            RecordingCaptureWindowRegistry.shared.unregister(window)
         }
         windows.removeAll()
         overlayViews.removeAll()
@@ -217,6 +324,9 @@ class RecordingOverlayModule: Module {
         highlightTimer?.invalidate()
         highlightTimer = nil
         highlightWindow?.orderOut(nil)
+        if let highlightWindow {
+            RecordingCaptureWindowRegistry.shared.unregister(highlightWindow)
+        }
         highlightWindow = nil
         highlightWindowID = nil
     }

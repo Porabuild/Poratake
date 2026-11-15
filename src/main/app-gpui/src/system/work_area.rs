@@ -1,16 +1,5 @@
 //! The usable area of a display, i.e. what is left once the taskbar is taken
 //! out.
-//!
-//! Electron positions the capture previews against `display.workArea`
-//! (`capture-preview/index.ts`, `getPreviewPosition`). gpui 0.2.2 has no
-//! equivalent -- `PlatformDisplay` exposes only `bounds()`, the full monitor
-//! rectangle -- so this shell anchored to the full bounds and every
-//! bottom-anchored preview sat a taskbar's height too low, tucked underneath it.
-//! Measured on a 3440x1440 display with a 48px taskbar: the preview landed at
-//! y=1276 where Electron puts it at y=1228.
-//!
-//! Windows reports both rectangles for a monitor, so the inset between them is
-//! the taskbar (and any other appbar).
 
 use gpui::{px, Bounds, Pixels};
 use herogpui::gpui;
@@ -28,6 +17,145 @@ pub fn display_bounds(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
     display.bounds()
 }
 
+#[cfg(any(windows, test))]
+fn persistent_display_hash(data: &[u8]) -> u32 {
+    if data.is_empty() {
+        return 0;
+    }
+    let mut hash = data.len() as u32;
+    let (chunks, remainder) = data.as_chunks::<4>();
+    for chunk in chunks {
+        hash = hash.wrapping_add(u16::from_le_bytes([chunk[0], chunk[1]]) as u32);
+        let mixed = ((u16::from_le_bytes([chunk[2], chunk[3]]) as u32) << 11) ^ hash;
+        hash = (hash << 16) ^ mixed;
+        hash = hash.wrapping_add(hash >> 11);
+    }
+    match remainder {
+        [a, b, c] => {
+            hash = hash.wrapping_add(u16::from_le_bytes([*a, *b]) as u32);
+            hash ^= hash << 16;
+            hash ^= (*c as i8 as i32 as u32) << 18;
+            hash = hash.wrapping_add(hash >> 11);
+        }
+        [a, b] => {
+            hash = hash.wrapping_add(u16::from_le_bytes([*a, *b]) as u32);
+            hash ^= hash << 11;
+            hash = hash.wrapping_add(hash >> 17);
+        }
+        [a] => {
+            hash = hash.wrapping_add(*a as i8 as i32 as u32);
+            hash ^= hash << 10;
+            hash = hash.wrapping_add(hash >> 1);
+        }
+        _ => {}
+    }
+    hash ^= hash << 3;
+    hash = hash.wrapping_add(hash >> 5);
+    hash ^= hash << 4;
+    hash = hash.wrapping_add(hash >> 17);
+    hash ^= hash << 25;
+    hash.wrapping_add(hash >> 6)
+}
+
+#[cfg(any(windows, test))]
+fn windows_target_preference_id(low: u32, high: i32, target: u32) -> i64 {
+    let value = format!("{low}/{high}/{target}");
+    i64::from(persistent_display_hash(value.as_bytes()))
+}
+
+#[cfg(windows)]
+fn windows_display_preference_id(id: gpui::DisplayId) -> Option<i64> {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+        QDC_ONLY_ACTIVE_PATHS,
+    };
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOEXW};
+
+    let monitor = HMONITOR(u64::from(id) as _);
+    let mut info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() } {
+        return None;
+    }
+    let device = String::from_utf16_lossy(&info.szDevice)
+        .trim_end_matches('\0')
+        .to_string();
+    let fallback = || i64::from(persistent_display_hash(device.as_bytes()));
+    loop {
+        let (mut path_count, mut mode_count) = (0, 0);
+        if unsafe {
+            GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+        } != ERROR_SUCCESS
+        {
+            return Some(fallback());
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+        let result = unsafe {
+            QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut path_count,
+                paths.as_mut_ptr(),
+                &mut mode_count,
+                modes.as_mut_ptr(),
+                None,
+            )
+        };
+        if result == ERROR_INSUFFICIENT_BUFFER {
+            continue;
+        }
+        if result != ERROR_SUCCESS {
+            return Some(fallback());
+        }
+        for path in paths.into_iter().take(path_count as usize) {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                    adapterId: path.sourceInfo.adapterId,
+                    id: path.sourceInfo.id,
+                },
+                ..Default::default()
+            };
+            if unsafe { DisplayConfigGetDeviceInfo(&mut source.header) } != 0 {
+                continue;
+            }
+            let source_name = String::from_utf16_lossy(&source.viewGdiDeviceName);
+            if source_name.trim_end_matches('\0') != device {
+                continue;
+            }
+            let target = path.targetInfo;
+            return Some(windows_target_preference_id(
+                target.adapterId.LowPart,
+                target.adapterId.HighPart,
+                target.id,
+            ));
+        }
+        return Some(fallback());
+    }
+}
+
+pub fn display_preference_id(id: gpui::DisplayId) -> Option<i64> {
+    #[cfg(windows)]
+    {
+        let mapped = windows_display_preference_id(id);
+        #[cfg(test)]
+        return mapped.or_else(|| i64::try_from(u64::from(id)).ok());
+        #[cfg(not(test))]
+        mapped
+    }
+    #[cfg(not(windows))]
+    i64::try_from(u64::from(id)).ok()
+}
+
 pub fn capture_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut gpui::App) -> f32 {
     #[cfg(target_os = "macos")]
     if let Some(scale) = macos_display_scale_factor(u64::from(display.id()) as u32) {
@@ -36,7 +164,7 @@ pub fn capture_scale_factor(display: &dyn gpui::PlatformDisplay, cx: &mut gpui::
     #[cfg(windows)]
     {
         let bounds = display.bounds();
-        let Some((monitor, _)) = monitor_rects(bounds) else {
+        let Some((monitor, _)) = monitor_rects(display) else {
             return 1.0;
         };
         if let Some(scale) =
@@ -172,10 +300,11 @@ unsafe extern "C" {
 
 /// The work area of the monitor showing `display`, or `display` unchanged if
 /// the platform will not say.
-pub fn work_area(display: Bounds<Pixels>) -> Bounds<Pixels> {
+pub fn work_area(display: &dyn gpui::PlatformDisplay) -> Bounds<Pixels> {
+    let bounds = display_bounds(display);
     match monitor_rects(display) {
-        Some((monitor, work)) => inset_bounds(display, monitor, work),
-        None => display,
+        Some((monitor, work)) => inset_bounds(bounds, monitor, work),
+        None => bounds,
     }
 }
 
@@ -224,32 +353,17 @@ fn inset_bounds(display: Bounds<Pixels>, monitor: Rect, work: Rect) -> Bounds<Pi
 }
 
 #[cfg(windows)]
-fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-
-    // The centre of the display, so the lookup cannot land on a neighbouring
-    // monitor the way an edge coordinate can.
-    let point = POINT {
-        x: (f32::from(display.origin.x) + f32::from(display.size.width) / 2.0) as i32,
-        y: (f32::from(display.origin.y) + f32::from(display.size.height) / 2.0) as i32,
-    };
+fn monitor_rects(display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
 
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
 
-    // SAFETY: `cbSize` is set as the API requires and `info` is fully
-    // initialised; `MONITOR_DEFAULTTONEAREST` never returns a null handle.
-    let ok = unsafe {
-        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-        GetMonitorInfoW(monitor, &mut info).as_bool()
-    };
+    let monitor = HMONITOR(u64::from(display.id()) as _);
+    let ok = unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() };
     if !ok {
-        eprintln!("[work-area] GetMonitorInfoW failed; using the full display bounds");
         return None;
     }
 
@@ -270,12 +384,13 @@ fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
 }
 
 #[cfg(target_os = "macos")]
-fn monitor_rects(display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
+fn monitor_rects(display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
     use cocoa::appkit::NSScreen;
     use cocoa::base::nil;
     use cocoa::foundation::{NSArray, NSDictionary, NSString};
     use objc::{msg_send, sel, sel_impl};
 
+    let display = display_bounds(display);
     unsafe {
         let screens = NSScreen::screens(nil);
         let key = NSString::alloc(nil).init_str("NSScreenNumber");
@@ -346,7 +461,7 @@ fn appkit_visible_work_rect(
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn monitor_rects(_display: Bounds<Pixels>) -> Option<(Rect, Rect)> {
+fn monitor_rects(_display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
     None
 }
 
@@ -361,6 +476,54 @@ mod tests {
             origin: point(px(x), px(y)),
             size: size(px(w), px(h)),
         }
+    }
+
+    #[test]
+    fn display_hash_matches_chromium_persistent_hash_vectors() {
+        let expected = [
+            0, 1213478405, 2371107848, 2412215855, 2296013106, 2963130491, 342812795, 1345887711,
+            2394271580, 2806845956, 2484860346, 2794219650,
+        ];
+        let bytes = b"hello world";
+        for (length, expected) in expected.into_iter().enumerate() {
+            assert_eq!(persistent_display_hash(&bytes[..length]), expected);
+        }
+        let expected_high = [
+            0, 2524495555, 901867827, 52332316, 1053305007, 4170027104, 1891345481, 2246421829,
+            1241531838, 4191939542, 4100345281, 896950651,
+        ];
+        let bytes = [
+            0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa,
+        ];
+        for (length, expected) in expected_high.into_iter().enumerate() {
+            assert_eq!(persistent_display_hash(&bytes[..length]), expected);
+        }
+        assert_eq!(windows_target_preference_id(94645, 0, 4353), 2047569839);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invalid_windows_display_identity_has_no_preference_id() {
+        assert_eq!(windows_display_preference_id(gpui::DisplayId::new(0)), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires the primary display ID from Electron in the same session"]
+    fn primary_windows_display_id_matches_electron() {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+
+        let expected: i64 = std::env::var("PORATAKE_EXPECTED_PRIMARY_DISPLAY_ID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        assert!(!monitor.is_invalid());
+        assert_eq!(
+            windows_display_preference_id(gpui::DisplayId::new(monitor.0 as usize as u64)),
+            Some(expected)
+        );
     }
 
     /// The case this module exists for: a 48px taskbar along the bottom of a
@@ -411,6 +574,51 @@ mod tests {
     fn capture_scale_uses_the_selected_displays_physical_width() {
         assert_eq!(scale_from_widths(1280.0, 1920.0), Some(1.5));
         assert_eq!(scale_from_widths(1920.0, 1920.0), Some(1.0));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn invalid_monitor_identity_does_not_select_a_nearby_monitor(cx: &mut gpui::TestAppContext) {
+        let id = gpui::DisplayId::new(0);
+        cx.simulate_display_added(id, None);
+        let display = cx.read(|cx| cx.displays().into_iter().find(|display| display.id() == id));
+        assert!(monitor_rects(display.unwrap().as_ref()).is_none());
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn monitor_rectangles_come_from_the_selected_identity(cx: &mut gpui::TestAppContext) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+        };
+
+        let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let id = gpui::DisplayId::new(monitor.0 as u64);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        assert!(unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() });
+        cx.simulate_display_added(id, None);
+        let display = cx.read(|cx| cx.displays().into_iter().find(|display| display.id() == id));
+        assert_eq!(
+            monitor_rects(display.unwrap().as_ref()),
+            Some((
+                (
+                    info.rcMonitor.left,
+                    info.rcMonitor.top,
+                    info.rcMonitor.right,
+                    info.rcMonitor.bottom,
+                ),
+                (
+                    info.rcWork.left,
+                    info.rcWork.top,
+                    info.rcWork.right,
+                    info.rcWork.bottom,
+                ),
+            ))
+        );
     }
 
     #[test]

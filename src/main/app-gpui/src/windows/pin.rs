@@ -10,7 +10,8 @@ use crate::ui::chrome;
 
 pub struct PinWindow {
     image: Arc<gpui::RenderImage>,
-    restore_path: Option<String>,
+    image_size: gpui::Size<gpui::Pixels>,
+    restore: Option<(String, crate::editor::window::PersistedEditorState)>,
     hovered: bool,
 }
 
@@ -21,11 +22,20 @@ impl PinWindow {
 
     /// Port of `screenshot:pin`: the editor closes into the pin and the pin
     /// reopens it, with its persisted state, when closed.
-    pub fn open_for_editor(cx: &mut App, png_bytes: Vec<u8>, file_path: String) {
-        Self::open_with_restore(cx, png_bytes, Some(file_path));
+    pub(crate) fn open_for_editor(
+        cx: &mut App,
+        png_bytes: Vec<u8>,
+        file_path: String,
+        state: crate::editor::window::PersistedEditorState,
+    ) {
+        Self::open_with_restore(cx, png_bytes, Some((file_path, state)));
     }
 
-    fn open_with_restore(cx: &mut App, png_bytes: Vec<u8>, restore_path: Option<String>) {
+    fn open_with_restore(
+        cx: &mut App,
+        png_bytes: Vec<u8>,
+        restore: Option<(String, crate::editor::window::PersistedEditorState)>,
+    ) {
         let decoded = match image::load_from_memory(&png_bytes) {
             Ok(img) => img.to_rgba8(),
             Err(_) => return,
@@ -36,6 +46,15 @@ impl PinWindow {
             .map(|display| crate::system::work_area::capture_scale_factor(display.as_ref(), cx))
             .unwrap_or(1.0)
             .max(1.0);
+        #[cfg(feature = "parity")]
+        let scale = if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+            std::env::var("PORATAKE_PARITY_SCALE")
+                .unwrap_or_else(|_| "2".into())
+                .parse::<f32>()
+                .unwrap()
+        } else {
+            scale
+        };
         let (width, height) = (
             decoded.width() as f32 / scale,
             decoded.height() as f32 / scale,
@@ -77,51 +96,72 @@ impl PinWindow {
             },
         );
         options.window_min_size = Some(size(px(chrome::PIN_MIN_SIZE), px(chrome::PIN_MIN_SIZE)));
-        cx.open_window(options, |_, cx| {
-            cx.new(|_| Self {
+        cx.open_window(options, |window, cx| {
+            window.set_window_title("Poratake pinned screenshot");
+            let view = cx.new(|_| Self {
                 image: render_image.clone(),
-                restore_path,
+                image_size: size(px(width), px(height)),
+                restore,
                 hovered: false,
-            })
+            });
+            let weak = view.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                weak.update(cx, |view, cx| view.restore_editor(cx)).ok();
+                true
+            });
+            view
         })
         .ok();
     }
 
-    fn close(&self, window: &mut Window, cx: &mut App) {
-        if let Some(path) = &self.restore_path {
-            crate::open_editor_for(cx, path);
+    fn restore_editor(&mut self, cx: &mut App) {
+        if let Some((path, state)) = self.restore.take() {
+            crate::open_editor_with_state(cx, &path, Some(state));
         }
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut App) {
+        self.restore_editor(cx);
         window.remove_window();
     }
 }
 
 impl Render for PinWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let image = crate::ui::window_controls::drag_area("pin-drag")
+            .absolute()
+            .inset_0()
+            .mx(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                img(self.image.clone())
+                    .w(self.image_size.width)
+                    .h(self.image_size.height)
+                    .max_w_full()
+                    .max_h_full()
+                    .object_fit(gpui::ObjectFit::Contain),
+            );
         let content = crate::ui::font::root()
-            .id("pin-root")
             .size_full()
             .relative()
             .p(px(chrome::PIN_PAD))
             .overflow_hidden()
             .flex()
             .items_center()
-            .justify_center()
+            .justify_center();
+        #[cfg(feature = "parity")]
+        let content = content.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("pin-controls", bounds);
+        });
+        let content = content
+            .id("pin-root")
             .on_hover(cx.listener(|this, hovered, _, cx| {
                 this.hovered = *hovered;
                 cx.notify();
             }))
-            .child(
-                crate::ui::window_controls::drag_area("pin-drag")
-                    .absolute()
-                    .inset_0()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        img(self.image.clone())
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    ),
-            )
+            .child(image)
             .when(self.hovered, |root| {
                 root.child(
                     div()
@@ -210,5 +250,89 @@ mod tests {
             chrome::pin_window_origin(400.0, 1920.0, 2),
             (1920.0 - 400.0 - 20.0 - 60.0, 80.0)
         );
+    }
+
+    #[herogpui::test]
+    fn native_close_restores_the_annotated_editor_without_history(cx: &mut gpui::TestAppContext) {
+        use crate::config::store::ConfigStore;
+        use crate::editor::annotations::Annotation;
+        use crate::editor::window::{EditorWindow, PersistedEditorState};
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        config.update(|settings| settings.history.enabled = false);
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let path = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(320, 180, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let annotations = vec![Annotation::Pen {
+            id: "native-close".into(),
+            points: vec![20., 30., 160., 90.],
+            stroke: "#EF4D3B".into(),
+            stroke_width: 8.,
+        }];
+        let state: PersistedEditorState =
+            serde_json::from_value(serde_json::json!({"annotations": &annotations})).unwrap();
+        let editor = cx.add_window(|window, cx| {
+            EditorWindow::from_file_with_state(&path, state.clone(), window, cx)
+        });
+        let expected = editor
+            .update(cx, |editor, _, _| editor.export_png().unwrap())
+            .unwrap();
+        cx.update(|cx| PinWindow::open_for_editor(cx, expected.clone(), path.clone(), state));
+        editor
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let pin = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .find(|window| window.downcast::<PinWindow>().is_some())
+                .unwrap()
+        });
+        let mut visual = gpui::VisualTestContext::from_window(pin, cx);
+        let accepted = visual.simulate_close();
+        cx.update_window(pin, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        let restored: Vec<_> = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .collect()
+        });
+        assert_eq!(restored.len(), 1, "native close must restore the editor");
+        assert!(accepted);
+        restored[0]
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.file_path, path);
+                assert_eq!(editor.history.current(), annotations);
+                assert_eq!(editor.export_png().unwrap(), expected);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn native_close_of_a_standalone_pin_does_not_open_an_editor(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(320, 180, image::Rgba([64, 112, 192, 255]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        cx.update(|cx| PinWindow::open(cx, bytes.into_inner()));
+        let pin = cx.read(|cx| cx.windows()[0]);
+        let mut visual = gpui::VisualTestContext::from_window(pin, cx);
+        assert!(visual.simulate_close());
+        cx.update_window(pin, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(cx.read(|cx| cx.windows().is_empty()));
     }
 }

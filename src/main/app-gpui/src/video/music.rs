@@ -2,7 +2,7 @@
 //! file is copied into the project's `music/` folder so the project stays
 //! self-contained, and its duration is probed by decoding it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::video::encoder::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 use crate::video::project;
@@ -122,14 +122,6 @@ fn sanitize_id(value: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Opens the picker `video-editor:music:add` opens.
-pub fn pick_file() -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Add Music")
-        .add_filter("Audio Files", &SUPPORTED_EXTENSIONS)
-        .pick_file()
 }
 
 #[cfg(test)]

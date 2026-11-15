@@ -16,6 +16,22 @@ use crate::theme::color::Srgba;
 pub const TIMER_DURATION: u32 = 5;
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(all(test, windows))]
+static TEST_HIDE_GATE: std::sync::Mutex<
+    Option<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(all(test, windows))]
+pub(crate) fn gate_hide_for_test(
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+) {
+    *TEST_HIDE_GATE.lock().unwrap() = Some((entered, release));
+}
+
 pub struct Session;
 
 impl Drop for Session {
@@ -68,6 +84,10 @@ pub fn show(
     accent: Hsla,
     accent_foreground: Hsla,
 ) -> bool {
+    #[cfg(all(test, windows))]
+    if std::env::var_os("PORATAKE_TEST_TIMER_CONTROL").is_some() {
+        return true;
+    }
     let (x, y) = timer_position(capture);
     match daemon.timer_control().show(&TimerShowRequest {
         x,
@@ -85,6 +105,12 @@ pub fn show(
 }
 
 pub fn hide(daemon: &DaemonHandle) {
+    #[cfg(all(test, windows))]
+    if let Some((entered, release)) = TEST_HIDE_GATE.lock().unwrap().take() {
+        entered.send(()).unwrap();
+        release.recv().unwrap();
+        return;
+    }
     if let Err(error) = daemon.timer_control().hide() {
         eprintln!("[timer] failed to hide control: {error}");
     }

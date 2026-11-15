@@ -57,7 +57,7 @@ describe('isFeatureSupportedOn', () => {
     expect(wayland.includes('screenshot-screen')).toBe(true);
     expect(wayland.includes('screenshot-area')).toBe(true);
     expect(wayland.includes('display-selector')).toBe(false);
-    expect(wayland.includes('recording')).toBe(true);
+    expect(wayland.includes('recording')).toBe(false);
     expect(x11.includes('video-editor')).toBe(true);
     expect(wayland.includes('video-editor')).toBe(true);
   });

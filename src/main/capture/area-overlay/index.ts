@@ -3,6 +3,7 @@ import {
   captureRegionToFile,
   captureWindowByIdToFile,
 } from '@/main/capture/screenshot/native-capture';
+import type { CaptureFailureHandler } from '@/main/capture/screenshot/native-capture';
 import { isFreezeScreenEnabled } from '@/main/capture/freeze-screen/preference';
 import { startOverlaySession } from './session';
 import { resolveWindowPickTargets } from './window-pick-targets';
@@ -55,8 +56,9 @@ export function startInteractiveOverlay(
 }
 
 export async function captureAreaToFile(
-  filePath: string,
-  onCaptureStarted?: () => void
+  filePath: string | (() => string),
+  onCaptureStarted?: () => void,
+  onCaptureFailure?: CaptureFailureHandler
 ): Promise<boolean> {
   const freeze = isFreezeScreenEnabled();
   const selection = await selectAreaWithOverlay({ freeze, interactive: true });
@@ -65,9 +67,14 @@ export async function captureAreaToFile(
   }
 
   try {
-    const capture = captureRegionToFile(selection.rect, filePath, {
-      cached: selection.frozen,
-    });
+    const capture = captureRegionToFile(
+      selection.rect,
+      typeof filePath === 'function' ? filePath() : filePath,
+      {
+        cached: selection.frozen,
+        ...(onCaptureFailure ? { onFailure: onCaptureFailure } : {}),
+      }
+    );
     onCaptureStarted?.();
     return await capture;
   } finally {
@@ -76,8 +83,9 @@ export async function captureAreaToFile(
 }
 
 export async function captureWindowToFile(
-  filePath: string,
-  onCaptureStarted?: () => void
+  filePath: string | (() => string),
+  onCaptureStarted?: () => void,
+  onCaptureFailure?: CaptureFailureHandler
 ): Promise<boolean> {
   const pickTargets = await resolveWindowPickTargets();
   if (!pickTargets) {
@@ -101,7 +109,10 @@ export async function captureWindowToFile(
     }
 
     if (!selection.frozen) {
-      const capture = captureWindowByIdToFile(selection.pickId, filePath);
+      const path = typeof filePath === 'function' ? filePath() : filePath;
+      const capture = onCaptureFailure
+        ? captureWindowByIdToFile(selection.pickId, path, onCaptureFailure)
+        : captureWindowByIdToFile(selection.pickId, path);
       onCaptureStarted?.();
       return await capture;
     }
@@ -111,11 +122,15 @@ export async function captureWindowToFile(
       return false;
     }
 
-    const capture = captureFrozenWindowToFile(
-      captureRect,
-      filePath,
-      selection.pickId
-    );
+    const path = typeof filePath === 'function' ? filePath() : filePath;
+    const capture = onCaptureFailure
+      ? captureFrozenWindowToFile(
+          captureRect,
+          path,
+          selection.pickId,
+          onCaptureFailure
+        )
+      : captureFrozenWindowToFile(captureRect, path, selection.pickId);
     onCaptureStarted?.();
     return await capture;
   } finally {

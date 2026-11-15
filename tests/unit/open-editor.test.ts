@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { pathToFileURL } from 'url';
+import type * as FileSystem from 'node:fs';
+import type * as OS from 'node:os';
 
 const browserWindows: MockBrowserWindow[] = [];
 const mockExistsSync = vi.fn();
@@ -69,7 +71,7 @@ class MockNotification {
 
 vi.mock('electron', () => ({
   BrowserWindow: MockBrowserWindow,
-  app: { focus: vi.fn() },
+  app: { focus: vi.fn(), getPath: () => '/tmp' },
   screen: {
     getPrimaryDisplay: () => ({
       scaleFactor: 2,
@@ -104,6 +106,7 @@ vi.mock('os', () => ({
 
 vi.mock('@/main/utils/env.ts', () => ({
   isDev: true,
+  isProduction: false,
   devServerUrl: 'http://localhost:5173',
 }));
 
@@ -293,6 +296,87 @@ describe('open-editor', () => {
       openClipboardInEditor();
       expect(mockWriteFileSync).toHaveBeenCalled();
       expect(browserWindows.length).toBe(1);
+    });
+
+    it('retries an already occupied clipboard filename without overwriting it', async () => {
+      mockClipboardReadImage.mockReturnValue({
+        isEmpty: () => false,
+        toPNG: () => Buffer.from('png-bytes'),
+      });
+      mockExistsSync.mockReturnValue(true);
+      mockWriteFileSync.mockImplementationOnce(() => {
+        throw Object.assign(new Error('file exists'), { code: 'EEXIST' });
+      });
+      const { openClipboardInEditor } =
+        await import('@/main/capture/screenshot/open-editor');
+      openClipboardInEditor();
+
+      expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+      expect(mockWriteFileSync.mock.calls[0][0]).not.toBe(
+        mockWriteFileSync.mock.calls[1][0]
+      );
+      expect(mockWriteFileSync.mock.calls.map(call => call[2])).toEqual([
+        { flag: 'wx' },
+        { flag: 'wx' },
+      ]);
+      expect(browserWindows).toHaveLength(1);
+    });
+
+    it('keeps clipboard images separate when opened in the same millisecond', async () => {
+      const realFs = await vi.importActual<typeof FileSystem>('node:fs');
+      const os = await vi.importActual<typeof OS>('node:os');
+      const path = await import('node:path');
+      const directory = realFs.mkdtempSync(
+        path.join(os.tmpdir(), 'poratake-clipboard-')
+      );
+      const existing = path.join(directory, 'poratake-clipboard-123.png');
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(123);
+      realFs.writeFileSync(existing, 'original');
+      mockOsTmpdir.mockReturnValue(directory);
+      mockExistsSync.mockImplementation((file: string) =>
+        realFs.existsSync(file)
+      );
+      mockWriteFileSync.mockImplementation(
+        (file: string, bytes: Buffer, options?: object) =>
+          realFs.writeFileSync(file, bytes, options)
+      );
+      mockClipboardReadImage
+        .mockReturnValueOnce({
+          isEmpty: () => false,
+          toPNG: () => Buffer.from('first'),
+        })
+        .mockReturnValueOnce({
+          isEmpty: () => false,
+          toPNG: () => Buffer.from('second'),
+        });
+
+      try {
+        const { openClipboardInEditor } =
+          await import('@/main/capture/screenshot/open-editor');
+        openClipboardInEditor();
+        openClipboardInEditor();
+        const files = realFs
+          .readdirSync(directory)
+          .map(name => path.join(directory, name));
+        expect(files).toHaveLength(3);
+        expect(realFs.readFileSync(existing, 'utf8')).toBe('original');
+        expect(
+          new Set(
+            files
+              .filter(file => file !== existing)
+              .map(file => realFs.readFileSync(file, 'utf8'))
+          )
+        ).toEqual(new Set(['first', 'second']));
+        expect(browserWindows).toHaveLength(2);
+      } finally {
+        clock.mockRestore();
+        mockOsTmpdir.mockReturnValue('/tmp');
+        mockWriteFileSync.mockReset();
+        mockExistsSync.mockReset();
+        for (const name of realFs.readdirSync(directory))
+          realFs.unlinkSync(path.join(directory, name));
+        realFs.rmdirSync(directory);
+      }
     });
   });
 });

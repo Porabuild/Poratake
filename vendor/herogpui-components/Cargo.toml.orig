@@ -1,0 +1,95 @@
+[package]
+name = "herogpui-components"
+autotests = false
+description = "HeroUI-style component library for GPUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The crate embeds the Lucide icons (`assets/lucide/`, ISC; the Feather-derived
+# ones MIT), so its own license expression names them beside Apache-2.0.
+license = "Apache-2.0 AND ISC AND MIT"
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+gallery-source = []
+
+[dependencies]
+gpui.workspace = true
+herogpui-core.workspace = true
+herogpui-theme.workspace = true
+icu_calendar.workspace = true
+icu_datetime.workspace = true
+icu_locale_core.workspace = true
+icu_locale.workspace = true
+# Local-timezone civil dates for `Date::today` (v3's `today(getLocalTimeZone())`).
+jiff.workspace = true
+web-time.workspace = true
+unicode-segmentation.workspace = true
+
+# The system date/time locale (`src/system_locale.rs`): the macOS Region and
+# the Windows regional format, with the preferred languages as fallbacks.
+# Linux reads the POSIX environment and needs nothing.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation.workspace = true
+sys-locale.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+sys-locale.workspace = true
+windows-registry.workspace = true
+
+# `test-support` is what gives the tests a headless platform, a
+# `VisualTestContext` and simulated input -- the only way to assert that a
+# control *works* rather than that it draws.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[[test]]
+name = "suite_collections"
+path = "tests/suite_collections.rs"
+
+[[test]]
+name = "suite_controls"
+path = "tests/suite_controls.rs"
+
+[[test]]
+name = "suite_feedback"
+path = "tests/suite_feedback.rs"
+
+[[test]]
+name = "suite_fields"
+path = "tests/suite_fields.rs"
+
+[[test]]
+name = "suite_foundations"
+path = "tests/suite_foundations.rs"
+
+[[test]]
+name = "suite_overlays"
+path = "tests/suite_overlays.rs"
+
+[[test]]
+name = "suite_pickers"
+path = "tests/suite_pickers.rs"
+
+[[test]]
+name = "suite_styling"
+path = "tests/suite_styling.rs"
+
+[[test]]
+name = "suite_tables_layout"
+path = "tests/suite_tables_layout.rs"
+
+[lints]
+workspace = true
+
+# docs.rs builds every crate with only its default features unless told
+# otherwise, so a docs.rs page for herogpui-components would omit
+# `gallery-source`-gated items entirely. `--cfg docsrs` matches the flag CI's
+# own rustdoc job now sets (see .github/workflows/ci.yml), so a `#[cfg(docsrs)]`
+# doc-only annotation behaves identically in both places.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

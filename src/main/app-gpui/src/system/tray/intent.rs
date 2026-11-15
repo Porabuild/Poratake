@@ -87,6 +87,23 @@ impl Intent {
             _ => None,
         }
     }
+
+    pub fn is_supported(self) -> bool {
+        self.is_supported_with(crate::system::capabilities::is_supported)
+    }
+
+    fn is_supported_with(
+        self,
+        feature_supported: impl Fn(crate::system::capabilities::Feature) -> bool,
+    ) -> bool {
+        use crate::system::capabilities::Feature;
+
+        if self == Self::RecordWindow {
+            return feature_supported(Feature::Recording)
+                && feature_supported(Feature::ScreenshotWindow);
+        }
+        self.feature().is_none_or(feature_supported)
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +123,22 @@ mod tests {
             assert_eq!(intent.id(), *id);
         }
         assert_eq!(Intent::from_id("nope"), None);
+    }
+
+    #[test]
+    fn record_window_requires_recording_and_window_capture_support() {
+        use crate::system::capabilities::Feature;
+
+        assert!(Intent::RecordWindow.is_supported_with(|feature| matches!(
+            feature,
+            Feature::Recording | Feature::ScreenshotWindow
+        )));
+        assert!(!Intent::RecordWindow.is_supported_with(|feature| feature == Feature::Recording));
+        assert!(
+            !Intent::RecordWindow.is_supported_with(|feature| feature == Feature::ScreenshotWindow)
+        );
+        assert!(!Intent::RecordWindow.is_supported_with(|_| false));
+        assert!(Intent::RecordScreen.is_supported_with(|feature| feature == Feature::Recording));
+        assert!(Intent::RecordArea.is_supported_with(|feature| feature == Feature::Recording));
     }
 }

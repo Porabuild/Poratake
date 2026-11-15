@@ -10,13 +10,14 @@ export default function ToolbarButton({
       size="icon-sm"
       variant="ghost"
       className={cn(
-        'size-8 min-w-8 rounded-3xl hover:bg-white/15 disabled:pointer-events-none disabled:opacity-35',
+        'size-8 min-w-8 rounded-3xl hover:bg-foreground/15 disabled:pointer-events-none disabled:opacity-35',
         className
       )}
       {...props}
       style={
         {
-          '--button-fg': 'rgb(255 255 255 / 0.85)',
+          '--button-fg':
+            'color-mix(in oklab, var(--foreground) 85%, transparent)',
         } as React.CSSProperties & { '--button-fg': string }
       }
     />

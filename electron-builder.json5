@@ -27,6 +27,10 @@
       "to": "licenses/HeroGPUI-Apache-2.0.txt"
     },
     {
+      "from": "licenses/ZXing-LICENSE.txt",
+      "to": "licenses/ZXing-LICENSE.txt"
+    },
+    {
       "from": "licenses/Geist-OFL-1.1.txt",
       "to": "licenses/Geist-OFL-1.1.txt"
     },

@@ -278,7 +278,7 @@ function ExportEstimateSection({
       </div>
       <div className="flex items-center justify-between">
         <Label htmlFor="open-in-finder" className="text-xs">
-          Reveal in Finder after export
+          Show in folder after export
         </Label>
         <Switch
           size="sm"

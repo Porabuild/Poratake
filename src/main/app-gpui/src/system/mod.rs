@@ -1,6 +1,6 @@
 pub mod accelerator;
 pub mod capabilities;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 pub mod click_through;
 pub mod clipboard;
 pub mod desktop;
@@ -10,6 +10,8 @@ pub mod hotkeys;
 #[cfg(target_os = "linux")]
 pub mod linux_session;
 pub mod native;
+#[cfg(windows)]
+pub mod native_tooltip;
 pub mod notification;
 pub mod permissions;
 pub mod reduced_transparency;
