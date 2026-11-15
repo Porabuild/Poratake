@@ -300,7 +300,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     #[cfg(not(target_os = "macos"))]
     let _ = (play_sound, silent);
 
-    let history_saved = crate::history_store::add_item(
+    let history_outcome = crate::history_store::add_item(
         crate::history_store::HistoryItem {
             id: uuid_simple(),
             timestamp: chrono::Local::now().timestamp_millis(),
@@ -312,13 +312,9 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
         max_items,
         history_enabled,
     );
-    if !history_saved {
+    if let Some((title, message)) = history_outcome.warning("screenshot") {
         cx.update(|cx| {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History update failed",
-                "The screenshot was saved, but it could not be added to history",
-            );
+            crate::windows::toast::Toast::show(cx, title, message);
         });
     }
 

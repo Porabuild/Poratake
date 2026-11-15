@@ -21,6 +21,10 @@ Each gate counts once only when its stated evidence exists. As of 2026-11-15,
 seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
+The full Windows visual matrix is opt-in through the Checks workflow's manual
+`run_windows_visual_regressions` input. Run it against the intended revision for
+release verification; routine PR checks do not run the matrix.
+
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
@@ -1869,8 +1873,9 @@ preview test exercises the partial-success warning. Native interaction remains
 unverified. Electron still swallows history write errors.
 History writes are not crash-atomic; readers outside the GPUI process may observe
 a partial write.
-GPUI's automatic history-limit eviction can still remove old files before a
-failed index save, and simultaneous writes from the two shells are not coordinated.
+GPUI saves the history index before evicting old files; failures retain or report
+the affected entries. A crash between the index save and cleanup can leave files
+outside history. Simultaneous writes from the two shells are not coordinated.
 A failed history update after renaming a recording now warns that the index may
 retain the old path; isolated tests cover write failure and untracked recordings.
 

@@ -50,6 +50,95 @@ pub enum UpdatePathOutcome {
     PersistenceFailed(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddOutcome {
+    Disabled,
+    Added {
+        retained_entries: Vec<String>,
+        backup_warnings: Vec<String>,
+        minimum_one_retained: bool,
+    },
+    HistoryUnavailable(String),
+    PersistenceFailed(String),
+    CleanupRepairFailed {
+        cleanup_failed_paths: Vec<String>,
+        error: String,
+        backup_warnings: Vec<String>,
+        minimum_one_retained: bool,
+    },
+}
+
+impl AddOutcome {
+    pub fn warning(&self, capture_label: &str) -> Option<(String, String)> {
+        match self {
+            Self::Disabled => None,
+            Self::Added {
+                retained_entries,
+                backup_warnings,
+                minimum_one_retained,
+            } if retained_entries.is_empty()
+                && backup_warnings.is_empty()
+                && !minimum_one_retained =>
+            {
+                None
+            }
+            Self::Added {
+                retained_entries,
+                backup_warnings,
+                minimum_one_retained,
+            } => {
+                let mut details = Vec::new();
+                if *minimum_one_retained {
+                    details.push(
+                        "The configured limit was zero, so the new capture was retained".into(),
+                    );
+                }
+                if !retained_entries.is_empty() {
+                    details.push(format!(
+                        "{} older history item(s) could not be cleaned up and remain indexed: {}",
+                        retained_entries.len(),
+                        retained_entries.join(", ")
+                    ));
+                }
+                details.extend(
+                    backup_warnings
+                        .iter()
+                        .map(|path| format!("A history recovery copy remains at {path}")),
+                );
+                Some(("History update warning".into(), details.join(". ")))
+            }
+            Self::HistoryUnavailable(error) | Self::PersistenceFailed(error) => Some((
+                "History update failed".into(),
+                format!("The {capture_label} was saved but could not be added to history: {error}"),
+            )),
+            Self::CleanupRepairFailed {
+                cleanup_failed_paths,
+                error,
+                backup_warnings,
+                minimum_one_retained,
+            } => {
+                let mut details = Vec::new();
+                if *minimum_one_retained {
+                    details.push(
+                        "The configured limit was zero, so the new capture was retained".into(),
+                    );
+                }
+                details.push(format!(
+                    "The {capture_label} was saved, but cleanup failed for {} older item(s); their assets may be partially removed and their history entries could not be restored: {}. {error}",
+                    cleanup_failed_paths.len(),
+                    cleanup_failed_paths.join(", ")
+                ));
+                details.extend(
+                    backup_warnings
+                        .iter()
+                        .map(|path| format!("A history recovery copy remains at {path}")),
+                );
+                Some(("History update failed".into(), details.join(". ")))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClearOutcome {
     pub retained: Vec<HistoryItem>,
@@ -154,36 +243,203 @@ fn write_history_file(path: &Path, content: &[u8]) -> io::Result<Option<String>>
     }
 }
 
-pub fn add_item(item: HistoryItem, max_items: usize, enabled: bool) -> bool {
+fn comparison_path(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    let mut current = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(&current) {
+            Ok(mut resolved) => {
+                for component in suffix.iter().rev() {
+                    resolved.push(component);
+                }
+                return Some(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if current
+                    .components()
+                    .any(|component| component == Component::ParentDir)
+                {
+                    return None;
+                }
+                suffix.push(current.file_name()?.to_os_string());
+                if !current.pop() {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn cleanup_targets(item: &HistoryItem) -> Vec<(PathBuf, bool)> {
+    let path = Path::new(&item.original_path);
+    if item.r#type == HistoryItemType::Screenshot {
+        return vec![(path.to_path_buf(), false)];
+    }
+    if let Some(project) = crate::video::project::project_folder(path) {
+        return vec![(project, true)];
+    }
+    [
+        crate::video::project::recording_video_path(path),
+        crate::video::project::system_audio_path(path),
+        crate::video::project::mic_audio_path(path),
+        crate::video::project::cursor_path(path),
+        crate::video::project::camera_video_path(path),
+        crate::video::project::camera_meta_path(path),
+        crate::video::project::keys_path(path),
+        crate::video::project::editor_state_path(path),
+        crate::video::project::subtitle_path(path),
+    ]
+    .into_iter()
+    .map(|path| (path, false))
+    .collect()
+}
+
+fn comparison_cleanup_targets(item: &HistoryItem) -> Result<Vec<(PathBuf, bool)>, ()> {
+    cleanup_targets(item)
+        .into_iter()
+        .map(|(path, recursive)| {
+            comparison_path(&path)
+                .map(|path| (path, recursive))
+                .ok_or(())
+        })
+        .collect()
+}
+
+fn cleanup_scopes_intersect(left: &(PathBuf, bool), right: &(PathBuf, bool)) -> bool {
+    match (left.1, right.1) {
+        (true, true) => left.0.starts_with(&right.0) || right.0.starts_with(&left.0),
+        (true, false) => right.0.starts_with(&left.0),
+        (false, true) => left.0.starts_with(&right.0),
+        (false, false) => left.0 == right.0,
+    }
+}
+
+fn cleanup_is_referenced(
+    item: &HistoryItem,
+    candidates: &[Vec<(PathBuf, bool)>],
+) -> Result<bool, ()> {
+    let targets = comparison_cleanup_targets(item)?;
+    for target in &targets {
+        for candidate in candidates.iter().flatten() {
+            if cleanup_scopes_intersect(target, candidate) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn add_item(item: HistoryItem, max_items: usize, enabled: bool) -> AddOutcome {
     if !enabled {
-        return true;
+        return AddOutcome::Disabled;
     }
     let _lock = HISTORY_MUTATION_LOCK.lock();
-    let mut items = match load_history_from(&history_file_path()) {
+    add_item_with(&history_file_path(), item, max_items, save_history_to)
+}
+
+fn add_item_with(
+    history_path: &Path,
+    item: HistoryItem,
+    max_items: usize,
+    mut save: impl FnMut(&Path, &[HistoryItem]) -> io::Result<Option<String>>,
+) -> AddOutcome {
+    let mut items = match load_history_from(history_path) {
         Ok(items) => items,
         Err(error) => {
             eprintln!("[history] failed to load before adding item: {error}");
-            return false;
+            return AddOutcome::HistoryUnavailable(error.to_string());
         }
     };
     items.insert(0, item);
-    while items.len() > max_items {
+    let minimum_one_retained = max_items == 0;
+    let mut evicted = Vec::new();
+    while items.len() > max_items.max(1) {
         let Some(removed) = items.pop() else {
             break;
         };
-        if cleanup_item(&removed).is_err() {
-            items.push(removed);
-            break;
-        }
+        evicted.push(removed);
     }
-    match save_history_to(&history_file_path(), &items) {
-        Ok(warning) => {
-            log_backup_warning(warning.as_deref());
-            true
-        }
+    let mut backup_warnings = Vec::new();
+    match save(history_path, &items) {
+        Ok(warning) => backup_warnings.extend(warning),
         Err(error) => {
             eprintln!("[history] failed to save after adding item: {error}");
-            false
+            return AddOutcome::PersistenceFailed(error.to_string());
+        }
+    }
+    if evicted.is_empty() {
+        for warning in &backup_warnings {
+            log_backup_warning(Some(warning));
+        }
+        return AddOutcome::Added {
+            retained_entries: Vec::new(),
+            backup_warnings,
+            minimum_one_retained,
+        };
+    }
+    let mut retained = Vec::new();
+    let candidate_cleanup_scopes: Result<Vec<_>, _> =
+        items.iter().map(comparison_cleanup_targets).collect();
+    for removed in evicted {
+        let cleanup_referenced = candidate_cleanup_scopes
+            .as_ref()
+            .map_err(|_| ())
+            .and_then(|candidates| cleanup_is_referenced(&removed, candidates));
+        match cleanup_referenced {
+            Ok(true) => continue,
+            Err(()) => {
+                retained.push(removed);
+                continue;
+            }
+            Ok(false) => {}
+        }
+        if cleanup_item(&removed).is_err() {
+            retained.push(removed);
+        }
+    }
+    if retained.is_empty() {
+        for warning in &backup_warnings {
+            log_backup_warning(Some(warning));
+        }
+        return AddOutcome::Added {
+            retained_entries: Vec::new(),
+            backup_warnings,
+            minimum_one_retained,
+        };
+    }
+    let retained_entries = retained
+        .iter()
+        .map(|item| item.original_path.clone())
+        .collect::<Vec<_>>();
+    retained.reverse();
+    items.extend(retained);
+    match save(history_path, &items) {
+        Ok(warning) => {
+            backup_warnings.extend(warning);
+            for warning in &backup_warnings {
+                log_backup_warning(Some(warning));
+            }
+            AddOutcome::Added {
+                retained_entries,
+                backup_warnings,
+                minimum_one_retained,
+            }
+        }
+        Err(error) => {
+            eprintln!("[history] failed to restore cleanup-retained entries: {error}");
+            AddOutcome::CleanupRepairFailed {
+                cleanup_failed_paths: retained_entries,
+                error: error.to_string(),
+                backup_warnings,
+                minimum_one_retained,
+            }
         }
     }
 }
@@ -423,6 +679,376 @@ mod tests {
             editor_state: None,
             duration: None,
         }
+    }
+
+    fn video_item(id: &str, path: &Path) -> HistoryItem {
+        HistoryItem {
+            r#type: HistoryItemType::Video,
+            ..item(id, path)
+        }
+    }
+
+    fn added_without_warnings(outcome: AddOutcome) {
+        assert_eq!(
+            outcome,
+            AddOutcome::Added {
+                retained_entries: Vec::new(),
+                backup_warnings: Vec::new(),
+                minimum_one_retained: false,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_candidate_save_does_not_evict_old_or_new_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::write(&old_source, b"old").unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        let previous = vec![item("old", &old_source)];
+        save_history_to(&history_path, &previous).unwrap();
+        let original = fs::read(&history_path).unwrap();
+
+        let outcome = add_item_with(&history_path, item("new", &new_source), 1, |_, _| {
+            Err(io::Error::other("injected candidate write failure"))
+        });
+
+        assert_eq!(
+            outcome,
+            AddOutcome::PersistenceFailed("injected candidate write failure".into())
+        );
+        assert!(old_source.exists());
+        assert!(new_source.exists());
+        assert_eq!(fs::read(&history_path).unwrap(), original);
+        assert_eq!(load_history_from(&history_path).unwrap(), previous);
+    }
+
+    #[test]
+    fn add_below_limit_persists_without_eviction() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::write(&old_source, b"old").unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        save_history_to(&history_path, &[item("old", &old_source)]).unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            item("new", &new_source),
+            2,
+            save_history_to,
+        ));
+
+        assert!(old_source.exists());
+        assert!(new_source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &new_source), item("old", &old_source)]
+        );
+    }
+
+    #[test]
+    fn successful_limit_eviction_saves_new_item_and_removes_old_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::write(&old_source, b"old").unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        save_history_to(&history_path, &[item("old", &old_source)]).unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            item("new", &new_source),
+            1,
+            save_history_to,
+        ));
+
+        assert!(!old_source.exists());
+        assert!(new_source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &new_source)]
+        );
+    }
+
+    #[test]
+    fn failed_eviction_cleanup_is_compensated_by_retaining_its_history_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::create_dir(&old_source).unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        save_history_to(&history_path, &[item("old", &old_source)]).unwrap();
+
+        let outcome = add_item_with(&history_path, item("new", &new_source), 1, save_history_to);
+
+        assert_eq!(
+            outcome,
+            AddOutcome::Added {
+                retained_entries: vec![old_source.to_string_lossy().into_owned()],
+                backup_warnings: Vec::new(),
+                minimum_one_retained: false,
+            }
+        );
+        assert!(old_source.is_dir());
+        assert!(new_source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &new_source), item("old", &old_source)]
+        );
+    }
+
+    #[test]
+    fn failed_eviction_repair_keeps_assets_and_reports_unindexed_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::create_dir(&old_source).unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        let previous = vec![item("old", &old_source)];
+        save_history_to(&history_path, &previous).unwrap();
+        let writes = std::cell::Cell::new(0);
+
+        let outcome = add_item_with(&history_path, item("new", &new_source), 1, |path, items| {
+            let write_index = writes.get();
+            writes.set(write_index + 1);
+            if write_index == 0 {
+                save_history_to(path, items)
+            } else {
+                Err(io::Error::other("injected repair write failure"))
+            }
+        });
+
+        assert_eq!(
+            outcome,
+            AddOutcome::CleanupRepairFailed {
+                cleanup_failed_paths: vec![old_source.to_string_lossy().into_owned()],
+                error: "injected repair write failure".into(),
+                backup_warnings: Vec::new(),
+                minimum_one_retained: false,
+            }
+        );
+        assert!(old_source.is_dir());
+        assert!(new_source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &new_source)]
+        );
+    }
+
+    #[test]
+    fn zero_limit_preserves_the_new_capture_and_removes_old_items() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let old_source = directory.path().join("old.png");
+        let new_source = directory.path().join("new.png");
+        fs::write(&old_source, b"old").unwrap();
+        fs::write(&new_source, b"new").unwrap();
+        save_history_to(&history_path, &[item("old", &old_source)]).unwrap();
+
+        let outcome = add_item_with(&history_path, item("new", &new_source), 0, save_history_to);
+
+        assert_eq!(
+            outcome,
+            AddOutcome::Added {
+                retained_entries: Vec::new(),
+                backup_warnings: Vec::new(),
+                minimum_one_retained: true,
+            }
+        );
+        assert!(outcome
+            .warning("capture")
+            .unwrap()
+            .1
+            .contains("limit was zero"));
+        assert!(!old_source.exists());
+        assert!(new_source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &new_source)]
+        );
+    }
+
+    #[test]
+    fn evicting_duplicate_path_never_deletes_a_retained_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let source = directory.path().join("capture.png");
+        fs::write(&source, b"capture").unwrap();
+        save_history_to(&history_path, &[item("old", &source)]).unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            item("new", &source),
+            1,
+            save_history_to,
+        ));
+
+        assert!(source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &source)]
+        );
+    }
+
+    #[test]
+    fn evicting_a_path_alias_never_deletes_a_retained_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let source = directory.path().join("capture.png");
+        let alias = directory.path().join(".").join("capture.png");
+        fs::write(&source, b"capture").unwrap();
+        save_history_to(&history_path, &[item("old", &source)]).unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            item("new", &alias),
+            1,
+            save_history_to,
+        ));
+
+        assert!(source.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [item("new", &alias)]
+        );
+    }
+
+    #[test]
+    fn video_eviction_preserves_retained_project_and_loose_sidecar_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+
+        let project = directory.path().join("Folder.poratake");
+        fs::create_dir(&project).unwrap();
+        let recording = crate::video::project::recording_video_path(&project);
+        fs::write(&recording, b"recording").unwrap();
+        save_history_to(&history_path, &[video_item("old-project", &project)]).unwrap();
+        added_without_warnings(add_item_with(
+            &history_path,
+            video_item("new-recording", &recording),
+            1,
+            save_history_to,
+        ));
+        assert!(project.exists());
+        assert!(recording.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [video_item("new-recording", &recording)]
+        );
+
+        save_history_to(&history_path, &[video_item("old-recording", &recording)]).unwrap();
+        added_without_warnings(add_item_with(
+            &history_path,
+            video_item("new-project", &project),
+            1,
+            save_history_to,
+        ));
+        assert!(project.exists());
+        assert!(recording.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [video_item("new-project", &project)]
+        );
+
+        let loose_video = directory.path().join("loose.mp4");
+        let system_audio = crate::video::project::system_audio_path(&loose_video);
+        fs::write(&loose_video, b"video").unwrap();
+        fs::write(&system_audio, b"audio").unwrap();
+        save_history_to(
+            &history_path,
+            &[video_item("old-loose-video", &loose_video)],
+        )
+        .unwrap();
+        added_without_warnings(add_item_with(
+            &history_path,
+            video_item("retained-audio-sidecar", &system_audio),
+            1,
+            save_history_to,
+        ));
+        assert!(loose_video.exists());
+        assert!(system_audio.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [video_item("retained-audio-sidecar", &system_audio)]
+        );
+    }
+
+    #[test]
+    fn evicted_screenshot_sidecar_is_protected_by_retained_loose_video_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let video = directory.path().join("retained.mp4");
+        let sidecar = crate::video::project::system_audio_path(&video);
+        let new_capture = directory.path().join("new-capture.png");
+        fs::write(&video, b"video").unwrap();
+        fs::write(&sidecar, b"audio").unwrap();
+        fs::write(&new_capture, b"new").unwrap();
+        save_history_to(
+            &history_path,
+            &[
+                video_item("retained-video", &video),
+                item("evicted-screenshot", &sidecar),
+            ],
+        )
+        .unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            item("new-capture", &new_capture),
+            2,
+            save_history_to,
+        ));
+
+        assert!(video.exists());
+        assert!(sidecar.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [
+                item("new-capture", &new_capture),
+                video_item("retained-video", &video)
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_alias_with_parent_component_protects_canonical_retained_recording() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let history_path = directory.path().join("history.json");
+        let real_root = directory.path().join("real");
+        let project = real_root.join("Project.poratake");
+        std::fs::create_dir_all(project.join("inside")).unwrap();
+        let link_parent = directory.path().join("alias");
+        std::fs::create_dir(&link_parent).unwrap();
+        symlink(real_root.join("through-link"), link_parent.join("link")).unwrap();
+        std::fs::create_dir(real_root.join("through-link")).unwrap();
+        let removed_alias = link_parent.join("link").join("..").join("Project.poratake");
+        let recording = crate::video::project::recording_video_path(&project);
+        fs::write(&recording, b"recording").unwrap();
+        save_history_to(&history_path, &[video_item("old-alias", &removed_alias)]).unwrap();
+
+        added_without_warnings(add_item_with(
+            &history_path,
+            video_item("retained-recording", &recording),
+            1,
+            save_history_to,
+        ));
+
+        assert!(project.exists());
+        assert!(recording.exists());
+        assert_eq!(
+            load_history_from(&history_path).unwrap(),
+            [video_item("retained-recording", &recording)]
+        );
     }
 
     #[test]
