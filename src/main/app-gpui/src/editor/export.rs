@@ -37,12 +37,16 @@ pub fn composites_primary_backdrop(
     layers: &[crate::editor::layers::ImageLayer],
 ) -> bool {
     layers.is_empty()
-        && !wallpaper.balance
-        && (composites_wallpaper_effects(wallpaper, layers)
-            || (wallpaper.corners <= 0.0
-                && wallpaper.shadow <= 0.0
-                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()))
         && wallpaper.is_active(false)
+        && ((!wallpaper.balance
+            && (composites_wallpaper_effects(wallpaper, layers)
+                || (wallpaper.corners <= 0.0
+                    && wallpaper.shadow <= 0.0
+                    && crate::render::window_frame::theme(&wallpaper.window_frame.style)
+                        .is_none())))
+            || (wallpaper.balance
+                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+                && (wallpaper.corners > 0.0 || wallpaper.shadow > 0.0)))
 }
 
 fn framed_composite_required(
@@ -195,9 +199,10 @@ pub fn compose_with_layers(
     let mut canvas = Canvas::from_pixmap(composed);
     let title_bar =
         crate::render::window_frame::title_bar_height(&wallpaper.window_frame.style, frame_scale);
+    let crop = original_balance.unwrap_or_default();
     canvas.translate(
-        offset_x.round() as f32,
-        (offset_y.round() + title_bar) as f32,
+        offset_x.round() as f32 - crop.left as f32,
+        (offset_y.round() + title_bar) as f32 - crop.top as f32,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     to_rgba(canvas.pixmap())
@@ -827,8 +832,14 @@ pub fn render_backdrop(
 )> {
     if composites_primary_backdrop(wallpaper, layers) {
         let primary = from_dynamic_image(base?)?;
+        let cropped = wallpaper
+            .balance
+            .then(|| balance_bounds_pixmap(&primary))
+            .flatten()
+            .and_then(|bounds| balance_crop(&primary, bounds));
+        let primary = cropped.as_ref().unwrap_or(&primary);
         let composite =
-            compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
+            compose_wallpaper(primary, wallpaper, frame_scale, Some(inset_color), false);
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
             composite_tiles(&composite, stage_background, 8192)?
         } else {
@@ -2157,6 +2168,42 @@ mod tests {
             } else {
                 let shadow_alpha = composed.get_pixel(padding + 36, padding - 5).0[3];
                 assert!((1..255).contains(&shadow_alpha));
+            }
+        }
+    }
+
+    #[test]
+    fn balanced_zero_padding_preserves_unframed_effects() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
+            if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        for inset in [0, 8] {
+            for shadow in [0., 50.] {
+                let settings = WallpaperSettings {
+                    balance: true,
+                    corners: 20.,
+                    inset: f64::from(inset),
+                    shadow,
+                    ..WallpaperSettings::default()
+                };
+                let composed = compose(Some(&base), 200, 160, &[], &settings, 1.);
+                assert_eq!(composed.dimensions(), (140 + inset * 2, 120 + inset * 2));
+                assert_eq!(
+                    composed.get_pixel(70 + inset, 60 + inset).0,
+                    [64, 112, 192, 255]
+                );
+                if inset > 0 {
+                    assert_eq!(composed.get_pixel(4, 60 + inset).0, [230, 230, 230, 255]);
+                }
+                if shadow == 0. {
+                    assert_eq!(composed.get_pixel(0, 0).0[3], 0);
+                }
             }
         }
     }

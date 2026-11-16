@@ -106,14 +106,9 @@ impl WallpaperSettings {
             || self.background_image.is_some()
             || self.padding > 0.0
             || (!self.balance && self.inset <= 0.0 && (self.corners > 0.0 || self.shadow > 0.0))
-            || (!has_layers
-                && self.balance
-                && self.inset <= 0.0
-                && self.corners <= 0.0
-                && self.shadow <= 0.0)
+            || (!has_layers && self.balance && self.inset <= 0.0)
             || (!has_layers
                 && self.inset > 0.0
-                && (!self.balance || (self.corners <= 0.0 && self.shadow <= 0.0))
                 && crate::render::window_frame::theme(&self.window_frame.style).is_none())
             || self.layer_inset(has_layers) > 0.0
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
@@ -389,13 +384,7 @@ pub fn layout(
     frame_scale: f64,
     has_layers: bool,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
-    let inset = if !has_layers
-        && (!settings.balance
-            || crate::render::window_frame::theme(&settings.window_frame.style).is_some()
-            || (settings.corners <= 0.0
-                && settings.shadow <= 0.0
-                && crate::render::window_frame::theme(&settings.window_frame.style).is_none()))
-    {
+    let inset = if !has_layers {
         settings.inset.max(0.0)
     } else {
         0.0
@@ -458,7 +447,7 @@ mod tests {
         };
         assert!(settings.is_active(false));
         settings.balance = true;
-        assert!(!settings.is_active(false));
+        assert!(settings.is_active(false));
         settings.balance = false;
         settings.inset = 10.0;
         assert!(settings.is_active(false));
