@@ -3706,9 +3706,14 @@ the requested rectangle does not fit one display, a new window-list fallback
 preserves the requested desktop rectangle and removes excluded IDs before using
 Core Graphics. [Geometry and live window-metadata checks](tests/native/evidence/macos-ui/cross-display-window-list-20261116.txt)
 pass, but the fallback's pixels, color handling and mixed-DPI output are not
-verified on multiple physical displays. The legacy direct scroll path remains
-outside this coordination, and a window removed during a strict exclusion
-capture can also cause a capture to fail closed.
+verified on multiple physical displays. The legacy direct scroll path now holds
+the same snapshot barrier and switches to a filtered capture when protected daemon
+windows are registered; it includes the native scroll boundaries and control panel
+in that filter. A native fixture with injected frames checks a waiting overlay,
+filter IDs, a stale request, and a failed filtered frame after two frames; the retained PNG
+reopens pixel-identical to the generated stitched image. The [fixture evidence](tests/native/evidence/macos-ui/legacy-scroll-capture-coordination-20261116.txt)
+does not prove actual ScreenCaptureKit filtering or live scroll pixels. A window removed during a strict
+exclusion capture can also cause a capture to fail closed.
 
 Native window-server probes found that the recording dimmer and outline, scroll
 boundaries and control panel, camera preview, and freeze overlay could remain
