@@ -3842,6 +3842,12 @@ falling back to the primary display. An [AppKit metadata fixture](tests/native/e
 checks the available display, unavailable selections and preservation of an
 active session; it cancels before UI setup or pixel capture. Physical unplug and
 multi-display behavior remain unverified.
+The macOS recorder also now rejects an unavailable explicitly selected display
+instead of recording the first available display. It still chooses a moved
+window's current display when that display is available. A
+[native selection fixture](tests/native/evidence/macos-ui/recording-display-selection-20261116.txt)
+checks generated and active-display metadata; live unplug, actual recording and
+the startup error's presentation remain unverified.
 The delayed post-scroll callback and queued auto-scroll start now also retain their
 original session generation: stopping and restarting cannot turn an old callback
 into a second capture or start an unrelated session. The Swift fixture holds and
