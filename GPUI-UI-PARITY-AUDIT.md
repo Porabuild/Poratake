@@ -3251,6 +3251,37 @@ device access or physical-display behavior. The GPUI editor unit suite passed
 334 tests with two ignored, and the same-size source replacement test and
 parity-feature Clippy check passed.
 
+A transparent rounded screenshot with inset, shadow, blur, blackout and
+pixelation exposed a separate reopen difference. A plain GPUI image used the
+surface color behind transparent pixels, while the wallpaper preview used the
+editor background. The plain image and redaction preview now use that same
+background; Electron's screenshot canvas is transparent over its background.
+In a generated dark-mode 73% comparison, the [previous preview](tests/native/evidence/macos-ui/transparent-reopen-before-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/transparent-reopen-before-reopened-20261116.png)
+differed by more than two levels at 7,572 of 13,516 pixels, maximum 11. The
+[new preview](tests/native/evidence/macos-ui/transparent-reopen-after-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/transparent-reopen-after-reopened-20261116.png)
+matched at every pixel. The generated Metal fixture also passed at 100% and
+150% zoom in both appearances at simulated 125% display scale, and checked a
+plain partially transparent image with redactions. The offscreen Electron
+43.4.0 screenshot editor, using the fixture preload and the same generated PNG,
+shows its transparent corner over the editor background in both [dark](tests/native/evidence/macos-ui/transparent-editor-electron-dark-20261116.json)
+and [light](tests/native/evidence/macos-ui/transparent-editor-electron-light-20261116.json)
+appearances. Neither probe establishes physical-display or live-capture behavior.
+The GPUI comparison also matched an eight-pixel band around the composition in
+both appearances at the three tested zooms. The full dark-mode synthetic GPUI
+workflow passed after the change.
+The restored-pixelation fixture also passed after the matte change in both
+appearances at simulated 100%, 125% and 200%, with opaque and transparent
+sources, clipped and unclipped regions, and reopened PNG comparisons.
+
+The Electron comparison initially could not load its stylesheet: Tailwind scanned
+a vendored Rust test and generated an invalid CSS declaration. The stylesheet
+now excludes the vendor directory from automatic source scanning. A fresh Vite
+renderer server returned HTTP 200 for the stylesheet after previously returning
+500, and the offscreen screenshot editor then loaded in both appearances. This
+does not establish a packaged-build result.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners
