@@ -4143,6 +4143,20 @@ interactive playback and slower Macs remain unmeasured. The [results and
 commands](tests/native/evidence/macos-ui/video-redaction-preview-fix-20261116.txt)
 record the limits and the isolated fake-daemon checks.
 
+A deterministic 48-case redaction matrix subsequently checked 49,197 pixels
+inside effects against the resized full composition within one channel level,
+and 783,568 pixels away from effects against the unchanged scaled composition
+exactly. Its 89 generated effects included blur and pixelation at all ten
+intensities, clipped and reverse-dragged rectangles, ten overlaps, and selected
+camera/zoom cases. A shared canvas region read now copies bounded rows rather
+than testing every pixel. It preserves transparent padding for clipped and
+off-canvas reads. In two alternating same-process trials on an 800×600 region,
+the previous read took upper medians of 2.154 and 2.021 ms versus 0.275 and
+0.254 ms for the row copy. Full-playback results under changing machine load
+are not comparable; the editor's 60 fps composition budget is about 8.33 ms,
+and real playback, decode and slower-Mac behavior remain open. See the
+[matrix and timing evidence](tests/native/evidence/macos-ui/video-redaction-region-copy-20261116.txt).
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA

@@ -1,0 +1,43 @@
+macOS GPUI redaction stress and canvas region read, 2026-11-16
+
+The deterministic generated matrix uses 48 cases and four output sizes. It
+contains 46 blur and 43 pixelation effects, all ten intensities, 60 clipped
+rectangles, 68 reverse-dragged rectangles and ten overlapping effects. Selected
+cases include zoom, a generated camera image and annotations before and after
+the effects. It compares 49,197 pixels inside effects with a resized full
+composition within one channel level, and 783,568 pixels well outside effects
+with the unmodified scaled composition exactly. This is generated CPU-rendered
+content, not a real recording or a physical display comparison.
+
+The shared Canvas read_region routine now copies the in-bounds part of each row
+at once and leaves out-of-bounds padding transparent. A native test checks
+ordinary reads, all sides of the canvas, entirely off-canvas reads, extreme
+signed coordinates and zero-width rejection. Screenshot preview, annotation,
+canvas and video composition suites passed after the change.
+
+An ignored same-process benchmark alternates the old per-pixel routine and the
+new row-copy routine on an 800x600 region from a synthetic 4K frame. It checks
+their bytes match, discards the first two of 16 measurements and reports the
+upper median. Two runs gave 2.154 and 2.021 ms for the old routine, versus
+0.275 and 0.254 ms for the new one. This measures copying only. Full-preview
+timings varied substantially with machine load, so these results do not
+establish a playback frame rate or a comparable end-to-end speedup.
+
+Before the row-copy change, the synthetic quality-size probe measured a median
+9.28 ms for a 640x360 preview of a 4K frame with an 800x600 pixelation region.
+The editor uses half a frame interval as its adaptive composition budget,
+about 8.33 ms at 60 fps. The probe excludes decode, upload and scheduling; it
+does not establish what happens in live playback. Native playback and slower
+machines still require profiling.
+
+Commands:
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui generated_redaction_matrix_matches_full_composition_inside_effects -- --nocapture
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui video_redaction_region_copy_timing -- --ignored --nocapture
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui video_redaction_quality_timing -- --ignored --nocapture
+
+Ten canvas, 38 annotation, 25 screenshot-preview and 87 video-composition
+tests passed, along with the generated edited-project save/reopen and decoded
+H.264 export test, strict Rust clippy and format checks. Isolated 950-point, 2x
+GPUI parity runs with a fake daemon passed in light and dark, rendering 193
+states each. Their injected camera-protection failure is expected; they do not
+verify live capture, real permissions or physical pointer interaction.
