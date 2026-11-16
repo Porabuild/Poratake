@@ -9889,9 +9889,12 @@ pub(super) fn video(
         }
     });
     hover(cx, window, 300., 300.);
+    capture(cx, window, output, "video-loaded-default");
     #[cfg(target_os = "macos")]
     {
-        let screenshot = cx.capture_screenshot(window).unwrap();
+        let screenshot = image::open(output.join("gpui-video-loaded-default.png"))
+            .unwrap()
+            .to_rgba8();
         let stage_right = ((width
             - crate::ui::chrome::VIDEO_SIDEBAR_WIDTH
             - crate::ui::chrome::VIDEO_TAB_RAIL_WIDTH)
@@ -9911,7 +9914,6 @@ pub(super) fn video(
             "rendered preview lacks fixture colors: red={red}, blue={blue}"
         );
     }
-    capture(cx, window, output, "video-loaded-default");
     if cfg!(target_os = "macos") && width == 720. {
         let stage_right = px(width
             - crate::ui::chrome::VIDEO_SIDEBAR_WIDTH
