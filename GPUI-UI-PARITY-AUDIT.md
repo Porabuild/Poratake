@@ -4096,7 +4096,7 @@ GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
 macOS traffic-light space and Windows custom captions are platform-specific.
 These are not evidence that unrelated features match.
 
-A scaled pixelation diagnostic found a remaining preview/export discrepancy in a
+A scaled pixelation diagnostic found a preview/export discrepancy in a
 generated one-pixel stripe fixture. A half-size editor preview and a 2×2 reduction
 of the decoded H.264 export differed by 11.43 mean BGR levels in the pixelated
 region. A separate comparison without encoding still differed by 10.14 levels
@@ -4105,7 +4105,7 @@ decoded export differed by 1.84, and the unredacted control matched at the two
 preview sizes. This indicates an effect-scaling discrepancy in the fixture; live
 recordings remain unverified. Weighting fractional pixelation-block edges by
 area reduced the same comparison to 5.67 levels against decoded export and 4.51
-against the full-size preview; it did not remove the mismatch. A separate
+against the full-size preview; that earlier change did not remove the mismatch. A separate
 high-frequency stripe probe also shows a difference from Electron's current
 pixel sampling. Composing the whole 4K frame at source resolution for every
 playback preview would add substantial CPU cost: a local synthetic case measured
@@ -4122,9 +4122,26 @@ A source-resolution crop experiment matched a full composition in one
 overlapping-redaction case and corrected the sampled half-size preview in that
 fixture. In a local synthetic 4K timing, the crop median decreased from 9.36 ms
 to 6.84 ms after the pixelation optimization; a separate small preview took
-4.91 ms. The crop is not used by the production preview, and its alpha, zoom,
-clipping, other scales and playback cost need broader verification. See the
-[fixture and timings](tests/native/evidence/macos-ui/video-redaction-crop-20261116.txt).
+4.91 ms. See the initial [fixture and timings](tests/native/evidence/macos-ui/video-redaction-crop-20261116.txt).
+
+Scaled video composition now renders active blur and pixelation from bounded
+source-resolution crops and copies only their affected output rectangles.
+Overlapping source regions are grouped; distant ones are processed separately.
+The original generated stripe fixture now has a mean preview-versus-full-preview
+error of 0 at its first sampled time and 0.018 at its later sampled times, down
+from 4.51. Its decoded H.264 comparison fell from 5.67 to 1.84 levels at the
+first sampled time. Generated tests also exercise clipped selections on four
+edges, reverse drags, overlapping effects and annotations, a camera layer,
+zoom, transparent backgrounds, multiple separate effects, and output scales
+from roughly 13% to 150%. A plain source-blend clip was rejected because it
+changed pixels outside the mask; bounded output patches preserved neighboring
+pixels in the tested cases. This fixes the measured fixture, not the separate
+Electron pixel-sampling difference or an untested live recording. In two local
+synthetic 4K timing runs, the corrected 960×540 preview took medians of 11.89
+and 14.44 ms versus the earlier 4.91 ms direct preview. Decode, upload,
+interactive playback and slower Macs remain unmeasured. The [results and
+commands](tests/native/evidence/macos-ui/video-redaction-preview-fix-20261116.txt)
+record the limits and the isolated fake-daemon checks.
 
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
@@ -4133,8 +4150,9 @@ channels, by up to 11 levels, from composition at the same export dimensions.
 Fitted previews now use the same dimension-based rendering path as export.
 [Native evidence](tests/native/evidence/macos-ui/video-preview-rounded-size-20261116.txt)
 covers generated landscape, portrait and odd-sized frames, an edited H.264
-export, and isolated fake-daemon recording workflows in both themes. It does not
-resolve the scaled pixelation difference above or verify a live recording.
+export, and isolated fake-daemon recording workflows in both themes. That sizing
+fix alone did not resolve the scaled pixelation difference; the later crop change
+above addresses the tested fixture. Neither verifies a live recording.
 
 Fractional redaction bounds previously omitted the last partially covered row or
 column when calculating the source region. GPUI and Electron now round the far
@@ -4142,7 +4160,7 @@ edge independently before clipping to the canvas for video and screenshot blur
 and pixelation; empty selections still draw nothing. Generated tests exercise
 pixelation and blur, scaled and clipped bounds, and the previously unchanged
 corner pixel. An isolated Electron screenshot fixture checks the actual preview
-overlay and reopened PNG at 1× and 2×. This fix does not resolve the separate
+overlay and reopened PNG at 1× and 2×. That bounds fix alone did not resolve the
 scaled pixelation discrepancy above or establish parity for a live recording. A
 [macOS fixture](tests/native/evidence/macos-ui/fractional-redaction-bounds-20261116.txt)
 also checks the changed corner through Electron's offscreen drawing renderer.
