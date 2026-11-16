@@ -4079,9 +4079,11 @@ reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-
 
 Fractional redaction bounds previously omitted the last partially covered row or
 column when calculating the source region. GPUI and Electron now round the far
-edge independently before clipping to the canvas; empty selections still draw
-nothing. Generated tests exercise pixelation and blur, scaled and clipped bounds,
-and the previously unchanged corner pixel. This fix does not resolve the separate
+edge independently before clipping to the canvas for video and screenshot blur
+and pixelation; empty selections still draw nothing. Generated tests exercise
+pixelation and blur, scaled and clipped bounds, and the previously unchanged
+corner pixel. An isolated Electron screenshot fixture checks the actual preview
+overlay and reopened PNG at 1× and 2×. This fix does not resolve the separate
 scaled pixelation discrepancy above or establish parity for a live recording. A
 [macOS fixture](tests/native/evidence/macos-ui/fractional-redaction-bounds-20261116.txt)
 also checks the changed corner through Electron's offscreen drawing renderer.

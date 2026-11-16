@@ -20,3 +20,21 @@ edited-video export test uses fractional pixelation and blur coordinates,
 compares preview with decoded H.264 and reopens its saved project. See the audit
 for the remaining scaled pixelation discrepancy.
 These checks do not establish pixel parity for live captures or recordings.
+
+Screenshot preview and export follow-up, 2026-11-16
+
+Electron's screenshot overlay and PNG export independently omitted the same
+fractional far edge. An isolated hidden Electron 43.4.0 window mounted the
+production React overlay and export hook over a generated 12x12 image. The
+selection's far corner touched a white pixel at (10,10). Before the fix, both
+pixelation and blur left that preview pixel transparent and that exported pixel
+white. After the fix the preview and reopened PNG matched at that pixel: at 1x,
+pixelation yielded [64,64,64,255] and blur [241,241,241,255].
+
+The fixture also checks 2x rendering, selections clipped at the top and left,
+zero-width selections and an outside pixel for both effects. It uses a generated
+canvas and temporary Electron profile, and does not access screen capture or the
+user's editor. Run it using the existing development dependencies:
+
+bun build tests/native/fractional-screenshot-redact.tsx --target browser --outfile /tmp/poratake-fractional-screenshot.js
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron tests/native/fractional-screenshot-redact.cjs /tmp/poratake-fractional-screenshot.js
