@@ -3557,6 +3557,139 @@ pub(super) fn fractional_annotation_draft(cx: &mut HeadlessAppContext, scratch: 
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn ordered_redaction_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
+    use crate::editor::annotations::Annotation;
+
+    let source = scratch.join("ordered-redaction-source.png");
+    image::RgbaImage::from_pixel(200, 160, image::Rgba([255, 255, 255, 255]))
+        .save(&source)
+        .unwrap();
+    for scale in [1., 2.] {
+        for zoom in [0.73, 1., 1.37] {
+            for style in ["pixelate", "blur"] {
+                for shape_after in [false, true] {
+                    let editor = cx
+                        .open_window(size(px(1280.), px(738.)), |window, cx| {
+                            window.set_scale_factor(scale);
+                            cx.new(|cx| {
+                                EditorWindow::from_file(source.to_str().unwrap(), window, cx)
+                            })
+                        })
+                        .unwrap();
+                    let shape = Annotation::Rectangle {
+                        id: "stripe".into(),
+                        x: 50.,
+                        y: 40.,
+                        width: 2.,
+                        height: 40.,
+                        stroke: "#ff0000".into(),
+                        stroke_width: 1.,
+                        fill: Some("#ff0000".into()),
+                    };
+                    let redact = Annotation::Redact {
+                        id: style.into(),
+                        x: 40.,
+                        y: 30.,
+                        width: 50.,
+                        height: 60.,
+                        style: style.into(),
+                        intensity: 5.,
+                    };
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom;
+                            editor.history.push(if shape_after {
+                                vec![redact, shape]
+                            } else {
+                                vec![shape, redact]
+                            });
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+                    let saved = scratch.join("ordered-redaction-saved.png");
+                    std::fs::write(&saved, png).unwrap();
+                    let output = image::open(&saved).unwrap().to_rgba8();
+                    let stripe = output.get_pixel(51, 60).0;
+                    if shape_after {
+                        assert_eq!(stripe, [255, 0, 0, 255], "{style}, {scale}x");
+                    } else {
+                        assert!(stripe[1] > 0, "{style}, {scale}x: {stripe:?}");
+                    }
+                    let reopened = cx
+                        .open_window(size(px(1280.), px(738.)), |window, cx| {
+                            window.set_scale_factor(scale);
+                            cx.new(|cx| {
+                                EditorWindow::from_file(saved.to_str().unwrap(), window, cx)
+                            })
+                        })
+                        .unwrap();
+                    reopened
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, reopened.into());
+                    let (bounds, reopened_bounds) = cx.update(|cx| {
+                        (
+                            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                            reopened.read(cx).unwrap().bounds.borrow().unwrap(),
+                        )
+                    });
+                    assert_eq!(bounds, reopened_bounds);
+                    let preview = cx.capture_screenshot(editor.into()).unwrap();
+                    let reference = cx.capture_screenshot(reopened.into()).unwrap();
+                    let left = (f32::from(bounds.left()) * scale).round() as u32;
+                    let top = (f32::from(bounds.top()) * scale).round() as u32;
+                    let width = (f32::from(bounds.size.width) * scale).round() as u32;
+                    let height = (f32::from(bounds.size.height) * scale).round() as u32;
+                    let mut differences = 0;
+                    let mut worst = 0;
+                    for y in 0..height {
+                        for x in 0..width {
+                            let actual = preview.get_pixel(left + x, top + y).0;
+                            let expected = reference.get_pixel(left + x, top + y).0;
+                            let difference = actual
+                                .iter()
+                                .zip(expected)
+                                .map(|(a, b)| a.abs_diff(b))
+                                .max()
+                                .unwrap();
+                            differences += usize::from(difference > 2);
+                            worst = worst.max(difference);
+                        }
+                    }
+                    println!("{style}, scale {scale}, zoom {zoom}, shape after {shape_after}: stripe {stripe:?}, {differences} pixels above two, maximum {worst}");
+                    if let Some(output) = std::env::var_os("PORATAKE_PARITY_EVIDENCE") {
+                        if scale == 2. && zoom == 1. && !shape_after {
+                            let output = Path::new(&output);
+                            image::imageops::crop_imm(&preview, left, top, width, height)
+                                .to_image()
+                                .save(output.join(format!("ordered-{style}-preview.png")))
+                                .unwrap();
+                            image::imageops::crop_imm(&reference, left, top, width, height)
+                                .to_image()
+                                .save(output.join(format!("ordered-{style}-reopened.png")))
+                                .unwrap();
+                        }
+                    }
+                    assert_eq!(
+                        differences, 0,
+                        "{style}, {scale}x, zoom {zoom}, shape after {shape_after}"
+                    );
+                    for handle in [editor, reopened] {
+                        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn scaled_blackout_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
     use crate::editor::annotations::Annotation;
 

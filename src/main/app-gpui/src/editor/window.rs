@@ -2166,6 +2166,9 @@ fn render_redact_patch(
 ) -> Option<crate::editor::canvas::RedactPatch> {
     let (x, y, width, height) = rect;
     let (x, y, width, height) = crate::editor::annotations::normalize_rect(x, y, width, height);
+    if width <= 0. || height <= 0. {
+        return None;
+    }
     let left = x.floor();
     let top = y.floor();
     let x0 = left.max(0.0) as u32;
@@ -2173,10 +2176,10 @@ fn render_redact_patch(
     if x0 >= base.width() || y0 >= base.height() {
         return None;
     }
-    let w = (width.ceil() - (f64::from(x0) - left))
+    let w = ((x + width).ceil() - f64::from(x0))
         .max(0.0)
         .min(f64::from(base.width() - x0)) as u32;
-    let h = (height.ceil() - (f64::from(y0) - top))
+    let h = ((y + height).ceil() - f64::from(y0))
         .max(0.0)
         .min(f64::from(base.height() - y0)) as u32;
     if w == 0 || h == 0 {
@@ -4274,6 +4277,32 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[test]
+    fn blackout_patch_covers_fractional_extents_and_clips_to_image() {
+        let source = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            32,
+            24,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        for (rect, expected) in [
+            ((8.8, 3.8, 12.3, 12.3), (8., 3., 14., 14.)),
+            ((21.1, 16.1, -12.3, -12.3), (8., 3., 14., 14.)),
+            ((-2.5, 3.8, 12.3, 12.3), (0., 3., 10., 14.)),
+            ((28.8, 20.8, 12.3, 12.3), (28., 20., 4., 4.)),
+        ] {
+            let patch = render_redact_patch(&source, rect, "blackout", 5., 1.).unwrap();
+            assert_eq!((patch.x, patch.y, patch.width, patch.height), expected);
+            assert!(patch
+                .image
+                .as_bytes(0)
+                .unwrap()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255]));
+        }
+        assert!(render_redact_patch(&source, (8.8, 3.8, 0., 4.), "blackout", 5., 1.).is_none());
+        assert!(render_redact_patch(&source, (8.8, 3.8, 4., 0.), "blackout", 5., 1.).is_none());
+    }
 
     #[cfg(windows)]
     #[herogpui::test]

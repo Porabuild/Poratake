@@ -36,26 +36,13 @@ impl<'a> ScreenshotPaint<'a> {
 }
 
 pub fn screenshot_paints<'a>(
-    annotations: impl Iterator<Item = &'a Annotation> + Clone,
+    annotations: impl Iterator<Item = &'a Annotation>,
 ) -> Vec<ScreenshotPaint<'a>> {
     let mut paints = Vec::with_capacity(annotations.size_hint().1.unwrap_or(0));
-    for annotation in annotations.clone() {
-        if matches!(annotation, Annotation::Redact { .. }) {
-            paints.push(ScreenshotPaint::Annotation(annotation));
-        }
-    }
-    for annotation in annotations.clone() {
-        match annotation {
-            Annotation::Redact { style, .. } if style == "blackout" => {
-                paints.push(ScreenshotPaint::BlackoutOverlay(annotation));
-            }
-            Annotation::Redact { .. } | Annotation::Highlight { .. } => {}
-            _ => paints.push(ScreenshotPaint::Annotation(annotation)),
-        }
-    }
     for annotation in annotations {
-        if matches!(annotation, Annotation::Highlight { .. }) {
-            paints.push(ScreenshotPaint::Annotation(annotation));
+        paints.push(ScreenshotPaint::Annotation(annotation));
+        if matches!(annotation, Annotation::Redact { style, .. } if style == "blackout") {
+            paints.push(ScreenshotPaint::BlackoutOverlay(annotation));
         }
     }
     paints
@@ -2487,6 +2474,43 @@ mod tests {
                 .pixels()
                 .iter()
                 .all(|pixel| pixel.red() == 255));
+        }
+    }
+
+    #[test]
+    fn screenshot_selection_follows_redaction_and_annotation_order() {
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 4.,
+            y: 4.,
+            width: 16.,
+            height: 16.,
+            stroke: "#ff0000".into(),
+            stroke_width: 1.,
+            fill: Some("#ff0000".into()),
+        };
+        for style in ["blackout", "pixelate", "blur"] {
+            let redact = Annotation::Redact {
+                id: "redact".into(),
+                x: 4.,
+                y: 4.,
+                width: 16.,
+                height: 16.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            assert_eq!(
+                screenshot_annotation_at(&[shape.clone(), redact.clone()], (10., 10.), 1.)
+                    .map(Annotation::id),
+                Some("redact"),
+                "{style}"
+            );
+            assert_eq!(
+                screenshot_annotation_at(&[redact, shape.clone()], (10., 10.), 1.)
+                    .map(Annotation::id),
+                Some("shape"),
+                "{style}"
+            );
         }
     }
 

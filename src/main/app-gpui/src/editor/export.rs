@@ -2752,7 +2752,57 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_annotations_follow_electron_export_order() {
+    fn screenshot_redactions_filter_earlier_annotations_in_order() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            40,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 16.,
+            y: 10.,
+            width: 2.,
+            height: 20.,
+            stroke: "#ff0000".into(),
+            stroke_width: 1.,
+            fill: Some("#ff0000".into()),
+        };
+        for style in ["blackout", "pixelate", "blur"] {
+            let redact = Annotation::Redact {
+                id: style.into(),
+                x: 10.,
+                y: 5.,
+                width: 30.,
+                height: 30.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            let compose_order = |annotations: &[Annotation]| {
+                compose(
+                    Some(&base),
+                    60,
+                    40,
+                    annotations,
+                    &WallpaperSettings::default(),
+                    1.,
+                )
+            };
+            let filtered = compose_order(&[shape.clone(), redact.clone()]);
+            let above = compose_order(&[redact, shape.clone()]);
+            let filtered_pixel = filtered.get_pixel(17, 20).0;
+            let above_pixel = above.get_pixel(17, 20).0;
+            assert_eq!(above_pixel, [255, 0, 0, 255], "{style}");
+            if style == "blackout" {
+                assert_eq!(filtered_pixel, [0, 0, 0, 255]);
+            } else {
+                assert!(filtered_pixel[1] > 0, "{style}: {filtered_pixel:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_annotations_respect_composition_order() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
             100,
             80,
@@ -2794,12 +2844,12 @@ mod tests {
             stroke_width: 10.,
         };
         for (annotations, expected, corner) in [
-            (vec![shape.clone(), blur.clone()], [255, 0, 255, 255], None),
+            (vec![shape.clone(), blur.clone()], [208, 31, 240, 255], None),
             (vec![blur, shape.clone()], [255, 0, 255, 255], None),
             (
                 vec![shape.clone(), blackout.clone()],
                 [0, 0, 0, 255],
-                Some([191, 0, 191, 255]),
+                Some([0, 0, 0, 255]),
             ),
             (
                 vec![blackout.clone(), shape.clone()],
@@ -2808,7 +2858,7 @@ mod tests {
             ),
             (
                 vec![highlight.clone(), shape.clone()],
-                [255, 0, 127, 255],
+                [255, 0, 255, 255],
                 None,
             ),
             (vec![shape, highlight.clone()], [255, 0, 127, 255], None),
