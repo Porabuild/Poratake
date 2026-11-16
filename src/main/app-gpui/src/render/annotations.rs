@@ -1581,8 +1581,6 @@ fn blur_region(
     canvas.restore();
 }
 
-/// Box-averaged downsample, matching the browser's high-quality path when the
-/// pixelate redaction shrinks a region before scaling it back up.
 fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let mut target = Pixmap::new(width, height)?;
     let source_width = source.width();
@@ -1590,31 +1588,34 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let data = source.data();
     let out = target.data_mut();
 
+    let divisor = u64::from(source_width) * u64::from(source_height);
     for y in 0..height {
-        let y0 = (y * source_height / height).min(source_height - 1);
-        let y1 = ((y + 1) * source_height)
-            .div_ceil(height)
-            .min(source_height);
+        let top = u64::from(y) * u64::from(source_height);
+        let bottom = u64::from(y + 1) * u64::from(source_height);
+        let y0 = top / u64::from(height);
+        let y1 = bottom.div_ceil(u64::from(height));
         for x in 0..width {
-            let x0 = (x * source_width / width).min(source_width - 1);
-            let x1 = ((x + 1) * source_width).div_ceil(width).min(source_width);
-            let mut sums = [0u32; 4];
-            let mut count = 0u32;
-            for sample_y in y0..y1.max(y0 + 1) {
-                for sample_x in x0..x1.max(x0 + 1) {
-                    let index = ((sample_y * source_width + sample_x) * 4) as usize;
+            let left = u64::from(x) * u64::from(source_width);
+            let right = u64::from(x + 1) * u64::from(source_width);
+            let x0 = left / u64::from(width);
+            let x1 = right.div_ceil(u64::from(width));
+            let mut sums = [0u64; 4];
+            for sample_y in y0..y1 {
+                let weight_y = bottom.min((sample_y + 1) * u64::from(height))
+                    - top.max(sample_y * u64::from(height));
+                for sample_x in x0..x1 {
+                    let weight_x = right.min((sample_x + 1) * u64::from(width))
+                        - left.max(sample_x * u64::from(width));
+                    let weight = weight_x * weight_y;
+                    let index = ((sample_y * u64::from(source_width) + sample_x) * 4) as usize;
                     for channel in 0..4 {
-                        sums[channel] += data[index + channel] as u32;
+                        sums[channel] += u64::from(data[index + channel]) * weight;
                     }
-                    count += 1;
                 }
-            }
-            if count == 0 {
-                continue;
             }
             let index = ((y * width + x) * 4) as usize;
             for channel in 0..4 {
-                out[index + channel] = (sums[channel] / count) as u8;
+                out[index + channel] = ((sums[channel] + divisor / 2) / divisor) as u8;
             }
         }
     }
@@ -2680,6 +2681,62 @@ mod tests {
     }
 
     #[test]
+    fn pixelation_weights_partial_source_pixels_by_their_coverage() {
+        let mut source = Pixmap::new(3, 1).unwrap();
+        source
+            .data_mut()
+            .copy_from_slice(&[0, 0, 0, 255, 0, 0, 0, 255, 255, 120, 60, 255]);
+        let reduced = downsample(&source, 2, 1).unwrap();
+        assert_eq!(reduced.data(), &[0, 0, 0, 255, 170, 80, 40, 255]);
+    }
+
+    #[test]
+    fn pixelation_averages_high_frequency_stripes_across_block_edges() {
+        let mut source = Pixmap::new(30, 1).unwrap();
+        for (x, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            *pixel = [if x % 2 == 0 { 0 } else { 255 }, 0, 0, 255];
+        }
+        let reduced = downsample(&source, 4, 1).unwrap();
+        let red: Vec<_> = reduced
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .collect();
+        assert_eq!(red, [119, 119, 136, 136]);
+    }
+
+    #[test]
+    fn pixelation_area_sampling_is_consistent_for_scaled_source_pixels() {
+        let mut small = Pixmap::new(3, 3).unwrap();
+        let mut large = Pixmap::new(6, 6).unwrap();
+        for y in 0..3 {
+            for x in 0..3 {
+                let color = [(x * 60) as u8, (y * 50) as u8, ((x + y) * 30) as u8, 255];
+                let offset = ((y * 3 + x) * 4) as usize;
+                small.data_mut()[offset..offset + 4].copy_from_slice(&color);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let offset = (((y * 2 + dy) * 6 + x * 2 + dx) * 4) as usize;
+                        large.data_mut()[offset..offset + 4].copy_from_slice(&color);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            downsample(&small, 2, 2).unwrap().data(),
+            downsample(&large, 2, 2).unwrap().data()
+        );
+    }
+
+    #[test]
     fn pixelation_uses_the_same_nearest_boundaries_at_each_position() {
         let mut source = Pixmap::new(30, 1).unwrap();
         for (x, pixel) in source
@@ -2706,9 +2763,9 @@ mod tests {
             for i in 0..30 {
                 let expected = match i {
                     0..=7 => 10,
-                    8..=14 => 18,
+                    8..=14 => 19,
                     15..=22 => 30,
-                    _ => 38,
+                    _ => 39,
                 };
                 assert_eq!(canvas.pixmap().data()[(x + i) * 4], expected, "{x}+{i}");
             }
