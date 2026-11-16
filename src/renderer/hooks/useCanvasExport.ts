@@ -89,6 +89,7 @@ const clampRegionToCanvas = (
   width: number,
   height: number
 ): ClampedRegion | null => {
+  if (width <= 0 || height <= 0) return null;
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
 
@@ -96,14 +97,9 @@ const clampRegionToCanvas = (
   const flooredY = Math.floor(y);
   const clampedX = Math.max(0, flooredX);
   const clampedY = Math.max(0, flooredY);
-  const clampedWidth = Math.min(
-    Math.ceil(width) - (clampedX - flooredX),
-    canvasWidth - clampedX
-  );
-  const clampedHeight = Math.min(
-    Math.ceil(height) - (clampedY - flooredY),
-    canvasHeight - clampedY
-  );
+  const clampedWidth = Math.min(Math.ceil(x + width), canvasWidth) - clampedX;
+  const clampedHeight =
+    Math.min(Math.ceil(y + height), canvasHeight) - clampedY;
 
   if (clampedWidth <= 0 || clampedHeight <= 0) return null;
 

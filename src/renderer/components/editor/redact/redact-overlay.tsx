@@ -41,8 +41,8 @@ const pixelateRegion = (
 ) => {
   const scaledX = Math.floor(x * scale);
   const scaledY = Math.floor(y * scale);
-  const scaledWidth = Math.ceil(width * scale);
-  const scaledHeight = Math.ceil(height * scale);
+  const scaledWidth = Math.ceil((x + width) * scale) - scaledX;
+  const scaledHeight = Math.ceil((y + height) * scale) - scaledY;
   const scaledBlockSize = Math.max(1, Math.round(blockSize * scale));
 
   const canvasWidth = sourceCanvas.width;
@@ -88,8 +88,8 @@ const blurRegion = (
 ) => {
   const scaledX = Math.floor(x * scale);
   const scaledY = Math.floor(y * scale);
-  const scaledWidth = Math.ceil(width * scale);
-  const scaledHeight = Math.ceil(height * scale);
+  const scaledWidth = Math.ceil((x + width) * scale) - scaledX;
+  const scaledHeight = Math.ceil((y + height) * scale) - scaledY;
   const scaledRadius = Math.max(1, Math.round(radius * scale));
 
   const canvasWidth = sourceCanvas.width;
