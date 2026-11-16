@@ -5,9 +5,22 @@ import Foundation
 @main
 struct WindowIDValidationTests {
     static func main() throws {
+        precondition(AnyCodable(3.75).int() == 3)
+        precondition(AnyCodable(-3.75).int() == -3)
+        precondition(AnyCodable(0.0).int() == 0)
+        precondition(AnyCodable(Double.nan).int() == nil)
+        precondition(AnyCodable(Double.infinity).int() == nil)
+        precondition(AnyCodable(-Double.infinity).int() == nil)
+        precondition(AnyCodable(1e300).int() == nil)
+        precondition(AnyCodable(Int.max).int() == Int.max)
+        precondition(AnyCodable(Double(Int.max)).int() == nil)
+        let largestRepresentable = Double(Int.max).nextDown
+        precondition(AnyCodable(largestRepresentable).int() == Int(exactly: largestRepresentable))
+        precondition(AnyCodable(Double(Int.min)).int() == Int.min)
         let recorder = ScreenRecorderModule()
         let screenshot = ScreenshotModule()
         let overlay = RecordingOverlayModule()
+        let scroll = ScrollCaptureModule()
         let invalid: [Any] = [
             0,
             -1,
@@ -87,13 +100,38 @@ struct WindowIDValidationTests {
             )
         }
 
+        let invalidScroll: [[String: Any]] = [
+            ["x": 1e300], ["y": -1e300], ["x": Int(Int32.max) + 1],
+            ["width": 0], ["height": -1], ["height": Int(Int32.max) + 1],
+            ["displayId": -1], ["displayId": Int(UInt32.max) + 1],
+            ["displayId": 1.5], ["displayId": 1e300], ["displayId": true], ["displayId": "1"]
+        ]
+        let validScroll: [[String: Any]] = [
+            [:], ["x": -1440, "y": -900, "displayOriginX": -1440, "displayOriginY": -900],
+            ["displayId": 0], ["displayId": 1],
+            ["displayId": Int(UInt32.max)], ["displayId": NSNull()]
+        ]
+        for (index, values) in (invalidScroll + validScroll).enumerated() {
+            var params: [String: AnyCodable] = [
+                "x": AnyCodable(0), "y": AnyCodable(0), "width": AnyCodable(80), "height": AnyCodable(160)
+            ]
+            for (key, value) in values {
+                params[key] = try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(AnyCodable(value)))
+            }
+            scroll.handle(
+                method: DaemonContract.ScrollCapture.Method.start.rawValue,
+                params: params,
+                requestId: "scroll-\(index)"
+            )
+        }
+
         fflush(stdout)
         precondition(dup2(savedStdout, STDOUT_FILENO) >= 0)
         close(savedStdout)
         output.fileHandleForWriting.closeFile()
         let bytes = output.fileHandleForReading.readDataToEndOfFile()
         let lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n")
-        precondition(lines.count == (invalid.count + valid.count) * 3 + (invalidExclusions.count + validExclusions.count) * 2 + invalidDisplays.count + validDisplays.count)
+        precondition(lines.count == (invalid.count + valid.count) * 3 + (invalidExclusions.count + validExclusions.count) * 2 + invalidDisplays.count + validDisplays.count + invalidScroll.count + validScroll.count)
         let responses = try lines.map { try JSONDecoder().decode(Response.self, from: Data($0.utf8)) }
         for (index, response) in responses.prefix(invalid.count * 3).enumerated() {
             let action = ["record", "screenshot", "outline"][index % 3]
@@ -116,9 +154,19 @@ struct WindowIDValidationTests {
                 precondition(response.success && response.error == nil)
             }
         }
-        for (index, response) in exclusions.suffix(invalidDisplays.count + validDisplays.count).enumerated() {
+        let displayResponses = exclusions.dropFirst((invalidExclusions.count + validExclusions.count) * 2)
+            .prefix(invalidDisplays.count + validDisplays.count)
+        for (index, response) in displayResponses.enumerated() {
             precondition(response.id == "area-display-\(index)")
             if index < invalidDisplays.count {
+                precondition(!response.success && response.error?.code == "INVALID_PARAMS")
+            } else {
+                precondition(response.success && response.error == nil)
+            }
+        }
+        for (index, response) in responses.suffix(invalidScroll.count + validScroll.count).enumerated() {
+            precondition(response.id == "scroll-\(index)")
+            if index < invalidScroll.count {
                 precondition(!response.success && response.error?.code == "INVALID_PARAMS")
             } else {
                 precondition(response.success && response.error == nil)

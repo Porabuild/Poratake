@@ -421,13 +421,25 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func handleStart(params: [String: AnyCodable]?, requestId: String) {
-        guard let x = params?["x"]?.int(),
-              let y = params?["y"]?.int(),
-              let width = params?["width"]?.int(),
-              let height = params?["height"]?.int() else {
-            respondError(id: requestId, code: "INVALID_PARAMS", message: "start requires x, y, width, height")
+        guard let x = params?["x"]?.int(), Int32(exactly: x) != nil,
+              let y = params?["y"]?.int(), Int32(exactly: y) != nil,
+              let width = params?["width"]?.int(), Int32(exactly: width) != nil, width > 0,
+              let height = params?["height"]?.int(), Int32(exactly: height) != nil, height > 0 else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "start requires valid x, y, width, height")
             return
         }
+        var requestedDisplayID: CGDirectDisplayID?
+        if let value = params?["displayId"], !(value.value is NSNull) {
+            guard let number = value.value as? Int, let display = CGDirectDisplayID(exactly: number) else {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid display id")
+                return
+            }
+            requestedDisplayID = display
+        }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         guard canStartCapture else {
             respondError(id: requestId, code: "ALREADY_CAPTURING", message: "A scroll capture is already active")
@@ -449,8 +461,8 @@ class ScrollCaptureModule: NSObject, Module {
 
         displayId = CGMainDisplayID()
         targetScreen = nil
-        if let display = params?["displayId"]?.int() {
-            displayId = CGDirectDisplayID(display)
+        if let display = requestedDisplayID {
+            displayId = display
         } else if let originX = params?["displayOriginX"]?.int(),
                   let originY = params?["displayOriginY"]?.int(),
                   let screen = screenForTopLeftOrigin(x: originX, y: originY) {
