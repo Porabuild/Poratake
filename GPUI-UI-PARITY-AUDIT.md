@@ -4017,16 +4017,15 @@ macOS traffic-light space and Windows custom captions are platform-specific.
 These are not evidence that unrelated features match.
 
 A scaled pixelation diagnostic found a remaining preview/export discrepancy in a
-generated one-pixel stripe fixture. Comparing a half-size editor preview with a
-2×2 box reduction of the decoded H.264 export gave a mean absolute difference of
-11.43 BGR levels in the pixelated region, above the diagnostic threshold of 8.
-Encoding and resampling could contribute; this does not establish the cause or a
-live-recording failure. The diagnostic stopped at that first difference, and its
-later blur checks did not run. The result and a reproducible instrumentation patch
+generated one-pixel stripe fixture. A half-size editor preview and a 2×2 reduction
+of the decoded H.264 export differed by 11.43 mean BGR levels in the pixelated
+region. A separate comparison without encoding still differed by 10.14 levels
+between half-size and reduced full-size previews; the full-size preview versus
+decoded export differed by 1.84, and the unredacted control matched at the two
+preview sizes. This indicates an effect-scaling discrepancy in the fixture; live
+recordings remain unverified. The result and reproducible instrumentation patch
 are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
 `tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
-Investigate against a lossless source and full-size preview before changing the
-pixelation algorithm.
 
 ## Review gate
 
