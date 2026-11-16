@@ -3205,6 +3205,22 @@ and was terminated. Neither establishes a product defect or a physical 2×
 result. The preview and export use different pixel grids when their scale factors
 differ, so broader pixel equality remains unverified.
 
+A generated Electron 43.4.0 comparison now confirms a mismatch when those
+grids differ. It rendered the actual blackout preview component and SVG over a
+200×160 white source displayed at 100×80, then reconstructed the 2× export
+using the actual blackout and annotation exporters and downscaled it with Canvas
+image smoothing. Selection guides were removed from the preview SVG before the
+comparison. At the 1× preview, 52 of 8,000 pixels differed by more than two
+channel levels, with a maximum difference of 191; four mid-edge samples were
+black in the [preview](tests/native/evidence/macos-ui/blackout-scale-preview-20261116.png)
+and 128/255 gray in the [downscaled export](tests/native/evidence/macos-ui/blackout-scale-export-20261116.png).
+The [measurements](tests/native/evidence/macos-ui/blackout-scale-comparison-20261116.json)
+and probe are retained. All 676 pixels touched by the selection were opaque
+black in the native-resolution export; the difference appears after resampling.
+It does not exercise the full
+editor, its interaction guides, other compositions or a physical display. The
+preview/export difference remains open.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners

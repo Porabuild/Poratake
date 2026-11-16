@@ -55,3 +55,16 @@ samples. The component regression additionally checks simulated 2x canvas
 dimensions, reversed and clipped selections, and offsets. The offscreen probe
 does not establish physical 2x output or compare all pixels at unequal preview
 and export scales.
+
+The unequal-scale case uses a generated 200 x 160 white source displayed at
+100 x 80, the actual Electron preview canvas and live SVG annotation components,
+and a reconstructed native-scale export using the actual blackout and SVG
+export helpers. It removes the SVG's transparent selection guide before
+compositing the preview. Canvas draws the 200 x 160 export down to 100 x 80
+with high-quality smoothing. Electron 43.4.0 reported 52 of 8,000 pixels more
+than two channel levels apart, maximum 191. Four mid-edge pixels were black in
+the preview and 128/255 gray in the downscaled export. All 676 pixels touched
+by the selection were opaque black in the native-resolution export. The
+blackout-scale-comparison-20261116.json and paired PNGs retain these results.
+This does not render the full editor or its interaction guides and does not
+establish physical display behavior.
