@@ -261,9 +261,15 @@ regression also checks AppKit hover cancellation and in-window focus painting.
 The native Windows visual matrix and capture-exclusion proof have not been rerun
 on this source. Existing Windows baseline evidence above belongs to the previous
 revision; Windows keyboard tooltips now use the external surface and need a
-reviewed baseline refresh. Native macOS tooltip QA remains unverified: neither
-preview-window CLI target produced a targetable popup, including with foreground
-access. The macOS `parity` build has two existing blockers:
+reviewed baseline refresh. Neither macOS preview-window CLI target was exposed by
+the inspection tool at its native popup window level. A UI-only debug harness
+subsequently opened the production recording
+control and preview entities with an isolated profile and normal window level for
+inspection. Native AppKit hover help displayed and was captured; registration
+changed with the hovered control and cleared after leaving it. Tab showed the
+recording control's in-window keyboard help, and Escape dismissed it without
+closing the toolbar. This does not establish macOS capture exclusion.
+The macOS `parity` build has two existing blockers:
 `active_intents_for_test` is Windows-only but used by a shared workflow, and the
 thumbnail-ready sender is not wrapped in `Some`. Both are present in the starting
 commit. The normal macOS dev launcher also fails with Bacon's `Empty command in

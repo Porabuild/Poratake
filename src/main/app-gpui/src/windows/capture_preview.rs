@@ -2982,6 +2982,14 @@ mod tests {
         visual.simulate_resize(size(px(208.), px(604.)));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(500.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
         let trigger = visual
             .expect(&format!(
                 "preview-display-menu-{preview_id}-tooltip-trigger"
