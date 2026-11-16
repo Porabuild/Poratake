@@ -3163,6 +3163,15 @@ the previous Chrome proxy; 4× supersampling reduced but did not eliminate the
 error. The probes recreate the export operations and do not exercise either full
 editor or a physical display. No production rasterizer change was made.
 
+A follow-up on the same Electron 43.4.0 runtime invoked the renderer's actual
+annotation exporters through an isolated Vite fixture. All 18 scale, offset and
+order cases matched the earlier Electron reproduction exactly, including the
+rounded-blackout samples. The [actual-exporter samples](tests/native/evidence/macos-ui/blackout-order-actual-exporter-20261116.json)
+and [probe instructions](tests/native/evidence/macos-ui/blackout-order-probe-20261116.txt)
+are retained. This validates those export operations, not the complete Electron
+editor, its native window or physical display pixels. Backend-dependent corner
+coverage remains open.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners

@@ -30,3 +30,16 @@ blackout-order-electron.html selects the layered composition; without it the
 simple SVG is used. To repeat the GPUI probe, temporarily include
 blackout-order-gpui.rs inside editor/export.rs's test module, run the
 blackout_order_gpui_probe Rust test with --nocapture, and remove the include.
+
+The follow-up actual-exporter fixture invokes exportAnnotationToSvg from the
+renderer source for each rectangle and blackout. On this Mac with Electron
+43.4.0 and Chromium 150.0.7871.224, its 18 sample objects matched the earlier
+Electron reproduction exactly. It does not open the complete editor or access
+capture or media devices. To repeat with the installed local dependencies:
+
+node_modules/.bin/vite --config scripts/parity/vite.renderer.mts --host 127.0.0.1
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/blackout-exporter-probe.cjs
+
+The Electron process uses a temporary user-data directory and a hidden offscreen
+window. Stop the Vite server when finished. Output is JSON with Electron version,
+GPU status and sample pixels; no exact match is assumed across GPU backends.
