@@ -162,6 +162,7 @@ mod tests {
         presenter: Arc<NativeTooltipPresenter>,
         visible: bool,
         platform_tooltip: bool,
+        label_first: bool,
     }
 
     impl Render for Host {
@@ -174,9 +175,12 @@ mod tests {
                     el.children(
                         [("first", "Copy"), ("second", "Delete")].map(|(id, label)| {
                             let tooltip = Tooltip::new(label).id(id);
-                            let trigger = div()
-                                .debug_selector(move || id.into())
-                                .child(Button::new(id).label(label));
+                            let child = if self.label_first && id == "first" {
+                                div().id(id).tab_index(0).child(label).into_any_element()
+                            } else {
+                                Button::new(id).label(label).into_any_element()
+                            };
+                            let trigger = div().debug_selector(move || id.into()).child(child);
                             if self.platform_tooltip {
                                 self.presenter
                                     .wrap(id.into(), label.into(), tooltip, trigger)
@@ -207,6 +211,7 @@ mod tests {
             presenter: host_presenter,
             visible: true,
             platform_tooltip: false,
+            label_first: false,
         });
         visual.update(|_, cx| {
             herogpui::theme::set_reduce_motion(true, cx);
@@ -268,6 +273,7 @@ mod tests {
             presenter: host_presenter,
             visible: true,
             platform_tooltip: true,
+            label_first: false,
         });
         visual.update(|_, cx| {
             herogpui::theme::set_reduce_motion(true, cx);
@@ -309,5 +315,21 @@ mod tests {
         });
         settle(visual);
         assert!(presenter.active_content().is_none());
+    }
+
+    #[herogpui::test]
+    fn external_presenter_keeps_a_focusable_label_as_the_first_tab_stop(cx: &mut TestAppContext) {
+        let presenter = NativeTooltipPresenter::new("test");
+        let host_presenter = presenter.clone();
+        let (_host, visual) = herogpui::test::open_window(cx, move |_, _| Host {
+            presenter: host_presenter,
+            visible: true,
+            platform_tooltip: false,
+            label_first: true,
+        });
+        visual.press("tab");
+        assert_eq!(presenter.active_content().as_deref(), Some("Copy"));
+        visual.press("tab");
+        assert_eq!(presenter.active_content().as_deref(), Some("Delete"));
     }
 }

@@ -2977,17 +2977,19 @@ mod tests {
             .downcast::<CapturePreviewWindow>()
             .unwrap();
         let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
-        let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        let preview_id = preview.update(cx, |view, _| view.previews[0].id);
+        let (_wrapper, visual) = cx.add_window_view(|_, _| HoveredPreview { preview });
         visual.simulate_resize(size(px(208.), px(604.)));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
+        let trigger = visual
+            .expect(&format!(
+                "preview-display-menu-{preview_id}-tooltip-trigger"
+            ))
+            .center();
 
         crate::system::native_tooltip::take_test_requests();
-        visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         visual.executor().advance_clock(Duration::from_millis(149));
         visual.settle();
@@ -3013,11 +3015,7 @@ mod tests {
 
         visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
         visual.settle();
-        visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         visual.executor().advance_clock(Duration::from_millis(150));
         visual.settle();
@@ -3031,11 +3029,7 @@ mod tests {
             )]
         );
 
-        visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         crate::system::native_tooltip::take_test_requests();
         visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());

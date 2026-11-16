@@ -2133,7 +2133,7 @@ mod tests {
                 .advance_clock(Duration::from_millis(close_delay + 1));
         }
         visual.settle();
-        visual.press("tab tab");
+        visual.press(if cfg!(windows) { "tab" } else { "tab tab" });
         assert!(visual.update(|window, cx| {
             window.focused(cx).is_some() && herogpui::extend::focus_visible(cx)
         }));
@@ -2241,7 +2241,7 @@ mod tests {
                 gpui::Modifiers::none(),
             );
             visual.settle();
-            visual.press("tab tab");
+            visual.press(if cfg!(windows) { "tab" } else { "tab tab" });
 
             #[cfg(windows)]
             assert_eq!(
