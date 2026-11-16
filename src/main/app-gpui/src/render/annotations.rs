@@ -1606,7 +1606,7 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let data = source.data();
     let out = target.data_mut();
 
-    if source_width % width == 0 && source_height % height == 0 {
+    if source_width.is_multiple_of(width) && source_height.is_multiple_of(height) {
         let block_width = source_width / width;
         let block_height = source_height / height;
         let divisor = u64::from(block_width) * u64::from(block_height);
@@ -1618,7 +1618,7 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
                         + x as usize * block_width as usize)
                         * 4;
                     let end = start + block_width as usize * 4;
-                    for pixel in data[start..end].chunks_exact(4) {
+                    for pixel in data[start..end].as_chunks::<4>().0 {
                         for channel in 0..4 {
                             sums[channel] += u64::from(pixel[channel]);
                         }
@@ -2566,7 +2566,7 @@ mod tests {
             let actual = half.pixmap().pixel(x, 32).unwrap().red();
             let left = full.pixmap().pixel(x * 2, 64).unwrap().red();
             let right = full.pixmap().pixel(x * 2 + 1, 64).unwrap().red();
-            let expected = ((u16::from(left) + u16::from(right) + 1) / 2) as u8;
+            let expected = (u16::from(left) + u16::from(right)).div_ceil(2) as u8;
             assert!(
                 actual.abs_diff(expected) <= 8,
                 "pixel {x}: {actual} vs {expected}"
@@ -2738,7 +2738,13 @@ mod tests {
     #[test]
     fn pixelation_averages_aligned_blocks_without_changing_channels() {
         let mut source = Pixmap::new(4, 4).unwrap();
-        for (index, pixel) in source.data_mut().chunks_exact_mut(4).enumerate() {
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let x = index % 4;
             let y = index / 4;
             pixel.copy_from_slice(&[(x * 50) as u8, (y * 50) as u8, ((x + y) * 20) as u8, 255]);
@@ -2835,7 +2841,13 @@ mod tests {
     fn pixelation_preserves_nearest_block_samples_for_varied_sizes() {
         for (width, height, block) in [(7, 5, 2), (30, 11, 8), (47, 23, 6), (64, 32, 8)] {
             let mut source = Pixmap::new(width, height).unwrap();
-            for (index, pixel) in source.data_mut().chunks_exact_mut(4).enumerate() {
+            for (index, pixel) in source
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let x = index % width as usize;
                 let y = index / width as usize;
                 pixel.copy_from_slice(&[
