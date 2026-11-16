@@ -1,0 +1,25 @@
+macOS isolated native preview pointer and tooltip probe, 2026-11-16
+
+The existing development executable ran --native-ui-probe with
+PORATAKE_NATIVE_UI_NORMAL_LEVEL=1. The probe creates a checkerboard preview and
+an isolated configuration; no capture, recording, microphone, camera, system
+audio or privacy settings were accessed. The computer-use helper reported its
+own Screen Recording and Accessibility permissions already granted.
+
+The preview was moved under the stationary pointer using its test command. The
+probe reported card=true, pointer=true, window=false and AppKit tooltip text
+"Close preview". An already-authorized foreground drag then moved the real
+pointer from (120,100) to (25,25), relative to the 208x148-point generated
+preview. The helper reported foreground input delivered; its accessibility tree
+exposed Close preview, Delete screenshot, Edit, Copy and Upload to Cloud.
+The probe still reported card=true, pointer=true, window=false and the tooltip
+text "Close preview" after the drag.
+
+CGWindowListCopyWindowInfo did not show a distinct small tooltip window owned by
+the probe or a small visible window near the pointer in the tested bounds. The
+pointer entered while a mouse button was held, and this window-list observation
+does not prove what normal unpressed hover would show or identify a defect. The
+helper's own window capture showed the controls but cannot include a tooltip
+outside that window. Actual normal hover, tooltip placement and capture exclusion
+remain unverified. The generated probe exited normally; the helper was disabled,
+and Poracode Nightly was restored to the foreground.

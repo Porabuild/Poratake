@@ -1,0 +1,63 @@
+--- a/src/main/app-gpui/src/video/export.rs
++++ b/src/main/app-gpui/src/video/export.rs
+@@ -2193,28 +2193,43 @@
+             let scaled = preview.compose(time, Some((172, 102))).unwrap();
+             assert_eq!((scaled.width(), scaled.height()), (172, 102));
+             let scaled_pixels = to_bgra(&scaled);
+-            let mut scaled_error = 0_u64;
+-            for y in 34..45 {
+-                for x in 0..12 {
+-                    let target = (y * 172 + x) * 4;
+-                    for channel in 0..3 {
+-                        let mut sum = 0_u16;
+-                        for dy in 0..2 {
+-                            for dx in 0..2 {
+-                                let source = (((y * 2 + dy) * 344 + x * 2 + dx) * 4) + channel;
+-                                sum += u16::from(actual.bgra[source]);
++            let scaled_original = to_bgra(&unredacted.compose(time, Some((172, 102))).unwrap());
++            for (style, left, top, width, height) in [
++                ("pixelate", 86, 36, 15, 10),
++                ("blur", 106, 36, 15, 10),
++                ("clipped blur", 0, 34, 12, 11),
++            ] {
++                let mut scaled_error = 0_u64;
++                let mut scaled_change = 0_u64;
++                for y in top..top + height {
++                    for x in left..left + width {
++                        let target = (y * 172 + x) * 4;
++                        for channel in 0..3 {
++                            let mut sum = 0_u16;
++                            for dy in 0..2 {
++                                for dx in 0..2 {
++                                    let source = (((y * 2 + dy) * 344 + x * 2 + dx) * 4) + channel;
++                                    sum += u16::from(actual.bgra[source]);
++                                }
+                             }
++                            let decoded = ((sum + 2) / 4) as u8;
++                            scaled_error +=
++                                u64::from(decoded.abs_diff(scaled_pixels[target + channel]));
++                            scaled_change += u64::from(
++                                scaled_pixels[target + channel]
++                                    .abs_diff(scaled_original[target + channel]),
++                            );
+                         }
+-                        let decoded = ((sum + 2) / 4) as u8;
+-                        scaled_error +=
+-                            u64::from(decoded.abs_diff(scaled_pixels[target + channel]));
+                     }
+                 }
++                let count = (width * height * 3) as f64;
++                assert!(scaled_change as f64 / count > 5., "scaled {style} did not change the preview at {time}s");
++                assert!(
++                    scaled_error as f64 / count < 8.,
++                    "scaled preview {style} differs from decoded export at {time}s: {}",
++                    scaled_error as f64 / count
++                );
+             }
+-            assert!(
+-                scaled_error as f64 / (11. * 12. * 3.) < 8.,
+-                "scaled preview clipped blur differs from decoded export at {time}s"
+-            );
+             for (x, y) in [(0, 80), (23, 80), (10, 68), (10, 90)] {
+                 let pixel = (y * info.width as usize + x) * 4;
+                 let effect: u16 = expected[pixel..pixel + 3]

@@ -1,0 +1,46 @@
+macOS compact-window tooltip setting, 2026-11-16
+
+The isolated GPUI native popup probe creates a hidden window and registers
+tooltip text on its AppKit view. No capture, media device access, privacy
+setting, or existing editor was used.
+
+Before the change, the actual NSWindow returned false for
+allowsToolTipsWhenApplicationIsInactive after registration. AppKit's SDK
+header documents that the default is NO and that enabling this property allows
+tooltips while the application is in the background. The probe's pre-change
+assertion failed on that value. The failed assertion terminated its isolated
+process. A separate macOS notification window was visible afterward; its
+content was not inspected.
+
+After the change, the same probe confirmed that the setting is true for each
+of three registered strings, including Unicode, and false after clearing; the
+view's tooltip text and clearing also matched. Command:
+
+cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --native-popup-frame-probe
+
+Result: exit 0; inactive app tooltips before registration: false; text,
+replacement, inactive application setting and clearing passed.
+
+An initial isolated generated preview was moved under the stationary pointer.
+The notification window remained in front of it, and GPUI reported pointer
+outside and no tooltip.
+
+In a subsequent run, an authorized foreground drag moved the pointer to the
+generated preview area. Another Poratake window was in front, so the helper was
+disabled. The isolated preview was restarted at its normal popup level and
+moved under the stationary pointer. The probe reported its preview as the top
+window at the pointer, card=true, pointer=true and tooltip-status: Close preview.
+Core Graphics then listed a separate window owned by the isolated probe:
+
+preview: id 1097, layer 101, bounds (1500,949,208,148), sharing 1
+tooltip: id 1098, layer 103, bounds (1525,993,86,20), sharing 1
+
+These are per-run IDs. A tooltip-sized window appeared separately from the
+preview, with sharing enabled; its pixels were not inspected. The read-only
+window listing source is near-pointer-windows.swift. The stream setup passes the
+control window's ID in its exclusion list; it does not pass this dynamic tooltip
+ID. This observation does not prove whether ScreenCaptureKit includes the
+tooltip in a recorded image.
+It also does not test ordinary pointer entry or exit, actual tooltip pixels,
+themes or other displays. No screen recording or permission prompt was started.
+The isolated probe exited normally; the other Poratake window was left open.

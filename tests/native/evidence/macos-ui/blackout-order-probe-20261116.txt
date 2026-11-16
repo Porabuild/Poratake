@@ -1,0 +1,32 @@
+macOS rounded-blackout comparison, 2026-11-16
+
+The pinned Electron 43.4.0 runtime and Chromium 150.0.7871.224 rendered a hidden
+window with an isolated temporary user-data directory. The Electron probe uses
+the same rectangle and blackout SVG attributes and canvas blackout operation as
+the renderer, on a synthetic opaque background. It does not launch Poratake or
+access screen capture, audio, camera, or the user's editor. Three scales and
+three equal x/y offsets are sampled for each annotation order. Each result is a
+4x4 RGBA patch at the blackout's upper-left corner.
+
+The GPUI test fixture renders the equivalent inputs using the production
+compose function. The included JSON files contain the two sets of pixels.
+blackout-order-compare.py checks matching geometry and compares every channel.
+With the rectangle below the blackout, 62 of 576 channels differ by over two,
+with a maximum difference of 34. With the rectangle above it, all 576 channels
+match. In the integer-origin 1x case the respective corner values are 191 and
+158 for GPUI and Electron. An older GPUI test expected 169 for the corner;
+its source has not been established.
+
+blackout-corner-electron-43.json contains the pinned Electron rendering of the
+separate simple SVG used by the earlier Chrome probe. blackout-corner-compare.py
+compares it to the retained Tiny Skia outputs: 32 of 144 red samples differ by
+over two, maximum 34. The earlier 4x supersampled scratch output has 31 samples
+over two, maximum 18. Neither probe demonstrates a complete editor workflow,
+physical DPI behavior or real captured content; supersampling was not adopted.
+
+To repeat the Electron probes, run blackout-corner-electron.cjs with an existing
+Electron 43.4.0 executable and ELECTRON_RUN_AS_NODE unset. Its optional argument
+blackout-order-electron.html selects the layered composition; without it the
+simple SVG is used. To repeat the GPUI probe, temporarily include
+blackout-order-gpui.rs inside editor/export.rs's test module, run the
+blackout_order_gpui_probe Rust test with --nocapture, and remove the include.

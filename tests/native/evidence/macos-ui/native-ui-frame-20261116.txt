@@ -1,0 +1,35 @@
+macOS isolated native GPUI windows, 2026-11-16
+
+PORATAKE_NATIVE_UI_THEME=dark cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --native-ui-probe
+recording control: visible, borderless, no native shadow; frame 698,1012 332x52
+capture preview: bottom and right AppKit work-area margins 20,20 points
+capture preview: visible, borderless, no native shadow; frame 1500,20 208x148
+Exit status after newline: 0
+
+PORATAKE_NATIVE_UI_THEME=light src/main/target/debug/poratake-gpui --native-ui-probe
+recording control: visible, borderless, no native shadow; frame 698,1012 332x52
+capture preview: bottom and right AppKit work-area margins 20,20 points
+capture preview: visible, borderless, no native shadow; frame 1500,20 208x148
+Exit status after newline: 0
+
+The preview uses a generated checkerboard and an isolated configuration; the probe does not start a daemon or access capture devices. The computer-use helper reported neither floating window as targetable, so no physical hover, tooltip, input or captured-output check was performed. Frames are AppKit points on the available display.
+
+Normal-level native screenshots
+
+The same isolated windows were temporarily lowered to normal AppKit window level using PORATAKE_NATIVE_UI_NORMAL_LEVEL=1 so the computer-use helper could target them. The helper reported its Screen Recording permission already granted and captured each window through its own ScreenCaptureKit access, at 2x. The light and dark control and generated-preview PNGs are retained as native-{control,preview}-normal-level-{light,dark}-20261116.png. The native control images show a single toolbar border. The original floating window level was not inspected through the helper. A synthetic GPUI pointer move did not make the native window physically hovered and did not reveal the preview's hover controls. Both probes exited after stdin input; no daemon or capture device was started.
+
+Background pointer check
+
+The computer-use helper delivered one background click at the center of the generated preview in the normal-level probe. Its result was delivered=background, route=event, verified=unchanged. A window screenshot still showed no hover controls. The real pointer did not enter the window, and the synthetic preview was then closed. This is not evidence of physical hover failure.
+
+Native accessibility check
+
+On the normal-level generated probe, the first accessibility snapshot contained a window and group. A subsequent search for Start recording returned a button after tree activation; the next full tree contained Start recording, Select camera, Select microphone, Turn system sounds on, Select iPhone or iPad and Close. The helper invoked Close in the background, reported accessibility delivery confirmed, and a fresh window list showed only the generated preview remaining. No device menu or capture was opened. This does not verify the production floating-window level.
+
+Native preview-to-editor attempt
+
+With the probe's process-wide configuration directory isolated to its generated temporary directory, the helper delivered one background double-click to the generated preview. It reported verified=unchanged, and a fresh window list contained only the probe's preview and recording controls. No editor opened. The physical pointer did not enter the preview; this does not establish physical double-click behavior. The probe then exited cleanly.
+
+Native pre-recording sound toggle
+
+In a separate normal-level, generated probe with an isolated process-wide configuration, the helper found Turn system sounds on and invoked it through macOS accessibility. The next tree exposed Turn system sounds off; a second invocation restored Turn system sounds on. Both actions reported accessibility delivery confirmed. The probe was not recording, started no daemon and did not capture system audio.

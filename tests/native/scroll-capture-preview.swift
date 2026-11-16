@@ -318,6 +318,8 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
         runExistingScrollChecks()
         FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
         Task { @MainActor in
             do {
                 try await runRecordingCoordinationChecks()
@@ -327,7 +329,7 @@ struct ScrollCapturePreviewTest {
                 exit(EXIT_FAILURE)
             }
         }
-        dispatchMain()
+        application.run()
     }
 
     @MainActor
@@ -436,6 +438,7 @@ struct ScrollCapturePreviewTest {
             outputPath: "/tmp/recording-stop-test.poratake",
             cursorPath: nil,
             cameraPath: nil,
+            cameraTrackMissing: false,
             keysPath: nil,
             systemAudioPath: nil,
             micAudioPath: nil,
@@ -491,6 +494,84 @@ struct ScrollCapturePreviewTest {
         precondition(failedStopReported)
         let retryAfterFailure = try await stopCoordinator.stop(sessionID: 203) { stopResult }
         precondition(retryAfterFailure.outputPath == stopResult.outputPath, "A failed stop must release coordinator ownership")
+
+        var startingLifecycle = RecorderModuleLifecycle()
+        let startingSession = startingLifecycle.beginStart(.screen)!
+        var releaseStart: CheckedContinuation<Void, Never>?
+        let startup = Task { @MainActor in
+            await withCheckedContinuation { releaseStart = $0 }
+            precondition(startingLifecycle.finishStart(startingSession, success: true))
+        }
+        let waitingCoordinator = RecorderStopCoordinator()
+        var delayedStopCount = 0
+        let waitingStop = Task { @MainActor in
+            try await waitingCoordinator.stop(sessionID: startingSession, startup: startup) {
+                precondition(startingLifecycle.beginStop(startingSession) == .screen)
+                delayedStopCount += 1
+                startingLifecycle.finishStop(startingSession)
+                return stopResult
+            }
+        }
+        await waitUntil("Stop did not wait for startup") {
+            waitingCoordinator.testWaitingForStart && releaseStart != nil
+        }
+        let joiningStop = Task { @MainActor in
+            try await waitingCoordinator.stop(sessionID: startingSession, startup: startup) {
+                delayedStopCount += 1
+                return stopResult
+            }
+        }
+        await waitUntil("The second stop did not join startup finalization") {
+            waitingCoordinator.testWaiterCount == 1
+        }
+        precondition(delayedStopCount == 0)
+        releaseStart?.resume()
+        let waitingResult = try await waitingStop.value
+        let joiningResult = try await joiningStop.value
+        precondition(waitingResult.outputPath == stopResult.outputPath)
+        precondition(joiningResult.outputPath == stopResult.outputPath)
+        precondition(delayedStopCount == 1)
+        precondition(startingLifecycle.phase == .idle)
+
+        let failedStartingSession = startingLifecycle.beginStart(.ios)!
+        let failedStartup = Task { @MainActor in
+            precondition(startingLifecycle.finishStart(failedStartingSession, success: false))
+        }
+        var failedStartupStopRejected = false
+        do {
+            _ = try await waitingCoordinator.stop(sessionID: failedStartingSession, startup: failedStartup) {
+                guard startingLifecycle.beginStop(failedStartingSession) != nil else {
+                    throw RecordingCaptureFilterError.unavailableWindows([203])
+                }
+                return stopResult
+            }
+        } catch is RecordingCaptureFilterError {
+            failedStartupStopRejected = true
+        }
+        precondition(failedStartupStopRejected)
+        precondition(startingLifecycle.phase == .idle)
+
+        let staleSession = startingLifecycle.beginStart(.screen)!
+        var replacementSession: RecorderSessionID?
+        let replacedStartup = Task { @MainActor in
+            precondition(startingLifecycle.finishStart(staleSession, success: false))
+            replacementSession = startingLifecycle.beginStart(.ios)!
+            precondition(startingLifecycle.finishStart(replacementSession!, success: true))
+        }
+        var staleStopRejected = false
+        do {
+            _ = try await waitingCoordinator.stop(sessionID: staleSession, startup: replacedStartup) {
+                guard startingLifecycle.beginStop(staleSession) != nil else {
+                    throw RecordingCaptureFilterError.unavailableWindows([204])
+                }
+                return stopResult
+            }
+        } catch is RecordingCaptureFilterError {
+            staleStopRejected = true
+        }
+        precondition(staleStopRejected)
+        precondition(startingLifecycle.isCurrent(replacementSession!))
+        precondition(startingLifecycle.currentBackend == .ios)
         FileHandle.standardError.write(Data("recording stop coordinator: complete\n".utf8))
 
         FileHandle.standardError.write(Data("capture filter startup: start\n".utf8))
@@ -511,6 +592,193 @@ struct ScrollCapturePreviewTest {
         try await startupRefresh.value
         precondition(startupRefreshes == [[61]], "Startup must refresh registrations made after the initial snapshot")
         FileHandle.standardError.write(Data("capture filter startup: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("capture screenshot barrier: start\n".utf8))
+        let screenshotRegistry = RecordingCaptureWindowRegistry()
+        screenshotRegistry.register(windowID: 61)
+        let firstSnapshot = screenshotRegistry.beginScreenshot()
+        screenshotRegistry.register(windowID: 62)
+        let secondSnapshot = screenshotRegistry.beginScreenshot()
+        precondition(firstSnapshot == [61])
+        precondition(secondSnapshot == [61, 62])
+        var mayShow = false
+        let barrierPresentation = Task { @MainActor in
+            await screenshotRegistry.waitForScreenshots()
+            mayShow = true
+        }
+        await waitUntil("The panel did not wait for existing screenshots") {
+            screenshotRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        screenshotRegistry.finishScreenshot()
+        precondition(!mayShow)
+        screenshotRegistry.finishScreenshot()
+        let thirdSnapshot = screenshotRegistry.beginScreenshot()
+        precondition(thirdSnapshot == [61, 62])
+        await waitUntil("The panel did not wait for a newly started screenshot") {
+            screenshotRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(!mayShow)
+        screenshotRegistry.finishScreenshot()
+        await barrierPresentation.value
+        precondition(mayShow)
+        FileHandle.standardError.write(Data("capture screenshot barrier: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("direct screenshot coordination: start\n".utf8))
+        let directRegistry = RecordingCaptureWindowRegistry()
+        var directStarted = false
+        var releaseDirect: CheckedContinuation<Void, Never>?
+        let directCapture = Task { @MainActor in
+            await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: {
+                    directStarted = true
+                    await withCheckedContinuation { releaseDirect = $0 }
+                    return "direct"
+                },
+                filtered: { _ in "unexpected" }
+            )
+        }
+        await waitUntil("The direct screenshot did not start") { directStarted }
+        directRegistry.register(windowID: 73)
+        var directMayShow = false
+        let directPresentation = Task { @MainActor in
+            await directRegistry.waitForScreenshots()
+            directMayShow = true
+        }
+        await waitUntil("The panel did not wait for the direct screenshot") {
+            directRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(!directMayShow)
+        releaseDirect?.resume()
+        let directResult = await directCapture.value
+        await directPresentation.value
+        precondition(directResult == "direct" && directMayShow)
+        let filteredIDs = await coordinateAreaCapture(
+            registry: directRegistry,
+            excludedWindowIDs: [74],
+            unfiltered: { Set<CGWindowID>() },
+            filtered: { $0 }
+        )
+        precondition(filteredIDs == [73, 74])
+        var filteredFailed = false
+        do {
+            _ = try await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: { 0 },
+                filtered: { _ in throw RecordingCaptureFilterError.unavailableWindows([73]) }
+            )
+        } catch is RecordingCaptureFilterError {
+            filteredFailed = true
+        }
+        precondition(filteredFailed)
+        await directRegistry.waitForScreenshots()
+        FileHandle.standardError.write(Data("direct screenshot coordination: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
+        _ = NSApplication.shared
+        if let screen = NSScreen.screens.first {
+            let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)
+            let tooltipRegistry = RecordingCaptureWindowRegistry()
+            var updates: [[CGWindowID]] = []
+            tooltipRegistry.setFilterUpdater { updates.append($0) }
+            let tooltip = ProtectedTooltip(registry: tooltipRegistry)
+            _ = tooltipRegistry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 1, owner: 101, text: "Copy"))
+            let pendingTooltip = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 101, text: "Copy", dark: false, at: point)
+            }
+            await waitUntil("The tooltip did not wait for the screenshot") {
+                tooltipRegistry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            precondition(tooltip.testPanel?.alphaValue == 0)
+            precondition(tooltip.testPanel?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua)
+            precondition(tooltipRegistry.currentWindowIDs().count == 1)
+            precondition(!updates.isEmpty && updates.last == tooltipRegistry.currentWindowIDs())
+            precondition(!tooltip.accept(sequence: 2, owner: 101, text: nil))
+            tooltipRegistry.finishScreenshot()
+            let cancelledTooltipVisible = try await pendingTooltip.value
+            precondition(!cancelledTooltipVisible)
+            await waitUntil("The cancelled tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 3, owner: 102, text: "Stop auto-scroll · Esc"))
+            let shownTooltip = try await tooltip.show(sequence: 3, owner: 102, text: "Stop auto-scroll · Esc", dark: true, at: point)
+            precondition(shownTooltip)
+            precondition(tooltip.testPanel?.alphaValue == 1)
+            precondition(tooltip.testPanel?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+            precondition(tooltipRegistry.currentWindowIDs().count == 1)
+            precondition(!tooltip.accept(sequence: 2, owner: 102, text: nil))
+            precondition(tooltip.testPanel?.alphaValue == 1)
+            precondition(!tooltip.accept(sequence: 5, owner: 102, text: nil))
+            await waitUntil("The hidden tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 6, owner: 101, text: "First"))
+            let firstVisible = try await tooltip.show(sequence: 6, owner: 101, text: "First", dark: false, at: point)
+            precondition(firstVisible)
+            let firstPanel = tooltip.testPanel
+            precondition(!tooltip.accept(sequence: 8, owner: 102, text: nil))
+            precondition(firstPanel?.alphaValue == 0)
+            precondition(!tooltip.accept(sequence: 7, owner: 102, text: "Second"))
+            await waitUntil("The superseded owner's tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 9, owner: 102, text: "Second"))
+            precondition(!tooltip.accept(sequence: 8, owner: 102, text: nil))
+            let secondVisible = try await tooltip.show(sequence: 9, owner: 102, text: "Second", dark: true, at: point)
+            precondition(secondVisible)
+            precondition(!tooltip.accept(sequence: 10, owner: 102, text: nil))
+            await waitUntil("The replacement tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            let failureRegistry = RecordingCaptureWindowRegistry()
+            failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
+            let failedTooltip = ProtectedTooltip(registry: failureRegistry)
+            precondition(failedTooltip.accept(sequence: 1, owner: 103, text: "Copy"))
+            var tooltipFailed = false
+            do {
+                _ = try await failedTooltip.show(sequence: 1, owner: 103, text: "Copy", dark: false, at: point)
+            } catch is RecordingCaptureFilterError {
+                tooltipFailed = true
+            }
+            precondition(tooltipFailed && failedTooltip.testPanel == nil && failureRegistry.currentWindowIDs().isEmpty)
+            FileHandle.standardError.write(Data("protected tooltip lifecycle: complete\n".utf8))
+        } else {
+            FileHandle.standardError.write(Data("SKIP protected tooltip lifecycle: no AppKit display\n".utf8))
+        }
+
+        FileHandle.standardError.write(Data("scroll capture UI cleanup: start\n".utf8))
+        if let screen = NSScreen.screens.first {
+            let module = ScrollCaptureModule()
+            let frame = screen.visibleFrame
+            let windows = module.testShowCaptureUI(rect: NSRect(x: frame.minX + 100, y: frame.minY + 100,
+                                                                 width: 80, height: 100))
+            let ids = windows.map { CGWindowID($0.windowNumber) }
+            func onScreenAlphas() -> [CGWindowID: Double] {
+                let entries = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+                var alphas: [CGWindowID: Double] = [:]
+                for entry in entries {
+                    if let id = entry[kCGWindowNumber as String] as? UInt32,
+                       let alpha = entry[kCGWindowAlpha as String] as? Double, ids.contains(id) {
+                        alphas[id] = alpha
+                    }
+                }
+                return alphas
+            }
+            await waitUntil("Scroll controls were not visible to the window server") {
+                let alphas = onScreenAlphas()
+                return ids.allSatisfy { alphas[$0] == 1 }
+            }
+            module.testHideCaptureUI()
+            let alphas = onScreenAlphas()
+            precondition(ids.allSatisfy { alphas[$0].map { $0 == 0 } ?? true },
+                         "Scroll controls remained opaque after cleanup")
+            FileHandle.standardError.write(Data("scroll capture UI cleanup: complete\n".utf8))
+        } else {
+            FileHandle.standardError.write(Data("SKIP scroll capture UI cleanup: no AppKit display\n".utf8))
+        }
 
         FileHandle.standardError.write(Data("capture filter serial refresh: start\n".utf8))
         let serialRegistry = RecordingCaptureWindowRegistry()
@@ -1468,6 +1736,178 @@ struct ScrollCapturePreviewTest {
         let periodicFooterSource = CGImageSourceCreateWithURL(periodicFooterOutput as CFURL, nil)!
         let periodicFooterSaved = CGImageSourceCreateImageAtIndex(periodicFooterSource, 0, nil)!
         precondition(pixels(periodicFooterSaved) == pixels(periodicFooterFrames[0]), "Ambiguous alignment must save the previous accepted frame")
+
+        let asyncCaptureModule = ScrollCaptureModule()
+        asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        let staleCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        asyncCaptureModule.testStopAutoScroll()
+        asyncCaptureModule.testResumeAutoScroll()
+        let currentCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        precondition(staleCaptureGeneration != currentCaptureGeneration)
+        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[1], generation: staleCaptureGeneration) == nil)
+        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[0], generation: currentCaptureGeneration) == true)
+        let asyncCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-async-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: asyncCaptureOutput) }
+        let asyncCaptureResult = asyncCaptureModule.testFinishCurrentCapture(outputPath: asyncCaptureOutput.path)
+        precondition((asyncCaptureResult?["success"] as? Bool) == true)
+        precondition((asyncCaptureResult?["frameCount"] as? Int) == 1)
+        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[1], generation: currentCaptureGeneration) == nil)
+        let asyncCaptureSource = CGImageSourceCreateWithURL(asyncCaptureOutput as CFURL, nil)!
+        let asyncCaptureSaved = CGImageSourceCreateImageAtIndex(asyncCaptureSource, 0, nil)!
+        precondition(pixels(asyncCaptureSaved) == pixels(periodicFooterFrames[0]))
+
+        let delayedCaptureModule = ScrollCaptureModule()
+        delayedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        delayedCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        var pendingCaptures: [(CGImage?) -> Void] = []
+        var scheduledScrollSteps = 0
+        var delayedCaptureEvents: [[String: Any]] = []
+        delayedCaptureModule.testSetCaptureProvider { pendingCaptures.append($0) }
+        delayedCaptureModule.testSetScheduleAutoScroll { scheduledScrollSteps += 1 }
+        delayedCaptureModule.testSetScrollEndedResponder { delayedCaptureEvents.append($0) }
+        let delayedOldGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        let delayedCurrentGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedOldGeneration)
+        precondition(pendingCaptures.isEmpty, "A delayed request from a stopped run must not capture after restart")
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedCurrentGeneration)
+        precondition(pendingCaptures.count == 1)
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        pendingCaptures[0](periodicFooterFrames[1])
+        precondition(scheduledScrollSteps == 0, "A stale frame must not schedule a scroll timer")
+        let delayedNewGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 2)
+        pendingCaptures[1](periodicFooterFrames[0])
+        precondition(scheduledScrollSteps == 1)
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        pendingCaptures[2](nil)
+        precondition(!delayedCaptureModule.testIsAutoScrolling())
+        precondition(scheduledScrollSteps == 1)
+        precondition((delayedCaptureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((delayedCaptureEvents.first?["frameCount"] as? Int) == 1)
+        let delayedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-delayed-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: delayedCaptureOutput) }
+        let delayedCaptureResult = delayedCaptureModule.testFinishCurrentCapture(outputPath: delayedCaptureOutput.path)
+        precondition((delayedCaptureResult?["success"] as? Bool) == true)
+        precondition((delayedCaptureResult?["frameCount"] as? Int) == 1)
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        let delayedCaptureSource = CGImageSourceCreateWithURL(delayedCaptureOutput as CFURL, nil)!
+        let delayedCaptureSaved = CGImageSourceCreateImageAtIndex(delayedCaptureSource, 0, nil)!
+        precondition(pixels(delayedCaptureSaved) == pixels(periodicFooterFrames[0]))
+
+        let staleStartModule = ScrollCaptureModule()
+        staleStartModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStartModule.testStopAutoScroll()
+        var staleStartCaptures = 0
+        staleStartModule.testSetCaptureProvider { _ in staleStartCaptures += 1 }
+        staleStartModule.testEnqueueAutoScrollStart()
+        staleStartModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStartModule.testStopAutoScroll()
+        var staleStartDrained = false
+        DispatchQueue.main.async { staleStartDrained = true }
+        let staleStartDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleStartDrained && Date() < staleStartDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleStartDeadline)
+        }
+        precondition(staleStartDrained)
+        precondition(!staleStartModule.testIsAutoScrolling(), "An old start request must not start a new capture session")
+        precondition(staleStartCaptures == 0)
+
+        let staleStopModule = ScrollCaptureModule()
+        staleStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStopModule.testEnqueueAutoScrollStop()
+        staleStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        var staleStopDrained = false
+        DispatchQueue.main.async { staleStopDrained = true }
+        let staleStopDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleStopDrained && Date() < staleStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleStopDeadline)
+        }
+        precondition(staleStopDrained)
+        precondition(staleStopModule.testIsAutoScrolling(), "An old stop request must not stop a new capture session")
+
+        let rapidStopModule = ScrollCaptureModule()
+        rapidStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        rapidStopModule.testStopAutoScroll()
+        var rapidStopCaptures = 0
+        rapidStopModule.testSetCaptureProvider { _ in rapidStopCaptures += 1 }
+        rapidStopModule.testEnqueueAutoScrollStart()
+        rapidStopModule.testEnqueueAutoScrollStop()
+        var rapidStopDrained = false
+        DispatchQueue.main.async { rapidStopDrained = true }
+        let rapidStopDeadline = Date(timeIntervalSinceNow: 5)
+        while !rapidStopDrained && Date() < rapidStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: rapidStopDeadline)
+        }
+        precondition(rapidStopDrained)
+        precondition(!rapidStopModule.testIsAutoScrolling(), "A stop must cancel a queued auto-scroll start")
+        precondition(rapidStopCaptures == 0)
+
+        let staleSessionModule = ScrollCaptureModule()
+        var staleSessionStarts: [Bool] = []
+        staleSessionModule.testSetCaptureStartResult { staleSessionStarts.append($0) }
+        staleSessionModule.testEnqueueCaptureStart(width: footerWidth, height: footerHeight)
+        staleSessionModule.testCancelCapture()
+        staleSessionModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        var staleSessionDrained = false
+        DispatchQueue.main.async { staleSessionDrained = true }
+        let staleSessionDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleSessionDrained && Date() < staleSessionDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleSessionDeadline)
+        }
+        precondition(staleSessionDrained)
+        precondition(staleSessionStarts == [false], "A cancelled session must not finish setup in a later session")
+
+        let firstFrameFailureModule = ScrollCaptureModule()
+        var firstFrameFailureEvents: [[String: Any]] = []
+        firstFrameFailureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        firstFrameFailureModule.testSetScrollEndedResponder { firstFrameFailureEvents.append($0) }
+        precondition(!firstFrameFailureModule.testConsumeCaptureImage(nil))
+        precondition(!firstFrameFailureModule.testIsAutoScrolling())
+        precondition((firstFrameFailureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((firstFrameFailureEvents.first?["frameCount"] as? Int) == 0)
+
+        let failedCaptureModule = ScrollCaptureModule()
+        var failedCaptureEvents: [[String: Any]] = []
+        failedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        failedCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        failedCaptureModule.testSetScrollEndedResponder { failedCaptureEvents.append($0) }
+        precondition(failedCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!failedCaptureModule.testConsumeCaptureImage(nil))
+        precondition(!failedCaptureModule.testIsAutoScrolling())
+        precondition((failedCaptureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((failedCaptureEvents.first?["frameCount"] as? Int) == 1)
+        let failedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-capture-error-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: failedCaptureOutput) }
+        let failedCaptureResult = failedCaptureModule.testFinishCurrentCapture(outputPath: failedCaptureOutput.path)
+        precondition((failedCaptureResult?["success"] as? Bool) == true)
+        precondition((failedCaptureResult?["frameCount"] as? Int) == 1)
+        let failedCaptureSource = CGImageSourceCreateWithURL(failedCaptureOutput as CFURL, nil)!
+        let failedCaptureSaved = CGImageSourceCreateImageAtIndex(failedCaptureSource, 0, nil)!
+        precondition(pixels(failedCaptureSaved) == pixels(periodicFooterFrames[0]))
+        precondition(failedCaptureEvents.count == 1)
+
+        let duplicateCaptureModule = ScrollCaptureModule()
+        var duplicateCaptureEvents: [[String: Any]] = []
+        duplicateCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        duplicateCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        duplicateCaptureModule.testSetScrollEndedResponder { duplicateCaptureEvents.append($0) }
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!duplicateCaptureModule.testIsAutoScrolling())
+        precondition((duplicateCaptureEvents.first?["reason"] as? String) == "duplicate")
+        precondition((duplicateCaptureEvents.first?["frameCount"] as? Int) == 1)
 
         let autoStopModule = ScrollCaptureModule()
         var autoStopPreviewCounts: [Int] = []

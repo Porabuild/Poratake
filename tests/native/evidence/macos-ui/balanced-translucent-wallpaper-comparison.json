@@ -1,0 +1,9 @@
+{
+  "1-light-single-translucent-wallpaper": {
+    "size": [180, 188],
+    "pixels": 33840,
+    "pixelsOverTwo": 199,
+    "maximumDifference": 42,
+    "meanMaximumChannelDifference": 0.19946808510638298
+  }
+}

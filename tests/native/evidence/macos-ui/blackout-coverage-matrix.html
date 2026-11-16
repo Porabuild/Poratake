@@ -1,0 +1,45 @@
+<!doctype html><meta charset="utf-8" />
+<pre id="result">pending</pre>
+<script>
+  (async () => {
+    const results = [];
+    for (const radius of [0.5, 1, 1.5, 2, 3, 4, 8]) {
+      for (const offsetX of [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]) {
+        for (const offsetY of [0, 0.25, 0.5, 0.75]) {
+          const x = 8 + offsetX,
+            y = 8 + offsetY;
+          const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="#f0f"/><rect x="${x}" y="${y}" width="20" height="20" rx="${radius}" fill="#000"/></svg>`;
+          const image = new Image();
+          const url = URL.createObjectURL(
+            new Blob([svg], { type: 'image/svg+xml' })
+          );
+          await new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = reject;
+            image.src = url;
+          });
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 40;
+          const context = canvas.getContext('2d');
+          context.drawImage(image, 0, 0);
+          URL.revokeObjectURL(url);
+          const data = context.getImageData(7, 7, 12, 12).data;
+          results.push({
+            radius,
+            offsetX,
+            offsetY,
+            red: Array.from({ length: 12 }, (_, row) =>
+              Array.from(
+                { length: 12 },
+                (_, column) => data[(row * 12 + column) * 4]
+              )
+            ),
+          });
+        }
+      }
+    }
+    document.querySelector('#result').textContent = JSON.stringify(results);
+  })().catch(error => {
+    document.querySelector('#result').textContent = String(error);
+  });
+</script>

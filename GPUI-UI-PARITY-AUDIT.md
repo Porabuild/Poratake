@@ -25,20 +25,1227 @@ The full Windows visual matrix is opt-in through the Checks workflow's manual
 `run_windows_visual_regressions` input. Run it against the intended revision for
 release verification; routine PR checks do not run the matrix.
 
-| Gate                                 | Status | Completion evidence                                                                                                                                                         |
-| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
-| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                  |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                               |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                               |
-| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                |
-| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region. |
-| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                         |
-| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                  |
-| macOS critical capture and recording | Open   | On an already-authorized Mac, verify area/scroll captures and full-display recordings omit controls and overlays, including after restart; fix confirmed failures.          |
-| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                      |
+| Gate                                 | Status | Completion evidence                                                                                                                                                                                                               |
+| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                                                                                 |
+| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                                                                        |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                                                           |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                                                       |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                                                     |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                                                     |
+| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                                                                      |
+| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                       |
+| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                               |
+| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                        |
+| macOS critical capture and recording | Open   | Isolated native area and timer probes now exclude selector pixels; screen, area and moved/closed-window recordings passed screen-only probes. Verify scroll, physical input, additional displays and the remaining native matrix. |
+| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                            |
+
+### Local macOS verification attempt at `c34624e1`
+
+On 2026-11-15, this checkout was clean at `c34624e1` on an Apple M5 Pro Mac
+running macOS 27.2. System Information reported one online built-in Retina display
+(3456×2234). `bun run dev:gpui` exited before launch because Bacon 3 was not
+installed. This checkout had no built GPUI executable, development daemon or
+development FFmpeg. No dependencies were installed. The separately installed
+Electron app was already running and was left intact. The computer-use helper
+reported Screen Recording permission, but that does not establish permission for
+the GPUI executable or its daemon.
+
+The macOS `SCROLL_CAPTURE_TEST` fixture was compiled from this checkout with the
+same sources and flags as the Checks workflow and ran successfully without the
+`--screen-capture-exclusion` option. Its synthetic scroll preview/save checks,
+recording stop coordination and capture-filter coordination passed. The fixture
+explicitly skipped the ScreenCaptureKit exclusion check. This is not evidence of
+native captured pixels or an interactive GPUI workflow.
+
+Area, window, timer and real scroll captures; selector cleanup; preview and
+tooltip placement; annotation, save and reopen; screen, area and window recording,
+target movement and closure; decoded export comparisons; audio and camera; light
+and dark appearance; and narrow-window behavior remain unverified on this Mac.
+No new defect was established by this attempt. The macOS gate stays open, as does
+the fixed-header scroll-stitch issue described below.
+
+The follow-up built the Swift daemon and GPUI shell from this checkout using
+locally cached dependencies. The isolated GPUI parity build initially failed on
+macOS because a shared workflow referenced a Windows-only helper. The helper is
+now available to parity builds on macOS; fixture samples and control indices also
+account for the prompt shadow, the iPhone/iPad control, macOS point coordinates,
+and the actual display bounds. These are fixture changes, not evidence from a real
+capture. The normal app was not launched: startup prewarms screen capture, and the
+signed Electron app's grant does not establish access for the development daemon.
+
+With the simulated daemon and an isolated profile, the 1280px, 2× parity run passed
+in both light and dark themes, as did the 950px, 2× narrow-layout run in both
+themes. At 1280px and 1× in each theme, simulated window, area, display, timer and
+scroll capture, selector cleanup, annotation, save and reopen checks passed before
+the run stopped in an editor preview assertion. In two dark runs and one light run
+at 1.5× editor zoom, drawing a draft changed two sampled pixels outside its expected
+bounds from `[34, 103, 155, 255]` to `[40, 120, 180, 255]`.
+The before and after images from the second run are under
+`/tmp/poratake-parity-c34624e1-dark-scale1-proof/` in its `profile-*` directory.
+The observed line disappeared near the draft. A follow-up comparison with the
+reopened exported image showed that the unannotated preview edge had sampled a
+neighboring atlas tile. The pinned Apple renderer now clamps nonempty image tiles
+to their texel centers, as the Windows renderer already does. The full dark 1×
+and light 1× simulated runs subsequently passed, including three opaque edge
+comparisons with the reopened export and the original draft assertion; no tolerance
+was changed.
+
+The isolated macOS parity workflow also passed at 950 logical pixels and simulated
+125% scaling in both light and dark themes. Each run rendered 193 GPUI states and
+checked narrow editor navigation, selector states, recording controls, preview
+placement and history tooltips. Representative recording controls are retained in
+[light](tests/native/evidence/macos-ui/record-control-light-950-125-20261116.png)
+and [dark](tests/native/evidence/macos-ui/record-control-dark-950-125-20261116.png),
+along with the scrolled editor toolbar and bottom-right preview states for each
+theme. The fake daemon deliberately injects a camera protection failure in one
+workflow; the [logged failure](tests/native/evidence/macos-ui/parity-narrow-125-20261116.txt)
+is expected. These are headless renderer and simulated
+interaction checks, not native window-compositor, live capture or device evidence.
+The representative recording controls show no extra wrapper in the renderer;
+native frame verification and physical interaction remain separate checks.
+GPUI could also round a cropped one-pixel dimension to a zero-sized atlas tile.
+In an isolated Metal probe, a neighboring white tile changed an expected
+`[240, 80, 64, 255]` pixel to `[247, 167, 159, 255]`. The pinned GPUI core now
+retains one-pixel source dimensions when cropping and ignores empty images; the
+probe passes for both centered and far-edge crops and checks that an empty image
+paints nothing. A narrow two-pixel crop can
+still round one dimension to zero, so the Metal shader now clamps the other
+dimension independently and keeps premultiplied-alpha interpolation. The probe
+checks the opaque blend near both edges and a translucent blend; before this
+shader change an edge pixel was `[35, 0, 35, 255]` instead of approximately
+`[128, 0, 128, 255]`. A later Metal probe exposed a remaining source-edge leak:
+a narrow crop produced `[0, 0, 128, 255]` where the image edge was
+`[0, 0, 255, 255]`. Apple sprites now retain the original allocation bounds and
+fractional source rectangle; the shader interpolates within that rectangle and
+clamps to the original image. The edge probe and horizontal and vertical
+fractional gradient checks pass with differences of at most two channel levels.
+The full dark 1× and 2× and light 950px 2× parity runs pass after the change,
+and the x86_64 macOS shell compiles. Probe images are under
+`/tmp/poratake-metal-crop-before/` and `/tmp/poratake-metal-crop-2d/`.
+The Windows shader's zero-width clamp remains unverified. These are headless
+checks, not native UI proof.
+
+A wider diagnostic comparison found 476 differing pixels around translucent
+content at 1.5× editor zoom after the edge fix. Metal was interpolating straight
+RGB and alpha separately before compositing. Interpolating premultiplied values
+removed that difference in the focused fixture; the macOS redaction preview's
+software sampler now uses the same interpolation. The full dark 1× simulated
+run passed both that comparison and the existing transparent pixelation checks
+at 0.5×, 0.73×, 1.37× and 1.5× editor zoom. The saved reference images from before
+the fix are under `/tmp/poratake-draft-reference-dark-3/`. Native editor preview
+and export parity remain open.
+
+An isolated 3840×2160 headless editor probe on this Apple M5 Pro compared 42
+post-warmup GPU frames for each sampler, across three alternating runs. Median
+GPU time was 2.70 ms before and 2.60 ms after; individual frames varied, so this
+does not establish a speedup or characterize Intel Macs, other GPUs or live
+window presentation. The new sampler reads four texels for each nonempty image
+tile instead of one hardware-filtered sample.
+
+A separate Swift process launched by this session returned true from
+`CGPreflightScreenCaptureAccess()` without requesting access. That result belongs
+to the probe process and does not establish the GPUI daemon's authorization; live
+GPUI capture has not been attempted. The probe reported microphone access granted
+and camera access undetermined for its own identity. Neither was exercised.
+
+After installing Bacon 3.25.0 at the user's request, the native Swift fixture was
+run with `--screen-capture-exclusion`. Its own authorization preflight passed, and
+it found its hidden control window in ScreenCaptureKit content. Starting the
+filtered stream then terminated the fixture with SIGTRAP on macOS 27.2. The
+diagnostic report identified `Must only be used from the main thread` on a
+background ReplayKit `setWindowRotationLocked` path into AppKit's
+`NSWindow.setStyleMask`. This reproduces the earlier hosted fixture trap with a
+symbolized native stack; it does not establish that the GPUI recorder fails. No
+captured frame was produced, so exclusion and restart remain unverified. The
+existing Electron process remained running.
+
+The user subsequently authorized the checkout's FFmpeg build. The pinned 9.0.1
+source passed its checksum, produced an arm64/x86_64 universal binary and passed
+the script's LGPL check. A generated one-second H.264 VideoToolbox MP4 encoded and
+decoded successfully. Configure warned that PNG encoding and decoding were disabled
+because the deflate and inflate wrappers were unavailable, despite the script
+requesting both codecs; neither appears in the resulting codec lists. Any effect on
+Poratake workflows remains unverified. The dev launcher now recognizes the stamped
+FFmpeg build, but the live GPUI and recording checks above remain open.
+
+The development FFmpeg script now explicitly enables macOS's system zlib while
+autodetection is disabled. A rebuilt universal 9.0.1 binary lists both PNG
+encoding and decoding; on the Apple Silicon host, a generated 2×2 RGBA image
+round-tripped through both codecs with all 16 bytes identical, including alpha.
+Both architectures link the system `/usr/lib/libz.1.dylib`; the Intel slice was
+built but not executed. The build's LGPL configuration check passed. This checks
+the codec directly, not a live capture or the complete video editor workflow. A
+generated four-frame H.264 VideoToolbox MP4 also encoded and decoded after the
+rebuild. Against that rebuilt binary, the ignored macOS export tests for
+first-frame intro and delayed audio, synthetic camera ranges with zoom across a
+cut, and synthetic microphone/system-audio sidecar mix and mute all passed. The
+tests compare generated preview and decoded export data without accessing devices.
+
+The subsequent GPUI launch exposed a Bacon configuration error: the Unix kill
+override replaced the complete `gpui` job with an empty command. The launcher now
+applies the platform kill command through Bacon's `all_jobs` configuration, leaving
+the job command intact. A focused test runs Bacon's job listing when Bacon is
+installed, and the corrected `bun run dev:gpui` launched with an isolated profile.
+
+For a permission-safe native probe, a temporary copy of the Swift daemon added a
+screen-access preflight before its startup capture. Its own preflight returned true
+without a request. A separate instance of that instrumented daemon captured a
+400×300-point live screen area into an 800×600 PNG, and captured a GPUI preview
+window into a nonblank PNG. These are direct daemon calls, not completed GPUI
+selection workflows; neither proves control or overlay exclusion. An earlier
+standalone prewarm attempt timed out, but a further instrumented run completed, so
+the timeout is not a confirmed defect. The GPUI preview overlay existed in macOS's
+window list but was not exposed as a target by the background-control tool. Native
+selector interaction, timer and scroll capture, and recording/export remain open.
+
+After the user authorized temporary foreground control, the isolated GPUI app was
+launched with `--intent capture-area`. macOS reported a visible 1728×1117 capture
+overlay at window layer 101, and the instrumented daemon again reported screen
+access granted. The computer-use service did not return that window or resolve it
+by its macOS window ID, so no selection or save was performed. The test process was
+stopped and its windows disappeared. A separate `--intent record-screen` launch
+showed a 332×52 pre-recording control window at layer 101; the service could not
+target that window either, so recording was not started. Both runs used the same
+temporary daemon preflight and isolated profile described above; the original
+Electron process remained running.
+
+Although the isolated profile had system audio disabled, the Swift recorder sets
+`SCStreamConfiguration.capturesAudio` to true on macOS 13 and later to support
+in-session toggling. The daemon's system-audio authorization was not established,
+so no direct recording probe was started under the no-permission-dialog constraint.
+For a later isolated recording probe, a temporary daemon copy checked its own
+screen-capture authorization before starting and disabled ScreenCaptureKit audio,
+microphone, camera, keyboard and cursor tracking. A separate synthetic window
+process supplied the target, so the probe did not capture the existing editor.
+The window moved during recording and was then closed. Initially ScreenCaptureKit
+reported `SCStreamErrorDomain` code -3815; the daemon emitted `CAPTURE_ERROR` and
+stopped itself, which caused GPUI's error path to discard the project. The daemon
+now identifies that error for window recordings as `TARGET_CLOSED` and waits for
+the client to stop and finalize the take. Other errors and display recordings keep
+their existing error path.
+
+The same probe found that ScreenCaptureKit sends a stopped-status sample with
+timestamp zero, resetting the reported duration even though the movie contained
+video. Ignoring that control sample retained the duration: after moving and closing
+the target, explicit stop succeeded with 2.326 seconds reported and `ffprobe`
+measured 2.327 seconds and 12 frames. The probe's logs and synthetic movie are in
+`/var/folders/_r/p8gqgcd93zb1w708g0h__ztw0000gn/T/poratake-native-smoke-5yrih1e3/window-stream-fixture/`.
+Decoded frames from a second take show the synthetic target's updated content
+both before and after movement. Native Swift tests cover the error classification
+and stopped sample status. This verifies the
+screen-only daemon path with a synthetic window, not GPUI's recording controls,
+audio, camera, editor or export.
+
+The macOS recorder previously let a system-audio callback establish the initial
+recording timestamp before the first screen frame arrived. Screen and system-audio
+callbacks now use one serial queue, and only a screen sample with an image can
+start the timeline. After a pause, either stream can resume it: the macOS SDK
+defines idle screen frames as having no new image, so requiring a new image could
+discard system audio for as long as a static screen remains unchanged. The permission-free native fixture
+checks screen, audio, empty and stopped sample eligibility. A second native fixture
+feeds synthetic samples through the recorder's actual callback logic and verifies
+audio arriving before the first video frame and after a paused, unchanged screen.
+The full daemon also typechecks. The commands and results are recorded in
+[native evidence](tests/native/evidence/macos-ui/recording-timeline-20261116.txt).
+This does not verify physical audio, microphone synchronization or
+an actual paused recording, which remain open under the access constraint.
+
+The same fixture exposed a separate audio corruption bug in both muting and
+timestamp adjustment: a 480-sample, 48 kHz PCM buffer lasting 10 ms became
+4.8 seconds because the total buffer duration was assigned to every sample.
+Both paths now retain the original sample timing entries, shifting timestamps
+only when retiming. The native fixture checks the actual recorder methods with
+both a single shared timing entry and individual timing entries, including
+duration, an interior timestamp, zeroed output and an unchanged source buffer.
+This is synthetic PCM evidence, not a live microphone or system-audio recording.
+Microphone re-enable padding also started at the previous buffer's start and
+could extend a full silent buffer past the resumed audio. A native synthetic
+fixture reproduced both overlaps in an AAC writer. It now starts padding at the
+last successfully written buffer's end and trims the final silent buffer to
+whole samples that fit. The writer received adjacent intervals at 0–10 ms,
+10–20 ms, 20–26 ms and 26–36 ms; a decoded check of the
+[synthetic AAC](tests/native/evidence/macos-ui/microphone-padding-synthetic-20261116.m4a)
+found the expected silent middle. The fixture also checks sub-sample boundaries
+and individual sample timing entries. An eight-second synthetic gap also passed
+with the writer configured for real-time input. A five-minute gap failed on this
+Mac: the writer stopped accepting buffers after approximately 11 seconds and the
+resumed buffer was dropped. A separate writer probe that omitted silence entirely
+collapsed an eight-second timestamp gap to a 64 ms file, so simply skipping the
+padding is not a fix. The retained [gap probe](tests/native/evidence/macos-ui/aac-gap-collapsed-synthetic-20261116.m4a)
+contains generated audio only. This reproduced the original backpressure failure.
+
+A separate readiness-driven writer probe supplied the same five-minute gap and
+final generated audio buffer through `requestMediaDataWhenReady`. It accepted all
+30,001 buffers over 134 callbacks. Decoding the retained
+[synthetic AAC](tests/native/evidence/macos-ui/aac-readiness-synthetic-20261116.m4a)
+produced 300.01 seconds of PCM, with silence before 300 seconds and the generated
+signal in the last 10 ms. This validates a possible writer mechanism only: it does
+not queue real microphone callbacks, handle stop or failure, or fix the recorder.
+Another synthetic probe used readiness observation, added three generated audio
+buffers while the gap was being drained, and requested finish before draining
+completed. It wrote all 30,003 buffers in 151 drains; the
+[decoded output](tests/native/evidence/macos-ui/aac-queued-synthetic-20261116.m4a)
+contained the resumed 30 ms. A separate writer-cancellation check received a
+status observation. Neither probe is connected to the recorder or establishes
+the behavior of a live microphone or a failed writer.
+
+The recorder now feeds microphone audio through a bounded queue that waits for
+writer readiness, keeps each silence interval as a compact range, and drains the
+queue before finishing its input. With generated samples passed through the actual
+recorder methods, the five-minute case now wrote 30,003 contiguous buffers,
+including three resumed buffers; a cancelled writer and an injected queue limit
+each returned an error. The
+[decoded output](tests/native/evidence/macos-ui/recorder-queue-synthetic-20261116.m4a)
+contains 300.03 seconds of PCM with the final 30 ms of generated signal. Queue
+overflow reports a recording error rather than silently dropping audio. Real
+microphone toggles, device changes and stop/failure timing remain unverified.
+
+System audio had the same writer-backpressure failure: it discarded each buffer
+when the writer was not ready, without reporting an error. A native generated-PCM
+probe submitted 30,000 adjacent 10 ms buffers rapidly through the recorder; the
+[old AAC](tests/native/evidence/macos-ui/system-audio-backpressure-before-20261116.m4a)
+contained only 10.54 seconds. System audio now uses the bounded readiness-driven
+queue as well, drains it before finishing and reports a writer or queue failure.
+The same probe produced [300 seconds of decoded PCM](tests/native/evidence/macos-ui/system-audio-backpressure-after-20261116.m4a);
+the macOS checks now run the duration assertion. The fast synthetic submission
+deliberately creates backpressure and does not establish how often it occurs in a
+live recording. Real system audio, toggles and device timing remain unverified.
+
+System audio could also lose synchronization when its first sample arrived after
+the first screen frame or later samples had a timestamp gap. A generated recorder
+fixture sent audio at 2, 2.01 and 8 seconds; the old AAC decoded to 30 ms. The
+recorder now queues silence up to each later timestamp. The [new generated AAC](tests/native/evidence/macos-ui/system-audio-gap-after-20261116.m4a)
+decodes to 8.01 seconds, with signal at 2 and 8 seconds and silence in between;
+the [old output](tests/native/evidence/macos-ui/system-audio-gap-before-20261116.m4a)
+is retained for comparison. The native fixture decodes and checks those intervals
+and runs in macOS checks.
+
+Repeated gaps shorter than one sample previously accumulated drift: 1,000 generated
+buffers with 10-microsecond gaps yielded 10 seconds instead of 10.00999 seconds.
+The recorder now carries the fractional remainder and writes whole silence samples
+when enough time accumulates. The native fixture finishes within one 48 kHz sample
+of the expected duration, including an intervening overlap; the [generated output](tests/native/evidence/macos-ui/system-audio-fractional-after-20261116.m4a)
+and [old output](tests/native/evidence/macos-ui/system-audio-fractional-before-20261116.m4a)
+are retained. A remainder shorter than one sample can remain at the end. Real
+ScreenCaptureKit timing, physical audio and callback performance remain unverified.
+
+Overlapping system-audio buffers also extended the encoded timeline: three
+generated 10 ms buffers covering 20 ms produced 30 ms before the correction. The
+recorder now discards already-accepted samples and queues the remaining suffix.
+The native fixture covers partially overlapping buffers with shared and per-sample
+timing, plus a fully repeated buffer; the decoded 20 ms output retains the expected
+three signal levels in order. The [generated output](tests/native/evidence/macos-ui/system-audio-overlap-after-20261116.m4a)
+and [prior output](tests/native/evidence/macos-ui/system-audio-overlap-before-20261116.m4a)
+are retained. Actual callback overlap and device timing remain unverified.
+
+If an audio callback arrives after the first video callback with a timestamp
+before the video start, the recorder previously clamped that timestamp to zero,
+so generated pre-video samples displaced the actual opening audio. It now drops
+whole pre-video buffers and trims a buffer that crosses the video start to its
+first remaining sample. A fixture drives the recorder's stream callback with
+distinct generated signals: before the change the first 8 ms contained pre-video
+audio; afterward the decoded signal comes from the crossing buffer and the next
+buffer at the expected times. The [before](tests/native/evidence/macos-ui/system-audio-initial-before-20261116.m4a)
+and [after](tests/native/evidence/macos-ui/system-audio-initial-after-20261116.m4a)
+outputs and a macOS check are retained. This reproduces a synthetic callback order;
+the timing of live ScreenCaptureKit callbacks remains unverified.
+
+An audio queue failure during stop previously prevented the primary writer from
+finishing, and the GPUI error handler deleted the project while the daemon was
+stopping. The daemon now attempts to finish each writer before returning the
+failure; GPUI keeps the partial project and displays its path. A native fixture
+injects a cancelled system-audio writer while a generated H.264 primary writer is
+active: before the change the primary writer remained unfinished; after it, the
+error is still returned and the retained [one-frame movie](tests/native/evidence/macos-ui/recording-audio-failure-recovery-20261116.mov)
+decodes successfully. Fake-daemon GPUI workflows inject an audio error during the
+recording and from the stop response; both check that the control closes and the
+project file remains byte-identical. Other stop failures still leave the controls
+available for retry. This does not
+prove recovery of a real capture or of a video writer that itself has failed.
+Electron also deleted the project as soon as it received a terminal recording
+error, potentially while the daemon was still finalizing the video. It now keeps
+the project, requests recorder finalization, waits for that request before a new
+recording starts, and reports the possible partial-recording path in its error
+dialog. Focused tests cover finalization failure, the retry ordering and the
+permission-error message; they use mocked daemons and dialogs. A failure returned
+directly from a requested stop now also reports the possible partial-recording
+path after the controls close. The toolbar and tray use this same stop action;
+focused tests cover the action and both entry points. The full Electron suite
+passed 2,331 tests with three skipped on this Mac. Recovery after a real recording
+failure remains unverified.
+
+The microphone re-enable anchor and its upper timestamp limit previously used
+the last encoded video frame even if later screen callbacks had advanced the
+recording timeline. In a generated native fixture, a 20-second screen timeline
+with a 1-second last encoded frame placed microphone audio at 1 second. Both
+calculations now use the latest screen presentation time, adjusted for pauses,
+without moving behind the last encoded frame. The fixture now places generated
+audio at 20 seconds and continues it through 21 seconds; the
+[decoded AAC](tests/native/evidence/macos-ui/microphone-screen-clock-synthetic-20261116.m4a)
+contains silence at 1 and 19.99 seconds and signal from 20 seconds. This checks
+synthetic callbacks, not how long a real static screen can go without any callback
+or whether physical microphone and screen clocks stay synchronized.
+
+Microphone re-enable also installed its start timestamp after starting the
+capture session, allowing an early callback to use the previous timeline. A
+generated callback delivered during setup reproduced a 0.01-second buffer end
+where 20.01 seconds was expected. The recorder now installs the pending start
+on the microphone callback queue before setup begins and clears it if setup fails.
+The native fixture exercises both paths without opening a microphone; real device
+delivery and synchronization remain unverified.
+
+The GPUI scroll handoff previously removed its selector windows without passing
+their IDs to the daemon. The earlier screenshot probes found stale selector pixels
+immediately after a window was hidden or removed. The handoff now keeps the hidden
+selectors owned by the scroll session, passes their stable IDs with the three
+control IDs, and releases them when that session ends or fails. The daemon asks
+ScreenCaptureKit for off-screen windows and rejects a frame if any requested
+exclusion cannot be resolved. An off-screen [native window probe](tests/native/evidence/macos-ui/scroll-selector-lease-20261116.txt)
+checks that an ordered, non-key window becomes hidden while retaining its ID,
+that its actual ID joins the three actual control-window IDs, and that cleanup
+leaves a newer selector intact; simulated GPUI workflows check
+the exclusion list and session lifecycle. Actual scroll pixels and the behavior
+of the off-screen ScreenCaptureKit filter remain unverified on this Mac.
+
+The daemon also queued an auto-scroll stop after handling its request. A synthetic
+native lifecycle test showed that this delayed stop could reach a replacement
+session and stop it. Since daemon requests are already routed on the main thread,
+stop now takes effect in request order. The [native fixture](tests/native/evidence/macos-ui/scroll-stale-stop-20261116.txt)
+checks both a replaced session and a rapid start followed by stop; no real screen
+or input was used.
+
+If the first scroll frame fails, both shells now offer retry instead of claiming
+that a captured portion can be saved. Existing partial-capture messages remain
+unchanged. Focused GPUI and Electron event tests cover zero and nonzero frame
+counts; native notification presentation remains unverified.
+
+The macOS window screenshot, recording and recording-outline handlers previously
+converted signed window IDs to `CGWindowID` without consistently validating the
+range. A negative or oversized ID could trap the daemon; non-integer inputs could
+also reach an unsafe numeric conversion. All three handlers now reject null-window,
+negative, oversized and non-integer IDs before using capture APIs. The
+[native validation fixture](tests/native/window-id-validation.swift) round-trips
+invalid values and valid numeric boundaries through the JSON types and all three
+handlers. Its test build stops immediately after validation, so neither success nor
+failure cases start capture, open windows or access devices.
+
+Screenshot-area and recording-start requests also accepted the null window ID in
+their exclusion lists. The screenshot path could then treat that unresolved ID as
+an absent control and proceed without excluding it. Both handlers now reject null
+IDs before starting capture. The screenshot handler also validates a supplied
+display ID as a representable integer before conversion; an out-of-range floating
+point value previously reached a trapping integer conversion. The native validation
+fixture checks invalid, mixed and valid exclusion lists and display IDs without
+calling capture APIs. This validates request handling, not live exclusion pixels.
+
+A separate direct-daemon probe covered the only connected display with an
+isolated test pattern and placed a magenta stand-in control over it. It recorded
+the full display and a 300×200-point area, first including the control as a
+positive check and then excluding its window ID. On two fresh daemon processes,
+the decoded 3456×2234 display and 600×400 area videos contained the control in
+the positive checks and the underlying pattern in the exclusion checks. In the
+second run, all eight decoded frames of each excluded recording had zero magenta
+samples; every frame of each positive recording contained magenta. Logs and
+synthetic videos are `daemon-display-probe*.log` and `display-*.mov` in the same
+`window-stream-fixture/` directory. The same screen-only daemon restrictions
+apply. This verifies exclusion of a supplied native window ID, not that GPUI
+registers every real control and overlay or that its editor/export matches.
+
+On 2026-11-16 the temporary `window-stream-fixture/` directory was no longer
+present, so the logs and videos cited from that directory below cannot currently
+be inspected. The measurements remain a record of the earlier runs; the
+separately linked images under `tests/native/evidence/` remain in the worktree.
+Repeat those native probes and retain their outputs in persistent storage before
+using the missing videos or logs as release evidence.
+
+An isolated native GPUI pre-recording toolbar was then placed above a small
+synthetic backdrop. A screen-only Swift daemon recorded that area with the actual
+toolbar window ID supplied for exclusion. A positive recording without the ID
+contained 3,024 changed sampled pixels from the toolbar. The excluded recording
+matched the backdrop, including after the daemon showed its actual full-display
+recording overlay during the stream: zero sampled pixels changed by more than
+20 levels in the tested region. The toolbar's GPUI process used a fake daemon;
+the real screen-only daemon was driven directly, so this does not verify the
+GPUI start button or its transfer of the ID. Evidence is
+`gpui-control-probe-separate-daemon.log` and `gpui-control-*.mov` in the same
+fixture directory. Before using the fake UI daemon, two attempts with two copies
+of the instrumented screen-only daemon timed out starting the test recording;
+one logged ScreenCaptureKit connection interruption `-3805`. This does not
+establish a failure of the app's normal single-daemon recording flow.
+
+An opt-in native GPUI harness subsequently invoked the real area recording
+control's start and stop handlers with one instrumented daemon, using an isolated
+profile and synthetic backdrop. The daemon checked its own existing screen grant
+and disabled system audio, microphone, camera, keyboard and cursor tracking for
+the probe. GPUI showed the actual recording overlay, started and finalized a
+1456×320, 18-frame project, and opened its 208×148 preview 20 points from the
+bottom-right work-area edges. All 18 decoded frames were at least 99.93% the
+expected blue backdrop in sampled pixels, with a small animated marker accounting
+for the remainder; no toolbar or overlay was detected. The run and project are
+under `window-stream-fixture/gpui-integrated-1794755586882217000/`, and the log
+is `gpui-integrated-probe-bottom-right.log` beside it. This drives GPUI's handlers
+programmatically rather than exercising the selector or physical pointer input,
+and it does not verify audio or camera.
+
+The same one-daemon GPUI harness recorded the full 1728×1117-point display over
+a synthetic backdrop. All 18 decoded 3456×2234 frames were at least 99.99% the
+expected backdrop in sampled pixels; the toolbar and recording overlay were not
+detected, and the preview was again 20 points from the bottom-right work-area
+edges. Its project is under
+`window-stream-fixture/gpui-integrated-screen-1794755697139936000/` and its log
+is `gpui-integrated-screen-probe.log`.
+
+For a window target, the harness selected an isolated 400×240-point window and
+started recording through GPUI. The native outline remained the same window ID
+and followed the target's 180-point horizontal and 100-point vertical movement.
+Closing the target caused GPUI to stop normally, remove the outline, retain the
+800×480, 14-frame take and open the bottom-right preview. All decoded frames
+contained the expected synthetic pattern in sampled pixels; changed pattern
+content was present after movement. The project is under
+`window-stream-fixture/gpui-integrated-window-1794755853621575000/`, and the log
+is `gpui-integrated-window-probe-final.log`. These harness runs use the same
+permission-safe daemon and programmatic handlers described above; selector,
+physical input, audio and camera remain unverified.
+
+The same isolated native harness drove GPUI's screenshot selector with internal
+pointer events on the one connected 1728×1117-point display. With freeze disabled,
+an area drag over a solid synthetic blue window saved a 600×400 PNG containing
+the selector's dimming and handles. The selector itself was gone when the preview
+appeared. After allowing the drag to redraw before release, the visible selection
+was offset 33 points below the saved crop: Core Graphics reported the full-height
+selector at y=33 instead of the display's y=0. A fast drag captured an entirely
+dimmed image. The five-second timer capture also saved a 66-pixel-high dimmed
+strip at the top of the 2× PNG. The original failures are preserved as
+synthetic evidence: [area selector captured](tests/native/evidence/macos-selector/area-selector-captured.png)
+and [timer dimming captured](tests/native/evidence/macos-selector/timer-dim-captured.png).
+Calling `orderOut:` before capture did not reliably remove the selector from the
+captured frame, and setting the native frame during and just after window creation
+did not correct its reported position; neither attempt was retained. This probe
+does not establish whether normal pointer timing changes the frequency of the
+capture race. It used a test-only, screen-authorized daemon with audio and input
+tracking disabled, and did not modify privacy settings.
+
+The selector was a titled AppKit panel, which AppKit constrained below the menu
+bar. Removing its native frame and applying the display bounds after opening
+placed it at y=0 on this display. Live area captures now pass the selector's
+native window IDs to the daemon; ScreenCaptureKit excludes them explicitly,
+and frozen captures continue to use the retained frame. In isolated fresh app
+launches, a slow drag, a fast drag and a five-second timer each saved a 600×400
+PNG with no pixel more than six RGB levels from the synthetic blue backdrop.
+The test examined every pixel, including the edges where the handles had appeared.
+An additional capture taken while the selector was still visible also excluded
+it and had the expected 2× dimensions. The native window list was empty of the
+selector after each saved capture and the preview opened at the bottom right.
+The resulting [area](tests/native/evidence/macos-selector/area-clean.png) and
+[timer](tests/native/evidence/macos-selector/timer-clean.png) images are retained
+alongside the earlier failures.
+The daemon used the production screenshot algorithm with a temporary preflight
+wrapper and screen-only recorder. After those runs the same geometry calculation
+was extracted into a separately tested helper. The test did not exercise physical
+mouse input or a second display. Geometry tests cover a negative display origin
+and 1×/2× dimensions; real mixed-display and color-profile comparisons remain
+open. The before images above remain evidence of the original regression.
+
+An offline geometry check found that independently rounding a half-point origin
+and width could extend a selection by one point past the display edge, causing
+the new bounds validation to reject it. Selected capture rectangles now round
+both edges and derive their width and height from those rounded edges, while
+the existing conversion for other window layouts is unchanged. Tests cover the
+right and bottom edges at positive and negative display origins; this case has
+not yet been rechecked with a native pointer.
+
+After the selector changes, the fake-daemon GPUI visual workflow completed at
+1280 points in dark mode at 1× and at 950 points in light mode at 2×. The dark
+run covered the simulated capture, timer, OCR/QR, scroll, annotation, save and
+reopen workflows; the narrow light run covered the visual layouts, preview and
+history. They produced 199 and 195 PNGs respectively under
+`/tmp/poratake-macos-smoke-offline-dark-final/` and
+`/tmp/poratake-macos-smoke-offline-light-retry/`. The first attempted run exposed
+a headless-only failure because its simulated selector has no native window
+handle; the parity fixture now uses simulated positioning and no native window
+IDs. These results do not verify native capture or physical input.
+
+The macOS fake-daemon workflow now supplies two synthetic selector IDs and
+asserts their exact presence in area, display and timer capture requests. A
+subsequent full dark 1280-point, 1× run completed with 35 matching area requests:
+13 cached and 22 live. Both completed timer captures retained the IDs after the
+countdown. The log and request record are under
+`/tmp/poratake-macos-exclusion-handoff/`. This tests the handoff and wire format;
+it does not test ScreenCaptureKit or replace the paused native rerun.
+
+During a later repeat probe, a macOS screen-access dialog for Poracode Nightly
+appeared even though the test daemon had reported an existing screen grant.
+The probe stopped; the dialog and privacy settings were left untouched. Its
+cause was not established, and the partial test image containing the dialog
+was deleted. Further live capture requires a way to avoid triggering or
+interacting with a permission dialog.
+
+The window screenshot selector independently saved a clean 800×480 image of a
+synthetic target, dismissed the selector and opened the bottom-right preview;
+the [saved window image](tests/native/evidence/macos-selector/window-clean.png)
+contains the target pattern without selector pixels. The selection was driven by
+an internal pointer event; physical mouse interaction and another display remain
+unverified.
+
+Each of those three GPUI-created projects was then passed through the isolated
+video-editor drawing, save/reopen and H.264 export test. The first and later
+decoded export frames matched the corresponding editor previews within the
+test's compression tolerance. This is an editor-harness comparison rather
+than a native file-dialog or pointer-driven export.
+
+The Mac video-editor harness exposed a critical decode failure with the pinned
+FFmpeg 9.0.1: its decoder passed the removed `-vsync` option, so FFmpeg exited
+without frames. The editor could show a black source preview and export a black
+source image with annotations on top. The decoder now uses
+`-fps_mode passthrough`, preserving the intended frame timestamps. With the
+pinned FFmpeg, 37 Mac video-editor tests passed, including a drawing gesture,
+save/reopen and decoded first-frame comparison, timeline normalization and export
+cancellation. The drawing workflow also passed when supplied each of the three
+synthetic native screen, area and moved/closed-window recordings above; its
+changed-pixel RGB mean errors versus the edited previews were 25.20, 4.75 and
+18.06 respectively. A second comparison after seeking also passed for each
+recording; at 1.5 seconds the window recording's changed content was present in
+the preview. These are lossy H.264 comparisons, not pixel-identical results or
+interactive native-editor evidence. The Mac 2× dark
+parity run also loaded the video and exercised all sidebar tabs in the headless
+GPUI renderer; its images are under `/tmp/poratake-macos-video-parity/`. A light
+950px parity run passed too, although its loaded video editor used a 1200px
+minimum fixture width at the time.
+
+The Mac fixture now also opens the loaded video at the requested width, reflecting
+the editor's reduced minimum on a small display. At 720 points the timeline bar
+clipped Scrub Audio and keyboard help. The bar now scrolls horizontally on macOS;
+the Metal headless workflow scrolls to Scrub Audio, toggles it on and off, then
+scrolls back to Play in both light and dark appearance at 2×. A 950-point dark
+run covers the wider loaded editor. The
+[scrolled synthetic editor](tests/native/evidence/macos-ui/video-preview-visible-controls-scrolled.png)
+shows the controls. Physical trackpad and keyboard navigation remain unverified.
+
+The loaded-video workflow now also accepts a reduced height. At 720×520 and
+simulated 1× in both appearances, it checks the rendered red annotation and blue
+video, all sidebar tabs, timeline scrolling and keyboard focus, and the export
+button and canceling status within the viewport. The [dark editor](tests/native/evidence/macos-ui/video-small-workarea-dark.png),
+[dark export panel](tests/native/evidence/macos-ui/video-small-workarea-dark-export.png),
+[light editor](tests/native/evidence/macos-ui/video-small-workarea-light.png) and
+[light export panel](tests/native/evidence/macos-ui/video-small-workarea-light-export.png)
+are retained. This uses generated media and synthetic input; it does not verify
+native small-display placement, physical input or the save dialog.
+
+At the same 720×520 simulated viewport, an isolated UI test selected the
+rectangle tool, drew on a generated video, saved and reopened the project, then
+completed an MP4 export to a supplied path. The test checked the viewport on
+both editor instances and compared decoded frames at the start and at 1.4 seconds
+with their respective previews. Whole-frame mean channel differences were 1.03
+and 1.08; the first annotation region averaged 5.03. On the 1,196 pixels changed
+by the drawing, the decoded export's RGB mean difference was 20.77 from the
+edited preview versus 118.72 from the original preview. The [preview](tests/native/evidence/macos-ui/narrow-video-preview.png),
+[decoded frame](tests/native/evidence/macos-ui/narrow-video-export-frame.png),
+[later preview](tests/native/evidence/macos-ui/narrow-video-later-preview.png),
+[later decoded frame](tests/native/evidence/macos-ui/narrow-video-later-export-frame.png),
+[synthetic MP4](tests/native/evidence/macos-ui/narrow-video-export.mp4) and
+[measurements](tests/native/evidence/macos-ui/narrow-video-export-metrics.json)
+are retained. The test bypasses the save dialog and does not exercise a live
+recording or native pointer delivery.
+
+On 2026-11-16, fresh isolated 720×520, 2× simulated light and dark runs both
+completed on the current worktree. Their loaded-video screenshots are retained in
+[light](tests/native/evidence/macos-ui/simulated-small-video-20261116-light.png)
+and [dark](tests/native/evidence/macos-ui/simulated-small-video-20261116-dark.png),
+with [decoded pixel measurements](tests/native/evidence/macos-ui/simulated-small-video-20261116-pixels.json).
+The image viewer displayed the dark preview as black, but decoding the PNG found
+the expected red annotation and blue video pixels in both images. System
+Information reported one online 3456×2234 built-in Retina display and the
+system appearance was dark; no additional display was available to check. The
+synthetic runs do not verify native placement, input or captured pixels.
+The same local run passed the Swift fixtures for recorded-window closure
+classification, stopped-frame handling, display-coordinate conversions and
+screenshot capture geometry. Those fixtures do not start ScreenCaptureKit.
+
+The fixture also checks the rendered screenshot for the synthetic video's red
+annotation and blue checkerboard, in addition to comparing the in-memory preview
+against the composed frame. An image viewer initially displayed some of these
+screenshots with a black preview, but direct PNG pixel inspection confirmed that
+the expected content was present. This check does not establish that the preview
+is always visible in a real window.
+
+The three existing synthetic native recordings were also edited offline with a
+cut and 1.5× zoom, saved and reopened, then exported through VideoToolbox. Four
+decoded frames from each export matched the edited previews with mean channel
+errors below 0.87, and changed-pixel checks confirmed that zoom affected the
+preview and appeared in the export. Separate generated-video tests passed for
+annotations and redactions, and for a synthetic camera track with visibility
+ranges across a cut and zoom. These checks did not access a physical camera or
+exercise interactive editing. The macOS export tests requiring development
+FFmpeg are opt-in because the clean macOS CI job does not provision that binary;
+they were run locally with the checkout's pinned FFmpeg 9.0.1.
+
+The edited GIF workflow also ran on macOS using generated media at all six
+offered frame rates. After saving and reopening the edit, the test checked
+annotation and source colors, opaque output, frame counts and playback timing.
+Each two-second GIF lasted 2,000 ms, with at most 5 ms accumulated timing error.
+The macOS FFmpeg path scales this fixture's 184×114 preview to an 854×528 GIF,
+as Electron's fixed-width conversion does; Windows' direct GIF path keeps the
+184×114 source size. After resizing the decoded GIF back to preview dimensions,
+the sampled frames had mean BGRA errors of 1.098–1.908. Between 148 and 219 of
+83,904 channels per sampled frame differed by more than 32 levels. At one
+translucent padding pixel with source alpha 1, the preview was white and the
+resized GIF was approximately `[209, 213, 211]`. The test retains the Windows
+per-pixel padding assertion; at the time the macOS result was recorded without
+that assertion. The [measurements](tests/native/evidence/macos-ui/gif-preview-export-20261116.txt)
+are generated-media evidence, not an interactive recording or physical display
+comparison.
+
+A follow-up stage probe rendered the same 50 fps fixture at the MP4 export's
+776×480 size, compared that unencoded composition, a separately encoded and
+decoded MP4, and the decoded GIF after resizing each to the 184×114 preview.
+At the alpha-1 sample, their RGB values were `[211, 217, 216]`, `[210, 215,
+213]`, and `[209, 213, 211]`, versus `[255, 255, 255]` in the preview. Their
+whole-frame mean BGRA differences were 0.667, 1.707 and 1.788 respectively;
+131, 149 and 149 of 83,904 channels differed by more than 32. The difference
+therefore already appears in this size-dependent composition comparison before
+video encoding. The [measurements](tests/native/evidence/macos-ui/gif-preview-export-stages-20261116.txt),
+[preview](tests/native/evidence/macos-ui/gif-stage-preview-20261116.png),
+[unencoded composition](tests/native/evidence/macos-ui/gif-stage-composition-20261116.png),
+[MP4](tests/native/evidence/macos-ui/gif-stage-mp4-20261116.png) and
+[GIF](tests/native/evidence/macos-ui/gif-stage-gif-20261116.png) are retained.
+The opt-in fixture can regenerate its synthetic stage images with
+`PORATAKE_GIF_DIAGNOSTIC_DIR`.
+
+An isolated Electron canvas and WebCodecs probe then exercised the same gradient
+using the checkout's `renderGradientToCanvas`. At a half-transparent pixel,
+its canvas over black was `[64, 32, 16]` and its decoded H.264 frame was
+`[64, 31, 16]`; the alpha-1 decoded sample was black. The
+[probe](tests/native/electron-video-alpha.cjs) and [output](tests/native/evidence/macos-ui/electron-video-alpha-20261116.json)
+use generated content. GPUI had instead unpremultiplied translucent RGB and
+forced alpha to opaque, making the half-transparent pixel `[128, 64, 32]` and
+amplifying tiny values near alpha zero. The video preview, MP4 input and direct
+GIF output now composite their premultiplied pixels over black. A unit test
+covers alpha zero, one and 128, and the existing preview/export test asserts the
+half-transparent pixel against the Electron result. After the change, the same
+alpha-1 preview, unencoded composition and decoded GIF samples were near black;
+the channels differing by more than 32 in that stage comparison fell from 131,
+149 and 149 to 5, 5 and 5 respectively. The [new measurements](tests/native/evidence/macos-ui/gif-preview-export-stages-black-20261116.txt),
+[preview](tests/native/evidence/macos-ui/gif-stage-preview-black-20261116.png),
+[composition](tests/native/evidence/macos-ui/gif-stage-composition-black-20261116.png)
+and [GIF](tests/native/evidence/macos-ui/gif-stage-gif-black-20261116.png) are
+retained. The GIF workflow now applies its existing padding-pixel assertion on
+macOS as well as Windows, and the edited MP4 and synthetic camera tests pass.
+An isolated dark 1280-point GPUI parity run also completed after the change;
+its [workflow results](tests/native/evidence/macos-ui/opaque-video-parity-20261116.txt)
+include generated screen, area and window preview/export comparisons, screenshot
+annotation and save/reopen, and scroll workflow fixtures. It used a fake daemon.
+These checks do not establish parity for every translucent image, display or
+interactive recording.
+
+The shared GPUI code and its test targets also passed an offline
+[Windows cross-check](tests/native/evidence/macos-ui/opaque-video-windows-crosscheck-20261116.txt)
+using the cached SDK. This compiles the Windows GIF path but does not execute it.
+On 2026-11-16 a fresh dark-theme 1280-point, 1× simulated workflow completed on
+the current worktree. Its generated area, window and screen projects were edited,
+saved, reopened and exported; decoded frames at 0.5, 1 and 1.5 seconds differed
+from their corresponding in-memory previews by mean BGRA channel values of 0.653,
+0.713 and 0.712 respectively for each fixture. The saved H.264 videos, 1-second
+decoded frames and editor screenshots are retained for [area export](tests/native/evidence/macos-ui/simulated-recording-20261116-area.mp4),
+[area decoded frame](tests/native/evidence/macos-ui/simulated-recording-20261116-area-decoded.png),
+[area editor](tests/native/evidence/macos-ui/simulated-recording-20261116-area-preview.png),
+[window export](tests/native/evidence/macos-ui/simulated-recording-20261116-window.mp4),
+[window decoded frame](tests/native/evidence/macos-ui/simulated-recording-20261116-window-decoded.png),
+[window editor](tests/native/evidence/macos-ui/simulated-recording-20261116-window-preview.png),
+[screen export](tests/native/evidence/macos-ui/simulated-recording-20261116-screen.mp4),
+[screen decoded frame](tests/native/evidence/macos-ui/simulated-recording-20261116-screen-decoded.png)
+and [screen editor](tests/native/evidence/macos-ui/simulated-recording-20261116-screen-preview.png).
+[Stream metadata and hashes](tests/native/evidence/macos-ui/simulated-recording-20261116-streams.json)
+confirm three 320×180, two-second, 60-frame H.264 files. The source media and
+daemon were simulated. An independent [comparison of the rendered editor
+screenshots with the decoded 1-second frames](tests/native/evidence/macos-ui/simulated-recording-20261116-comparison.json)
+averaged each 2×2 screenshot block to the export size: the mean RGB channel
+difference was 1.570 for each case, with 4,780 of 172,800 channels differing by
+more than 12 levels. All three generated targets produced the same decoded frame,
+so they are not independent source-content tests. This does not establish native
+target movement, closure, capture controls exclusion or hardware access.
+The generated-audio editor test also passed on macOS: it compared preview and
+decoded export across a cut, two playback speeds, volume changes and synthetic
+keyboard clicks. The Mac sample's mean click contribution was below the
+Windows fixture's absolute cutoff, so the Mac assertion checks that the click
+changes the mix and remains distinguishable from export error. This is a
+file-only comparison, not a microphone, system-audio or listening test.
+Another file-only test generated separate system and microphone M4A sidecars,
+with distinct tones that change from 440/880 Hz to 660/1100 Hz across the
+source. The expected tones appeared in the preview mix and decoded exports on
+both sides of a cut, and muting each track separately removed its tone from
+both preview and export. The sources were synthesized;
+this does not verify device access, live recording or the timing of live toggles.
+
+A generated first-frame intro exposed two more Mac export defects. At exact
+video frame boundaries, rounded FFmpeg `pts_time` values and floating-point
+subtraction could leave the preceding frame visible. The Unix decoder now uses
+integer presentation timestamps with FFmpeg's time base and allows one
+representable floating-point step at the requested boundary. The intro's audio
+delay was staged as 15,999 zero bytes at 12 fps, splitting a 16-bit stereo frame
+and corrupting the following audio. The Mac encoder now rounds the delay to
+whole audio frames before writing silence. The native VideoToolbox regression
+checks the intro and two changed source frames against decoded export, verifies
+silence during the intro and a recognizable tone afterward, and failed on the
+old padding. Unit checks cover the timestamp precision and byte alignment. The
+audio and camera fixture exports above also passed after these changes; no live
+devices were used.
+The normal Unix decoder tests now also drive the complete frame-selection path
+with synthetic FFmpeg output at and just before fractional frame boundaries,
+without requiring FFmpeg or screen access. The macOS audio-padding unit test
+checks whole stereo frames at 12, 15, 24, 25, 30 and 60 fps.
+
+Code review also found that rebuilding preview audio removed the old output
+before reading whether it was playing. The replacement therefore paused until
+the next playback tick even when playback was active. The handoff now retains
+that state before taking the output. A software-mixer test now replaces stems
+while playing and paused, checks the player state and seek anchor, and uses no
+hardware. This handoff has not been exercised against a real output device.
+
+An additional offline macOS run passed 13 recording-control, 35 capture-preview,
+27 selector and 14 scroll-control GPUI tests. These exercise simulated device
+menus, preview placement and dismissal, selector geometry and scroll controls;
+they do not access real devices or establish native interaction. The Swift
+scroll fixture also passed its synthetic preview/stitch and filter lifecycle
+checks with its ScreenCaptureKit exclusion check left disabled.
+
+The user's screenshot showed a second rounded outline around the recording toolbar.
+The native GPUI popup was a titled AppKit panel even though the toolbar draws its
+own border. Removing the titled frame for the recording toolbar and screenshot
+preview eliminated the extra outline in isolated native previews on macOS. The
+[recording toolbar](tests/native/evidence/macos-ui/recording-toolbar.png) is
+preserved; the one-card `capture-preview-final.png` is under
+`/var/folders/_r/p8gqgcd93zb1w708g0h__ztw0000gn/T/poratake-native-smoke-5yrih1e3/`.
+The screenshot preview was placed at the bottom right of the sole available
+display. These checks verify visible frames and placement, not interaction,
+tooltips, capture handoff or recording.
+
+The macOS scroll preview, cursor prompt and control bar also used GPUI's titled
+popup configuration while drawing their own content. They now remove the native
+frame and shadow using the same helper as the recording toolbar. A hidden native
+GPUI popup with the scroll-control options had a titled frame and shadow before
+the helper and neither afterwards; its AppKit frame stayed unchanged and the
+window could still be made click-through. The [probe result](tests/native/evidence/macos-ui/scroll-popup-native-frame.txt)
+also checks the three actual scroll windows hidden on the primary display with
+a full-display selection: each is borderless and positioned as requested; only
+the preview and prompt are click-through. It does not show the windows or verify
+their pixels in a capture. Real scroll capture and overlay exclusion remain open.
+
+The [hidden native popup probe](tests/native/evidence/macos-ui/native-tooltip-bridge-20261116.txt)
+also sets, replaces and clears the AppKit view tooltip through the shared GPUI
+helper, including a Unicode label. The native view returned the expected text and
+then no tooltip, without changing the popup frame. This checks the bridge used by
+recording controls and capture previews; it does not establish actual hover
+delivery, visible tooltip placement or exclusion from recorded pixels.
+
+The native tray menu also showed a rounded frame extending well below its content,
+as captured in the [before image](tests/native/evidence/macos-ui/tray-before.png). The menu is now created
+hidden, made borderless, and activated after its view is ready. Disabling the native
+window shadow removes a remaining curved outline; the menu's window is then resized
+to its measured content height. In isolated dark and light native previews it
+stayed visible and its bounds shrank from 304×632 to 304×548 points, matching its
+rendered menu; the [dark](tests/native/evidence/macos-ui/tray-dark.png) and
+[light](tests/native/evidence/macos-ui/tray-light.png) images record the result.
+The existing fitted-menu test now also runs on macOS at 1×, 1.25×, 1.5×
+and 2×. Live tray interaction and dismissal remain unverified because the
+computer-use service does not expose the window.
+
+The native screenshot preview previously used a fixed 208×604-point window for a
+single thumbnail. AppKit's window hit test confirmed that a point in the empty
+space above the card targeted the preview instead of the window underneath. The
+macOS preview window now fits its stack: a native one-card probe measured 208×148
+points, and the same empty point reached the underlying window while a point on
+the thumbnail reached the preview. A top-left one-card probe also measured 208×148
+points and returned the underlying window below the preview. A separate instrumented native probe opened
+three cards in a 208×452-point window and showed all three cards in the
+[preview stack](tests/native/evidence/macos-ui/preview-stack.png). Automated
+checks cover stack growth and shrinkage, all four corner anchors, and a simulated
+multi-display menu inside a one-card window. The narrow gaps between cards and live
+preview interaction remain unverified. After the change, isolated 2× parity runs
+passed at 1280px in light mode and 950px in dark mode, including all four preview
+corners, a four-card stack, tooltips, display menus and editor handoff. The native
+window remains rectangular, so transparent corners and the gap between multiple
+cards can still intercept clicks. Physical mixed-DPI placement remains unverified.
+
+An isolated native GPUI probe opened the recording control and a generated-image
+preview in both light and dark mode without starting a daemon. AppKit reported both
+visible, borderless and without native shadows. On the available display, the
+208×148-point preview had 20-point bottom and right margins relative to the AppKit
+work area. The [probe log](tests/native/evidence/macos-ui/native-ui-frame-20261116.txt)
+records the measured frames. The computer-use helper did not list either floating
+window as targetable, so this check does not verify hover, tooltips, screenshot
+pixels or interaction.
+
+Lowering only the isolated probe windows to the normal AppKit window level made
+them targetable by the already-authorized computer-use helper. Native window
+images show one toolbar border in [dark](tests/native/evidence/macos-ui/native-control-normal-level-dark-20261116.png)
+and [light](tests/native/evidence/macos-ui/native-control-normal-level-light-20261116.png),
+and the generated preview in [dark](tests/native/evidence/macos-ui/native-preview-normal-level-dark-20261116.png)
+and [light](tests/native/evidence/macos-ui/native-preview-normal-level-light-20261116.png).
+The helper captured those windows through its own ScreenCaptureKit access; no
+Poratake capture or recording was made. The production floating level, physical
+hover, native tooltip presentation and capture exclusion remain unverified.
+A background click on the generated preview was delivered to the lowered probe
+window, but the helper observed no change and the hover controls did not appear.
+The physical pointer did not enter the window, so this does not establish whether
+hover works for a user.
+In a later isolated normal-level probe, moving the generated preview under the
+stationary pointer and dragging into its Close control made the real pointer
+land over the control. The preview reported card and pointer hover, and its
+AppKit tooltip text was “Close preview”; the helper's accessibility tree also
+exposed the hovered controls. A window-list query did not identify a separate
+tooltip window near the pointer after the drag. Since the pointer entered while
+the mouse button was held and the query cannot establish all tooltip presentation,
+this does not prove ordinary hover display or a product defect. The isolated
+probe was closed and focus returned to Poracode. The [native record](tests/native/evidence/macos-ui/preview-tooltip-drag-20261116.txt)
+contains the observations; ordinary physical hover and recorded-output exclusion
+remain open.
+An isolated native probe then dispatched a GPUI mouse move while the preview was
+unfocused. The card's hover state became true, but GPUI's macOS window-hover value
+remained false because it reflects window focus. The controls consequently stayed
+hidden, as shown in the [before image](tests/native/evidence/macos-ui/native-preview-hover-before-20261116.png).
+The preview now tracks mouse entry and window exit separately from focus on macOS;
+it also clears and suppresses native tooltips after exit. In the same native probe,
+the controls appeared on entry, disappeared on exit and reappeared on re-entry while
+the window stayed unfocused; the [after image](tests/native/evidence/macos-ui/native-preview-hover-after-20261116.png)
+shows the controls. A GPUI regression checks those transitions and the associated
+auto-dismiss gate; all 36 local capture-preview tests passed. Input was simulated,
+and native physical hover and tooltip presentation still require verification.
+
+The macOS recording toolbar also reserved a transparent side margin for its
+device menu. An AppKit hit test found that a point 14 points inside that margin
+targeted the recording window. The closed toolbar now fits its measured content;
+it expands for a menu, countdown or keyboard-focus tooltip and returns to the
+fitted size afterward. In isolated native light and dark probes, the measured
+toolbar and window were both 276×44 points, remained centered, and an outside
+point reached another window. A fake microphone menu expanded the window to
+332×300 and returned it to 276×44 on dismissal without querying a real device.
+The [native results](tests/native/evidence/macos-ui/recording-control-window-fit-20261116.txt),
+[light fitted toolbar](tests/native/evidence/macos-ui/recording-control-fitted-light-20261116.png),
+[dark fitted toolbar](tests/native/evidence/macos-ui/recording-control-fitted-dark-20261116.png),
+[fixture menu](tests/native/evidence/macos-ui/recording-control-fitted-menu-light-20261116.png)
+and [keyboard tooltip](tests/native/evidence/macos-ui/recording-control-fitted-focus-dark-20261116.png)
+are retained. The image checks use the headless renderer, and native input was
+simulated. While a menu, countdown or keyboard tooltip is open, the expanded
+transparent area can still intercept clicks; the fitted frame also clips the
+toolbar's outer shadow. Native keyboard behavior, real capture exclusion,
+multi-display positioning and a visual comparison of that shadow remain open.
+
+The isolated dark native toolbar was also exercised with a fixture daemon for
+the [camera menu](tests/native/evidence/macos-ui/recording-camera-menu-dark-native-20261116.png)
+and an empty [iOS device menu](tests/native/evidence/macos-ui/recording-ios-menu-full-dark-native-20261116.png).
+The long generated camera name was truncated visually but retained in the native
+accessibility tree. Selecting “None” in the iOS menu through accessibility closed
+it and restored the fitted toolbar; outside hit testing reached the underlying
+window. No real device was queried. The helper also returned [one partial image](tests/native/evidence/macos-ui/recording-ios-menu-dark-native-20261116.png)
+without the toolbar and one blank image; a later capture after simulated pointer
+exit and entry showed the complete surface. The [probe record](tests/native/evidence/macos-ui/recording-device-menus-native-20261116.txt)
+does not distinguish a helper capture artifact from an actual redraw problem.
+The windows were lowered for inspection, so production floating-level appearance
+and physical input remain open.
+
+A follow-up reopened the isolated iOS menu and captured its unchanged window
+eight consecutive times, including immediately after reopening; all eight
+contained the toolbar. In another run, the same open menu was captured from
+the [GPUI Metal scene](tests/native/evidence/macos-ui/recording-ios-menu-gpui-scene-20261116.png)
+and the [helper window capture](tests/native/evidence/macos-ui/recording-ios-menu-helper-stable-20261116.png).
+Both show the toolbar and menu. Against black, the 664×600 images had a mean
+RGB channel difference of 0.24 levels; 58,211 of 1,195,200 channels differed
+by more than two, with a maximum of 21.82. These captures do not establish why
+the earlier helper images were partial or whether the visible compositor output
+was affected. The comparison used an isolated lowered window and no capture or
+media permissions from Poratake.
+
+An isolated AppKit probe toggled the native recording-window shadow on and off.
+The authorized computer-use helper captured the same 552×88-pixel window image
+with either setting; its window capture ends at the frame and therefore cannot
+show an external shadow. The [probe record](tests/native/evidence/macos-ui/recording-control-native-shadow-20261116.txt)
+and [captured toolbar](tests/native/evidence/macos-ui/recording-control-native-shadow-20261116.png)
+are retained. This does not establish the appearance or capture exclusion of a
+native shadow, so the production shadow behavior is unchanged.
+
+An isolated AppKit probe moved the generated preview under the stationary pointer.
+The preview's card became hovered but its window pointer flag stayed false, and a
+four-second auto-dismiss closed it. The macOS GPUI backend now forwards AppKit's
+mouse-enter event as a pointer movement. With that change the unfocused preview
+stayed open beyond the timer; after moving the window away, it closed. The move also
+exposed stale window pointer state after card hover cleared, so the preview now
+clears that state when the pointer is outside its viewport. The
+[native probe record](tests/native/evidence/macos-ui/stationary-preview-hover-20261116.txt)
+and AppKit event-conversion test cover this sequence without screen or device
+capture. Physical pointer movement and popup overlap with other apps remain open.
+
+The display and window pickers also used GPUI's macOS window-focus value as a
+hover signal. Selector windows on other displays can be unfocused, leaving the
+display dimmed or a hovered window unhighlighted. On macOS the selector now tracks
+pointer entry and exit independently, initializes its pointer after positioning,
+and re-evaluates the target when an asynchronous window list arrives. GPUI visual
+tests with simulated input verify the dimmed and highlighted states on entry,
+exit and re-entry, including a window list arriving under a stationary pointer.
+An isolated AppKit picker also reported pointer states true, false and true after
+simulated entry, exit and re-entry while its window remained unfocused. It used a
+small test window and no capture. Actual multi-display pointer behavior, native
+selector cleanup and capture output remain unverified by these tests.
+
+An isolated AppKit preview was also moved so that its Close control lay under
+the stationary system pointer. The preview became the top window at that point,
+reported the card and pointer inside, and registered `Close preview` on its
+native view while the window remained unfocused. Moving it away cleared both
+hover states and the tooltip; moving it back repeated the result. The
+[native probe record](tests/native/evidence/macos-ui/preview-native-close-hover-20261116.txt)
+uses a generated preview and real AppKit entry and exit delivery, without moving
+the pointer or starting a capture. It does not establish that AppKit visibly
+presents the tooltip during physical pointer movement.
+
+The generated preview was then lowered to normal window level so the authorized
+computer-use helper could target it. Foreground pointer drags from the preview
+interior to Close and Delete revealed its controls and registered the respective
+native tooltip text; moving to the preview's margin cleared the card hover and
+tooltip. The helper reported input delivery as unverified, and the probe's own
+pointer and tooltip state supplied the subsequent observation. The [record](tests/native/evidence/macos-ui/preview-physical-hover-20261116.txt)
+and [window image](tests/native/evidence/macos-ui/preview-physical-hover-20261116.png)
+are retained. A drag beyond the window was refused, and the window-only screenshot
+cannot show a system tooltip outside the frame. Physical window exit, visible
+tooltip presentation and production floating-window input remain open.
+
+In a separate normal-level preview run, a foreground pointer click on Edit
+closed the generated preview and opened its checkerboard in an isolated GPUI
+editor. The helper reported delivery as unverified; the new editor window and
+its generated image were observed afterward. Although its accessibility tree
+reported focus, macOS identified another application as frontmost, so no
+physical drawing or keyboard input was sent. The [handoff record](tests/native/evidence/macos-ui/preview-physical-edit-20261116.txt)
+does not establish physical annotation, save or reopen behavior.
+
+An isolated editor attempt then used the computer-use helper's background drag
+after dispatching the Rectangle tool action. The helper reported the drag as
+unchanged and the exported image had zero changed pixels. A subsequent synthetic
+GPUI drag changed 1,790 pixels and produced the [annotated editor image](tests/native/evidence/macos-ui/editor-native-annotation-20261116.png).
+The native save sheet opened in the isolated temporary directory, but its Save
+element returned stale-snapshot refusals and a background click left the sheet
+unchanged. It was canceled; no output was saved or reopened. The
+[attempt record](tests/native/evidence/macos-ui/editor-background-save-20261116.txt)
+does not establish whether the background-input failures are in the app or the
+helper, and does not replace physical annotation and save verification.
+
+An AppKit probe also confirmed that calling `NSSavePanel.ok:` directly throws
+an unimplemented-method exception for this sheet. That was a probe-only failure,
+not evidence that a user click fails; the direct call was removed. A later
+isolated run canceled the sheet, wrote the annotated image to a new temporary PNG
+through the same screenshot save backend, and opened that file in a second
+native editor. The 640×360 [saved PNG](tests/native/evidence/macos-ui/native-save-annotated-20261116.png)
+differs from its [generated source](tests/native/evidence/macos-ui/native-save-source-20261116.png)
+at 1,790 pixels and matches both editors' exported pixels exactly. The
+[probe result](tests/native/evidence/macos-ui/native-save-reopen-20261116.txt)
+and script are retained. The drawing and save were dispatched by the probe;
+the native sheet was canceled, so a user's Save click remains unverified.
+
+In a subsequent isolated native run, simulated movement over Close registered
+“Close preview” on the actual AppKit view; moving to Delete replaced it with
+“Delete screenshot”. A simulated window exit cleared the AppKit tooltip, and
+re-entering over Close registered “Close preview” again. The preview remained
+unfocused. This checks native tooltip registration and clearing, not whether
+AppKit displays the tooltip during physical hover. The GPUI regression also
+checks replacement and clearing of the test tooltip after these transitions.
+With a four-second auto-dismiss setting in the isolated native probe, the
+unfocused preview stayed open beyond the timer while simulated hover was active,
+then closed after simulated exit. Its generated 640×360 source PNG still existed
+afterward. A GPUI timer regression checks the same hold, exit and source-preservation
+behavior; all 37 local capture-preview tests passed. No physical pointer or live
+capture was involved.
+After the native accessibility tree initialized, the lowered recording control
+exposed its Start, camera, microphone, system-sound, iOS-device and Close buttons.
+The helper invoked Close through macOS accessibility and confirmed that only the
+isolated control window closed. No device menu or capture was opened. Production
+floating-window accessibility and physical input still need verification. A
+separate isolated run invoked the pre-recording system-sound button twice through
+macOS accessibility; its label changed from “Turn system sounds on” to “Turn
+system sounds off” and back. This changed only the temporary probe configuration
+and did not start or test system-audio capture.
+A separate native probe found that the unfocused recording control registered
+“Start recording” on hover but retained it after a simulated window exit. GPUI
+re-established its stale hover during redraw. The macOS control now clears the
+tooltip on exit and restores it on subsequent pointer movement over the control.
+In the isolated AppKit probe, the registered tooltip changed from “Start recording”
+to none on exit and back on re-entry, while the window stayed unfocused. A GPUI
+regression also checks Start and Close; all 14 local recording-control tests
+passed. The [toolbar image after the fix](tests/native/evidence/macos-ui/native-control-tooltip-fix-dark-20261116.png)
+is byte-identical to the earlier dark normal-level image. The probe used simulated
+input and did not start recording or test native tooltip presentation with a
+physical pointer.
+After that change, a native GPUI event probe clicked the pre-recording system-sound
+control twice. Its isolated preference changed from off to on and back to off;
+the regression also checks both transitions. No recorder or audio device was
+started, and this does not verify physical pointer delivery.
+One background double-click on the generated preview was delivered but did not
+open an editor or change the preview. This does not establish how a physical
+double-click behaves; the native preview-to-editor handoff remains unverified.
+In a separate isolated run, a simulated GPUI double-click on the generated
+preview opened a native screenshot editor. Selecting Rectangle through AppKit
+accessibility and dispatching a simulated GPUI drag drew the rectangle shown in
+the [native editor](tests/native/evidence/macos-ui/native-editor-annotated-20261116.png).
+The editor's Save button opened a macOS save sheet in the temporary probe directory.
+The background helper refused the sheet's Save element as stale, and a background
+Return did not dismiss the sheet; no annotated file was saved or reopened in this
+run. The test process was stopped, leaving the user's editor untouched. Physical
+input, the completed native save/reopen flow and real capture pixels remain open.
+Another isolated run selected Rectangle through macOS accessibility and drew it
+with a simulated GPUI drag. Accessibility then invoked Undo and Redo on the
+native editor. Comparing the captured central image region, Undo changed 16,445
+pixels by more than two RGB levels; after Redo, zero pixels differed by more than
+two levels from the annotated state. The [undo](tests/native/evidence/macos-ui/native-editor-undo-20261116.png)
+and [redo](tests/native/evidence/macos-ui/native-editor-redo-20261116.png) window
+images are retained. This checks those accessibility actions on a generated image,
+not physical pointer delivery or live capture.
+After the renderer change, `bun run dev:gpui` launched an isolated native preview
+with the instrumented daemon; macOS reported its 208×148-point window. The test
+process was stopped and the existing Electron process remained open.
+
+The normal GPUI Settings window was discoverable by the computer-use service.
+Using an isolated profile, a native interaction switched Appearance from light to
+dark and opened the Screenshot, Recording, Shortcuts and About pages. The Devices
+page was not opened because it can request microphone or camera authorization.
+PNG captures of the dark Appearance, Screenshot, Recording and About pages are
+in the evidence directory above as `settings-appearance-dark.png`,
+`settings-screenshot.png`, `settings-recording.png` and `settings-about.png`.
+An attempted corner drag left the window at 880×700 points; it did not verify a
+narrow native layout. Floating capture controls remain undiscoverable to the
+service, so these checks do not verify interactive capture or recording.
+
+At the screenshot editor's 950-point minimum width, the rectangle tool adds a
+third option control and pushes the Pin action beyond the right edge. The macOS
+toolbar previously clipped that action without allowing horizontal scrolling.
+It now uses the same scrollable cluster as Windows. In isolated macOS headless
+tests at 2×, both horizontal and vertical scroll input brought the action into
+view, the Copy action responded after scrolling, and the options could be
+reached again. Both light and dark 950-point runs passed, along with a forced
+720-point dark run; 720 is below the normal editor minimum. The synthetic
+[before](tests/native/evidence/macos-ui/editor-toolbar-before.png) and
+[scrolled](tests/native/evidence/macos-ui/editor-toolbar-scrolled.png) images
+show the 950-point case. The normal 1280-point dark workflow also completed,
+including the fake-daemon capture handoffs and annotation save/reopen checks;
+the Intel macOS parity build passed `cargo check`. Native mouse and trackpad
+delivery remains unverified.
+
+The screenshot editor previously requested its 950×650 minimum even when the
+primary display's usable area was smaller. Its initial size now uses the work
+area and reduces the native minimum when necessary. Geometry tests cover an
+800×600 work area with absent, larger and smaller saved sizes, plus a degenerate
+area; ordinary minimum-size checks remain unchanged. At 720×520, the available
+size after the existing margins on an 800×600 work area, isolated light and dark
+headless runs exercise the editor toolbar's scrolling, Copy action and keyboard
+focus reveal. The [light](tests/native/evidence/macos-ui/editor-small-workarea-light.png)
+and [dark](tests/native/evidence/macos-ui/editor-small-workarea-dark.png)
+full-window images and [light](tests/native/evidence/macos-ui/editor-small-workarea-light-focused.png)
+and [dark](tests/native/evidence/macos-ui/editor-small-workarea-dark-focused.png)
+focused Pin images are retained. The normal-width dark synthetic capture,
+recording and editor workflow also passed after the sizing change. These simulate
+the smaller work area; native placement, pointer input and physical small displays
+remain unverified.
+
+Keyboard traversal exposed a separate issue in the same 950-point layout: Tab
+could focus Pin while the entire control remained to the right of the viewport.
+The macOS toolbar now reveals a focused control when focus changes, while manual
+scrolling remains available. The isolated Metal workflow checks that Tab reveals
+Pin and Shift-Tab reveals the first option after each starts clipped, with room
+for the focus outline; both light and dark runs passed. The
+[focused Pin screenshot](tests/native/evidence/macos-ui/editor-toolbar-keyboard-pin.png)
+is from the dark run. This is synthetic input and does not verify a physical keyboard.
+The video editor had a separate focus defect on all platforms: its root mouse
+handler took focus after every child click. The root now relies on GPUI's focus
+handling, so child controls retain focus and a click on the editor background
+still returns focus to the editor. In the Mac 720-point fixture, Play and Scrub
+Audio now keep distinct focus; Tab reveals the clipped audio switch and
+Shift-Tab reveals Play again in light and dark appearance. In both fixtures,
+Space also toggles the focused switch in both directions, and the C shortcut
+changes the Cut control after a background click. The
+[focused switch](tests/native/evidence/macos-ui/video-keyboard-scrub.png) is from
+the dark run. These checks use synthetic input.
+
+After Play received focus, pressing C left the GPUI Cut tool inactive. A
+state-based synthetic check confirmed this; the earlier pixel-only probe was
+inconclusive because button animation also changed pixels. Electron's shortcut
+handler accepts C from a button but ignores input, textarea, select and editable
+targets. GPUI now accepts editor shortcuts from HeroGPUI button key contexts while
+keeping Space and Enter for button activation. The synthetic workflow checks C
+and Command-S from Play, Space on Cut and Scrub Audio, and the zoom slider's arrow
+key; C does not activate Cut from the switch or slider, and Command-S does not
+open Export from the switch. A separate text-input
+test checks that typing C, Ctrl-S and Command-S do not activate editor shortcuts. Native
+keyboard delivery and other control types remain unverified.
+
+In an isolated native editor, a foreground drag added a red rectangle to the
+800×740 test image. Saving produced an 800×740 PNG with 3,140 changed pixels;
+opening that PNG in a second GPUI editor showed the rectangle while the first
+editor stayed open. The save panel briefly displayed the selected temporary
+directory but later displayed Applications and saved there; the test file was
+moved back to the evidence directory. The cause of that directory change has not
+been established. The `rfd` 0.15.4 macOS backend appends the default filename to
+the starting directory passed to `NSSavePanel`; a noninteractive AppKit probe
+confirmed that the panel initially holds that non-directory URL. Whether this
+explains the observed directory change is unverified. A follow-up isolated AppKit
+probe observed the same filename-appended URL after the save panel became visible;
+the directory-only control retained the expected directory. Programmatically
+invoking the panel's OK action did not complete either case, so this does not
+establish the selected destination or the cause of the earlier change.
+The vendored `rfd` backend now passes the directory itself to AppKit and sets the
+suggested filename separately for both save and open panels. In an isolated GPUI
+editor using a generated image, the visible save sheet reported its temporary
+directory and a separate suggested PNG filename; the repeatable
+`tests/native/macos-save-panel-probe.py` check passed and canceled the sheet. The
+[native record](tests/native/evidence/macos-ui/save-panel-directory-20261116.txt)
+describes the check. It now selects Rectangle and verifies that a simulated drag
+changes the generated image before opening the save sheet. In a separate native
+run the rectangle was visible and the intended temporary directory appeared in
+the sheet, but background accessibility returned stale IDs for its controls and
+background Return and click left it open. The isolated sheet was canceled. The
+subsequent authorized foreground attempt also left the sheet open; an AppKit
+frontmost-application check reported Docker Desktop after the activation attempt,
+so the test stopped without sending more desktop input. A separate app-local
+synthetic Return event also left the sheet open. Neither attempt produced a PNG.
+The GPUI crate also type-checked for Intel macOS; the
+dialog itself was exercised on Apple Silicon. An attempted test-only call to
+`NSSavePanel.ok:` terminated the isolated probe because AppKit reports that method
+as unimplemented; the unsafe probe action was removed. The directory correction
+does not establish the destination of a completed save or explain the earlier
+Applications result; physical save, reopen and video export remain open.
+Full-resolution captures
+of the two editor views differ at
+10,607 image-region pixels by more than two channel levels, concentrated around
+the annotation edges (maximum 63). Evidence is `native-editor-annotated.png`,
+`native-editor-full-original.png` and `native-editor-full-reopened.png` in the
+same directory. Rendering screenshot annotation previews on the export sampling
+grid corrected the same native test: `native-editor-full-after.png` differed from
+the reopened image by at most two channel levels across the tested image region.
+An isolated fixture also checks the draft-to-committed transition at 4× device
+scale; it changed 4,709 pixels before aligning drafts and now matches. These are
+image-editor checks; they are not evidence about recording or video export.
+
+For a 1,000×500 source-pixel rectangle on an opaque 1,920×1,080 image at 1.6×
+device scale, three uncached developer-build CPU timings on this Mac were
+12.8–13.3 ms for the old draft rasterization and 18.2–19.3 ms for the initial
+aligned path. Skipping unnecessary alpha conversion on opaque patches reduced
+the aligned timings to 14.0–14.7 ms in a second three-run probe; the old path in
+that probe took 12.2–14.7 ms. These are not interactive frame-rate measurements;
+translucent images, large or numerous annotations and slower machines still need
+profiling.
+
+A direct native timer-control probe opened a one-second countdown, received its
+completion event, and hid the panel successfully. It did not exercise the GPUI
+timer capture workflow or verify the saved output.
+
+A direct native scroll-capture probe used an isolated colored-row scroll window
+and the daemon's native controls. Three preview frames were emitted and a
+800×1770 PNG was saved from a 400×370-point selection. The output visibly
+contains the test rows without the control panel or boundary frame. After matching
+the reference screenshot's Display P3 profile to sRGB, 582,400 of 592,000 pixels
+in the first viewport matched exactly; the larger differences were confined to
+one-pixel horizontal row edges. The daemon also reported a no-overlap stop while
+finishing; this single synthetic probe does not establish whether that decision
+was correct. Evidence is in
+`/var/folders/_r/p8gqgcd93zb1w708g0h__ztw0000gn/T/poratake-native-smoke-5yrih1e3/scroll-output.png`.
+That temporary PNG was no longer present when checked on 2026-11-16, so the
+measurements above are a historical record rather than retained release evidence.
+It is not an interactive GPUI scroll workflow or a fixed-header test.
 
 [Hosted CI at `71ec03ef`](https://github.com/Porabuild/Poratake/actions/runs/43662801738)
 passed all active jobs, including the native workflows and Windows visual matrix;
@@ -1169,10 +2376,20 @@ Bugs fixed in this pass:
   reservations. Thread-coordinated tests cover the deadlock and a reservation
   arriving during release.
 - A full GPUI scroll progress queue could discard Done or Cancel. Terminal and
-  interruption signals now use a separate queue while preview updates stay
-  bounded. A GPU-free test fills the progress queue, sends 20 warnings, and
-  verifies both terminal actions. The burst-event workflow fixtures completed in
-  the hosted run at `8b764bc0` before its image baseline comparisons failed.
+  interruption signals now use a separate queue while progress remains bounded.
+  The old bounded queue could also discard the final auto-scroll or cursor state
+  during a burst of previews, leaving the toolbar or prompt stale. Pending progress
+  now retains the latest value of each kind. A GPU-free test sends 2,000 previews
+  with state changes and verifies the latest values; another sends 20 warnings and
+  verifies terminal actions take priority. A GPUI control test feeds a frame burst
+  and stop state through the queue, then checks the tooltip and next button action.
+  The isolated light-theme 1280-point, 1× simulated workflow passed after this
+  change, including scroll selection, cancellation, failures and save/reopen; its
+  output is under `/tmp/poratake-parity-scroll-coalescing-final/`. Its generated
+  screen, area and window recording fixtures also compared decoded exports with
+  the editor preview. Native interaction and presentation remain unverified. The
+  earlier burst-event workflow fixtures completed in the hosted run at `8b764bc0`
+  before its image baseline comparisons failed.
 - Scroll capture cleared its active state before finish or cancellation completed,
   allowing a second session to start while the daemon was still processing the
   first. Held-response fixtures now verify the state through both RPCs.
@@ -1826,49 +3043,733 @@ New recordings leave that track uninitialized until sidecar mapping, including
 when the preview's Copy action exports directly. Generated-recording tests cover
 both camera visibility and an explicitly empty track. Older GPUI recordings with
 an empty saved track are ambiguous and remain unchanged.
-GPUI retains explicitly saved camera ranges beyond the normalized timeline;
-Electron clips them. The user-visible impact of that difference is unverified.
+Loaded camera ranges now use the same video-duration cleanup as timeline edits
+and export. An isolated Mac editor test opens a four-second synthetic project
+with an eight-second music lane and saved camera ranges at 3–6 and 6–7 seconds;
+the displayed camera lane contains only 3–4, as in Electron, and opening leaves
+the saved project bytes untouched. A later editor change can persist the cleaned
+ranges. Tests also cover speed-adjusted duration, minimum clip length, invalid
+duration and the enabled first-frame offset. A generated macOS video and camera
+fixture tests a saved camera clip that would last less than 0.1 seconds after
+clipping: the uncleaned preview visibly shows the camera on the final sampled
+frame, while the normalized preview hides it and matches the decoded MP4 within
+three mean channel levels. Loading and exporting leave the saved state bytes
+unchanged. This is a file-only test, not native window or live camera evidence.
 
-| Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, outside-window placement, dismissal, re-entry and exclusion from a WGC screenshot and three decoded full-monitor recording frames, with painted-foreground, backdrop and known-visible controls. Verify other capture targets, macOS appearance and hover exit, and physical mixed-DPI placement. The macOS tooltip is registered on the whole native view and cleared on hover exit.                                                                                                          |
-| P2       | Linux recording tooltips                                 | [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43362521397/job/131679275651) passed hover and keyboard-focus tooltip geometry tests, including unbroken and Unicode titles at simulated 100% and 200%. Very long titles remain shortened. Verify real Linux, macOS focus and native screen-reader behavior. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                        |
-| P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                  |
-| P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.           |
-| P1       | Wayland screen and area recording                        | GPUI recording is currently disabled on Wayland: static tracing shows the recorder passes zero dimensions from zed-scap to FFmpeg and ignores the selected area. The portal can return a window, but the capturer does not expose its source type, position or size, so first-frame sizing alone cannot establish a correct area crop. Implement and verify source-aware capture on a real Wayland session before re-enabling it.                                                                                                                                   |
-| P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                           |
-| P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                           |
-| P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions and restarts, and cross-shell IDs on macOS/Linux.                                                                                                                                                                                                       |
-| P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Verify more styles and zooms, transparent reopen, balance, attached layers and physical DPI transitions.                      |
-| P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Verify frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                                                                                                                  |
-| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Unframed attached insets are checked on all edges by CPU and on the right edge by GPU. Balanced unframed right attachments with inset match preview/export in CPU tests at 100% and 125%. Verify GPU behavior, balanced corners and shadows, framed attachments and more inset combinations.                                                                                                                                                        |
-| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                |
-| P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                        |
-| P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance. |
-| P1       | Screenshot annotation order                              | GPUI CPU preview/export match within two levels at tested fractional origins and scales, but the rounded blackout corner differs from the pinned Electron sample: GPUI `[191, 0, 191]`, Electron `[169, 0, 169]`. The current corner assertion expects the Electron value with a ±24 per-channel allowance, so it accepts that mismatch. Verify live GPUI pixels, other corners, complex compositions and physical DPI. Electron screenshot preview paints blackout in export order; DOM tests cover both orders and selection.                                     |
-| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                |
-| P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                             |
-| P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                    |
-| P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Hosted Windows verifies the area-recording selection hole, restoration, pooled-overlay reuse and cancellation. Native pending/replacement handoffs and multi-display picker behavior remain unverified.                                                                                                                                                                                                              |
-| P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                   |
-| P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                          |
-| P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. A 2% per-row tolerance retains tested small animated footer blocks at three widths, while unrelated-frame controls are rejected. Some animations and footer changes still stop early or produce incorrect output in synthetic multi-frame cases. The separate macOS matcher passed hosted synthetic fixed-footer, changing-footer and ambiguity fixtures. Verify real surfaces, weak overlaps and fixed headers.                    |
-| P1       | Scroll stitching with repeated content                   | Windows/Linux retain the accepted prefix for a tested periodic false seam at 30% and 90% expected overlap; a noisy unique seam with variable movement still stitches in the tested cases. Earlier probes found 1,310 incorrect periodic cases rejected and 2,795 early stops, and 164 early stops in 360 translated-UI cases; those counts predate the new ambiguity guard. Quantify early stops and correctness on broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                    |
-| P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; hosted macOS fixtures and GPUI parity cases also ran. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                       |
-| P1       | macOS scroll preview with variable overlap               | The preview shares measured overlap with the saved stitch and coalesces background rendering. Hosted native fixtures compare variable-overlap pixels and cancellation; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                                              |
-| P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                             |
-| P1       | Native attachment compositor coverage                    | Hosted Windows verified two freeze-off attachments, hide/show, exact saved pixels and cancellation in one editor. A frozen handoff also passed one native capture and save. Verify additional edges, DPI transitions and macOS native behavior.                                                                                                                                                                                                                                                                                                                     |
-| P1       | Cached Windows screenshot resources                      | Cached composition streams with 4 MiB scratch bands and rejects requests over 512 Mi pixels. Tests retain offscreen padding, gaps, alpha and the empty-cache fallback. Window alpha-mask capture and WIC internals can allocate separately; profile large native captures, encoding latency and slower hardware.                                                                                                                                                                                                                                                    |
-| P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. The attributed photo fixture is also tested at 10°, 25° and 45° rotations, with perspective distortion and a combined 15° rotation plus perspective warp. Verify additional real photographs and interactive app clipboard delivery; further reduce low-contrast 4K no-code latency and test slower hardware across both desktop versions.                                                                                            |
-| P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                             |
-| P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                           |
-| P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                           |
-| P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                                                                                                                                                       |
-| P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                     |
-| P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                            |
-| P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                                                                                                                                                              |
+Changing a video clip's speed now retimes zoom, camera and drawing ranges as
+Electron does; previously those overlays stayed at their old times. A synthetic
+editor test checks the three tracks and confirms that one undo or redo restores
+the entire edit. Boundary tests cover ranges before, inside and across a changed
+clip, shortening and lengthening, and invalid speed input. On macOS, a generated
+camera recording was saved and reopened after a speed change; five decoded MP4
+frames matched the editor composition within a mean three levels per channel,
+including camera visibility before and after the retimed ranges. This file-only
+test does not establish live camera, capture or playback behavior.
+
+Deleting or trimming video now bounds zoom, camera and drawing ranges to the
+new duration in the same undo step. During a trim gesture, dragging the edge
+back restores the ranges from the gesture's starting state. A synthetic editor
+test covers deletion, trimming in both directions and undo/redo; an isolated
+macOS file test saved and reopened a shortened project and compared three
+decoded MP4 frames with the editor composition. Imported music is unchanged.
+
+Repeated start-trim movements previously accumulated the pointer delta, and a
+previously trimmed start could not be extended into the timeline gutter. A
+headless GPUI pointer test now exercises both handles, reverses an end trim in
+one gesture, and restores a start edge in a separate gesture into the gutter.
+Handle presses retain the pointer's offset from the edge. These are simulated
+events; physical pointer behavior and dragging beyond the window remain
+unverified.
+
+Zoom and camera clips now reject overlapping additions, moves and resizes, as
+Electron does; touching edges remain allowed. A headless GPUI pointer test draws,
+moves and resizes a zoom clip and rejects a crossing draw. Separate state tests
+cover both track types, including rejected drags and adjacent ranges. These do
+not verify physical pointer delivery.
+
+Opening an edited video project previously reset the drawing ID counter, so a
+new drawing could reuse a saved drawing's ID and deleting it could remove both.
+New clip and annotation IDs now avoid IDs already in the project, including
+saved annotation IDs. Splits also avoid IDs already on their track. Synthetic
+tests reopen a project, add a drawing, delete and undo it, save and reopen again;
+they also cover simultaneous drawings and collisions during cuts. Previously
+saved projects that already contain duplicate IDs are not repaired automatically.
+
+The empty or short video timeline previously shrank its lanes to the duration's
+pixel width; with no video this was one point and clipped the empty-lane hint.
+The lane now fills at least the available viewport, matching Electron's minimum
+width, and hides the add-zoom hint when no video is loaded. The isolated macOS
+renderer records the empty editor at 950 points [before](tests/native/evidence/macos-ui/video-empty-timeline-before.png)
+and [after](tests/native/evidence/macos-ui/video-empty-timeline-after.png). A
+headless geometry test checks empty and two-second timelines, and pointer tests
+check that clicking beyond the video or with no video does not create a clip
+outside its duration. These are synthetic renderer checks, not a physical display
+or pointer test. After the change, the isolated 950-point macOS fixture passed
+in light and dark appearance at simulated 2×, including its capture-preview,
+history, toolbar and recording-control workflows.
+
+An isolated macOS raster probe compared the existing rounded-blackout path with
+generated SVG pixels at integer and fractional origins. The 2px-radius top-left
+pixel over magenta was 191 in Tiny Skia 0.11.4 and 158 in headless Chrome 157;
+an older GPUI test expected 169 without recording its source. At a half-pixel offset, the adjacent
+sample was 223 in Tiny Skia and 189 in Chrome. A 4× supersampled Tiny Skia scratch
+render produced 176 and 203 for those two respective samples. This isolates a
+coverage difference from the surrounding annotation stack, but Chrome is not
+the pinned Electron runtime and supersampling does not reproduce its pixels.
+The [samples and probe sources](tests/native/evidence/macos-ui/blackout-corner-results.json)
+are retained alongside the JSON; no production rendering change was made. The
+rounded-corner mismatch remains open pending a broader pinned-Electron comparison
+and preview/export verification.
+
+A later local macOS probe used the already-present Electron 43.4.0 runtime
+(Chromium 150) with a hidden, isolated window. For a synthetic magenta rectangle
+overlaid by a rounded blackout, its 1× top-left sample was `[158, 0, 158, 255]`
+versus GPUI's `[191, 0, 191, 255]`; the source of the older GPUI test's expected
+value of 169 has not been established. Across nine scale/offset cases,
+62 of 576 sampled RGBA channels differed by more than two, by at most 34. Reversing
+the order matched all sampled channels. [Electron](tests/native/evidence/macos-ui/blackout-order-electron-43.json)
+and [GPUI](tests/native/evidence/macos-ui/blackout-order-gpui-20261116.json)
+samples and [reproduction details](tests/native/evidence/macos-ui/blackout-order-probe-20261116.txt)
+are retained. A separate simple SVG comparison found the same Electron pixels as
+the previous Chrome proxy; 4× supersampling reduced but did not eliminate the
+error. The probes recreate the export operations and do not exercise either full
+editor or a physical display. No production rasterizer change was made.
+
+An additional native comparison found that Core Graphics was closer on average
+to the pinned Electron rounded-rectangle samples but still differed by up to 24
+red levels. In the same Electron process, an SVG rectangle with rounded corners
+rendered differently from an equivalent SVG cubic path and Canvas path; disabling
+image smoothing did not change the SVG result. A candidate analytic coverage
+calculation matched the integer-origin corner but still differed by up to 12
+levels at fractional offsets. The [probe sources and results](tests/native/evidence/macos-ui/blackout-rasterizer-20261116.txt)
+therefore narrow the mismatch to the rounded-rectangle rendering path; no
+production rasterizer change was made. Full editor and physical display results
+remain open.
+
+The follow-up matrix expands the pinned Electron SVG samples to seven radii
+and independently varied horizontal and vertical offsets. For radius 2, the
+Tiny Skia scratch render differs by over two red levels in 229 of 4,608 sampled
+pixels, maximum 34. Tested analytic candidates reduce the difference but do not
+eliminate it; the best fitted candidate still misses ten samples by over two,
+maximum five. It lacks a verified rendering rule and was not adopted. The
+[expanded matrix and comparison](tests/native/evidence/macos-ui/blackout-rasterizer-20261116.txt)
+cover an opaque upper-left corner; the other corners, transparent blending and
+full editor rendering remain open.
+
+The pinned Electron runtime also produces different rounded-rectangle pixels
+when hardware acceleration is disabled. Its default configuration reported
+accelerated Skia Graphite on this Mac; the software run reported GPU raster and
+canvas acceleration disabled. Both matrices repeated exactly. At radius 2,
+117 of 4,608 red-channel samples differed by more than two levels, by at most
+34; the integer top-left sample was 158 in the accelerated run and 169 in the
+software run. The latter reproduces the older assertion's value, though it does
+not establish that assertion's origin. The [backend comparison](tests/native/evidence/macos-ui/blackout-rasterizer-20261116.txt)
+is synthetic and does not establish which backend other systems use. No GPUI
+production rasterizer was changed; preview/export parity and the Electron
+comparison for other colors, alpha, corners and full editor workflows remain
+open.
+
+The macOS fake-daemon recording workflow now exercises the target-close retry
+sequence that was previously Windows-only. It exposed a failed-start regression:
+the window outline disappeared even though the pre-recording controls stayed
+open. The failed-start rollback now retains an existing window outline and
+still hides an area overlay created for the failed attempt. The fixture checks
+that the empty failed project is removed, the window outline is not recreated or
+hidden before retry, a queued target-close event survives a failed stop, and
+the next stop finalizes the project and clears the controls and overlay.
+
+A separate isolated window-recording fixture queued two target-close events
+followed by a terminal capture error before the control could process them. The
+one-entry queue dropped the terminal error and the partial-recording warning.
+The queue now retains pending errors and chooses a terminal error ahead of
+target-close events already in the same batch. The fixture failed before the
+change and passes in both app appearances afterward: it checks the recovery path
+in the warning, unchanged recording bytes and no normal stop after that error.
+The [test results](tests/native/evidence/macos-ui/recording-queued-error-20261116.txt)
+use a fake daemon and generated video; they do not establish live event timing or
+physical target closure.
+
+Another fixture sends a terminal capture error while a Stop request is in flight,
+then returns a successful stop response. Previously the control removed its
+error listener and lost the warning. It now retains the first terminal message
+as the daemon event arrives and checks it after Stop returns, before treating the
+take as successful. The fixture failed before the change; afterward it checks
+that the warning includes the retained project path and that the generated video
+is unchanged. The [results](tests/native/evidence/macos-ui/recording-error-during-stop-20261116.txt)
+cover the event-before-response ordering in an isolated fake daemon, not live
+recorder callbacks or errors delivered after the stop response.
+
+The macOS daemon previously rejected Stop while the same session was still
+starting. Its stop coordinator now waits for that session's startup task before
+finalizing, and concurrent Stop requests join one finalization. The [native Swift
+fixture](tests/native/evidence/macos-ui/recording-stop-during-start-20261116.txt)
+checks successful and failed startup, duplicate Stop requests and a
+replacement session without accessing capture devices. GPUI now displays
+“Starting” without waiting for the Start response, retains that response with
+Stop still available, and keeps capture protection and the project until the
+daemon resolves the request. A definite start failure before Stop restores the
+pre-recording controls and retains any partial files; the restored controls are
+captured in [light](tests/native/evidence/macos-ui/recording-start-rejected-control-light-20261116.png)
+and [dark](tests/native/evidence/macos-ui/recording-start-rejected-control-dark-20261116.png).
+[Fake-daemon workflows](tests/native/evidence/macos-ui/recording-start-timeout-20261116.txt)
+cover late success and failure before and after Stop, both failure response
+orders, and target closure during startup, including a discard retry; the [light starting controls](tests/native/evidence/macos-ui/recording-starting-control-light-20261116.png)
+and [dark starting controls](tests/native/evidence/macos-ui/recording-starting-control-dark-20261116.png)
+are retained. GPUI now shows “Stopping” without waiting for the Stop response
+and retains that response until it resolves. The [fake-daemon stop fixture](tests/native/evidence/macos-ui/recording-stop-timeout-20261116.txt)
+checks successful finalization, discard, retryable failures, a paused recording,
+terminal errors, an overlapping startup, and target closure during a failed
+Stop. The [light](tests/native/evidence/macos-ui/recording-stopping-control-light-20261116.png)
+and [dark](tests/native/evidence/macos-ui/recording-stopping-control-dark-20261116.png)
+control images show the pending state. A daemon that neither responds nor
+disconnects leaves the controls stopping. Sending the request and clearing
+camera-preview protection still use synchronous daemon calls; their behavior with
+an unresponsive daemon and actual ScreenCaptureKit timing remain open.
+
+The area variant checks that a failed start hides the temporary overlay and
+passes a synthetic toolbar ID in `excludedWindowIds`. It also writes generated
+video before rejecting the start: the old cleanup deleted it, while the new
+cleanup retains the nonempty project and reports its path. A definite rejection
+removes an empty project; a timeout or daemon disconnect retains even an empty
+project because the start outcome is uncertain. Real-filesystem tests cover
+those cases, and the [fake-daemon fixture](tests/native/evidence/macos-ui/recording-partial-start-20261116.txt)
+passes in both appearances. A successful retry then
+uses a generated checkerboard video, opens the GPUI editor, applies a visible
+zoom, saves the project and exports MP4. In the light and dark runs, decoded frames at
+0.5, 1.0 and 1.5 seconds matched the editor composition with mean channel
+errors of 0.653, 0.713 and 0.712. The fixture exposed a duration mismatch:
+GPUI used 3.6 seconds of control-bar elapsed time for a two-second recording
+even when the daemon returned the finalized two-second duration. GPUI now uses
+the returned duration for the editor and history, falling back to elapsed time
+when it is absent or invalid. The [synthetic editor image](tests/native/evidence/macos-ui/recording-area-edited-preview.png)
+shows the corrected two-second timeline. A native Swift unit probe also passed target
+closure and stopped-sample classification without opening a capture stream.
+The daemon, window IDs, pointer input and media in this workflow are synthetic;
+it does not prove native capture exclusion or physical target movement.
+
+A separate fake-daemon control fixture rejects an attempt to disable the camera
+while recording. Previously GPUI hid the camera preview before the rejected
+request, leaving it hidden while recording continued with the camera enabled.
+It now keeps the preview until the recorder accepts the disable request. The
+fixture verifies the failed request leaves the preview in place and a successful
+retry hides it. No camera or device permission is used by this fixture; native
+camera behavior remains unverified.
+
+The macOS fake-daemon workflow now carries area, screen and window recordings
+through the GPUI editor, draws a zoom with simulated timeline input, saves and
+reopens the project, and compares three decoded export frames with the reopened
+preview. A local run used the earlier screen-only native synthetic area and
+move/close window takes; the screen take was scaled and time-stretched from the
+earlier synthetic exclusion probe. In both appearances, mean channel errors at
+0.5, 1.0 and 1.5 seconds were below 0.72. At one second the zoom changed 320,
+85,669 and 2,209 pixels by at least 16 levels for the area, window and screen
+fixtures respectively; on those pixels the export favored the edited preview
+over the unzoomed image. The [reopened window preview](tests/native/evidence/macos-ui/recording-window-reopened-preview.png)
+is retained. The daemon handoff and target-close events in this workflow are
+simulated, and the area image is nearly uniform. This does not prove live GPUI
+recording, physical movement, capture exclusion, audio or camera behavior.
+
+The same fixture exposed a capture-exclusion ordering gap: GPUI started the
+recorder before applying camera-preview protection, and removed that protection
+on a camera-off toggle. On macOS and Windows it now enables protection before
+starting the recorder, retains it throughout the session, and clears it after a
+successful stop or a failed start when the daemon accepts that cleanup. A simulated protection failure prevents the
+recording from starting and rolls the setting back. Light and dark fixtures check
+the request order and off/on toggles; a full macOS fake-daemon run also checks
+failed-start rollback with the camera enabled and protection before starts with
+the camera disabled. Native recorded pixels still need verification.
+
+For live macOS screenshots with requested exclusions, the daemon previously
+silently discarded IDs absent from ScreenCaptureKit's window list. It now
+checks missing IDs against the on-screen Core Graphics window list and fails
+the capture if a requested control is still visible or the list cannot be
+verified. IDs for windows no longer on screen remain permissible, since normal
+capture closes its selector before the request. Pure native tests cover the ID
+resolution cases, and both macOS targets typecheck. The queries are separate,
+so a window appearing between them can still race the check; native overlay
+exclusion and captured pixels remain unverified.
+
+The GPUI framed-attachment workflow now includes macOS light and dark frames
+with translucent primary-image content, a top attachment, a right attachment,
+and a drawn and moved annotation. In light and dark app appearances at simulated
+100%, 125%, and 200%, the headless editor preview matched the composited PNG
+within two channel levels before and after reopening the editing state. The PNG
+retained the source alpha. The synthetic 125% [light preview](tests/native/evidence/macos-ui/framed-attachment-alpha-light.png)
+and [export](tests/native/evidence/macos-ui/framed-attachment-alpha-light-export.png),
+and [dark preview](tests/native/evidence/macos-ui/framed-attachment-alpha-dark.png)
+and [export](tests/native/evidence/macos-ui/framed-attachment-alpha-dark-export.png)
+are retained. These checks do not establish physical DPI behavior or complete
+Electron parity for every frame and attachment combination.
+
+The same synthetic workflow now also checks balanced primary images with both
+macOS frame styles, top and right attachments, and a moved annotation. At
+simulated 100%, 125% and 200%, its headless preview matches the exported PNG
+within two channel levels before and after reopening, in both app appearances.
+Representative 125% [light preview](tests/native/evidence/macos-ui/balanced-framed-attachment-light-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-framed-attachment-light-export.png),
+and [dark preview](tests/native/evidence/macos-ui/balanced-framed-attachment-dark-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-framed-attachment-dark-export.png)
+are retained. These examples have no inset or shadow; physical display scaling
+remains unverified.
+
+The same unannotated compositions were compared with Electron's actual export
+hook running in isolated Chrome 157, with the same source pixels, crop, frame
+styles and scale. Dimensions and three interior content samples matched. After
+compositing onto white, 678–1,478 pixels per image differed by more than two
+channel levels across the six cases, with the largest differences around frame
+edges, corners and traffic lights. At 125%, 1,477 of 48,762 light-frame pixels
+and 1,478 dark-frame pixels exceeded that difference; the maximum was 42 levels
+and the mean maximum-channel differences were 0.294 and 0.367 respectively.
+The reference and GPUI images at 125% are retained for
+[light](tests/native/evidence/macos-ui/balanced-frame-electron-light.png),
+[GPUI light](tests/native/evidence/macos-ui/balanced-frame-gpui-light.png),
+[dark](tests/native/evidence/macos-ui/balanced-frame-electron-dark.png) and
+[GPUI dark](tests/native/evidence/macos-ui/balanced-frame-gpui-dark.png), with
+[all measurements](tests/native/evidence/macos-ui/balanced-frame-comparison.json).
+This confirms a small frame-rendering mismatch; it does not establish its cause
+or verify the packaged Electron runtime. Insets, shadows and physical display
+scaling remain unverified.
+
+An isolated frame-raster probe separates the remaining differences from image
+cropping and wallpaper composition. It draws the same rounded outline, fill and
+traffic-light circle with Tiny Skia 0.11.4 and Chrome 157 Canvas 2D at four
+scales and two offsets. At 125%, the one-pixel-scaled outline differs by more
+than two color levels at 1,082 of 57,600 canvas pixels, with a maximum difference
+of 16. On a straight top edge, the outer and inner pixel values are 200 and 184
+in Tiny Skia, versus 184 and 200 in Chrome. The
+[GPUI-rasterized outline](tests/native/evidence/macos-ui/frame-raster-outline-125-gpui.png),
+[Chrome outline](tests/native/evidence/macos-ui/frame-raster-outline-125-chrome.png),
+[probe sources](tests/native/evidence/macos-ui/frame-raster-probe.rs),
+[browser source](tests/native/evidence/macos-ui/frame-raster-probe.html),
+[comparison script](tests/native/evidence/macos-ui/frame-raster-compare.py) and
+[measurements](tests/native/evidence/macos-ui/frame-raster-probe-results.json)
+are retained. [Reversing the outline path](tests/native/evidence/macos-ui/frame-raster-probe-reverse.rs)
+did not resolve the discrepancy. No
+rendering change was made: an offset tuned to one scale would not establish
+correct rasterization at the others, and Chrome is not the packaged Electron
+runtime.
+
+At simulated 133⅓% display scale, a moved rectangle in a framed attachment
+composition previously differed between GPUI preview and export at eight pixels,
+by up to 22 channel levels. The preview treated the effective zoom as native for
+placement but passed its nearly-one value to the patch rasterizer. The rasterizer
+now uses the same native scale in that branch. In both app appearances, strict
+preview/export and reopen comparisons pass for Windows and macOS frame styles;
+the original case has no pixels more than two levels apart and a maximum
+difference of one. The [before preview](tests/native/evidence/macos-ui/fractional-frame-preview-before.png),
+[after preview](tests/native/evidence/macos-ui/fractional-frame-preview-after.png)
+and [export over the editor matte](tests/native/evidence/macos-ui/fractional-frame-export-matte.png)
+are retained. Physical display scaling remains unverified.
+
+Electron draws the title bar at a fractional height even though it rounds the
+layout height. GPUI now does the same. At simulated 133⅓%, the number of pixels
+more than two levels apart over white fell from 2,351 to 1,507 for the light
+frame, and from 2,042 to 1,660 for the dark frame, out of 49,896 pixels per
+image. Mean maximum-channel differences fell from 0.921 to 0.511 and from 1.120
+to 0.569 respectively. Framed attachments and unbalanced single-image frames
+with inset and shadow pass strict preview/export comparisons at this scale in
+both app appearances. The [Electron reference](tests/native/evidence/macos-ui/balanced-frame-electron-fractional-light.png),
+[GPUI before](tests/native/evidence/macos-ui/balanced-frame-gpui-fractional-light.png),
+[GPUI after](tests/native/evidence/macos-ui/balanced-frame-gpui-fractional-light-after.png)
+and [measurements](tests/native/evidence/macos-ui/fractional-title-comparison.json)
+are retained. Frame edge and control differences remain open, and the browser
+reference does not verify packaged Electron behavior.
+
+For a balanced single screenshot with a macOS frame, the headless preview
+previously omitted the saved frame's border and rounded clipping. At simulated
+133⅓%, the strict comparison found 442 pixels more than two channel levels
+apart. The [old preview](tests/native/evidence/macos-ui/balanced-single-frame-preview.png)
+and [export over the editor matte](tests/native/evidence/macos-ui/balanced-single-frame-export-matte.png)
+show the original failure. Balanced frames without inset now use the existing
+edge preview, painted above the image and annotations; fractional title-bar
+boundaries retain the partially covered image row. In both app appearances,
+the new matrix checks macOS light and dark frames, with and without shadows and
+backgrounds, at simulated 100%, 125%, 133⅓% and 200%, before and after reopen.
+It includes annotations crossing all four crop edges and one entirely outside.
+Each comparison stays within two levels except at most one rounded-edge pixel
+that may differ by three. The 133⅓% [dark preview](tests/native/evidence/macos-ui/balanced-single-frame-after-dark-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-single-frame-after-dark-export.png),
+and [light preview](tests/native/evidence/macos-ui/balanced-single-frame-after-light-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-single-frame-after-light-export.png),
+match within two. Other annotations, large captures and physical display
+scaling remain unverified.
+
+When a balanced framed source contained transparent pixels, its preview used
+the editor surface color behind them while the saved PNG remained transparent.
+The preview now exposes the stage background. In the 100% dark case, pixels
+more than two levels from the saved image over that background fell from 601
+to one; the maximum difference fell from 11 to three levels. The
+[before preview](tests/native/evidence/macos-ui/balanced-alpha-before-preview.png),
+[after preview](tests/native/evidence/macos-ui/balanced-alpha-after-preview.png)
+and [export over the stage background](tests/native/evidence/macos-ui/balanced-alpha-export-matte.png)
+are retained, as are the 133⅓% [light preview](tests/native/evidence/macos-ui/balanced-alpha-light-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-alpha-light-export-matte.png).
+The matrix now includes fully transparent and 50%-alpha source regions in both
+app appearances, with and without inset, shadow and background; the transparent
+PNG retains alpha 0 and 128 when those effects do not fill the region. Each
+preview/export comparison meets the same two-level tolerance, with at most one
+rounded-edge pixel at three. The 100% [GPUI PNG](tests/native/evidence/macos-ui/balanced-alpha-gpui.png)
+and [Electron-hook PNG](tests/native/evidence/macos-ui/balanced-alpha-electron.png)
+have matching sampled alpha; 294 of 20,720 pixels differ by more than two levels
+over white. With an inset, the [GPUI PNG](tests/native/evidence/macos-ui/balanced-alpha-inset-gpui.png)
+and [Electron-hook PNG](tests/native/evidence/macos-ui/balanced-alpha-inset-electron.png)
+match at the sampled inset, translucent and clear regions; 310 of 25,584 pixels
+differ by more than two levels. The reference runs in Chrome.
+
+The same headless matrix now includes a two-stop 50%-alpha solid gradient behind opaque
+and transparent sources, with and without inset and shadow, in both app
+appearances. The saved wallpaper retains alpha 128 where unobstructed, and the
+preview matches the saved PNG composited over the editor background within two
+levels, except at most one rounded-edge pixel at three. At simulated 133⅓%,
+the [light preview](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-light-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-light-export-matte.png),
+and [dark preview](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-dark-preview.png)
+and [export](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-dark-export-matte.png)
+match within two levels throughout. At 100%, the [GPUI PNG](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-gpui.png)
+and [Electron-hook PNG](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-electron-hook.png)
+have matching alpha at sampled wallpaper, translucent-image and clear-image
+pixels. Over white, 199 of 33,840 pixels differ by more than two levels, with a
+maximum difference of 42; all are within the frame bounds. The
+[measurements](tests/native/evidence/macos-ui/balanced-translucent-wallpaper-comparison.json)
+come from the Electron export hook running in Chrome, not packaged Electron.
+Other wallpaper types, real capture and physical scaling remain unverified.
+
+At the edge of a video composition, GPUI's blur used clamped source pixels
+where Electron's canvas filter samples transparency. With a synthetic
+half-alpha canvas, the unit-scale corner was `[64, 128, 191, 192]` in GPUI
+and `[65, 128, 192, 145]` in Electron 43.4.0. GPUI now uses transparent-edge
+sampling for video blur. Tests compare translucent and opaque clipped cases
+with the [Electron reference](tests/native/evidence/macos-ui/video-blur-parity-20261116.txt),
+and a generated edited video checks a half-size preview against decoded export
+pixels across cuts and speed changes. An isolated GPUI fake-daemon workflow
+also passed generated area, window and screen recording handoffs, with sampled
+decoded-export versus preview mean channel errors below one; that workflow
+checks zoom, not the blur case or live capture. Electron's blur also changes apparent
+size at scaled transforms; GPUI keeps its composition-proportional scale so
+the scaled preview remains consistent with export. That Electron difference,
+other scales and live recording/playback remain open.
+
+Electron includes the inset around a balanced screenshot with a frame; GPUI
+previously omitted it from both preview and export. With an 8px inset, the
+synthetic 100% export was 140×148 rather than Electron's 156×164. GPUI now
+uses the framed composition for this case and samples the balanced image edge
+for the inset color. The light/dark headless matrix covers inset 0 and 8,
+shadows, backgrounds, annotations across all four crop edges and reopen at
+simulated 100%, 125%, 133⅓% and 200%. Preview and export stay within two color
+levels, except at most one rounded-edge pixel that may differ by three. The
+[previous GPUI export](tests/native/evidence/macos-ui/balanced-inset-before.png),
+[corrected GPUI export](tests/native/evidence/macos-ui/balanced-inset-gpui.png)
+and [Electron-hook output](tests/native/evidence/macos-ui/balanced-inset-electron.png)
+are retained. Their corrected 100% dimensions and inset and image sample
+colors match; 310 of 25,584 pixels differ by more than two levels over white,
+with a maximum difference of 62. A 133⅓% [preview](tests/native/evidence/macos-ui/balanced-inset-preview.png)
+and [export over the editor matte](tests/native/evidence/macos-ui/balanced-inset-export-matte.png)
+are also retained. The reference runs Electron's hook in Chrome, and physical
+scaling and other inset combinations remain unverified.
+
+Recording project allocation also had a name collision race in both shells:
+the existence check and directory creation were separate, so concurrent starts
+could share one project and a failed start could delete another take. A local
+24-thread GPUI test produced only four distinct directories before the fix.
+Both shells now reserve project directories with exclusive creation and retry
+only name collisions. The GPUI test now obtains 24 unique directories while
+preserving an occupied name; an Electron real-filesystem test preserves an
+existing recording, and unit tests cover retry and other errors. The full
+synthetic Mac workflow and the full Vitest suite passed; the first unrestricted
+Vitest run timed out in the rebrand scan, which passed alone and in the full
+two-worker rerun. Simultaneous recordings across the two running shells remain
+unverified.
+
+The macOS timer and camera-preview panels converted top-left coordinates using
+`NSScreen.main`, which follows the key window rather than the global origin. On a
+secondary display of a different height, this offset the panels and the camera
+move event by the height difference. They now use the first display's height
+for forward and reverse conversion. A native arithmetic fixture covers panels
+above and below a 900-point primary display, including a 1,200-point secondary;
+both macOS targets are typechecked. A native `FloatingPanel` placement probe
+also passed on this Mac's primary display without showing the panel. This Mac
+has only one available display, so physical multi-display placement and camera
+interaction remain unverified.
+
+For a narrow timer selection at either horizontal edge, GPUI previously centered
+the 140-point countdown outside the display. It now resolves the selected
+display's bounds and clamps the control within them; if the bounds cannot be
+resolved, its known left origin still prevents left-edge overflow. Unit tests
+cover both edges, a negative-origin display and a display narrower than the
+control. On this Mac's 1728-point display, an isolated GPUI probe placed the
+control at x=0 and x=1588 for 10-point edge selections, instead of the previous
+x=-65 and x=1653. A Swift probe constructed the actual hidden `FloatingPanel`
+and `TimerButton` at both positions and verified their AppKit frames. The
+[native and fixture record](tests/native/evidence/macos-ui/timer-display-edge-20261116.txt)
+also includes a fake-daemon timer workflow for the left edge, completion,
+cancellation, timeout, failure and retry. A separate [native lifecycle check](tests/native/evidence/macos-ui/timer-control-lifecycle-20261116.txt)
+showed the actual timer module's panel at both edge positions, canceled it with
+synthetic AppKit mouse events, waited for a one-second countdown to complete,
+and showed and hid it again. Each path removed the panel. Its transport was
+mocked; physical interaction, the live GPUI-to-daemon handoff, timer capture,
+another display and scaled Windows placement remain unverified.
+
+The macOS countdown's completion event previously followed `orderOut` while
+the window server could still list the timer panel at full opacity. The panel is
+now made transparent before it is ordered out and before completion, cancel or
+hide is reported. A [native handoff fixture](tests/native/evidence/macos-ui/timer-window-server-handoff-20261116.txt)
+failed on the prior completion path and passed three times after the change;
+it checks on-screen window metadata at each event. It does not capture the
+screen, so exclusion from saved timer captures remains to be verified with pixels.
+
+An isolated macOS renderer check now places blur and pixelation across the seam
+between a framed primary screenshot and a right attachment. At simulated 133⅓%
+scale, both effects change pixels on both sides of the seam, and the complete
+preview matches the flattened PNG over the editor matte within two channel levels in light and dark
+app appearances with light and dark macOS frames. The source also contains a
+translucent area away from the redaction. The dark-frame [blur preview](tests/native/evidence/macos-ui/framed-attachment-blur-preview-20261116.png),
+[blur export over matte](tests/native/evidence/macos-ui/framed-attachment-blur-expected-20261116.png),
+[pixelation preview](tests/native/evidence/macos-ui/framed-attachment-pixelate-preview-20261116.png)
+and [pixelation export over matte](tests/native/evidence/macos-ui/framed-attachment-pixelate-expected-20261116.png)
+are retained. This uses simulated input and a generated image, not a physical
+display, live capture or an Electron pixel comparison.
+
+GPUI now retains the daemon's camera-preview position while recording, so a
+preview dragged before the camera is disabled reappears at that position when
+the camera is enabled again. The position is session-scoped and movement events
+are ignored while the preview is hidden. The headless recording-control fixture
+injects a negative-coordinate move, an invalid move and a hidden-preview move,
+then verifies the next show request and unchanged saved preferences. This uses a
+fake camera and does not verify physical dragging or camera access on macOS.
+
+A permission-free [native camera timeline probe](tests/native/evidence/macos-ui/camera-timeline-gap-20261116.txt)
+found a recording issue that the visibility ranges do not resolve. The previous
+camera timestamp calculation started at zero on its first frame and removed time
+spent suspended. With generated source samples at 100, 101, 106 and 107 seconds,
+and suspension between the second and third samples, its accepted presentation
+times were 0, 1 and 2 seconds; the third sample was rejected as non-increasing.
+If the main video began at source time 90, its corresponding times would be 10,
+11, 16 and 17 seconds. GPUI preview and export seek the camera at main-video
+time, so a camera first enabled during recording or enabled again after an
+off-period could show the wrong frame. With an injected H.264 writer, the old
+recorder path produced a [generated movie](tests/native/evidence/macos-ui/camera-timeline-before-20261116.mov)
+whose decoded frames occur at 0, 1 and 2 seconds. An independent writer probe
+anchored at zero retained frames at 10, 11, 16 and 17 seconds; it does not use
+the recorder's timing logic. The screen recorder now converts camera timestamps
+between capture clocks and removes the screen recorder's pause duration while
+preserving camera-off gaps. It anchors the camera movie at zero and delays a
+camera enabled during a pause until the screen timeline resumes. A generated
+writer fixture using the changed recorder produced frames at 0, 10, 11, 16, 17
+and 19 seconds across a delayed start, toggle and pause; GPUI's decoder selected
+the expected frame at each tested video time. A generated project then trimmed
+and cut that recording, doubled the speed of the second segment, and compared
+six GPUI preview frames with decoded MP4 export: the mean channel error was below
+three at each point, and camera visibility and sampled colors matched. Stopping
+the camera before its first frame previously returned a zero-byte movie; it now
+removes the empty file and returns no camera track, as checked by a native
+fixture. A canceled writer after a generated frame also previously returned a
+path even when no movie existed. Stop now returns no camera track unless the
+writer finishes successfully; a native cancellation fixture checks the result
+and cleanup. A separate stop fixture injects a canceled camera writer and
+successfully decodes a frame from the finalized primary movie with no camera
+track. The stop response now reports a missing camera track, and both GPUI and
+Electron present a warning after saving; deliberately discarded recordings do
+not warn. Unit and native fixtures check the flag and handoff without displaying
+the warning. These probes do not access a camera and use the same clock for both
+synthetic sources. Distinct hardware clocks, live editor interaction, multiple
+toggles and physical media verification remain open.
+
+Camera visibility markers also used the last screen-frame duration. In a
+generated callback sequence with the first screen frame at 100 seconds and no
+later screen frame, enabling and disabling the camera at clock times 120 and
+125 previously recorded a zero-length range at 0. The recorder now timestamps
+those changes on the screen clock and freezes that position across a pause. A
+native fixture verifies the 20–25 second range, a 20–22/22–25 transition across
+a pause, and fallback when the clock is unavailable or invalid. It does not
+establish how long a real static ScreenCaptureKit stream can go without a screen
+callback. Physical camera toggles and full preview/export with actual media
+remain unverified.
+
+A generated native writer probe now confirms that the recorder's pause boundary
+also used the last screen callback. With a frame at 100 seconds, a pause at 125,
+a resume at 130 and the next frame at 135, the old path counted 35 seconds as
+paused. Pause and resume now use the stream clock when available; the fixture
+checks the five-second pause, the camera range while paused and a 27–29 second
+range immediately after resume. Without a usable clock the existing sample-based
+fallback remains. The primary movie was also incorrect for sparse callbacks:
+a 30-second sequence decoded as 60 seconds, and a 25-second sequence with one
+frame reported zero and decoded to about 0.067 seconds. Finalization now holds
+the last written image through the stop time, waits for writer readiness and
+ends the video session at that time. Generated cases for a static frame, a
+pause/resume, stopping while paused and missing clock passed native decoded-frame
+checks; FFmpeg reports 25 and 31 seconds for the first two cases. The finalizer
+also completed after observed writer backpressure and reported a canceled writer.
+GPUI decoded the pause fixture through forward and backward seeks, and its
+trimmed preview matched sampled pixels in the decoded export. See the
+[native probe and outputs](tests/native/evidence/macos-ui/static-recording-timeline-20261116.txt).
+Whether real ScreenCaptureKit supplies this callback sequence, actual target
+closure, and live pause/resume and preview/export remain unverified.
+
+A subsequent generated-frame test forced the video input to be busy during the
+last screen change. The old finalizer held the previous image for the remainder
+of the movie. The recorder now retains the latest pending image and its original
+timestamp, flushes it when the writer recovers or before stopping, and keeps the
+pending buffer count bounded at one. Native decoded-frame tests verify a change
+at 10 seconds, recovery with a later change at 15 seconds, and stopping while
+paused after the first frame arrived under backpressure. Four sampled GPUI
+preview frames around the injected busy-frame change matched a decoded export
+after cuts. Intermediate frames can
+still be dropped during sustained backpressure. The test injects readiness at
+the recorder boundary; a physical ScreenCaptureKit stream and hardware encoder
+under sustained load remain unverified. See the
+[native backpressure evidence](tests/native/evidence/macos-ui/pending-video-frame-20261116.txt).
+
+Microphone alignment also used the last screen callback as its upper timeline
+bound and as the toggle time. With a generated screen frame at 100 seconds, no
+later screen callback and a microphone toggle at screen-clock time 120, the
+old path placed the first audio at 1 second in the fixture. The microphone path
+now reads a synchronized screen-clock position, pause duration and video-start
+state together, falling back to the last screen time when the clock is not
+available. Generated AAC tests place audio at 20–20.51 seconds and verify silence
+before it, including enabling while paused and a first screen frame not yet
+accepted by the writer. This is synthetic audio: actual microphone permission,
+device clock conversion and live toggle latency have not been tested. See
+[native microphone evidence](tests/native/evidence/macos-ui/static-microphone-clock-20261116.txt).
+An edited GPUI project using that generated microphone track also preserved
+silence before the toggle and audible audio afterward in preview and decoded
+export.
+
+A separate generated startup-delay case enabled the microphone at screen time 20
+and delivered its first captured sample at time 21. The previous recorder placed
+that sample at 20. The first sample now uses the microphone capture clock and
+screen stream clock when both are available, and silence is written up to the
+converted capture time. The microphone writer is also installed and started
+immediately when the video timeline is already running, so it does not depend on
+a later screen callback. Native AAC tests cover writer installation before and
+after the first screen frame, a synthetic clock origin offset, and a callback
+delivered two seconds after capture. GPUI preview and decoded export retained the
+resulting silence and audio after trimming. The [native evidence](tests/native/evidence/macos-ui/microphone-startup-clock-20261116.txt)
+uses generated PCM and clocks; physical microphone startup, device clock drift,
+device swaps and the fallback when a clock is unavailable remain unverified.
+
+The native macOS compact controls register their tooltip on an AppKit view in
+an unfocused window. An isolated GPUI window reported that AppKit's
+`allowsToolTipsWhenApplicationIsInactive` was false after registration, which
+prevents tooltips while the application is inactive. Registration now enables
+that setting while text is present and clears it when the tooltip is removed.
+The [native probes](tests/native/evidence/macos-ui/inactive-app-tooltip-20261116.txt)
+check the actual window setting, text replacement and clearing. A subsequent
+isolated preview placed under a stationary pointer registered “Close preview”
+and Core Graphics listed a separate tooltip-sized window with its own window ID
+and sharing enabled; the recording filter excludes the control window
+ID, not this dynamically created tooltip ID. Whether ScreenCaptureKit includes
+that tooltip in recorded pixels remains unverified, as do normal pointer entry,
+hover exit, placement on other displays and tooltip appearance across themes.
+
+The GPUI compact controls now request a daemon-owned tooltip panel instead of
+AppKit's separate implicit tooltip window. The panel is registered for capture
+exclusion while hidden, and waits for filter updates and in-flight screenshots
+before it becomes visible. Hover changes and active-owner closure hide it, and stale
+requests cannot restore an older tooltip. A [native lifecycle fixture](tests/native/evidence/macos-ui/protected-tooltip-lifecycle-20261116.txt)
+checks window registration, screenshot coordination, cancellation, out-of-order
+requests and failed filter updates. It uses a simulated recording filter; it does
+not establish that tooltip pixels are absent from a live recording or screenshot.
+In a separate [isolated GPUI probe](tests/native/evidence/macos-ui/protected-tooltip-gpui-20261116.txt),
+synthetic hover requested recording and preview tooltips, and macOS window
+metadata confirmed that daemon-owned panels appeared and disappeared on exit.
+The probe did not check the painted text. The panel now receives Poratake's
+resolved light or dark appearance, and the lifecycle fixture checks the
+effective AppKit appearance in both modes. A light-mode GPUI probe also displayed
+the panel while macOS was in dark mode; it did not measure its colors. Physical
+hover, placement and visual theme parity still require native verification.
+
+An ordering review found two cross-window races in that handoff: a late exit from
+the previous window could suppress the new window's tooltip, and a new window's
+exit delivered before its show could leave the previous tooltip visible. GPUI
+now sends an exit only for the current owner, and the daemon applies the latest
+exit even if its preceding show has not arrived. A GPUI owner-state test and the
+[native lifecycle fixture](tests/native/evidence/macos-ui/protected-tooltip-ordering-20261116.txt)
+cover these cases with simulated input and filter updates. Actual capture pixels
+and physical pointer transitions remain unverified. An isolated GPUI probe also
+switched from the recording control to the preview and sent the old control's
+exit; the preview tooltip stayed mapped until its own simulated exit.
+
+Exclusion-based macOS area and scroll screenshots previously took a window-ID
+snapshot without coordinating with a newly presented daemon overlay. A hidden
+recording overlay or camera panel could therefore become visible while an older
+snapshot was in flight. Those screenshots now add the registered daemon-window
+IDs to their exclusion snapshot, and the protected panels wait for in-flight
+snapshots before becoming visible. A [native coordination fixture](tests/native/evidence/macos-ui/screenshot-exclusion-barrier-20261116.txt)
+checks overlapping snapshots and a new snapshot arriving while presentation is
+waiting. This alone did not protect AppKit's separate tooltip window or prove saved
+pixels on a live capture; the GPUI tooltip now uses the protected panel described
+above. Direct area screenshots now also hold the coordination
+barrier while their background capture runs; if a protected daemon window is
+already registered they use the exclusion-based path. The [direct-path fixture](tests/native/evidence/macos-ui/direct-screenshot-barrier-20261116.txt)
+checks the dispatch, wait and failure cleanup without capturing the screen. If
+the requested rectangle does not fit one display, a new window-list fallback
+preserves the requested desktop rectangle and removes excluded IDs before using
+Core Graphics. [Geometry and live window-metadata checks](tests/native/evidence/macos-ui/cross-display-window-list-20261116.txt)
+pass, but the fallback's pixels, color handling and mixed-DPI output are not
+verified on multiple physical displays. The legacy direct scroll path remains
+outside this coordination, and a window removed during a strict exclusion
+capture can also cause a capture to fail closed.
+
+Native window-server probes found that the recording dimmer and outline, scroll
+boundaries and control panel, camera preview, and freeze overlay could remain
+opaque immediately after their cleanup paths called `orderOut`. They now set
+window alpha to zero and flush pending Core Animation changes before removal;
+the protected tooltip and timer dismissal do the same. The
+[cleanup fixtures](tests/native/evidence/macos-ui/overlay-window-server-cleanup-20261116.txt)
+observed the previous opaque state and then verified that each tested surface
+was absent or transparent at cleanup. The camera preview and freeze tests use
+generated stand-ins, and the tests inspect window metadata rather than captured
+pixels. Live capture, filter behavior and other displays remain unverified.
+
+On macOS, a selected window that temporarily left the on-screen window list
+previously caused its recording outline and tracking timer to be discarded.
+The outline now becomes transparent while the window is unavailable and resumes
+following it when it returns; it remains registered for capture exclusion until
+the recording UI explicitly removes it. A [native generated-window fixture](tests/native/evidence/macos-ui/window-outline-lifecycle-20261116.txt)
+reproduced the old failure and checks automatic tracking through movement,
+hiding, restoration, closure and explicit cleanup. It does not start a recording
+or verify captured pixels, another display, or finalization after target closure.
+
+| Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, outside-window placement, dismissal, re-entry and exclusion from a WGC screenshot and three decoded full-monitor recording frames. On macOS, a daemon-owned tooltip is registered for capture exclusion before showing; a native fixture covers its lifecycle with a simulated filter. Verify saved pixels, physical hover exit, other capture targets, themes and mixed-DPI placement.                                                                                                                                                                             |
+| P2       | Linux recording tooltips                                 | [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43362521397/job/131679275651) passed hover and keyboard-focus tooltip geometry tests, including unbroken and Unicode titles at simulated 100% and 200%. Very long titles remain shortened. Verify real Linux, macOS focus and native screen-reader behavior. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                                                                                             |
+| P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                                                                                       |
+| P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.                                                                                |
+| P1       | Wayland screen and area recording                        | GPUI recording is currently disabled on Wayland: static tracing shows the recorder passes zero dimensions from zed-scap to FFmpeg and ignores the selected area. The portal can return a window, but the capturer does not expose its source type, position or size, so first-frame sizing alone cannot establish a correct area crop. Implement and verify source-aware capture on a real Wayland session before re-enabling it.                                                                                                                                                                                                        |
+| P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                                                                                                |
+| P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. On the current single-display Mac, the GPUI preference ID, Electron ID and Core Graphics ID match; Electron and GPUI also agree on bounds and work area. See the [native comparison](tests/native/evidence/macos-ui/display-identity-20261116.txt). Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions, mirroring and restarts, and cross-shell IDs on Linux.                   |
+| P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Balanced macOS frames with and without inset match in the matrix above. Verify more styles and zooms, transparent reopen, additional inset settings, attached layers and physical DPI transitions. |
+| P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Verify frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                                                                                                                                                                                       |
+| P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Unframed attached insets are checked on all edges by CPU and on the right edge by GPU. Balanced unframed right attachments with inset match preview/export in CPU tests at 100% and 125%. Verify GPU behavior, balanced corners and shadows, framed attachments and more inset combinations.                                                                                                                                                                                                                             |
+| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                                                                                     |
+| P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                                                                                             |
+| P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance.                                                                      |
+| P1       | Screenshot annotation order                              | GPUI CPU preview/export match within two levels at tested fractional origins and scales, but the rounded blackout corner differs in the pinned Electron probe: GPUI `[191, 0, 191]`, Electron `[158, 0, 158]`. The GPUI regression test checks its current result within two levels; the Electron mismatch remains open. An older assertion expected 169, but its source has not been established. Verify live GPUI pixels, other corners, complex compositions and physical DPI. Electron screenshot preview paints blackout in export order; DOM tests cover both orders and selection.                                                |
+| P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                                                                                     |
+| P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Hosted Windows verifies the area-recording selection hole, restoration, pooled-overlay reuse and cancellation. Native pending/replacement handoffs and multi-display picker behavior remain unverified.                                                                                                                                                                                                                                                                                   |
+| P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                                                        |
+| P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                                                                                               |
+| P1       | Scroll stitching with fixed footers                      | Windows/Linux PNGs retain one footer in 20 light/dark three-frame fixtures and synthetic changes to footer size and appearance. A 2% per-row tolerance retains tested small animated footer blocks at three widths, while unrelated-frame controls are rejected. Some animations and footer changes still stop early or produce incorrect output in synthetic multi-frame cases. The separate macOS matcher passed hosted synthetic fixed-footer, changing-footer and ambiguity fixtures. Verify real surfaces, weak overlaps and fixed headers.                                                                                         |
+| P1       | Scroll stitching with repeated content                   | Windows/Linux retain the accepted prefix for a tested periodic false seam at 30% and 90% expected overlap; a noisy unique seam with variable movement still stitches in the tested cases. Earlier probes found 1,310 incorrect periodic cases rejected and 2,795 early stops, and 164 early stops in 360 translated-UI cases; those counts predate the new ambiguity guard. Quantify early stops and correctness on broader patterns, animations and real pages; macOS uses a separate stitcher.                                                                                                                                         |
+| P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; hosted macOS fixtures and GPUI parity cases also ran. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                                                                                            |
+| P1       | macOS scroll preview with variable overlap               | The preview shares measured overlap with the saved stitch and coalesces background rendering. Hosted native fixtures compare variable-overlap pixels and cancellation; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                                                                                                  |
+| P1       | Native attachment compositor coverage                    | Hosted Windows verified two freeze-off attachments, hide/show, exact saved pixels and cancellation in one editor. A frozen handoff also passed one native capture and save. Verify additional edges, DPI transitions and macOS native behavior.                                                                                                                                                                                                                                                                                                                                                                                          |
+| P1       | Cached Windows screenshot resources                      | Cached composition streams with 4 MiB scratch bands and rejects requests over 512 Mi pixels. Tests retain offscreen padding, gaps, alpha and the empty-cache fallback. Window alpha-mask capture and WIC internals can allocate separately; profile large native captures, encoding latency and slower hardware.                                                                                                                                                                                                                                                                                                                         |
+| P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. The attributed photo fixture is also tested at 10°, 25° and 45° rotations, with perspective distortion and a combined 15° rotation plus perspective warp. Verify additional real photographs and interactive app clipboard delivery; further reduce low-contrast 4K no-code latency and test slower hardware across both desktop versions.                                                                                                                                                                 |
+| P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                                                                                                |
+| P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
+| P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                                                                                                                                                                                                                            |
+| P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                                                                                          |
+| P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| P2       | macOS and Linux runtime comparison                       | Re-run the same applicable workflows on actual target platforms; Windows evidence does not certify them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P2       | Other app surfaces                                       | Settings, history and onboarding need refreshed runtime comparison and their own image baselines. Tray, pin and capture-preview representative states now have automated coverage; complete native interaction, preview docking and hover coverage remain outstanding.                                                                                                                                                                                                                                                                                                                                                                   |
 
 GPUI now attempts to restore history after returned write errors and reports when a
 capture was deleted but its history update failed. Isolated store tests cover
@@ -1892,14 +3793,45 @@ verified the native capture-preview tooltip's text, window state and paint, then
 compared every pixel in its screenshot region while the tooltip was hidden and
 shown. That paint check does not independently prove its monitor-composited pixels.
 
-macOS scroll-overlay capture exclusion remains unverified. The preview can overlap
-the selected area when there is no room beside it, and the retained Electron
-selection overlay also draws a border and tint inside that area. The daemon captures
-on-screen windows. The daemon's native boundary and control windows use
-`NSWindowSharingNone`, a legacy value that [Apple does not recommend relying on to omit captured content](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none).
-Verify saved pixels against a real selected area, including a full-width area,
-before claiming that the overlay is absent from capture output. This is separate
-from the ScreenCaptureKit recording-window exclusions below.
+macOS scroll-overlay capture exclusion remains unverified with real pixels. The
+GPUI preview can overlap the selected area when there is no room beside it. GPUI
+now passes the preview, prompt and control window IDs when starting auto-scroll;
+the daemon also includes its boundary windows and uses the same ScreenCaptureKit
+exclusion and visible-window validation as live area capture. If an ID is missing
+or a visible window cannot be resolved, it stops instead of saving an unverified
+frame. Async results from a stopped, finished or restarted session are discarded.
+The delayed post-scroll callback and queued auto-scroll start now also retain their
+original session generation: stopping and restarting cannot turn an old callback
+into a second capture or start an unrelated session. The Swift fixture holds and
+releases synthetic frame completions across restarts, checks the timer and error
+events, and reopens the retained frame; it also drains a queued stale start without
+moving the cursor. These are lifecycle checks, not live scrolling evidence.
+Initial session setup also checks that its preview session is still current, so a
+cancelled setup cannot recreate boundary or control windows during a later session.
+The fixture cancels and replaces a session before the queued setup runs and checks
+that the old setup is rejected.
+The [hidden native-window probe](tests/native/evidence/macos-ui/scroll-popup-native-frame.txt)
+checks that all three GPUI IDs match their real AppKit windows, and the Swift
+fixture checks stale-result rejection and pixel-identical saving of a synthetic
+frame. Neither exercises actual ScreenCaptureKit scroll pixels or timing. Verify
+the result with a real full-width area, including stop and retry, before claiming
+that controls are absent. The Electron selection overlay also draws a border and
+tint inside the area. Electron now passes the retained selector and control
+CGWindowIDs to the same exclusion filter when starting auto-scroll, and declines
+to start if either ID cannot be obtained. Mock tests cover the handoff, missing or
+destroyed windows and retryable refusal; they do not prove ScreenCaptureKit can
+resolve Electron's content-protected windows or that actual pixels are clean. If
+the filter cannot resolve both windows, capture stops rather than accepting an
+unverified frame. Native full-width capture and retry remain necessary. This is
+separate from the recording-window exclusions below.
+
+The scroll-control tooltip also remained registered after a window-exit event in
+the macOS GPUI fixture. The control now clears it on exit and restores the active
+button's tooltip on re-entry. An isolated native AppKit probe showed “Start
+auto-scroll”, no tooltip after exit, and “Start auto-scroll” on re-entry while the
+window remained unfocused; the [control image](tests/native/evidence/macos-ui/native-scroll-control-tooltip-fix-20261116.png)
+is retained. The probe used simulated events and did not start auto-scroll or
+screen capture. Physical hover and capture exclusion remain unverified.
 
 On Linux the recording-control and capture-preview tooltips are drawn inside
 their GPUI windows. X11 screen and area recording reads the root drawable with
@@ -2070,10 +4002,31 @@ after interruption. A GPU-free GPUI unit test checks the event mapping. A GPUI
 workflow fixture checks the same sequence and passed in the hosted run at
 `27798e87`; native notification presentation still needs verification.
 
+The macOS daemon previously treated a failed screen-frame capture as a duplicate,
+and ignored a failure on the initial frame. It now stops and emits `capture-error`
+for either failure, while preserving earlier frames; a duplicate still reports
+`duplicate`. The native Swift fixture injects a missing image before and after a
+frame, checks the stop events, and saves and reopens the retained frame pixel for
+pixel. This is synthetic failure injection, not evidence of a real capture or of
+on-screen notification presentation. Real GPUI scroll exclusion and the Electron
+scroll overlay remain subject to the limitations above.
+
 Keep known platform differences explicit: preview/zoom use a baked blur because
 GPUI has no live backdrop filter; the capture eyedropper remains an app overlay;
 macOS traffic-light space and Windows custom captions are platform-specific.
 These are not evidence that unrelated features match.
+
+A scaled pixelation diagnostic found a remaining preview/export discrepancy in a
+generated one-pixel stripe fixture. Comparing a half-size editor preview with a
+2×2 box reduction of the decoded H.264 export gave a mean absolute difference of
+11.43 BGR levels in the pixelated region, above the diagnostic threshold of 8.
+Encoding and resampling could contribute; this does not establish the cause or a
+live-recording failure. The diagnostic stopped at that first difference, and its
+later blur checks did not run. The result and a reproducible instrumentation patch
+are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
+`tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
+Investigate against a lossless source and full-size preview before changing the
+pixelation algorithm.
 
 ## Review gate
 

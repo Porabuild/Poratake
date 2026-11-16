@@ -1,0 +1,26 @@
+macOS display preference identity, 2026-11-16
+
+This Mac had one active display. No screen recording, screenshot, device access,
+privacy prompt or display setting change was involved. The Electron probe used
+the installed Electron runtime without opening a window; the AppKit probe read
+the active NSScreen and Core Graphics display metadata.
+
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron tests/native/evidence/macos-ui/electron-displays-20261116.cjs
+
+Electron: id 1, primary, bounds (0,0,1728,1117), work area (0,33,1728,1084),
+backing scale 2.
+
+swiftc tests/native/evidence/macos-ui/appkit-displays-20261116.swift -o /tmp/poratake-appkit-displays
+/tmp/poratake-appkit-displays
+
+AppKit/Core Graphics: id 1, primary, bounds (0,0,1728,1117), backing scale 2.
+
+cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --native-popup-frame-probe
+
+GPUI: display id 1, preference id 1, primary, bounds (0,0,1728,1117), work
+area (0,33,1728,1084). The probe exited successfully. This uses the same GPUI
+display-preference mapping that the preview selector uses.
+
+This establishes only the current display's identity and geometry. Selection,
+unplug/replug, restart persistence, multiple displays, mirroring and negative
+origins remain unverified.

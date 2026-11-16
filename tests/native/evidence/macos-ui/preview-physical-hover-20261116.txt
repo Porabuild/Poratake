@@ -1,0 +1,14 @@
+macOS native preview pointer check, 2026-11-16
+
+An isolated generated 208 x 148 point preview was lowered to normal window level for the computer-use helper. The helper reported its own existing Accessibility and Screen Recording grants. Foreground input moved from the preview interior to Close, then from the interior to Delete, then to the preview's inner margin. Each drag reported foreground delivery with verification unverified. The probe subsequently reported the target window at the pointer and the following actual states:
+preview at pointer: window=752, top=752
+preview hover status: card=true, pointer=true, window=false
+tooltip-status: Close preview
+preview at pointer: window=752, top=752
+preview hover status: card=true, pointer=true, window=false
+tooltip-status: Delete screenshot
+preview at pointer: window=752, top=752
+preview hover status: card=false, pointer=true, window=false
+tooltip-status: none
+
+The helper's window-only ScreenCaptureKit image shows the generated preview and its controls; the accessibility tree exposed Close, Delete, Edit, Copy and Upload. This does not show the system tooltip outside the window. Attempting to drag beyond the preview frame was refused before input, so physical window exit was not tested. The helper was disabled and the isolated process exited normally. No Poratake capture, recording, device access or privacy request was started.

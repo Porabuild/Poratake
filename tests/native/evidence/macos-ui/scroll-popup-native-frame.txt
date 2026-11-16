@@ -1,0 +1,4 @@
+popup titled before=true after=false, native shadow before=true after=false, frame unchanged, click-through enabled
+scroll preview: borderless, hidden, click-through=true, frame and exclusion ID match
+scroll prompt: borderless, hidden, click-through=true, frame and exclusion ID match
+scroll control: borderless, hidden, click-through=false, frame and exclusion ID match

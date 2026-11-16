@@ -1,0 +1,15 @@
+macOS GPUI parity fixture, isolated profile and generated video
+
+Sequence: two TARGET_CLOSED events followed by CAPTURE_ERROR before the
+recording control processes the event queue. No device or screen capture is used.
+
+Before the queue change: the fixture failed because the expected terminal-error
+notification and partial-recording path were absent.
+
+After the queue change: light and dark parity runs passed. The fixture asserts
+that the notification names the retained project, the generated recording stays
+byte-identical, and no normal stop is requested for the terminal error.
+
+The same runs exercised synthetic area, window and screen recording handoffs,
+editing, reopening and decoded export comparisons. These do not verify a live
+recording, physical window closure or device permissions.

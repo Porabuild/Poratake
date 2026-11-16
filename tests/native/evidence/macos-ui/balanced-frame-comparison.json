@@ -1,0 +1,79 @@
+{
+  "1-light": {
+    "size": [190, 239],
+    "pixels": 45410,
+    "pixelsOverTwo": 678,
+    "maximumDifference": 89,
+    "meanMaximumChannelDifference": 0.2036555824708214
+  },
+  "1-dark": {
+    "size": [190, 239],
+    "pixels": 45410,
+    "pixelsOverTwo": 729,
+    "maximumDifference": 125,
+    "meanMaximumChannelDifference": 0.2905307201057036
+  },
+  "1.25-light": {
+    "size": [189, 258],
+    "pixels": 48762,
+    "pixelsOverTwo": 1477,
+    "maximumDifference": 42,
+    "meanMaximumChannelDifference": 0.29404044132726304
+  },
+  "1.25-dark": {
+    "size": [189, 258],
+    "pixels": 48762,
+    "pixelsOverTwo": 1478,
+    "maximumDifference": 42,
+    "meanMaximumChannelDifference": 0.36741725113818136
+  },
+  "2-light": {
+    "size": [186, 316],
+    "pixels": 58776,
+    "pixelsOverTwo": 871,
+    "maximumDifference": 29,
+    "meanMaximumChannelDifference": 0.12707567714713489
+  },
+  "2-dark": {
+    "size": [186, 316],
+    "pixels": 58776,
+    "pixelsOverTwo": 937,
+    "maximumDifference": 41,
+    "meanMaximumChannelDifference": 0.1544678099904723
+  },
+  "1.3333333-light": {
+    "size": [189, 264],
+    "pixels": 49896,
+    "pixelsOverTwo": 1507,
+    "maximumDifference": 63,
+    "meanMaximumChannelDifference": 0.5111832611832612
+  },
+  "1.3333333-dark": {
+    "size": [189, 264],
+    "pixels": 49896,
+    "pixelsOverTwo": 1660,
+    "maximumDifference": 63,
+    "meanMaximumChannelDifference": 0.5687429854096521
+  },
+  "1-light-single-inset": {
+    "size": [156, 164],
+    "pixels": 25584,
+    "pixelsOverTwo": 310,
+    "maximumDifference": 62,
+    "meanMaximumChannelDifference": 0.17350687929956224
+  },
+  "1-light-single-alpha": {
+    "size": [140, 148],
+    "pixels": 20720,
+    "pixelsOverTwo": 294,
+    "maximumDifference": 62,
+    "meanMaximumChannelDifference": 0.20207528957528959
+  },
+  "1-light-single-alpha-inset": {
+    "size": [156, 164],
+    "pixels": 25584,
+    "pixelsOverTwo": 310,
+    "maximumDifference": 62,
+    "meanMaximumChannelDifference": 0.17350687929956224
+  }
+}

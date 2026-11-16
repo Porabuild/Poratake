@@ -136,6 +136,13 @@ jobs:
       - name: Build macOS daemon
         run: ./scripts/build-daemon.sh
 
+      - name: Test macOS window ID validation
+        run: |
+          find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
+            xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D WINDOW_ID_VALIDATION_TEST -suppress-warnings \
+              tests/native/window-id-validation.swift -o "$RUNNER_TEMP/window-id-validation-test"
+          "$RUNNER_TEMP/window-id-validation-test"
+
       - name: Compile macOS scroll preview fixture
         timeout-minutes: 5
         run: |
@@ -144,7 +151,10 @@ jobs:
             src/main/daemon/Core/Protocol.swift \
             src/main/daemon/Core/ModuleProtocol.swift \
             src/main/daemon/Core/DaemonContract.generated.swift \
+            src/main/daemon/Core/ScreenshotCaptureGeometry.swift \
+            src/main/daemon/Core/ExcludedWindowCapture.swift \
             src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
+            src/main/daemon/UI/ProtectedTooltip.swift \
             src/main/daemon/Modules/ScrollCaptureModule.swift \
             tests/native/scroll-capture-preview.swift
 
@@ -152,6 +162,113 @@ jobs:
         timeout-minutes: 5
         run: |
           "$RUNNER_TEMP/scroll-capture-preview-test"
+
+      - name: Test macOS recording target closure
+        run: |
+          swiftc -target "$(uname -m)-apple-macosx13.0" \
+            src/main/daemon/ScreenRecorder/Types/RecorderError.swift \
+            src/main/daemon/ScreenRecorder/Recorders/ScreenCaptureFrame.swift \
+            tests/native/recording-target-closed.swift \
+            -o "$RUNNER_TEMP/recording-target-closed-test"
+          "$RUNNER_TEMP/recording-target-closed-test"
+
+      - name: Test macOS recording outline lifecycle
+        timeout-minutes: 5
+        run: |
+          swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_OUTLINE_TEST \
+            -framework ScreenCaptureKit -o "$RUNNER_TEMP/recording-outline-lifecycle-test" \
+            src/main/daemon/Core/Protocol.swift \
+            src/main/daemon/Core/ModuleProtocol.swift \
+            src/main/daemon/Core/DaemonContract.generated.swift \
+            src/main/daemon/Core/DisplayCoordinates.swift \
+            src/main/daemon/Core/FrozenFrameStore.swift \
+            src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
+            src/main/daemon/UI/Theme.swift \
+            src/main/daemon/Modules/RecordingOverlayModule.swift \
+            src/main/daemon/Modules/CameraPreviewModule.swift \
+            src/main/daemon/Modules/FreezeScreenModule.swift \
+            tests/native/recording-outline-lifecycle.swift
+          "$RUNNER_TEMP/recording-outline-lifecycle-test"
+
+      - name: Test macOS timer control lifecycle
+        timeout-minutes: 5
+        run: |
+          swiftc -target "$(uname -m)-apple-macosx13.0" \
+            src/main/daemon/UI/Theme.swift \
+            src/main/daemon/UI/FloatingPanel.swift \
+            src/main/daemon/UI/TimerButton.swift \
+            src/main/daemon/Core/DisplayCoordinates.swift \
+            src/main/daemon/Modules/TimerControlModule.swift \
+            tests/native/timer-control-lifecycle.swift \
+            -o "$RUNNER_TEMP/timer-control-lifecycle-test"
+          "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128
+
+      - name: Test macOS recording timeline
+        run: |
+          find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
+            xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings \
+              tests/native/recording-timeline.swift -o "$RUNNER_TEMP/recording-timeline-test"
+          "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone-paused.m4a" PORATAKE_TEST_MIC_PAUSED_TOGGLE=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone-first-pending.m4a" PORATAKE_TEST_MIC_FIRST_PENDING=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone-delayed.m4a" PORATAKE_TEST_MIC_DELAYED_CAPTURE=1 PORATAKE_TEST_MIC_INSTALL_STATIC=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone-shifted.m4a" PORATAKE_TEST_MIC_DELAYED_CAPTURE=1 PORATAKE_TEST_MIC_SHIFTED_CLOCK=1 PORATAKE_TEST_MIC_INSTALL_STATIC=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone-late-callback.m4a" PORATAKE_TEST_MIC_DELAYED_CAPTURE=1 PORATAKE_TEST_MIC_SHIFTED_CLOCK=1 PORATAKE_TEST_MIC_CALLBACK_LATE=1 PORATAKE_TEST_MIC_INSTALL_STATIC=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/microphone-initial-delay.m4a" PORATAKE_TEST_MIC_DELAYED_CAPTURE=1 PORATAKE_TEST_MIC_INITIAL_DELAY=1 PORATAKE_TEST_MIC_INSTALL_BEFORE_SCREEN=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/microphone-before-screen.m4a" PORATAKE_TEST_MIC_INSTALL_BEFORE_SCREEN=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen.mov" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-pause.mov" PORATAKE_TEST_STATIC_PAUSE=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-paused-stop.mov" PORATAKE_TEST_STATIC_PAUSED_STOP=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-no-clock.mov" PORATAKE_TEST_STATIC_NO_CLOCK=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-busy-change.mov" PORATAKE_TEST_VIDEO_DROPPED_CHANGE=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-busy-recovered.mov" PORATAKE_TEST_VIDEO_RECOVERED_CHANGE=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_STATIC_VIDEO="$RUNNER_TEMP/static-screen-busy-first-paused.mov" PORATAKE_TEST_VIDEO_DROPPED_FIRST=1 PORATAKE_TEST_STATIC_PAUSED_STOP=1 \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_VIDEO_FINALIZER_CANCELLED="$RUNNER_TEMP/cancelled-video.mov" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_VIDEO_FINALIZER_BACKPRESSURE="$RUNNER_TEMP/video-backpressure.mov" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_SYSTEM_BACKPRESSURE="$RUNNER_TEMP/system-audio-backpressure.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_SYSTEM_GAP="$RUNNER_TEMP/system-audio-gap.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_SYSTEM_OVERLAP="$RUNNER_TEMP/system-audio-overlap.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_SYSTEM_FRACTIONAL_GAPS="$RUNNER_TEMP/system-audio-fractional-gaps.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+          PORATAKE_TEST_SYSTEM_INITIAL_OVERLAP="$RUNNER_TEMP/system-audio-initial-overlap.m4a" \
+            "$RUNNER_TEMP/recording-timeline-test"
+
+      - name: Test macOS screenshot capture geometry
+        run: |
+          swiftc -target "$(uname -m)-apple-macosx13.0" \
+            src/main/daemon/Core/ScreenshotCaptureGeometry.swift \
+            tests/native/screenshot-capture-geometry.swift \
+            -o "$RUNNER_TEMP/screenshot-capture-geometry-test"
+          "$RUNNER_TEMP/screenshot-capture-geometry-test"
+
+      - name: Test macOS display coordinate conversions
+        run: |
+          swiftc -target "$(uname -m)-apple-macosx13.0" \
+            src/main/daemon/Core/DisplayCoordinates.swift \
+            tests/native/display-coordinates.swift \
+            -o "$RUNNER_TEMP/display-coordinates-test"
+          "$RUNNER_TEMP/display-coordinates-test"
 
       - name: Check GPUI shell
         run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml

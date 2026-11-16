@@ -1,0 +1,54 @@
+macOS isolated recording device menus, 2026-11-16
+
+The GPUI native UI probe used an isolated configuration and generated preview,
+at normal AppKit window level, dark appearance, and 2x physical backing scale.
+A fixture daemon returned generated camera names and no iOS devices. Neither
+camera nor microphone hardware, system audio, nor screen capture was started.
+Window images were obtained by the already-authorized computer-use helper's
+ScreenCaptureKit window capture, not by the Poratake process.
+
+The camera menu opened in a centered 332x300-point window. Its accessibility
+menu exposed Camera, System Default (Built-in camera), Built-in camera, and
+USB camera with a deliberately long device name; the latter was visually
+ellipsized. On dismissal the window returned to 276x44 points, its toolbar was
+276 points wide, and an AppKit hit test four points outside reached another
+window. The camera menu was opened with a synthetic GPUI pointer event; no
+camera item was activated because selecting it could request camera access.
+
+The iOS menu opened in the same 332x300-point window and showed None. Selecting
+None through the helper's background accessibility action was confirmed; the
+menu closed and the window returned to 276x44 points. A second iOS open/dismiss
+also returned to that frame and passed the outside hit test. The fixture daemon
+logged only media-devices.list with kinds [camera] and recording-control.listIOSDevices.
+
+The helper initially returned a window image where only the None menu was visible,
+with the toolbar area transparent/black; another returned a blank image. After
+separate synthetic pointer exit and entry, a further helper window capture showed
+both toolbar and menu. The accessibility tree retained toolbar controls. The
+partial and full captures are retained; they do not distinguish a helper capture
+artifact from an actual compositor or redraw issue. Physical visual confirmation
+at the production floating window level is still needed.
+
+The initial probe's hit-test assertion ran before AppKit completed the resize
+following menu dismissal and the isolated process aborted. A second run waited
+for the observed frame change before testing and exited normally. The existing
+editor and its unsaved work were not touched.
+
+Follow-up comparison, 2026-11-16
+
+On a fresh isolated run, four consecutive helper captures of the open iOS menu
+contained the toolbar. After dismissing and reopening the menu, four more helper
+captures also contained it. The captures were 664x600 pixels; the same 552x88
+pixel toolbar region contained 7,338 pixels above 20% RGB brightness in each.
+This metric was used only to establish that the toolbar was present, not as a
+pixel parity requirement.
+
+In a separate run, record-scene-snapshot rendered GPUI's most recently painted
+scene to a Metal-backed RGBA image without capturing the screen. The helper then
+captured the same native window using its own already-granted Screen Recording
+access. Both retained images show the toolbar and None menu. Each had 7,338
+bright pixels in the same toolbar region. Compared over black, the images had a
+mean RGB difference of 0.24 levels; 58,211 of 1,195,200 channels differed by
+more than two, with maximum 21.82. The result does not explain the earlier
+partial or blank helper captures and does not prove what was visible on screen
+at the time. No Poratake screen capture or device access was used.
