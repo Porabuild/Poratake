@@ -242,6 +242,8 @@ Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflo
 at the same width and scale, including selector exclusion IDs and cleanup.
 Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout
 preview/export checks at the same width and scale on macOS.
+Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
+opaque source instead of the partially translucent generated region.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser

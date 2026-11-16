@@ -827,10 +827,15 @@ impl EditorWindow {
             self.native_scale,
             (!wallpaper.has_background()
                 || wallpaper.supports_edge_preview(!self.layers.is_empty())
-                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers))
+                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers)
+                || ((size.0 > 16384 || size.1 > 16384)
+                    && crate::editor::export::composites_primary_backdrop(
+                        &wallpaper,
+                        &self.layers,
+                    )))
             .then_some(stage_background),
             (wallpaper.inset > 0.0
-                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers)
+                || crate::editor::export::composites_primary_backdrop(&wallpaper, &self.layers)
                 || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
                 || (!self.layers.is_empty()
                     && crate::render::window_frame::theme(&wallpaper.window_frame.style)
@@ -4280,6 +4285,60 @@ mod tests {
             report_screenshot_save_failure(cx, Some(Path::new("capture.png")), &error);
         });
         assert_eq!(&*notifications.borrow(), &["Screenshot Save Failed"]);
+    }
+
+    #[herogpui::test]
+    fn simple_backdrop_refreshes_when_source_changes_at_same_size(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 20.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        let original = cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop_composite);
+            editor.backdrop.as_ref().unwrap().id
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    8,
+                    8,
+                    image::Rgba([64, 80, 240, 255]),
+                ));
+                editor.image = Some(render_image_from_base(&base));
+                editor.base_image = Some(Arc::new(base));
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop_composite);
+            assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
+        });
     }
 
     #[herogpui::test]

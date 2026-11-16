@@ -3608,9 +3608,14 @@ pub(super) fn simple_inset_preview(
     let source = scratch.join(format!(
         "simple-inset-{scale}-{padding_setting}-{with_background}-{inset_setting}-{clipped_blur}.png"
     ));
+    let alpha = if std::env::var_os("PORATAKE_PARITY_OPAQUE_SOURCE").is_some() {
+        255
+    } else {
+        128
+    };
     image::RgbaImage::from_fn(100, 80, |x, y| {
         if (30..70).contains(&x) && (20..60).contains(&y) {
-            image::Rgba([220, 70, 90, 128])
+            image::Rgba([220, 70, 90, alpha])
         } else {
             image::Rgba([40, 120, 180, 255])
         }
@@ -4408,6 +4413,7 @@ pub(super) fn simple_inset_preview(
         for (restored, draft_check, selection, current) in [
             (false, false, None, without_redactions),
             (false, true, None, Vec::new()),
+            (false, false, None, Vec::new()),
             (
                 false,
                 false,
@@ -4462,6 +4468,7 @@ pub(super) fn simple_inset_preview(
             ),
             (true, false, None, annotations),
         ] {
+            let unannotated_baseline = current.is_empty() && !draft_check;
             let fractional_boundary = current
                 .iter()
                 .any(|item| item.id() == "fractional-boundary-blackout");
@@ -4477,7 +4484,7 @@ pub(super) fn simple_inset_preview(
             settle(cx, editor.into());
             let (bounds, current_png) = cx.update(|cx| {
                 let editor = editor.read(cx).unwrap();
-                assert!(!editor.snapshot.borrow().backdrop_composite);
+                assert!(editor.snapshot.borrow().backdrop_composite);
                 (
                     editor.bounds.borrow().unwrap(),
                     editor.export_png().unwrap(),
@@ -4507,8 +4514,12 @@ pub(super) fn simple_inset_preview(
                     );
                 }
             }
-            if zoomed_blackout_order {
-                let order_label = selection.expect("ordered annotation selection");
+            if zoomed_blackout_order || fractional_boundary || unannotated_baseline {
+                let order_label = if unannotated_baseline {
+                    "unannotated"
+                } else {
+                    selection.unwrap_or("fractional-boundary")
+                };
                 let flattened_path = scratch.join("ordered-blackout-flattened.png");
                 std::fs::write(&flattened_path, &current_png).unwrap();
                 let flattened = cx
@@ -4520,7 +4531,12 @@ pub(super) fn simple_inset_preview(
                     })
                     .unwrap();
                 settle(cx, flattened.into());
-                for zoom in [0.73_f32, 1.5] {
+                let zooms: &[f32] = if fractional_boundary {
+                    &[0.5, 0.73, 1.5]
+                } else {
+                    &[0.73, 1.5]
+                };
+                for &zoom in zooms {
                     for window in [editor, flattened] {
                         window
                             .update(cx, |editor, _, cx| {
@@ -4548,12 +4564,39 @@ pub(super) fn simple_inset_preview(
                         (flat_left, flat_top),
                         "ordered blackout {order_label} at {zoom}x"
                     );
-                    for y in ((margin + 19) as f32 * zoom).ceil() as u32
-                        ..((margin + 45) as f32 * zoom).floor() as u32
-                    {
-                        for x in ((margin + 29) as f32 * zoom).ceil() as u32
-                            ..((margin + 55) as f32 * zoom).floor() as u32
-                        {
+                    if unannotated_baseline && zoom == 0.73 {
+                        let width = ((100 + 2 * margin) as f32 * zoom).round() as u32;
+                        let height = ((80 + 2 * margin) as f32 * zoom).round() as u32;
+                        image::imageops::crop_imm(&preview, left, top, width, height)
+                            .to_image()
+                            .save(scratch.join("scaled-backdrop-preview.png"))
+                            .unwrap();
+                        image::imageops::crop_imm(
+                            &flattened_image,
+                            flat_left,
+                            flat_top,
+                            width,
+                            height,
+                        )
+                        .to_image()
+                        .save(scratch.join("scaled-backdrop-reopened.png"))
+                        .unwrap();
+                    }
+                    let (x_range, y_range) = if unannotated_baseline {
+                        (
+                            0..((100 + 2 * margin) as f32 * zoom).round() as u32,
+                            0..((80 + 2 * margin) as f32 * zoom).round() as u32,
+                        )
+                    } else {
+                        (
+                            ((margin + 29) as f32 * zoom).ceil() as u32
+                                ..((margin + 55) as f32 * zoom).floor() as u32,
+                            ((margin + 19) as f32 * zoom).ceil() as u32
+                                ..((margin + 45) as f32 * zoom).floor() as u32,
+                        )
+                    };
+                    for y in y_range {
+                        for x in x_range.clone() {
                             let actual = preview.get_pixel(left + x, top + y).0;
                             let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
                             if actual.iter().zip(expected).any(|(a, e)| a.abs_diff(e) > 2) {
@@ -4710,7 +4753,7 @@ pub(super) fn simple_inset_preview(
                     settle(cx, editor.into());
                     cx.update(|cx| {
                         assert!(
-                            !editor
+                            editor
                                 .read(cx)
                                 .unwrap()
                                 .snapshot

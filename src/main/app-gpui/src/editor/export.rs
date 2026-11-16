@@ -825,7 +825,7 @@ pub fn render_backdrop(
     Vec<PreviewEdgeImage>,
     bool,
 )> {
-    if composites_wallpaper_effects(wallpaper, layers) {
+    if composites_primary_backdrop(wallpaper, layers) {
         let primary = from_rgba(&base?.to_rgba8())?;
         let composite =
             compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
