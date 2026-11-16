@@ -127,10 +127,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         RecordingCaptureWindowRegistry.shared.beginCaptureStart()
 
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: config.outputPath) {
-            try fileManager.removeItem(atPath: config.outputPath)
-        }
-
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
             onScreenWindowsOnly: true
@@ -143,11 +139,13 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             return window
         }
 
-        let displayID = displayContaining(capturedWindow, in: content) ?? config.displayID
-            ?? CGMainDisplayID()
-        guard let display = content.displays.first(where: { $0.displayID == displayID })
-                ?? content.displays.first
-        else {
+        let displayID = try recordingDisplayID(
+            available: content.displays.map(\.displayID),
+            windowDisplayID: displayContaining(capturedWindow, in: content),
+            requestedDisplayID: config.displayID,
+            mainDisplayID: CGMainDisplayID()
+        )
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw RecorderError.configuration("No display found")
         }
 
@@ -246,6 +244,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         let outputURL = URL(fileURLWithPath: config.outputPath)
+        if fileManager.fileExists(atPath: config.outputPath) {
+            try fileManager.removeItem(at: outputURL)
+        }
         assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
 
         let pixelCount = videoWidth * videoHeight
