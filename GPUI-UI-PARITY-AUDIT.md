@@ -3255,6 +3255,12 @@ and [trial preview](tests/native/evidence/macos-ui/blackout-editor-order-trial-p
 are retained. Neither trial was kept in production. A correct solution still
 needs to reconcile the differently scaled preview layers with the exported
 composition while preserving annotation order.
+Electron's export hook now exposes its composed canvas separately from PNG or
+JPEG encoding as preparation for sharing that composition. An isolated
+Electron fixture checks byte-identical canvas and encoded PNG results for four
+generated frame, transparency and attachment combinations in light and dark
+styles. The interactive editor still paints separate layers, so this refactor
+does not yet resolve the blackout preview mismatch.
 
 The equivalent GPUI Metal fixture found a separate sampling boundary mismatch
 at simulated 2× scale and 137% zoom: the [preview](tests/native/evidence/macos-ui/scaled-blackout-before-preview-20261116.png)

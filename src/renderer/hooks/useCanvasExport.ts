@@ -61,6 +61,7 @@ interface UseCanvasExportProps {
 
 interface UseCanvasExportReturn {
   exportToImage: (format?: ScreenshotFormat) => Promise<string>;
+  renderToCanvas: () => Promise<HTMLCanvasElement>;
 }
 
 const svgToImage = async (svgString: string): Promise<HTMLImageElement> => {
@@ -349,246 +350,244 @@ export const useCanvasExport = ({
     return sampleDominantInsetColor(image, nativeBalanceCrop);
   }, [image, inset, nativeBalanceCrop]);
 
-  const exportToImage = useCallback(
-    async (format: ScreenshotFormat = 'png'): Promise<string> => {
-      if (!image) {
-        throw new Error('Image not loaded');
-      }
+  const renderToCanvas = useCallback(async (): Promise<HTMLCanvasElement> => {
+    if (!image) {
+      throw new Error('Image not loaded');
+    }
 
-      const nativeWidth = image.naturalWidth;
-      const nativeHeight = image.naturalHeight;
+    const nativeWidth = image.naturalWidth;
+    const nativeHeight = image.naturalHeight;
 
-      const scaleX = nativeWidth / imageWidth;
-      const scaleY = nativeHeight / imageHeight;
-      const nativeScale = Math.max(scaleX, scaleY);
+    const scaleX = nativeWidth / imageWidth;
+    const scaleY = nativeHeight / imageHeight;
+    const nativeScale = Math.max(scaleX, scaleY);
 
-      const nativeCroppedWidth =
-        nativeWidth - nativeBalanceCrop.left - nativeBalanceCrop.right;
-      const nativeCroppedHeight =
-        nativeHeight - nativeBalanceCrop.top - nativeBalanceCrop.bottom;
+    const nativeCroppedWidth =
+      nativeWidth - nativeBalanceCrop.left - nativeBalanceCrop.right;
+    const nativeCroppedHeight =
+      nativeHeight - nativeBalanceCrop.top - nativeBalanceCrop.bottom;
 
-      const nativePadding = Math.round(padding * nativeScale);
-      const nativeInset = Math.round(inset * nativeScale);
-      const nativeSpacing = Math.round(spacing * nativeScale);
-      const nativeCornerRadius = Math.round(cornerRadius * nativeScale);
+    const nativePadding = Math.round(padding * nativeScale);
+    const nativeInset = Math.round(inset * nativeScale);
+    const nativeSpacing = Math.round(spacing * nativeScale);
+    const nativeCornerRadius = Math.round(cornerRadius * nativeScale);
 
-      const hasWindowFrame = windowFrame !== 'none';
-      const nativeTitleBarHeight = hasWindowFrame
-        ? Math.round(WINDOW_FRAME_TITLE_BAR_HEIGHT * nativeScale)
-        : 0;
+    const hasWindowFrame = windowFrame !== 'none';
+    const nativeTitleBarHeight = hasWindowFrame
+      ? Math.round(WINDOW_FRAME_TITLE_BAR_HEIGHT * nativeScale)
+      : 0;
 
-      const primaryFrameW = nativeCroppedWidth + nativeInset * 2;
-      const primaryFrameH =
-        nativeCroppedHeight + nativeTitleBarHeight + nativeInset * 2;
+    const primaryFrameW = nativeCroppedWidth + nativeInset * 2;
+    const primaryFrameH =
+      nativeCroppedHeight + nativeTitleBarHeight + nativeInset * 2;
 
-      const layout = computeLayerLayout({
-        primaryWidth: primaryFrameW,
-        primaryHeight: primaryFrameH,
-        extraLayers: extraLayers.map(l => ({
-          ...l,
-          naturalWidth: l.naturalWidth + nativeInset * 2,
-          naturalHeight:
-            l.naturalHeight + nativeTitleBarHeight + nativeInset * 2,
-        })),
-        spacing: nativeSpacing,
-      });
+    const layout = computeLayerLayout({
+      primaryWidth: primaryFrameW,
+      primaryHeight: primaryFrameH,
+      extraLayers: extraLayers.map(l => ({
+        ...l,
+        naturalWidth: l.naturalWidth + nativeInset * 2,
+        naturalHeight: l.naturalHeight + nativeTitleBarHeight + nativeInset * 2,
+      })),
+      spacing: nativeSpacing,
+    });
 
-      const frameWidth = layout.width;
-      const frameHeight = layout.height;
-      const canvasWidth = frameWidth + nativePadding * 2;
-      const canvasHeight = frameHeight + nativePadding * 2;
+    const frameWidth = layout.width;
+    const frameHeight = layout.height;
+    const canvasWidth = frameWidth + nativePadding * 2;
+    const canvasHeight = frameHeight + nativePadding * 2;
 
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = canvasWidth;
-      exportCanvas.height = canvasHeight;
-      const ctx = exportCanvas.getContext('2d');
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvasWidth;
+    exportCanvas.height = canvasHeight;
+    const ctx = exportCanvas.getContext('2d');
 
-      if (!ctx) {
-        throw new Error('Failed to get canvas context');
-      }
+    if (!ctx) {
+      throw new Error('Failed to get canvas context');
+    }
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-      const nativeBlurRadius = (backgroundBlur / 100) * 50 * nativeScale;
+    const nativeBlurRadius = (backgroundBlur / 100) * 50 * nativeScale;
 
-      if (backgroundImage) {
-        try {
-          const bgImg = await loadImage(backgroundImage);
-          renderBackgroundImageToCanvas(
-            ctx,
-            bgImg,
-            canvasWidth,
-            canvasHeight,
-            nativeBlurRadius
-          );
-        } catch (error) {
-          console.error('Failed to render background image:', error);
-        }
-      } else if (gradient) {
-        renderGradientToCanvas(
+    if (backgroundImage) {
+      try {
+        const bgImg = await loadImage(backgroundImage);
+        renderBackgroundImageToCanvas(
           ctx,
-          gradient,
+          bgImg,
           canvasWidth,
           canvasHeight,
           nativeBlurRadius
         );
+      } catch (error) {
+        console.error('Failed to render background image:', error);
       }
+    } else if (gradient) {
+      renderGradientToCanvas(
+        ctx,
+        gradient,
+        canvasWidth,
+        canvasHeight,
+        nativeBlurRadius
+      );
+    }
 
-      if ((backgroundImage || gradient) && noise > 0) {
-        renderNoise(ctx, canvasWidth, canvasHeight, noise);
-      }
+    if ((backgroundImage || gradient) && noise > 0) {
+      renderNoise(ctx, canvasWidth, canvasHeight, noise);
+    }
 
-      const primaryRect = findPrimaryRect(layout.rects);
+    const primaryRect = findPrimaryRect(layout.rects);
 
-      const drawLayerNative = (
-        srcImage: HTMLImageElement,
-        rect: { x: number; y: number; width: number; height: number },
-        layerBalanceCrop: BalanceCrop,
-        layerInsetColor: string | null
-      ) => {
-        const layerFrameX = nativePadding + rect.x;
-        const layerFrameY = nativePadding + rect.y;
-        const layerContentW = rect.width - nativeInset * 2;
-        const layerContentH =
-          rect.height - nativeTitleBarHeight - nativeInset * 2;
+    const drawLayerNative = (
+      srcImage: HTMLImageElement,
+      rect: { x: number; y: number; width: number; height: number },
+      layerBalanceCrop: BalanceCrop,
+      layerInsetColor: string | null
+    ) => {
+      const layerFrameX = nativePadding + rect.x;
+      const layerFrameY = nativePadding + rect.y;
+      const layerContentW = rect.width - nativeInset * 2;
+      const layerContentH =
+        rect.height - nativeTitleBarHeight - nativeInset * 2;
 
-        if (hasWindowFrame) {
-          renderWindowFrame(
-            ctx,
-            srcImage,
-            layerFrameX,
-            layerFrameY,
-            layerContentW,
-            layerContentH,
-            windowFrame as FramedWindowStyle,
-            shadow,
-            nativeScale,
-            nativeInset,
-            layerInsetColor,
-            layerBalanceCrop
-          );
-          return;
-        }
-
-        if (nativeInset > 0 && layerInsetColor) {
-          renderImageWithInset(
-            ctx,
-            srcImage,
-            layerFrameX,
-            layerFrameY,
-            rect.width,
-            rect.height,
-            nativeCornerRadius,
-            shadow,
-            nativeInset,
-            layerInsetColor,
-            layerBalanceCrop
-          );
-          return;
-        }
-
-        renderImageToCanvas(
+      if (hasWindowFrame) {
+        renderWindowFrame(
           ctx,
           srcImage,
           layerFrameX,
           layerFrameY,
           layerContentW,
           layerContentH,
-          nativeCornerRadius,
+          windowFrame as FramedWindowStyle,
           shadow,
+          nativeScale,
+          nativeInset,
+          layerInsetColor,
           layerBalanceCrop
         );
-      };
-
-      drawLayerNative(image, primaryRect, nativeBalanceCrop, insetColor);
-
-      for (const layer of extraLayers) {
-        const img = extraLayerImages[layer.id];
-        if (!img) continue;
-        const rect = layout.rects.find(r => r.id === layer.id);
-        if (!rect) continue;
-        const layerInsetColor =
-          nativeInset > 0 ? sampleDominantInsetColor(img) : null;
-        drawLayerNative(
-          img,
-          rect,
-          { left: 0, top: 0, right: 0, bottom: 0 },
-          layerInsetColor
-        );
+        return;
       }
 
-      const redactAnnotations = annotations.filter(
-        (ann): ann is RedactAnnotation => ann.type === 'redact'
-      );
-
-      const effectOffsetX =
-        (nativePadding + primaryRect.x + nativeInset) / nativeScale;
-      const effectOffsetY =
-        (nativePadding + primaryRect.y + nativeInset + nativeTitleBarHeight) /
-        nativeScale;
-
-      for (const redact of redactAnnotations) {
-        applyRedactEffect(
+      if (nativeInset > 0 && layerInsetColor) {
+        renderImageWithInset(
           ctx,
-          redact,
-          effectOffsetX,
-          effectOffsetY,
-          nativeScale
+          srcImage,
+          layerFrameX,
+          layerFrameY,
+          rect.width,
+          rect.height,
+          nativeCornerRadius,
+          shadow,
+          nativeInset,
+          layerInsetColor,
+          layerBalanceCrop
         );
+        return;
       }
 
-      const svgString = getSvgForExport(nativeScale);
-      if (svgString) {
-        try {
-          const svgImage = await svgToImage(svgString);
-          ctx.drawImage(svgImage, 0, 0);
-        } catch (error) {
-          console.error('Failed to render SVG annotations:', error);
-        }
-      }
-
-      const highlightAnnotations = annotations.filter(
-        (ann): ann is HighlightAnnotation => ann.type === 'highlight'
+      renderImageToCanvas(
+        ctx,
+        srcImage,
+        layerFrameX,
+        layerFrameY,
+        layerContentW,
+        layerContentH,
+        nativeCornerRadius,
+        shadow,
+        layerBalanceCrop
       );
+    };
 
-      for (const highlight of highlightAnnotations) {
-        applyHighlightEffect(
-          ctx,
-          highlight,
-          effectOffsetX,
-          effectOffsetY,
-          nativeScale
-        );
+    drawLayerNative(image, primaryRect, nativeBalanceCrop, insetColor);
+
+    for (const layer of extraLayers) {
+      const img = extraLayerImages[layer.id];
+      if (!img) continue;
+      const rect = layout.rects.find(r => r.id === layer.id);
+      if (!rect) continue;
+      const layerInsetColor =
+        nativeInset > 0 ? sampleDominantInsetColor(img) : null;
+      drawLayerNative(
+        img,
+        rect,
+        { left: 0, top: 0, right: 0, bottom: 0 },
+        layerInsetColor
+      );
+    }
+
+    const redactAnnotations = annotations.filter(
+      (ann): ann is RedactAnnotation => ann.type === 'redact'
+    );
+
+    const effectOffsetX =
+      (nativePadding + primaryRect.x + nativeInset) / nativeScale;
+    const effectOffsetY =
+      (nativePadding + primaryRect.y + nativeInset + nativeTitleBarHeight) /
+      nativeScale;
+
+    for (const redact of redactAnnotations) {
+      applyRedactEffect(ctx, redact, effectOffsetX, effectOffsetY, nativeScale);
+    }
+
+    const svgString = getSvgForExport(nativeScale);
+    if (svgString) {
+      try {
+        const svgImage = await svgToImage(svgString);
+        ctx.drawImage(svgImage, 0, 0);
+      } catch (error) {
+        console.error('Failed to render SVG annotations:', error);
       }
+    }
 
+    const highlightAnnotations = annotations.filter(
+      (ann): ann is HighlightAnnotation => ann.type === 'highlight'
+    );
+
+    for (const highlight of highlightAnnotations) {
+      applyHighlightEffect(
+        ctx,
+        highlight,
+        effectOffsetX,
+        effectOffsetY,
+        nativeScale
+      );
+    }
+
+    return exportCanvas;
+  }, [
+    padding,
+    inset,
+    spacing,
+    insetColor,
+    image,
+    imageWidth,
+    imageHeight,
+    cornerRadius,
+    shadow,
+    gradient,
+    backgroundImage,
+    backgroundBlur,
+    noise,
+    getSvgForExport,
+    annotations,
+    windowFrame,
+    nativeBalanceCrop,
+    extraLayers,
+    extraLayerImages,
+  ]);
+
+  const exportToImage = useCallback(
+    async (format: ScreenshotFormat = 'png'): Promise<string> => {
+      const canvas = await renderToCanvas();
       const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
       const quality = format === 'jpeg' ? 0.92 : 1;
-      const dataURL = exportCanvas.toDataURL(mimeType, quality);
+      const dataURL = canvas.toDataURL(mimeType, quality);
       return dataURL.replace(/^data:image\/(png|jpeg);base64,/, '');
     },
-    [
-      padding,
-      inset,
-      spacing,
-      insetColor,
-      image,
-      imageWidth,
-      imageHeight,
-      cornerRadius,
-      shadow,
-      gradient,
-      backgroundImage,
-      backgroundBlur,
-      noise,
-      getSvgForExport,
-      annotations,
-      windowFrame,
-      nativeBalanceCrop,
-      extraLayers,
-      extraLayerImages,
-    ]
+    [renderToCanvas]
   );
 
-  return { exportToImage };
+  return { exportToImage, renderToCanvas };
 };

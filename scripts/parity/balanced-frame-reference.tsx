@@ -87,8 +87,27 @@ function Reference() {
   const light = useCanvasExport(exportProps('macos-light'));
   const dark = useCanvasExport(exportProps('macos-dark'));
   useEffect(() => {
-    Promise.all([light.exportToImage(), dark.exportToImage()]).then(
-      ([lightPng, darkPng]) => {
+    Promise.all([
+      light.exportToImage(),
+      dark.exportToImage(),
+      ...(query.has('verifyCanvas')
+        ? [light.renderToCanvas(), dark.renderToCanvas()]
+        : []),
+    ]).then(
+      ([lightPng, darkPng, lightCanvas, darkCanvas]) => {
+        if (
+          query.has('verifyCanvas') &&
+          (typeof lightPng !== 'string' ||
+            typeof darkPng !== 'string' ||
+            !(lightCanvas instanceof HTMLCanvasElement) ||
+            !(darkCanvas instanceof HTMLCanvasElement) ||
+            lightCanvas.toDataURL('image/png').split(',')[1] !== lightPng ||
+            darkCanvas.toDataURL('image/png').split(',')[1] !== darkPng)
+        ) {
+          document.querySelector('#result')!.textContent =
+            'Canvas and encoded PNG differ';
+          return;
+        }
         document.querySelector('#result')!.textContent = JSON.stringify({
           lightPng,
           darkPng,

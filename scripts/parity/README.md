@@ -242,6 +242,10 @@ Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflo
 at the same width and scale, including selector exclusion IDs and cleanup.
 Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout
 preview/export checks at the same width and scale on macOS.
+Set `PORATAKE_PARITY_SCALED_BLACKOUT_ONLY=1` to compare a fractional blackout
+over a shape with its reopened PNG at four zooms and three simulated scales.
+Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to retain the 2×,
+137% comparison images.
 Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
 opaque source instead of the partially translucent generated region.
 Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,
@@ -263,6 +267,10 @@ guide for the comparison and intercepts the save through its fake preload.
 Set `PORATAKE_BLACKOUT_ORDER=1` to add a shape under the blackout and check that
 it stays hidden. Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to
 retain the preview, saved and reopened PNGs.
+Run `env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/shared-composition-probe.cjs`
+to compare the shared export canvas with the encoded PNG for generated framed,
+transparent and attached images in both appearances. This checks the renderer
+and encoder; the interactive preview still uses separate layers.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser
