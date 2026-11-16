@@ -3230,7 +3230,11 @@ The macOS ScreenCaptureKit delegate also now reports failures from the current
 stream during startup, including a closed window target, instead of discarding
 them while the recorder's public state is still idle. A [native callback fixture](tests/native/evidence/macos-ui/recording-start-stream-error-20261116.txt)
 checks session and error classification without starting a stream. Actual
-callback timing and errors during or after Stop remain unverified.
+callback timing remains unverified. The recorder now also retains unexpected
+current-stream failures handled during Stop until its writers finish, then
+reports the error while preserving the movie. A [generated-movie fixture](tests/native/evidence/macos-ui/recording-stop-stream-error-20261116.txt)
+decodes the retained file and checks normal closure and user-stop cases. Real
+callbacks handled too late in finalization or after Stop remain unverified.
 
 The area variant checks that a failed start hides the temporary overlay and
 passes a synthetic toolbar ID in `excludedWindowIds`. It also writes generated

@@ -1,0 +1,24 @@
+macOS stream errors during Stop, 2026-11-16
+
+The recorder changed its public state to idle before awaiting ScreenCaptureKit's
+stop, so a failure delivered to its callback handler while Stop was in progress
+was ignored. It now retains an unexpected failure from the current stream and
+returns CAPTURE_ERROR after finishing its writers. A closed window and a
+user-stopped stream remain normal stop cases. The stream reference is retained
+through finalization so a callback handled after the active stream is cleared can
+still be associated with the stopping session.
+
+A native fixture uses generated video and injects a failure into the callback
+handler while Stop is in progress. Before the fix Stop returned success. After
+the fix it reports CAPTURE_ERROR and the finalized movie can be decoded. The
+fixture also checks a stale stream, normal window closure, user stop, missing
+display source and a new session after an error. It does not start capture or
+access media devices.
+
+find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 | xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings tests/native/recording-stop-stream-error.swift -o /tmp/poratake-recording-stop-stream-error
+/tmp/poratake-recording-stop-stream-error
+
+The complete daemon typechecked for arm64 and x86_64 macOS, and the generated
+recording-timeline fixture passed. This fixture does not exercise a real
+ScreenCaptureKit delegate. A callback delivered too late to be handled before
+finalization or after the Stop response remains unverified.
