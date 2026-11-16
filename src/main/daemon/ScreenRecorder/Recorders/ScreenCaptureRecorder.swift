@@ -1410,6 +1410,11 @@ extension ScreenCaptureRecorder: SCStreamOutput {
         _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
+        handleStreamSample(sampleBuffer, type: type, streamID: ObjectIdentifier(stream))
+    }
+
+    private func handleStreamSample(_ sampleBuffer: CMSampleBuffer, type: SCStreamOutputType, streamID: ObjectIdentifier) {
+        guard streamFailures.isCurrent(streamID) else { return }
         handleStreamSample(sampleBuffer, type: type)
     }
 
@@ -1602,6 +1607,10 @@ extension ScreenCaptureRecorder: SCStreamOutput {
 
     func testProcessSample(_ sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
         handleStreamSample(sampleBuffer, type: type)
+    }
+
+    func testProcessStreamSample(_ sampleBuffer: CMSampleBuffer, type: SCStreamOutputType, stream: AnyObject) {
+        handleStreamSample(sampleBuffer, type: type, streamID: ObjectIdentifier(stream))
     }
 
     func testBeginResume(from time: CMTime) {

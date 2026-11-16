@@ -25,6 +25,12 @@ final class StreamFailureInbox {
         stopping = true
     }
 
+    func isCurrent(_ id: ObjectIdentifier) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return streamID == id
+    }
+
     func enqueue(_ error: Error, from id: ObjectIdentifier) -> Bool {
         lock.lock()
         defer { lock.unlock() }

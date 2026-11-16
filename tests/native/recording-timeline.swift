@@ -515,6 +515,17 @@ struct RecordingTimelineTests {
             print("Submitted 30000 system-audio buffers; AAC duration \(duration) seconds")
             return
         }
+        let oldStream = NSObject()
+        let activeStream = NSObject()
+        let streamIdentity = ScreenCaptureRecorder()
+        streamIdentity.testStartTimeline()
+        streamIdentity.testActivateStream(activeStream)
+        streamIdentity.testProcessStreamSample(sample(at: 10), type: .screen, stream: oldStream)
+        precondition(!streamIdentity.testTimeline.started, "A previous stream must not anchor a new recording")
+        streamIdentity.testProcessStreamSample(sample(at: 20), type: .screen, stream: activeStream)
+        precondition(CMTimeCompare(streamIdentity.testTimeline.first!, CMTime(value: 20, timescale: 1)) == 0)
+        print("Stale stream frame ignored; current stream anchors the timeline")
+
         let preFramePause = ScreenCaptureRecorder()
         preFramePause.testStartTimeline()
         try! preFramePause.pause()
