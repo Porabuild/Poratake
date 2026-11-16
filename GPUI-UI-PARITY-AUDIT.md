@@ -3821,6 +3821,12 @@ the daemon also includes its boundary windows and uses the same ScreenCaptureKit
 exclusion and visible-window validation as live area capture. If an ID is missing
 or a visible window cannot be resolved, it stops instead of saving an unverified
 frame. Async results from a stopped, finished or restarted session are discarded.
+The daemon's numeric conversion now rejects non-finite and out-of-range values
+instead of trapping, and scroll startup validates coordinates, positive dimensions
+and the display ID before altering a session. An isolated native protocol fixture
+checks malformed numbers and display IDs, and accepts negative display origins;
+the [evidence](tests/native/evidence/macos-ui/scroll-parameter-validation-20261116.txt)
+does not start a capture.
 The delayed post-scroll callback and queued auto-scroll start now also retain their
 original session generation: stopping and restarting cannot turn an old callback
 into a second capture or start an unrelated session. The Swift fixture holds and
