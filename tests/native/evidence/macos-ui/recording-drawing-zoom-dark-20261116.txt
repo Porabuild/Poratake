@@ -1,0 +1,20 @@
+Generated fake-daemon area, window and screen recording handoffs; macOS; FFmpeg 9.0.2.
+Each uses the same generated recording and a simulated drawing gesture.
+fixture area zoom changes 31354 preview pixels by at least 16 levels
+fixture area recording preview/export mean channel error at 0.5s: 0.694
+fixture area drawing export error: edited 9418, undrawn 1346536 across 2716 pixels
+fixture area changed-pixel export error: edited 107340, unzoomed 9215850 across 31354 pixels
+fixture area recording preview/export mean channel error at 1s: 0.744
+fixture area recording preview/export mean channel error at 1.5s: 0.743
+fixture window zoom changes 31354 preview pixels by at least 16 levels
+fixture window recording preview/export mean channel error at 0.5s: 0.694
+fixture window drawing export error: edited 9418, undrawn 1346536 across 2716 pixels
+fixture window changed-pixel export error: edited 107340, unzoomed 9215850 across 31354 pixels
+fixture window recording preview/export mean channel error at 1s: 0.744
+fixture window recording preview/export mean channel error at 1.5s: 0.743
+fixture screen zoom changes 31354 preview pixels by at least 16 levels
+fixture screen recording preview/export mean channel error at 0.5s: 0.694
+fixture screen drawing export error: edited 9418, undrawn 1346536 across 2716 pixels
+fixture screen changed-pixel export error: edited 107340, unzoomed 9215850 across 31354 pixels
+fixture screen recording preview/export mean channel error at 1s: 0.744
+fixture screen recording preview/export mean channel error at 1.5s: 0.743

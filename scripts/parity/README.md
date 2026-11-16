@@ -235,8 +235,10 @@ window recording handoffs. `PORATAKE_PARITY_AREA_RECORDING`,
 `PORATAKE_PARITY_SCREEN_RECORDING` and `PORATAKE_PARITY_WINDOW_RECORDING` can
 instead point to existing local videos longer than 1.5 seconds. The fake daemon
 copies those files; it does not start a capture or access audio or camera
-devices. The editor workflow draws a zoom on the timeline and compares decoded
-export frames with its preview. Set `PORATAKE_PARITY_RECORDING_ONLY=1` to run
+devices. The editor workflow draws a zoom on the timeline and a rectangle on the
+preview, reopens the project, and compares decoded export frames with its preview.
+The drawing tool is selected through the fixture API; the gestures are simulated.
+Set `PORATAKE_PARITY_RECORDING_ONLY=1` to run
 just those handoffs at 1280 points and 1× simulated scale.
 Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflows
 at the same width and scale, including selector exclusion IDs and cleanup.

@@ -3594,6 +3594,26 @@ is retained. The daemon handoff and target-close events in this workflow are
 simulated, and the area image is nearly uniform. This does not prove live GPUI
 recording, physical movement, capture exclusion, audio or camera behavior.
 
+The fake-daemon area, window and screen handoffs now also draw a filled rectangle
+on the zoomed preview using simulated pointer input, save and reopen the project,
+and compare decoded MP4 frames with the reopened preview. Both appearances passed
+with the same generated checkerboard recording and FFmpeg 9.0.2. At 0.5, 1.0 and
+1.5 seconds, mean channel errors were 0.694, 0.744 and 0.743. At one second,
+2,716 pixels changed because of the drawing and 31,354 because of the zoom; on
+those pixels the decoded export was closer to the respective edited preview than
+to the version without that edit. The [dark](tests/native/evidence/macos-ui/recording-drawing-zoom-dark-20261116.txt)
+and [light](tests/native/evidence/macos-ui/recording-drawing-zoom-light-20261116.txt)
+measurements, [editor](tests/native/evidence/macos-ui/recording-drawing-zoom-window-preview-20261116.png)
+and [decoded frame](tests/native/evidence/macos-ui/recording-drawing-zoom-window-decoded-20261116.png)
+are retained. Tool settings are selected through the test API; the drawing gesture
+and timeline zoom use simulated pointer input. This does not establish physical
+recording, target movement or closure, capture exclusion, or media-device behavior.
+The separate 720×520 generated drawing workflow also passed on the current code.
+On changed pixels its decoded export's mean RGB error was 20.77 against the
+edited preview versus 118.72 against the undrawn preview; this narrower result is
+less precise than the checkerboard workflow above. The [measurements](tests/native/evidence/macos-ui/recording-drawing-narrow-20261116.txt)
+do not establish physical window resizing or live playback.
+
 The same fixture exposed a capture-exclusion ordering gap: GPUI started the
 recorder before applying camera-preview protection, and removed that protection
 on a camera-off toggle. On macOS and Windows it now enables protection before
