@@ -3236,13 +3236,25 @@ also show 716 differing pixels at the outer image perimeter and 250 near the
 blackout; a repeat produced the same measurements. This verifies neither a
 physical display nor exclusion of live capture controls.
 
+The fixture also reopened that PNG in a second offscreen editor at the same
+displayed size. Its [reopened image](tests/native/evidence/macos-ui/blackout-editor-scale-reopened-20261116.png)
+differed from the annotated preview at 416 pixels, maximum 158 levels; 192 were
+fully black in the preview and lighter after reopen, though none was fully
+white in the reopened display. The [same-size measurements](tests/native/evidence/macos-ui/blackout-editor-reopen-comparison-20261116.json)
+reproduced on a second run.
+
 A local trial rendering the redaction layer at the source scale instead of the
-renderer scale did not solve the mismatch: differences near the blackout rose
-from 250 to 412 pixels, and some preview pixels remained dark where the export
-was white. The [trial preview](tests/native/evidence/macos-ui/blackout-editor-scale-trial-preview-20261116.png)
-is retained; the production renderer was not changed. A correct solution still
+renderer scale reduced the same-size maximum difference to 22, but still left
+312 differing pixels in the [trial preview](tests/native/evidence/macos-ui/blackout-editor-scale-trial-preview-20261116.png).
+Suppressing the additional SVG blackout fill reduced the
+single-blackout comparison to within one level, but broke annotation order: a
+red rectangle underneath the blackout appeared in 388 preview pixels while the
+saved selection was black. The [baseline ordering result](tests/native/evidence/macos-ui/blackout-editor-order-baseline-20261116.json),
+[trial measurements](tests/native/evidence/macos-ui/blackout-editor-order-trial-20261116.json)
+and [trial preview](tests/native/evidence/macos-ui/blackout-editor-order-trial-preview-20261116.png)
+are retained. Neither trial was kept in production. A correct solution still
 needs to reconcile the differently scaled preview layers with the exported
-composition without exposing or obscuring extra source pixels.
+composition while preserving annotation order.
 
 The GPUI Metal fixture exposed a separate image sampling mismatch at 73% zoom,
 even without annotations, for opaque and translucent generated sources. The
