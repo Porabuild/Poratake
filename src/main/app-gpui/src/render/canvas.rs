@@ -799,9 +799,9 @@ pub fn preview_clip_edges(
                 }
                 let pixel_x = tile_x as usize + column;
                 let pixel_y = tile_y as usize + row;
-                let in_content = (pixel_x as f64) >= x
+                let in_content = (pixel_x as f64) + 1.0 > x
                     && (pixel_x as f64) < x + content_width
-                    && (pixel_y as f64) >= y + title_height
+                    && (pixel_y as f64) + 1.0 > y + title_height
                     && (pixel_y as f64) < y + title_height + content_height;
                 let clip_alpha = if in_content {
                     u32::from(clip.data()[source / 4])

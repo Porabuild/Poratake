@@ -4158,6 +4158,11 @@ impl EditorWindow {
         }
     }
 
+    #[cfg(all(not(test), target_os = "macos", feature = "parity"))]
+    pub(crate) fn parity_save_pending(&self) -> bool {
+        self.save_dialog_open
+    }
+
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.save_dialog_open {
             return;

@@ -415,18 +415,24 @@ fn label_element(clip: &Clip, kind: TrackKind, width: f32, theme: &ThemeVars) ->
 
 fn resize_handle(
     clip: &Clip,
-    kind: TrackKind,
+    context: &ClipContext<'_>,
     start_edge: bool,
     width: f32,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let id = clip.id.clone();
+    let kind = context.kind;
+    let scroll = context.scroll.clone();
+    let pixels_per_second = context.pixels_per_second;
+    let edge = if start_edge { clip.start } else { clip.end() };
+    let selector = format!(
+        "clip-handle-{}-{}",
+        clip.id,
+        if start_edge { "start" } else { "end" }
+    );
     div()
-        .id(SharedString::from(format!(
-            "clip-handle-{}-{}",
-            clip.id,
-            if start_edge { "start" } else { "end" }
-        )))
+        .id(SharedString::from(selector.clone()))
+        .debug_selector(move || selector.clone())
         .absolute()
         .top_0()
         .h_full()
@@ -449,9 +455,11 @@ fn resize_handle(
         )
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+            cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
                 cx.stop_propagation();
                 this.select_clip(id.clone(), cx);
+                let time =
+                    super::raw_time_at_position(event.position.x, &scroll, pixels_per_second);
                 this.begin_clip_drag(
                     ClipDrag {
                         kind,
@@ -461,7 +469,7 @@ fn resize_handle(
                         } else {
                             DragMode::ResizeEnd
                         },
-                        grab_offset: 0.0,
+                        grab_offset: time - edge,
                     },
                     cx,
                 );
@@ -506,10 +514,12 @@ fn clip_element(
         gradient_fill(clip.gradient.0, clip.gradient.1, 1.0)
     };
     let id = clip.id.clone();
+    let clip_selector = format!("timeline-clip-{}", clip.id);
     let handle = handle_width(clip.duration, pixels_per_second);
 
     let mut element = div()
         .id(SharedString::from(format!("clip-{}", clip.id)))
+        .debug_selector(move || clip_selector.clone())
         .absolute()
         .top_0()
         .left(px(left))
@@ -567,8 +577,8 @@ fn clip_element(
 
     if !is_cut_tool_active {
         element = element
-            .child(resize_handle(clip, kind, true, handle, cx))
-            .child(resize_handle(clip, kind, false, handle, cx));
+            .child(resize_handle(clip, context, true, handle, cx))
+            .child(resize_handle(clip, context, false, handle, cx));
     }
 
     if !menu::has_menu(kind) {
@@ -633,7 +643,7 @@ fn lane(
     let pixels_per_second = timeline.pixels_per_second;
     let total_duration = timeline.total_duration;
     let is_cut_tool_active = timeline.is_cut_tool_active;
-    let drawable = can_add_to(kind);
+    let drawable = can_add_to(kind) && total_duration > 0.0;
     let moving_id = timeline
         .clip_drag
         .filter(|drag| drag.mode == DragMode::Move)
@@ -642,9 +652,11 @@ fn lane(
         .reorder
         .filter(|drag| drag.dragging)
         .map(|drag| drag.id.clone());
+    let lane_selector = format!("timeline-lane-{}", track.lane_id);
 
     let mut lane = div()
         .id(track.lane_id.clone())
+        .debug_selector(move || lane_selector.clone())
         .relative()
         .h(px(TRACK_HEIGHT))
         .flex_shrink_0()
@@ -727,10 +739,15 @@ fn lane(
         }
     }
 
-    if let Some(text) = track.empty_text.filter(|_| track.clips.is_empty()) {
+    if let Some(text) = track
+        .empty_text
+        .filter(|_| drawable && track.clips.is_empty())
+    {
         if timeline.draw.is_none() {
+            let selector = format!("timeline-empty-{}", track.lane_id);
             lane = lane.child(
                 div()
+                    .debug_selector(move || selector.clone())
                     .absolute()
                     .inset_0()
                     .flex()
@@ -755,11 +772,20 @@ pub fn render(
     let total_duration = timeline.total_duration;
     let total_width = (timeline.display_duration as f32 * pixels_per_second).max(1.0);
 
-    let mut lanes = div().relative().flex().flex_col().w(px(total_width));
+    let mut lanes = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .w(px(total_width))
+        .min_w_full();
     for track in timeline.tracks {
         lanes = lanes.child(lane(track, timeline, theme, cx));
     }
     lanes = lanes.child(playhead(timeline.playhead as f32 * pixels_per_second));
+    #[cfg(feature = "parity")]
+    let lanes = lanes.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("video-timeline-lanes", bounds);
+    });
 
     div()
         .flex()
@@ -776,6 +802,7 @@ pub fn render(
                 .child(
                     div()
                         .id("timeline-tracks-scroll")
+                        .debug_selector(|| "timeline-tracks-scroll".into())
                         .track_scroll(timeline.scroll)
                         .relative()
                         .size_full()
@@ -825,8 +852,7 @@ pub fn render(
                                     this.preview_seek(Some(quantize_scrub(time)), cx);
                                     return;
                                 }
-                                if this.update_timeline_drag(time, f32::from(event.position.x), cx)
-                                {
+                                if this.is_dragging_clip() {
                                     return;
                                 }
                                 this.set_playhead(time, cx);

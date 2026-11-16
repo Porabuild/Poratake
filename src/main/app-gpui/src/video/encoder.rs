@@ -139,7 +139,7 @@ impl Encoder {
 
     /// Finalizes the file. Consuming the encoder guarantees no frame can be
     /// appended after the container is closed.
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, any(windows, target_os = "macos")))]
     pub fn finish(self) -> Result<(), String> {
         self.finish_cancellable(&|| false)
     }
@@ -631,8 +631,11 @@ mod backend {
             .open(path)
             .map_err(|error| format!("audio staging failed: {error}"))?;
         if time > 0 && file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
-            let bytes = time as u64 * AUDIO_SAMPLE_RATE as u64 * AUDIO_CHANNELS as u64 * 2
-                / UNITS_PER_SECOND as u64;
+            let frames = (time as u128 * u128::from(AUDIO_SAMPLE_RATE)
+                + UNITS_PER_SECOND as u128 / 2)
+                / UNITS_PER_SECOND as u128;
+            let bytes = u64::try_from(frames * u128::from(AUDIO_CHANNELS) * 2)
+                .map_err(|_| "audio padding is too large".to_string())?;
             std::io::copy(&mut std::io::repeat(0).take(bytes), &mut file)
                 .map_err(|error| format!("audio padding failed: {error}"))?;
         }
@@ -732,6 +735,33 @@ mod backend {
         } else {
             detail
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn intro_silence_preserves_stereo_sample_alignment() {
+            let directory = tempfile::tempdir().unwrap();
+            let samples = [1_u8, 2, 3, 4, 5, 6, 7, 8];
+            for (time, frames) in [
+                (833_333, 4_000),
+                (666_667, 3_200),
+                (416_667, 2_000),
+                (400_000, 1_920),
+                (333_333, 1_600),
+                (166_667, 800),
+            ] {
+                let path = directory.path().join(format!("{time}.pcm"));
+                write_audio(&path, &samples, time).unwrap();
+                write_audio(&path, &samples, time).unwrap();
+                let audio = std::fs::read(path).unwrap();
+                let offset = frames * AUDIO_CHANNELS as usize * 2;
+                assert!(audio[..offset].iter().all(|sample| *sample == 0));
+                assert_eq!(&audio[offset..], [samples, samples].concat());
+            }
+        }
     }
 }
 

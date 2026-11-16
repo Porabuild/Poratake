@@ -45,6 +45,14 @@ pub fn composites_primary_backdrop(
         && wallpaper.is_active(false)
 }
 
+fn framed_composite_required(
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+) -> bool {
+    crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
+        && (!layers.is_empty() || (wallpaper.balance && wallpaper.inset > 0.0))
+}
+
 /// Renders the base image plus every annotation into a fresh RGBA buffer at
 /// natural size, on its wallpaper backdrop when one is set.
 #[allow(dead_code)]
@@ -105,9 +113,7 @@ pub fn compose_with_layers(
             })
             .flatten()
     });
-    if !layers.is_empty()
-        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
-    {
+    if framed_composite_required(wallpaper, layers) {
         let cropped = original_balance.and_then(|bounds| balance_crop(canvas.pixmap(), bounds));
         let primary = cropped.as_ref().unwrap_or(canvas.pixmap());
         let offset = original_balance
@@ -120,7 +126,7 @@ pub fn compose_with_layers(
             annotations,
             frame_scale,
             offset,
-            None,
+            original_inset_color.clone().flatten(),
         ) {
             return to_rgba(&composed);
         }
@@ -830,9 +836,7 @@ pub fn render_backdrop(
         };
         return Some((render_image(&composite), tiles, true));
     }
-    if !layers.is_empty()
-        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
-    {
+    if framed_composite_required(wallpaper, layers) {
         let primary = from_rgba(&base?.to_rgba8())?;
         let balance = wallpaper
             .balance
@@ -2168,6 +2172,61 @@ mod tests {
     }
 
     #[test]
+    fn balanced_window_frame_preserves_inset_and_annotations() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
+            if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        let annotation = Annotation::Rectangle {
+            id: "balanced-frame-inset".into(),
+            x: 70.,
+            y: 70.,
+            width: 20.,
+            height: 20.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        for style in ["macos-light", "macos-dark"] {
+            for padding in [0, 20] {
+                let mut settings = WallpaperSettings {
+                    balance: true,
+                    padding: f64::from(padding),
+                    inset: 8.,
+                    shadow: 50.,
+                    ..WallpaperSettings::default()
+                };
+                settings.window_frame.style = style.into();
+                let composed = compose(
+                    Some(&base),
+                    200,
+                    160,
+                    std::slice::from_ref(&annotation),
+                    &settings,
+                    1.,
+                );
+                assert_eq!(
+                    composed.dimensions(),
+                    (156 + padding * 2, 164 + padding * 2)
+                );
+                assert_eq!(
+                    composed.get_pixel(padding + 4, padding + 76).0,
+                    [230, 230, 230, 255]
+                );
+                assert_eq!(
+                    composed.get_pixel(padding + 58, padding + 96).0,
+                    [255, 0, 255, 255]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_window_frame_preserves_the_inset_around_the_image() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 60, |x, y| {
             if (30..70).contains(&x) && (20..40).contains(&y) {
@@ -2718,7 +2777,7 @@ mod tests {
             (
                 vec![shape.clone(), blackout.clone()],
                 [0, 0, 0, 255],
-                Some([169, 0, 169, 255]),
+                Some([191, 0, 191, 255]),
             ),
             (
                 vec![blackout.clone(), shape.clone()],
@@ -2754,10 +2813,7 @@ mod tests {
             if let Some(expected) = corner {
                 let actual = output.get_pixel(32, 22).0;
                 assert!(
-                    actual
-                        .iter()
-                        .zip(expected)
-                        .all(|(a, e)| a.abs_diff(e) <= 24),
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
                     "{annotations:?}: corner {actual:?} vs {expected:?}"
                 );
             }

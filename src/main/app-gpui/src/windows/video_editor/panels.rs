@@ -2666,22 +2666,24 @@ fn export_panel(
             |this, cx| this.cancel_export(cx),
         ));
     } else {
-        footer.push(
-            div()
-                .w_full()
-                .debug_selector(|| "video-export-start".to_string())
-                .child(
-                    Button::new("export-start")
-                        .variant(Variant::Tertiary)
-                        .recipe("compact")
-                        .label(if is_gif { "Export GIF" } else { "Export Video" })
-                        .full_width(true)
-                        .on_press(
-                            cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
-                        ),
-                )
-                .into_any_element(),
-        );
+        let start = div()
+            .w_full()
+            .debug_selector(|| "video-export-start".to_string())
+            .child(
+                Button::new("export-start")
+                    .variant(Variant::Tertiary)
+                    .recipe("compact")
+                    .label(if is_gif { "Export GIF" } else { "Export Video" })
+                    .full_width(true)
+                    .on_press(
+                        cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
+                    ),
+            );
+        #[cfg(feature = "parity")]
+        let start = start.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-export-start", bounds);
+        });
+        footer.push(start.into_any_element());
     }
     if let Some(error) = view.export_error() {
         footer.push(kit::error(error, theme));

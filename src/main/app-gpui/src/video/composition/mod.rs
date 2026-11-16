@@ -8,6 +8,7 @@ pub mod cursor_sprites;
 pub mod device_frame;
 pub mod drawing;
 pub mod keyboard;
+pub mod opaque;
 pub mod segments;
 pub mod subtitle;
 pub mod wallpaper;

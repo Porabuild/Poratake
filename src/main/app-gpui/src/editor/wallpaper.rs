@@ -136,6 +136,9 @@ impl WallpaperSettings {
         if has_layers && !framed {
             return true;
         }
+        if self.balance && framed && !has_layers {
+            return self.inset <= 0.0 && self.corners <= 0.0;
+        }
         !self.balance
             && self.inset <= 0.0
             && ((framed && !has_layers && self.corners <= 0.0)
@@ -388,6 +391,7 @@ pub fn layout(
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
     let inset = if !has_layers
         && (!settings.balance
+            || crate::render::window_frame::theme(&settings.window_frame.style).is_some()
             || (settings.corners <= 0.0
                 && settings.shadow <= 0.0
                 && crate::render::window_frame::theme(&settings.window_frame.style).is_none()))
@@ -428,6 +432,23 @@ pub fn layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn balanced_single_frames_use_the_edge_preview() {
+        let mut settings = WallpaperSettings {
+            balance: true,
+            window_frame: WindowFrameSettings {
+                style: "macos-light".into(),
+            },
+            ..Default::default()
+        };
+        assert!(settings.supports_edge_preview(false));
+        assert!(!settings.supports_edge_preview(true));
+        settings.shadow = 50.;
+        assert!(settings.supports_edge_preview(false));
+        settings.inset = 8.;
+        assert!(!settings.supports_edge_preview(false));
+    }
 
     #[test]
     fn zero_padding_effects_activate_single_image_inset() {

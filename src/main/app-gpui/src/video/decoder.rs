@@ -573,7 +573,7 @@ mod backend {
         start_time: f64,
         decoder: &mut Option<DecoderProcess>,
     ) -> Option<DecodedFrame> {
-        let time = time.max(0.0);
+        let time = time.max(0.0).next_up();
         if let Some(decoder) = decoder.as_mut() {
             if decoder
                 .next
@@ -684,8 +684,18 @@ mod backend {
             .arg("-i")
             .arg(path)
             .args([
-                "-map", "0:v:0", "-an", "-vf", "showinfo", "-vsync", "0", "-f", "rawvideo",
-                "-pix_fmt", "bgra", "pipe:1",
+                "-map",
+                "0:v:0",
+                "-an",
+                "-vf",
+                "showinfo",
+                "-fps_mode",
+                "passthrough",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgra",
+                "pipe:1",
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -706,8 +716,13 @@ mod backend {
         if std::thread::Builder::new()
             .name("ffmpeg-timestamp-reader".into())
             .spawn(move || {
+                let mut time_base = None;
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let Some(timestamp) = parse_pts_time(&line) else {
+                    if let Some(parsed) = parse_time_base(&line) {
+                        time_base = Some(parsed);
+                        continue;
+                    }
+                    let Some(timestamp) = parse_pts_time(&line, time_base) else {
                         continue;
                     };
                     if timestamp_tx.send(timestamp).is_err() {
@@ -760,7 +775,22 @@ mod backend {
         })
     }
 
-    fn parse_pts_time(line: &str) -> Option<f64> {
+    fn parse_time_base(line: &str) -> Option<(u64, u64)> {
+        let (_, base) = line.split_once("config in time_base: ")?;
+        let base = base.split(',').next()?;
+        let (numerator, denominator) = base.split_once('/')?;
+        let numerator = numerator.trim().parse::<u64>().ok()?;
+        let denominator = denominator.trim().parse::<u64>().ok()?;
+        (numerator > 0 && denominator > 0).then_some((numerator, denominator))
+    }
+
+    fn parse_pts_time(line: &str, time_base: Option<(u64, u64)>) -> Option<f64> {
+        if let Some((numerator, denominator)) = time_base {
+            let pts = line.split_once(" pts:")?.1.split_whitespace().next()?;
+            if let Ok(pts) = pts.parse::<i64>() {
+                return Some(pts as f64 * numerator as f64 / denominator as f64);
+            }
+        }
         let (_, timestamp) = line.split_once("pts_time:")?;
         timestamp.split_whitespace().next()?.parse().ok()
     }
@@ -794,8 +824,126 @@ mod backend {
         }
 
         #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn sparse_camera_timeline_decodes_at_main_video_times() {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("camera.mov");
+            std::fs::write(
+                &source,
+                include_bytes!("../ui/parity/fixtures/camera-delayed-toggle.mov"),
+            )
+            .unwrap();
+            let ffmpeg = crate::video::ffmpeg_path();
+            let media = describe(&ffmpeg, &source).expect("camera metadata");
+            assert_eq!(media.start_time, 0.0);
+            let mut decoder = None;
+            for (time, expected_red) in [
+                (10.1, 37_u8),
+                (11.1, 71),
+                (16.1, 145),
+                (17.1, 219),
+                (19.0, 108),
+            ] {
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media.video,
+                    media.start_time,
+                    &mut decoder,
+                )
+                .expect("camera frame");
+                let red = frame.bgra[(32 * 64 + 32) * 4 + 2];
+                assert!(red.abs_diff(expected_red) <= 15, "red={red} at {time}s");
+            }
+        }
+
+        #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn sparse_screen_timeline_seeks_through_pause_and_end() {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("screen.mov");
+            std::fs::write(
+                &source,
+                include_bytes!("../ui/parity/fixtures/sparse-screen-pause.mov"),
+            )
+            .unwrap();
+            let ffmpeg = crate::video::ffmpeg_path();
+            let media = describe(&ffmpeg, &source).expect("screen metadata");
+            assert!((media.video.duration - 31.0).abs() < 0.01);
+            let mut decoder = None;
+            for (time, expected) in [
+                (0.0, 34_u8),
+                (12.0, 34),
+                (29.5, 34),
+                (30.1, 119),
+                (30.98, 119),
+                (8.0, 34),
+            ] {
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media.video,
+                    media.start_time,
+                    &mut decoder,
+                )
+                .expect("screen frame");
+                let channel = frame.bgra[(32 * 64 + 32) * 4 + 2];
+                assert!(
+                    channel.abs_diff(expected) <= 5,
+                    "channel={channel} at {time}s"
+                );
+            }
+        }
+
+        #[test]
         fn parses_ffmpeg_duration() {
             assert_eq!(parse_duration("01:02:03.50"), Some(3723.5));
+        }
+
+        #[test]
+        fn ffmpeg_integer_pts_preserves_frame_boundary_precision() {
+            let base =
+                parse_time_base("[Parsed_showinfo] config in time_base: 1/12, frame_rate: 12/1");
+            assert_eq!(base, Some((1, 12)));
+            let line = "[Parsed_showinfo] n: 2 pts: 2 pts_time:0.166667 duration: 1";
+            assert_eq!(parse_pts_time(line, base), Some(2.0 / 12.0));
+            assert_eq!(parse_pts_time(line, None), Some(0.166667));
+            assert_eq!(
+                parse_time_base("config in time_base: 1/0, frame_rate: 12/1"),
+                None
+            );
+        }
+
+        #[test]
+        fn unix_frame_selection_uses_precise_pts_at_fractional_boundaries() {
+            let directory = tempfile::tempdir().unwrap();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                "#!/bin/sh\nprintf '[Parsed_showinfo] config in time_base: 1/12, frame_rate: 12/1\\n' >&2\nprintf '[Parsed_showinfo] n:0 pts:0 pts_time:0\\n' >&2\nprintf '\\000\\000\\000\\377'\nprintf '[Parsed_showinfo] n:1 pts:1 pts_time:0.0833333\\n' >&2\nprintf '\\001\\001\\001\\377'\nprintf '[Parsed_showinfo] n:2 pts:2 pts_time:0.166667\\n' >&2\nprintf '\\002\\002\\002\\377'\nprintf '[Parsed_showinfo] n:3 pts:12 pts_time:1\\n' >&2\nprintf '\\014\\014\\014\\377'\n",
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&ffmpeg).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&ffmpeg, permissions).unwrap();
+            let info = VideoInfo {
+                width: 1,
+                height: 1,
+                duration: 2.0,
+                frame_rate: 12.0,
+            };
+            let mut decoder = None;
+            let source = directory.path().join("source.mov");
+            for (time, expected) in [
+                (2.0 / 12.0 - 0.000_000_1, 1),
+                (2.0 / 12.0, 2),
+                ((1.0 + 1.0 / 12.0) - 1.0 / 12.0, 12),
+            ] {
+                let frame = read_frame(&ffmpeg, &source, time, info, 0.0, &mut decoder).unwrap();
+                assert_eq!(frame.bgra[0], expected, "frame at {time:.17}");
+            }
         }
 
         #[test]

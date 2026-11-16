@@ -206,7 +206,7 @@ pub struct VideoEditorWindow {
     uploaded_url: Option<String>,
     drawing_tools: styles::DrawingToolSettings,
     drawing_stroke: Option<drawing_overlay::Stroke>,
-    drawing_id_seed: u64,
+    timeline_id_seed: u64,
     drawing_text_field: Entity<herogpui::components::InputState>,
     preview_bounds: drawing_overlay::BoundsCell,
     composition_size: Option<(f64, f64)>,
@@ -400,7 +400,7 @@ impl VideoEditorWindow {
             uploaded_url: None,
             drawing_tools: styles::DrawingToolSettings::default(),
             drawing_stroke: None,
-            drawing_id_seed: 0,
+            timeline_id_seed: 0,
             drawing_text_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             preview_bounds: Rc::new(RefCell::new(None)),
             composition_size: None,
@@ -970,11 +970,12 @@ impl VideoEditorWindow {
     }
 
     fn total_duration(&self) -> f64 {
-        first_frame_duration(&self.state)
-            + model::total_duration(
-                &self.state.segments,
-                self.state.source_duration.unwrap_or(0.0),
-            )
+        Self::state_duration(&self.state)
+    }
+
+    fn state_duration(state: &VideoEditorState) -> f64 {
+        first_frame_duration(state)
+            + model::total_duration(&state.segments, state.source_duration.unwrap_or(0.0))
     }
 
     fn active_tab(&self) -> SidebarTab {
@@ -987,6 +988,10 @@ impl VideoEditorWindow {
     {
         let before = self.state.clone();
         mutate(&mut self.state);
+        let duration = Self::state_duration(&self.state);
+        if duration != Self::state_duration(&before) {
+            edit::bound_overlay_ranges(&mut self.state, duration);
+        }
         self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.state == before {
             return;
@@ -1328,6 +1333,11 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_cut_tool_active(&self) -> bool {
+        self.is_cut_tool_active
+    }
+
     pub fn set_scrub_audio(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.state.ui.scrub_audio_enabled = enabled;
         if !enabled {
@@ -1436,10 +1446,9 @@ impl VideoEditorWindow {
         let Some(index) = self.selected_segment_index() else {
             return;
         };
+        let total_duration = self.total_duration();
         self.commit(cx, move |state| {
-            if let Some(segment) = state.segments.get_mut(index) {
-                segment.speed = Some(speed);
-            }
+            edit::set_video_speed(state, index, speed, total_duration);
         });
     }
 
@@ -1650,12 +1659,25 @@ impl VideoEditorWindow {
     /// Adds a clip to a track, which is what dragging on an empty lane does.
     pub fn add_clip(&mut self, kind: TrackKind, start: f64, end: f64, cx: &mut Context<Self>) {
         let total = self.total_duration();
+        if !total.is_finite() || total <= 0.0 || !start.is_finite() || !end.is_finite() {
+            return;
+        }
         let start = start.clamp(0.0, total);
-        let end = end.clamp(
-            start + edit::MIN_SPLIT_DURATION,
-            total.max(start + edit::MIN_SPLIT_DURATION),
-        );
-        let id = format!("{}-{}", kind.id(), (start * 1000.0).round() as i64);
+        let end = end.clamp(0.0, total);
+        if end - start < edit::MIN_SPLIT_DURATION {
+            return;
+        }
+        let available = match kind {
+            TrackKind::Zoom => edit::range_available(&self.state.zoom_segments, start, end, None),
+            TrackKind::Camera => {
+                edit::range_available(&self.state.camera_segments, start, end, None)
+            }
+            TrackKind::Drawing | TrackKind::Video | TrackKind::Music => true,
+        };
+        if !available {
+            return;
+        }
+        let id = self.next_timeline_id(kind.id());
         let composition = self.composition_size.unwrap_or_default();
         self.selected_clip = Some(SharedString::from(id.clone()));
         self.commit(cx, move |state| match kind {
@@ -2184,13 +2206,19 @@ impl VideoEditorWindow {
         };
         let total = self.total_duration();
         let id = drag.id.to_string();
+        let time = time - drag.grab_offset;
+        if drag.kind == TrackKind::Video {
+            if let Some(before) = &self.gesture_snapshot {
+                self.state.segments.clone_from(&before.segments);
+            }
+        }
         let state = &mut self.state;
 
         macro_rules! apply {
             ($items:expr) => {{
                 match drag.mode {
                     DragMode::Move => {
-                        edit::move_range($items, &id, time - drag.grab_offset, total);
+                        edit::move_range($items, &id, time, total);
                     }
                     DragMode::ResizeStart => {
                         let end = $items
@@ -2226,6 +2254,21 @@ impl VideoEditorWindow {
                 }
                 DragMode::Move => {}
             },
+        }
+        if drag.kind == TrackKind::Video {
+            if let Some(before) = &self.gesture_snapshot {
+                self.state.zoom_segments.clone_from(&before.zoom_segments);
+                self.state
+                    .camera_segments
+                    .clone_from(&before.camera_segments);
+                self.state
+                    .drawing_segments
+                    .clone_from(&before.drawing_segments);
+                let duration = Self::state_duration(&self.state);
+                if duration != Self::state_duration(before) {
+                    edit::bound_overlay_ranges(&mut self.state, duration);
+                }
+            }
         }
         self.sync_preview_state(cx);
         cx.notify();
@@ -2609,7 +2652,7 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    #[cfg(all(feature = "parity", windows))]
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
     pub(crate) fn begin_export_for_parity(&mut self, cx: &mut Context<Self>) {
         self.is_exporting = true;
         self.export_progress = 0.4;
@@ -2683,9 +2726,33 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    fn next_drawing_id(&mut self, prefix: &str) -> String {
-        self.drawing_id_seed += 1;
-        format!("{prefix}-{}", self.drawing_id_seed)
+    fn next_timeline_id(&mut self, prefix: &str) -> String {
+        loop {
+            self.timeline_id_seed = self.timeline_id_seed.wrapping_add(1);
+            let id = format!("{prefix}-{}", self.timeline_id_seed);
+            let in_use = self.state.segments.iter().any(|segment| segment.id == id)
+                || self
+                    .state
+                    .zoom_segments
+                    .iter()
+                    .any(|segment| segment.id == id)
+                || self
+                    .state
+                    .camera_segments
+                    .iter()
+                    .any(|segment| segment.id == id)
+                || self.state.music_tracks.iter().any(|track| track.id == id)
+                || self.state.drawing_segments.iter().any(|segment| {
+                    segment.id == id
+                        || segment
+                            .annotations
+                            .iter()
+                            .any(|annotation| annotation.id() == id)
+                });
+            if !in_use {
+                return id;
+            }
+        }
     }
 
     fn preview_content_rect(&self) -> Option<drawing_overlay::Rect> {
@@ -2718,7 +2785,7 @@ impl VideoEditorWindow {
             return;
         };
         let tools = self.drawing_tools.clone();
-        let id = self.next_drawing_id("annotation");
+        let id = self.next_timeline_id("annotation");
         if matches!(tools.active_tool.as_str(), "text" | "number") {
             let value = drawing_overlay::next_number_value(&self.state, &tools);
             let Some(annotation) = drawing_overlay::place(&tools, point, id, value) else {
@@ -2772,7 +2839,7 @@ impl VideoEditorWindow {
         };
         let total = self.total_duration();
         let position = self.playhead;
-        let segment_id = self.next_drawing_id("drawing");
+        let segment_id = self.next_timeline_id("drawing");
         let selected = self.selected_clip.as_ref().map(|id| id.to_string());
         let keeps_tool = matches!(annotation.kind(), "pen" | "highlight");
         let mut assigned = None;
@@ -3126,7 +3193,12 @@ impl VideoEditorWindow {
             cx.stop_propagation();
             return;
         }
-        if !self.focus_handle.is_focused(window) || self.editing_text(window, cx) {
+        let editor_focused = self.focus_handle.is_focused(window);
+        let button_focused = window
+            .context_stack()
+            .last()
+            .is_some_and(|context| context.contains("Button"));
+        if self.editing_text(window, cx) || (!editor_focused && !button_focused) {
             return;
         }
 
@@ -3134,6 +3206,9 @@ impl VideoEditorWindow {
         let primary = modifiers.control || modifiers.platform;
         let shortcuts = crate::state::state(cx).config.get().shortcuts;
         let key = event.keystroke.key.as_str();
+        if button_focused && !editor_focused && matches!(key, "space" | "enter") {
+            return;
+        }
 
         if primary {
             match key {
@@ -3458,6 +3533,7 @@ impl Render for VideoEditorWindow {
                 is_scrub_audio_available: has_project,
             },
             &theme,
+            window,
             cx,
         );
 
@@ -3639,14 +3715,16 @@ impl Render for VideoEditorWindow {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event: &gpui::MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle, cx);
-                }),
-            )
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
+                    if event.dragging() && this.is_dragging_clip() {
+                        let time = timeline::raw_time_at_position(
+                            event.position.x,
+                            &this.tracks_scroll,
+                            this.pixels_per_second,
+                        );
+                        this.update_timeline_drag(time, f32::from(event.position.x), cx);
+                    }
                     if this.sidebar_resize.is_some() {
                         this.update_sidebar_resize(f32::from(event.position.x), cx);
                     }
@@ -4448,6 +4526,708 @@ mod keyboard_demo_tests {
     }
 
     #[herogpui::test]
+    fn saved_camera_ranges_do_not_rewrite_the_project_on_open(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("CameraBeyondEnd.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: vec![
+                model::CameraSegment {
+                    id: "crossing".into(),
+                    start_time: 3.0,
+                    end_time: 6.0,
+                },
+                model::CameraSegment {
+                    id: "after".into(),
+                    start_time: 6.0,
+                    end_time: 7.0,
+                },
+            ],
+            music_tracks: vec![model::MusicTrack {
+                id: "long-music".into(),
+                start_time: 0.0,
+                end_time: 8.0,
+                ..model::MusicTrack::default()
+            }],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &state);
+        let path = crate::video::project::editor_state_path(&project);
+        let original = std::fs::read(&path).unwrap();
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                let tracks = editor.tracks(true);
+                let camera = tracks
+                    .iter()
+                    .find(|track| track.kind == TrackKind::Camera)
+                    .unwrap();
+                assert_eq!(
+                    camera
+                        .clips
+                        .iter()
+                        .map(|clip| (clip.id.to_string(), clip.start, clip.duration))
+                        .collect::<Vec<_>>(),
+                    vec![("crossing".to_string(), 3.0, 1.0)]
+                );
+                assert_eq!(editor.total_duration(), 4.0);
+                assert_eq!(editor.display_duration(), 8.0);
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[herogpui::test]
+    fn changing_video_speed_retimes_overlay_tracks_and_undoes_together(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut first = model::Segment::spanning(4.0);
+                first.id = "first".into();
+                let mut second = model::Segment::spanning(8.0);
+                second.id = "second".into();
+                second.original_start = 4.0;
+                second.trim_min_start = 4.0;
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![first, second],
+                    zoom_segments: vec![model::ZoomSegment {
+                        id: "zoom".into(),
+                        start_time: 1.0,
+                        end_time: 3.0,
+                        ..model::ZoomSegment::default()
+                    }],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 3.0,
+                        end_time: 5.0,
+                    }],
+                    drawing_segments: vec![model::DrawingSegment {
+                        id: "drawing".into(),
+                        start_time: 4.5,
+                        end_time: 6.0,
+                        ..model::DrawingSegment::default()
+                    }],
+                    ..VideoEditorState::default()
+                };
+                let original = editor.state.clone();
+                editor.selected_clip = Some("first".into());
+                editor.set_selected_segment_speed(2.0, cx);
+                assert_eq!(editor.total_duration(), 6.0);
+                assert_eq!(
+                    (
+                        editor.state.zoom_segments[0].start_time,
+                        editor.state.zoom_segments[0].end_time
+                    ),
+                    (0.5, 1.5)
+                );
+                assert_eq!(
+                    (
+                        editor.state.camera_segments[0].start_time,
+                        editor.state.camera_segments[0].end_time
+                    ),
+                    (1.5, 3.0)
+                );
+                assert_eq!(
+                    (
+                        editor.state.drawing_segments[0].start_time,
+                        editor.state.drawing_segments[0].end_time
+                    ),
+                    (2.5, 4.0)
+                );
+                let edited = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, original);
+                editor.redo(cx);
+                assert_eq!(editor.state, edited);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn deleting_video_clips_bounds_overlays_and_undo_restores_them(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut first = model::Segment::spanning(4.0);
+                first.id = "first".into();
+                let mut second = model::Segment::spanning(8.0);
+                second.id = "second".into();
+                second.original_start = 4.0;
+                second.trim_min_start = 4.0;
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![first, second],
+                    zoom_segments: vec![model::ZoomSegment {
+                        id: "zoom".into(),
+                        start_time: 3.0,
+                        end_time: 6.0,
+                        ..Default::default()
+                    }],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 6.0,
+                        end_time: 7.0,
+                    }],
+                    drawing_segments: vec![model::DrawingSegment {
+                        id: "drawing".into(),
+                        start_time: 3.0,
+                        end_time: 7.0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.selected_clip = Some("second".into());
+                editor.delete_selected_segment(cx);
+                assert_eq!(editor.state.zoom_segments[0].end_time, 4.0);
+                assert!(editor.state.camera_segments.is_empty());
+                assert_eq!(editor.state.drawing_segments[0].end_time, 4.0);
+                let after = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, before);
+                editor.redo(cx);
+                assert_eq!(editor.state, after);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn trimming_video_back_and_forth_keeps_overlay_history(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut segment = model::Segment::spanning(8.0);
+                segment.id = "video".into();
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![segment],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 3.0,
+                        end_time: 7.0,
+                    }],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.begin_clip_drag(
+                    ClipDrag {
+                        id: "video".into(),
+                        kind: TrackKind::Video,
+                        mode: DragMode::ResizeEnd,
+                        grab_offset: 0.0,
+                    },
+                    cx,
+                );
+                editor.update_clip_drag(4.0, cx);
+                assert_eq!(editor.state.camera_segments[0].end_time, 4.0);
+                editor.update_clip_drag(6.0, cx);
+                assert_eq!(editor.state.camera_segments[0].end_time, 6.0);
+                editor.end_clip_drag(cx);
+                let after = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, before);
+                editor.redo(cx);
+                assert_eq!(editor.state, after);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn repeated_start_trim_moves_follow_the_pointer_without_accumulating(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut segment = model::Segment::spanning(8.0);
+                segment.id = "video".into();
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![segment],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.begin_clip_drag(
+                    ClipDrag {
+                        id: "video".into(),
+                        kind: TrackKind::Video,
+                        mode: DragMode::ResizeStart,
+                        grab_offset: 0.25,
+                    },
+                    cx,
+                );
+                editor.update_clip_drag(1.25, cx);
+                assert_eq!(editor.state.segments[0].original_start, 1.0);
+                editor.update_clip_drag(2.25, cx);
+                assert_eq!(editor.state.segments[0].original_start, 2.0);
+                editor.update_clip_drag(0.25, cx);
+                assert_eq!(editor.state, before);
+                editor.end_clip_drag(cx);
+                assert!(editor.history.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn timeline_pointer_can_shorten_and_extend_video_in_one_drag(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            let mut segment = model::Segment::spanning(8.0);
+            segment.id = "video".into();
+            editor.state = VideoEditorState {
+                source_duration: Some(8.0),
+                segments: vec![segment],
+                ..Default::default()
+            };
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        cx.settle();
+        let handle = cx.expect("clip-handle-video-end");
+        let start = handle.center();
+        let shortened = gpui::point(start.x - px(160.0), start.y);
+        let extended = gpui::point(start.x - px(80.0), start.y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            shortened,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_end) - 4.0).abs() < 0.02
+        );
+        cx.simulate_mouse_move(
+            extended,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_end) - 6.0).abs() < 0.02
+        );
+        cx.simulate_mouse_up(extended, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let start = cx.expect("clip-handle-video-start").center();
+        let first = gpui::point(start.x + px(40.0), start.y);
+        let second = gpui::point(start.x + px(80.0), start.y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            first,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 1.0).abs()
+                < 0.02
+        );
+        cx.simulate_mouse_move(
+            second,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 2.0).abs()
+                < 0.02
+        );
+        cx.simulate_mouse_move(
+            start,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let restored = cx.update(|_, cx| editor.read(cx).state.segments[0].original_start);
+        assert!(restored.abs() < 0.02);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            first,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(first, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 1.0).abs()
+                < 0.02
+        );
+        let trimmed_start = cx.expect("clip-handle-video-start").center();
+        let restored_start = gpui::point(trimmed_start.x - px(40.0), trimmed_start.y);
+        cx.simulate_mouse_move(trimmed_start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(
+            trimmed_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            restored_start,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            restored_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let restored = cx.update(|_, cx| editor.read(cx).state.segments[0].original_start);
+        assert!(
+            restored.abs() < 0.02,
+            "restored start: {restored}, handle: {trimmed_start:?}, pointer: {restored_start:?}"
+        );
+    }
+
+    #[herogpui::test]
+    fn zoom_and_camera_ranges_reject_overlapping_adds_and_drags(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.state = VideoEditorState {
+                    source_duration: Some(10.0),
+                    segments: vec![model::Segment::spanning(10.0)],
+                    zoom_segments: vec![
+                        model::ZoomSegment {
+                            id: "z1".into(),
+                            start_time: 1.0,
+                            end_time: 3.0,
+                            ..Default::default()
+                        },
+                        model::ZoomSegment {
+                            id: "z2".into(),
+                            start_time: 4.0,
+                            end_time: 6.0,
+                            ..Default::default()
+                        },
+                    ],
+                    camera_segments: vec![
+                        model::CameraSegment {
+                            id: "c1".into(),
+                            start_time: 1.0,
+                            end_time: 3.0,
+                        },
+                        model::CameraSegment {
+                            id: "c2".into(),
+                            start_time: 4.0,
+                            end_time: 6.0,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.add_clip(TrackKind::Zoom, 2.0, 4.0, cx);
+                editor.add_clip(TrackKind::Camera, 2.0, 4.0, cx);
+                assert_eq!(editor.state, before);
+                for (kind, id) in [(TrackKind::Zoom, "z1"), (TrackKind::Camera, "c1")] {
+                    editor.begin_clip_drag(
+                        ClipDrag {
+                            kind,
+                            id: id.into(),
+                            mode: DragMode::Move,
+                            grab_offset: 0.0,
+                        },
+                        cx,
+                    );
+                    editor.update_clip_drag(3.0, cx);
+                    editor.end_clip_drag(cx);
+                    assert_eq!(editor.state, before);
+                    editor.begin_clip_drag(
+                        ClipDrag {
+                            kind,
+                            id: id.into(),
+                            mode: DragMode::ResizeEnd,
+                            grab_offset: 0.0,
+                        },
+                        cx,
+                    );
+                    editor.update_clip_drag(5.0, cx);
+                    editor.end_clip_drag(cx);
+                    assert_eq!(editor.state, before);
+                }
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn reopening_a_project_does_not_reuse_drawing_or_annotation_ids(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("ExistingDrawings.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let existing = Annotation::Rectangle {
+            id: "annotation-1".into(),
+            x: 1.0,
+            y: 1.0,
+            width: 10.0,
+            height: 10.0,
+            stroke: "#ff0000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        model::save_state(
+            &project,
+            &VideoEditorState {
+                source_duration: Some(8.0),
+                segments: vec![model::Segment::spanning(8.0)],
+                drawing_segments: vec![model::DrawingSegment {
+                    id: "drawing-2".into(),
+                    start_time: 0.0,
+                    end_time: 4.0,
+                    canvas_width: 320.0,
+                    canvas_height: 180.0,
+                    annotations: vec![existing.clone()],
+                }],
+                ..Default::default()
+            },
+        );
+        let editor =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.composition_size = Some((320.0, 180.0));
+                let id = editor.next_timeline_id("annotation");
+                let mut new = existing.clone();
+                if let Annotation::Rectangle { id: new_id, .. } = &mut new {
+                    *new_id = id;
+                }
+                editor.add_drawing_annotation(new, cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+                assert_ne!(
+                    editor.state.drawing_segments[0].id,
+                    editor.state.drawing_segments[1].id
+                );
+                assert_ne!(
+                    editor.state.drawing_segments[0].annotations[0].id(),
+                    editor.state.drawing_segments[1].annotations[0].id()
+                );
+                editor.delete_selected_drawing(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 1);
+                assert_eq!(editor.state.drawing_segments[0].annotations, vec![existing]);
+                editor.undo(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let reopened = model::load_state(&project);
+        assert_eq!(reopened.drawing_segments.len(), 2);
+        assert_ne!(
+            reopened.drawing_segments[0].id,
+            reopened.drawing_segments[1].id
+        );
+        assert_ne!(
+            reopened.drawing_segments[0].annotations[0].id(),
+            reopened.drawing_segments[1].annotations[0].id()
+        );
+    }
+
+    #[herogpui::test]
+    fn drawing_clips_at_the_same_time_have_independent_ids(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(8.0);
+                editor.state.segments = vec![model::Segment::spanning(8.0)];
+                editor.add_clip(TrackKind::Drawing, 1.0, 3.0, cx);
+                editor.add_clip(TrackKind::Drawing, 1.0, 3.0, cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+                assert_ne!(
+                    editor.state.drawing_segments[0].id,
+                    editor.state.drawing_segments[1].id
+                );
+                let first = editor.state.drawing_segments[0].clone();
+                editor.delete_selected_drawing(cx);
+                assert_eq!(editor.state.drawing_segments, vec![first]);
+                editor.undo(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn timeline_pointer_draws_moves_and_resizes_a_zoom_clip(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state = VideoEditorState {
+                source_duration: Some(10.0),
+                segments: vec![model::Segment::spanning(10.0)],
+                ..Default::default()
+            };
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        cx.settle();
+        let lane = cx.expect("timeline-lane-zoom");
+        let start = gpui::point(lane.left() + px(40.0), lane.center().y);
+        let end = gpui::point(lane.left() + px(120.0), lane.center().y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let id = cx.update(|_, cx| {
+            let ranges = &editor.read(cx).state.zoom_segments;
+            assert_eq!(ranges.len(), 1);
+            assert!((ranges[0].start_time - 1.0).abs() < 0.02);
+            assert!((ranges[0].end_time - 3.0).abs() < 0.02);
+            ranges[0].id.clone()
+        });
+        let body = cx.expect(&format!("timeline-clip-{id}")).center();
+        let moved = gpui::point(body.x + px(40.0), body.y);
+        cx.simulate_mouse_move(body, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(body, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            moved,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(moved, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let range = &editor.read(cx).state.zoom_segments[0];
+            assert!((range.start_time - 2.0).abs() < 0.02);
+            assert!((range.end_time - 4.0).abs() < 0.02);
+        });
+        let handle = cx.expect(&format!("clip-handle-{id}-end")).center();
+        let resized = gpui::point(handle.x + px(40.0), handle.y);
+        cx.simulate_mouse_move(handle, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(handle, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            resized,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(resized, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let range = &editor.read(cx).state.zoom_segments[0];
+            assert!((range.start_time - 2.0).abs() < 0.02);
+            assert!((range.end_time - 5.0).abs() < 0.02);
+        });
+        let overlapping_start = gpui::point(lane.left() + px(220.0), lane.center().y);
+        let overlapping_end = gpui::point(lane.left() + px(180.0), lane.center().y);
+        cx.simulate_mouse_move(overlapping_start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(
+            overlapping_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            overlapping_end,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            overlapping_end,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert_eq!(
+            cx.update(|_, cx| editor.read(cx).state.zoom_segments.len()),
+            1
+        );
+    }
+
+    #[herogpui::test]
+    fn empty_and_short_timeline_lanes_fill_the_viewport(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.settle();
+        for duration in [0.0, 2.0] {
+            cx.update(|_, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.state.source_duration = Some(duration);
+                    editor.state.segments = if duration > 0.0 {
+                        vec![model::Segment::spanning(duration)]
+                    } else {
+                        Vec::new()
+                    };
+                    cx.notify();
+                })
+            });
+            cx.settle();
+            let lane = cx.expect("timeline-lane-zoom");
+            let viewport = cx.expect("timeline-tracks-scroll");
+            assert!(
+                lane.size.width >= viewport.size.width - px(0.5),
+                "duration {duration}: lane {lane:?}, viewport {viewport:?}"
+            );
+            if duration == 0.0 {
+                assert!(cx.find("timeline-empty-zoom").is_none());
+            } else {
+                let hint = cx.expect("timeline-empty-zoom");
+                assert!(
+                    hint.size.width >= px(150.0),
+                    "duration {duration}: hint {hint:?}"
+                );
+            }
+        }
+    }
+
+    #[herogpui::test]
+    fn clicking_after_the_video_does_not_add_an_out_of_range_clip(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.source_duration = Some(2.0);
+            editor.state.segments = vec![model::Segment::spanning(2.0)];
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        let lane = cx.expect("timeline-lane-zoom");
+        cx.click_at(gpui::point(lane.left() + px(160.0), lane.center().y));
+        assert!(cx.update(|_, cx| editor.read(cx).state.zoom_segments.is_empty()));
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.state.source_duration = None;
+                editor.state.segments.clear();
+                cx.notify();
+            })
+        });
+        cx.settle();
+        cx.click_at(gpui::point(lane.left() + px(40.0), lane.center().y));
+        assert!(cx.update(|_, cx| editor.read(cx).state.zoom_segments.is_empty()));
+    }
+
+    #[herogpui::test]
     fn new_project_persists_materialized_builtin_audio_with_default_timeline(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -4480,7 +5260,8 @@ mod keyboard_demo_tests {
         assert_eq!(saved.music_tracks[0].source, "system");
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
     fn loaded_invalid_leading_timeline_segment_updates_preview_and_export(
         cx: &mut gpui::TestAppContext,
@@ -4514,7 +5295,7 @@ mod keyboard_demo_tests {
                 .write_frame([24, 24, 220, 255].repeat(320 * 180))
                 .unwrap();
         }
-        encoder.finish().unwrap();
+        encoder.finish_cancellable(&|| false).unwrap();
 
         let saved_state = VideoEditorState {
             source_duration: Some(2.0),
@@ -4686,6 +5467,38 @@ mod keyboard_demo_tests {
                 assert!(editor.is_playing);
             })
             .unwrap();
+    }
+
+    #[herogpui::test]
+    fn editor_shortcuts_work_when_a_button_is_focused(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let editor = VideoEditorWindow::new_for_test(None, cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.settle();
+        let mut reached_button = false;
+        for _ in 0..40 {
+            cx.press("tab");
+            reached_button = cx.update(|window, _| {
+                window
+                    .context_stack()
+                    .last()
+                    .is_some_and(|context| context.contains("Button"))
+            });
+            if reached_button {
+                break;
+            }
+        }
+        assert!(reached_button);
+        cx.press("c");
+        assert!(cx.update(|_, cx| editor.read(cx).is_cut_tool_active));
+        cx.press("c");
+        assert!(!cx.update(|_, cx| editor.read(cx).is_cut_tool_active));
     }
 
     #[herogpui::test]
@@ -4957,25 +5770,33 @@ mod keyboard_demo_tests {
         assert!(button.bottom() <= viewport.height);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
     fn drawing_tool_ui_edit_survives_reopen_and_matches_export(cx: &mut gpui::TestAppContext) {
         use herogpui::test::TestWindowExt;
 
+        let narrow = std::env::var_os("PORATAKE_TEST_NARROW_VIDEO").is_some();
         let dir = tempfile::tempdir().unwrap();
         test_state(cx, dir.path());
         let notifications = crate::system::notification::capture_for_test();
         let project = dir.path().join("Drawing workflow.poratake");
         std::fs::create_dir(&project).unwrap();
         let recording = project::recording_video_path(&project);
-        std::fs::write(
-            &recording,
-            include_bytes!("../../ui/parity/fixtures/capture.mov"),
-        )
-        .unwrap();
-        let source_info = crate::video::decoder::VideoDecoder::open(&recording)
-            .expect("open recording fixture")
-            .info();
+        let recording_bytes = std::env::var_os("PORATAKE_TEST_RECORDING")
+            .map(|path| std::fs::read(path).expect("read test recording"))
+            .unwrap_or_else(|| include_bytes!("../../ui/parity/fixtures/capture.mov").to_vec());
+        std::fs::write(&recording, recording_bytes).unwrap();
+        let source =
+            crate::video::decoder::VideoDecoder::open(&recording).expect("open recording fixture");
+        let source_info = source.info();
+        let first_frame = source.frame_at(0.0).expect("decode recording fixture");
+        assert!(first_frame
+            .bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[..3].iter().any(|channel| *channel > 32)));
         let mut initial_state = model::VideoEditorState {
             source_duration: Some(source_info.duration),
             segments: vec![model::Segment::spanning(source_info.duration)],
@@ -4993,8 +5814,17 @@ mod keyboard_demo_tests {
             window.focus(&editor.focus_handle, cx);
             editor
         });
+        if narrow {
+            cx.simulate_resize(size(px(720.0), px(520.0)));
+        }
         cx.run_until_parked();
         cx.settle();
+        if narrow {
+            assert_eq!(
+                cx.update(|window, _| window.viewport_size()),
+                size(px(720.0), px(520.0))
+            );
+        }
         let original_preview = cx.update(|_, app| {
             editor.update(app, |editor, _| {
                 editor
@@ -5005,6 +5835,11 @@ mod keyboard_demo_tests {
                     .to_vec()
             })
         });
+        assert!(original_preview
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[..3].iter().any(|channel| *channel > 32)));
 
         let drawing_shortcut = cx.update(|_, app| {
             crate::state::state(app)
@@ -5165,8 +6000,17 @@ mod keyboard_demo_tests {
             window.focus(&editor.focus_handle, cx);
             editor
         });
+        if narrow {
+            cx.simulate_resize(size(px(720.0), px(520.0)));
+        }
         cx.run_until_parked();
         cx.settle();
+        if narrow {
+            assert_eq!(
+                cx.update(|window, _| window.viewport_size()),
+                size(px(720.0), px(520.0))
+            );
+        }
         let reopened_preview = cx.update(|_, app| {
             reopened.update(app, |editor, _| {
                 assert_eq!(editor.state, saved_state);
@@ -5296,9 +6140,89 @@ mod keyboard_demo_tests {
             edited_mean_error + 8.0 < original_mean_error,
             "decoded export changed pixels do not favor the edited preview: edited MAE={edited_mean_error:.2}, original MAE={original_mean_error:.2}"
         );
+
+        let later_time = (source_info.duration * 7.0).floor() / 10.0;
+        reopened.update(&mut cx.cx, |editor, cx| editor.set_playhead(later_time, cx));
+        cx.run_until_parked();
+        cx.settle();
+        let later_preview = cx.update(|_, app| {
+            reopened.update(app, |editor, _| {
+                editor
+                    .preview_image()
+                    .expect("later editor preview")
+                    .as_bytes(0)
+                    .expect("later preview pixels")
+                    .to_vec()
+            })
+        });
+        let later_source = source.frame_at(later_time).expect("later recording frame");
+        let source_changed = first_frame
+            .bgra
+            .iter()
+            .zip(later_source.bgra.iter())
+            .filter(|(first, later)| first.abs_diff(**later) > 32)
+            .count()
+            > 20;
+        if source_changed {
+            assert!(
+                reopened_preview
+                    .iter()
+                    .zip(&later_preview)
+                    .any(|(first, later)| first.abs_diff(*later) > 16),
+                "the preview did not update when the recorded content changed"
+            );
+        }
+        let later_frame = exported.frame_at(later_time).expect("later exported frame");
+        assert_eq!(later_frame.bgra.len(), later_preview.len());
+        let later_error = later_frame
+            .bgra
+            .iter()
+            .zip(&later_preview)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum::<u64>() as f64
+            / later_preview.len() as f64;
+        assert!(
+            later_error < 8.0,
+            "later preview/export mean error at {later_time}s: {later_error}"
+        );
+        if let Some(directory) = std::env::var_os("PORATAKE_TEST_VIDEO_EVIDENCE") {
+            let directory = PathBuf::from(directory);
+            assert!(narrow && directory.is_absolute() && directory.is_dir());
+            let save_frame = |name: &str, pixels: &[u8]| {
+                let mut rgba = pixels.to_vec();
+                for pixel in rgba.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                image::RgbaImage::from_raw(frame.width, frame.height, rgba)
+                    .unwrap()
+                    .save(directory.join(name))
+                    .unwrap();
+            };
+            save_frame("narrow-video-preview.png", &reopened_preview);
+            save_frame("narrow-video-export-frame.png", &frame.bgra);
+            save_frame("narrow-video-later-preview.png", &later_preview);
+            save_frame("narrow-video-later-export-frame.png", &later_frame.bgra);
+            std::fs::copy(&output, directory.join("narrow-video-export.mp4")).unwrap();
+            let metrics = serde_json::json!({
+                "viewport": [720, 520],
+                "frameSize": [frame.width, frame.height],
+                "firstMeanError": mean_error,
+                "firstAnnotationRegionMeanError": roi_mean_error,
+                "changedPixels": changed_preview_pixels,
+                "editedChangedPixelMeanError": edited_mean_error,
+                "originalChangedPixelMeanError": original_mean_error,
+                "laterTime": later_time,
+                "laterMeanError": later_error,
+            });
+            std::fs::write(
+                directory.join("narrow-video-export-metrics.json"),
+                serde_json::to_vec_pretty(&metrics).unwrap(),
+            )
+            .unwrap();
+        }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn cancelled_export_finishes_before_a_retry_can_start(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -5509,6 +6433,13 @@ mod keyboard_demo_tests {
 
         cx.simulate_keystrokes(window.into(), "space");
         assert!(!window.update(cx, |editor, _, _| editor.is_playing).unwrap());
+        cx.simulate_keystrokes(window.into(), "c ctrl-s cmd-s");
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_cut_tool_active);
+                assert_ne!(editor.active_tab(), SidebarTab::Export);
+            })
+            .unwrap();
     }
 
     #[herogpui::test]

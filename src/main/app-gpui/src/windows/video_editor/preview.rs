@@ -203,6 +203,16 @@ fn to_render_image_with_alpha(
     pixmap: &Pixmap,
     preserve_alpha: bool,
 ) -> Option<Arc<gpui::RenderImage>> {
+    if !preserve_alpha {
+        let buffer = image::RgbaImage::from_raw(
+            pixmap.width(),
+            pixmap.height(),
+            crate::video::composition::opaque::bgra(pixmap),
+        )?;
+        return Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(buffer)
+        ])));
+    }
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
     for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
@@ -223,7 +233,7 @@ fn to_render_image_with_alpha(
                 unpremultiply(pixel[2]),
                 unpremultiply(pixel[1]),
                 unpremultiply(pixel[0]),
-                if preserve_alpha { alpha } else { 255 },
+                alpha,
             ]),
         );
     }
@@ -271,8 +281,7 @@ mod tests {
 
         let opaque = to_render_image_opaque(&pixmap).expect("opaque image");
         let opaque_pixels = opaque.as_bytes(0).expect("opaque pixels");
-        assert_eq!(&pixels[..3], &opaque_pixels[..3]);
-        assert_eq!(opaque_pixels[3], 255);
+        assert_eq!(opaque_pixels, &[25, 50, 100, 255]);
     }
 
     #[test]

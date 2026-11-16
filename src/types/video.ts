@@ -7,6 +7,7 @@ export interface RecorderResponse {
   outputPath?: string;
   cursorPath?: string;
   cameraPath?: string;
+  cameraTrackMissing?: boolean;
   keysPath?: string;
   systemAudioPath?: string;
   micAudioPath?: string;
@@ -17,6 +18,7 @@ export interface CompletedRecording {
   outputPath: string;
   cursorPath?: string;
   cameraPath?: string;
+  cameraTrackMissing?: boolean;
   keysPath?: string;
   systemAudioPath?: string;
   micAudioPath?: string;

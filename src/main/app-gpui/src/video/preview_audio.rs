@@ -257,11 +257,27 @@ struct Playing {
     stem: Stem,
 }
 
+enum OutputDevice {
+    Native(MixerDeviceSink),
+    #[cfg(test)]
+    Software(rodio::mixer::Mixer),
+}
+
+impl OutputDevice {
+    fn mixer(&self) -> &rodio::mixer::Mixer {
+        match self {
+            Self::Native(device) => device.mixer(),
+            #[cfg(test)]
+            Self::Software(mixer) => mixer,
+        }
+    }
+}
+
 struct Output {
     stems: Vec<Playing>,
     anchor: Option<(Instant, f64)>,
     playing: bool,
-    device: MixerDeviceSink,
+    device: OutputDevice,
 }
 
 impl Output {
@@ -316,6 +332,7 @@ impl PreviewAudio {
             self.output = None;
             return;
         }
+        let playing = self.output.as_ref().is_some_and(|output| output.playing);
         let device = match self.take_or_open_device() {
             Some(device) => device,
             None => {
@@ -326,7 +343,6 @@ impl PreviewAudio {
         self.cache = built.cache;
         self.signature = built.signature;
         self.built_once = true;
-        let playing = self.output.as_ref().is_some_and(|output| output.playing);
         let mut output = Output {
             stems: Vec::new(),
             anchor: None,
@@ -462,12 +478,12 @@ impl PreviewAudio {
             .is_some_and(|output| output.program().next().is_some())
     }
 
-    fn take_or_open_device(&mut self) -> Option<MixerDeviceSink> {
+    fn take_or_open_device(&mut self) -> Option<OutputDevice> {
         if let Some(output) = self.output.take() {
             return Some(output.device);
         }
         match rodio::DeviceSinkBuilder::open_default_sink() {
-            Ok(device) => Some(device),
+            Ok(device) => Some(OutputDevice::Native(device)),
             Err(error) => {
                 if !self.device_error_logged {
                     self.device_error_logged = true;
@@ -479,7 +495,7 @@ impl PreviewAudio {
     }
 }
 
-fn connect(device: &MixerDeviceSink, samples: Arc<Vec<i16>>) -> Stem {
+fn connect(device: &OutputDevice, samples: Arc<Vec<i16>>) -> Stem {
     let player = Player::connect_new(device.mixer());
     player.append(PcmSource::at(samples, Duration::ZERO));
     player.pause();
@@ -489,6 +505,77 @@ fn connect(device: &MixerDeviceSink, samples: Arc<Vec<i16>>) -> Stem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installing_new_stems_preserves_playing_and_paused_transport() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct MixerThread {
+            stop: Arc<AtomicBool>,
+            worker: Option<std::thread::JoinHandle<()>>,
+        }
+
+        impl Drop for MixerThread {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                if let Some(worker) = self.worker.take() {
+                    worker.join().unwrap();
+                }
+            }
+        }
+
+        let (mixer, mut source) = rodio::mixer::mixer(channels(), sample_rate());
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let _worker = MixerThread {
+            stop,
+            worker: Some(std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let _ = source.next();
+                    std::thread::yield_now();
+                }
+            })),
+        };
+        let state = VideoEditorState::default();
+        let build = || BuiltStems {
+            stems: vec![BuiltStem {
+                volume: VolumeSource::SystemAudio,
+                program: true,
+                samples: Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]),
+            }],
+            cache: HashMap::new(),
+            signature: StemSignature::capture(&state),
+        };
+        let device = OutputDevice::Software(mixer);
+        let original = connect(&device, Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]));
+        original.player.play();
+        let mut preview = PreviewAudio {
+            output: Some(Output {
+                stems: vec![Playing {
+                    volume: VolumeSource::SystemAudio,
+                    program: true,
+                    stem: original,
+                }],
+                anchor: None,
+                playing: true,
+                device,
+            }),
+            ..PreviewAudio::default()
+        };
+
+        preview.install(build(), &state, 0.25);
+        let output = preview.output.as_ref().unwrap();
+        assert!(output.playing);
+        assert_eq!(output.anchor.unwrap().1, 0.25);
+        assert!(!output.stems[0].stem.player.is_paused());
+
+        preview.pause_all();
+        preview.install(build(), &state, 0.5);
+        let output = preview.output.as_ref().unwrap();
+        assert!(!output.playing);
+        assert!(output.anchor.is_none());
+        assert!(output.stems[0].stem.player.is_paused());
+    }
 
     #[test]
     fn a_stem_volume_follows_the_model_it_came_from() {

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use tiny_skia::Pixmap;
 
+use crate::video::composition::opaque::{bgra as to_bgra, rgba as to_rgba};
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
 use crate::video::decoder::VideoDecoder;
@@ -548,30 +549,8 @@ fn run_gif_direct(
 }
 
 fn to_opaque_rgba_buffer(pixmap: &Pixmap) -> image::RgbaImage {
-    let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
-    for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
-        let alpha = pixel[3];
-        let unpremultiply = |value: u8| -> u8 {
-            if alpha == 0 {
-                0
-            } else {
-                ((value as u32 * 255 + alpha as u32 / 2) / alpha as u32).min(255) as u8
-            }
-        };
-        let x = index as u32 % pixmap.width();
-        let y = index as u32 / pixmap.width();
-        buffer.put_pixel(
-            x,
-            y,
-            image::Rgba([
-                unpremultiply(pixel[0]),
-                unpremultiply(pixel[1]),
-                unpremultiply(pixel[2]),
-                255,
-            ]),
-        );
-    }
-    buffer
+    image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), to_rgba(pixmap))
+        .expect("pixmap dimensions match its pixels")
 }
 
 fn compose_pixmap(
@@ -632,26 +611,6 @@ fn to_pixmap(frame: &crate::video::decoder::DecodedFrame) -> Option<Pixmap> {
     Some(pixmap)
 }
 
-/// Unpremultiplies into the BGRA layout Media Foundation's RGB32 input expects.
-fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(pixmap.data().len());
-    for pixel in pixmap.data().as_chunks::<4>().0 {
-        let alpha = pixel[3];
-        let unpremultiply = |value: u8| -> u8 {
-            if alpha == 0 {
-                0
-            } else {
-                ((value as u32 * 255 + alpha as u32 / 2) / alpha as u32).min(255) as u8
-            }
-        };
-        bytes.push(unpremultiply(pixel[2]));
-        bytes.push(unpremultiply(pixel[1]));
-        bytes.push(unpremultiply(pixel[0]));
-        bytes.push(255);
-    }
-    bytes
-}
-
 fn build_audio(
     project_path: &Path,
     state: &VideoEditorState,
@@ -703,6 +662,9 @@ fn build_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    include!("gif_parity_diagnostic.rs");
 
     #[cfg(windows)]
     fn first_audio_sample_time(path: &Path) -> i64 {
@@ -788,7 +750,300 @@ mod tests {
             .expect("read exported audio sample timestamp")
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires development FFmpeg"]
+    fn delayed_camera_toggle_survives_edits_and_matches_export() {
+        use crate::windows::video_editor::{model, preview};
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("delayed-camera.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut video = Encoder::create(
+            &project::recording_video_path(&project),
+            Settings {
+                width: 160,
+                height: 120,
+                frame_rate: 2,
+                bitrate: 2_000_000,
+                has_audio: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..40 {
+            video
+                .write_frame([180, 50, 10, 255].repeat(160 * 120))
+                .unwrap();
+        }
+        video.finish().unwrap();
+        std::fs::write(
+            project::camera_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/camera-delayed-toggle.mov"),
+        )
+        .unwrap();
+        std::fs::write(
+            project::camera_meta_path(&project),
+            serde_json::to_vec(&serde_json::json!({
+                "videoFile": "camera.mov",
+                "meta": {"visibleRanges": [{"start": 10., "end": 11.5}, {"start": 16., "end": 19.8}]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(20.),
+            segments: vec![
+                model::Segment {
+                    original_start: 10.,
+                    original_end: 12.,
+                    ..model::Segment::spanning(20.)
+                },
+                model::Segment {
+                    id: "faster".into(),
+                    original_start: 16.,
+                    speed: Some(2.),
+                    ..model::Segment::spanning(20.)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        let meta = sidecars::load_camera_meta(&project).unwrap();
+        state.camera_segments = sidecars::map_visible_ranges_to_segments(
+            meta.visible_ranges.as_deref(),
+            &state.segments,
+            4.,
+        );
+        assert_eq!(state.camera_segments.len(), 2);
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "12".into();
+        state.wallpaper.enabled = false;
+        state.camera_style.position = "top-left".into();
+        state.camera_style.size = "large".into();
+        state.camera_style.padding = 0.;
+        state.camera_style.border_radius = 0.;
+        state.camera_style.shadow = 0.;
+        let mut preview = preview::Source::open(&project, state.clone()).unwrap();
+        let output = directory.path().join("edited.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap();
+        for (time, expected_red) in [
+            (0.25, Some(37_u8)),
+            (1.25, Some(71)),
+            (1.75, None),
+            (2.25, Some(145)),
+            (2.75, Some(219)),
+            (3.75, Some(110)),
+        ] {
+            let expected = to_bgra(&preview.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            let mean = expected
+                .iter()
+                .zip(actual.bgra.iter())
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum::<u64>() as f64
+                / expected.len() as f64;
+            assert!(mean < 3., "preview/export channel error {mean} at {time}s");
+            let pixel = (20 * 160 + 20) * 4;
+            let red = expected[pixel + 2];
+            if let Some(value) = expected_red {
+                assert!(
+                    red.abs_diff(value) <= 20,
+                    "preview red={red}, expected {value} at {time}s"
+                );
+            } else {
+                assert!(red < 30, "camera was visible at {time}s: red={red}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires development FFmpeg"]
+    fn sparse_screen_pause_matches_preview_after_trim_and_export() {
+        use crate::windows::video_editor::{model, preview};
+
+        let cases: [(&str, &[u8], f64, [(f64, f64); 2], &[(f64, u8)]); 2] = [
+            (
+                "pause",
+                include_bytes!("../ui/parity/fixtures/sparse-screen-pause.mov"),
+                31.,
+                [(28., 29.), (30., 31.)],
+                &[(0.25, 34), (0.75, 34), (1.25, 119), (1.75, 119)],
+            ),
+            (
+                "busy",
+                include_bytes!("../ui/parity/fixtures/busy-screen-change.mov"),
+                25.,
+                [(9., 11.), (24., 25.)],
+                &[(0.5, 34), (1.25, 119), (1.75, 119), (2.5, 119)],
+            ),
+        ];
+        for (name, fixture, source_duration, spans, samples) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let project = directory.path().join(format!("{name}.poratake"));
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project::recording_video_path(&project), fixture).unwrap();
+            let mut state = VideoEditorState {
+                source_duration: Some(source_duration),
+                segments: vec![
+                    model::Segment {
+                        original_start: spans[0].0,
+                        original_end: spans[0].1,
+                        ..model::Segment::spanning(source_duration)
+                    },
+                    model::Segment {
+                        id: "second".into(),
+                        original_start: spans[1].0,
+                        original_end: spans[1].1,
+                        ..model::Segment::spanning(source_duration)
+                    },
+                ],
+                ..VideoEditorState::default()
+            };
+            state.export_settings.resolution = "original".into();
+            state.export_settings.frame_rate = "12".into();
+            state.wallpaper.enabled = false;
+            let mut preview = preview::Source::open(&project, state.clone()).unwrap();
+            let output = directory.path().join("edited.mp4");
+            run(
+                Request {
+                    project,
+                    output: output.clone(),
+                    state,
+                },
+                &mut |_| {},
+                &|| false,
+            )
+            .unwrap();
+            let exported = VideoDecoder::open(&output).unwrap();
+            for &(time, value) in samples {
+                let expected = to_bgra(&preview.compose(time, None).unwrap());
+                let actual = exported.frame_at(time).unwrap();
+                let mean = expected
+                    .iter()
+                    .zip(actual.bgra.iter())
+                    .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                    .sum::<u64>() as f64
+                    / expected.len() as f64;
+                assert!(mean < 3., "preview/export channel error {mean} at {time}s");
+                let pixel = (32 * 64 + 32) * 4 + 2;
+                assert!(
+                    expected[pixel].abs_diff(value) <= 5,
+                    "preview pixel {} at {time}s",
+                    expected[pixel]
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires development FFmpeg"]
+    fn static_screen_microphone_toggle_matches_preview_after_trim() {
+        use crate::video::audio_tracks::VolumeSource;
+        use crate::video::preview_audio::{self, RebuildInputs};
+        use crate::windows::video_editor::model;
+        use std::collections::HashMap;
+
+        let cases: [(&str, &[u8], f64); 2] = [
+            (
+                "static",
+                include_bytes!("../ui/parity/fixtures/mic-static-clock.m4a"),
+                19.5,
+            ),
+            (
+                "delayed",
+                include_bytes!("../ui/parity/fixtures/mic-delayed-clock.m4a"),
+                20.5,
+            ),
+        ];
+        for (name, microphone, start) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let project = directory.path().join(format!("{name}-microphone.poratake"));
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(
+                project::recording_video_path(&project),
+                include_bytes!("../ui/parity/fixtures/busy-screen-change.mov"),
+            )
+            .unwrap();
+            std::fs::write(project::mic_audio_path(&project), microphone).unwrap();
+            let mut state = VideoEditorState {
+                source_duration: Some(25.),
+                segments: vec![model::Segment {
+                    original_start: start,
+                    original_end: start + 1.25,
+                    ..model::Segment::spanning(25.)
+                }],
+                ..VideoEditorState::default()
+            };
+            state.wallpaper.enabled = false;
+            state.export_settings.resolution = "original".into();
+            state.export_settings.frame_rate = "12".into();
+            let built = preview_audio::build_stems(RebuildInputs::capture(
+                &project,
+                &state,
+                &HashMap::new(),
+            ));
+            assert!(built
+                .stems
+                .iter()
+                .any(|stem| stem.volume == VolumeSource::MicAudio));
+            let tracks: Vec<audio::Track> = built
+                .stems
+                .iter()
+                .map(|stem| audio::Track {
+                    samples: stem.samples.as_ref().clone(),
+                    volume: stem.volume.resolve(&state),
+                })
+                .collect();
+            let preview = audio::mix(&tracks, (1.25 * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2);
+            let output = directory.path().join("static-microphone.mp4");
+            run(
+                Request {
+                    project,
+                    output: output.clone(),
+                    state,
+                },
+                &mut |_| {},
+                &|| false,
+            )
+            .unwrap();
+            let exported = audio::decode(&output).expect("exported microphone");
+            for (time, audible) in [(0.2, false), (0.6, true), (0.9, true)] {
+                let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+                let end = start + AUDIO_SAMPLE_RATE as usize / 50 * 2;
+                let mut levels = Vec::new();
+                for samples in [&preview, &exported] {
+                    let mean = samples[start..end]
+                        .iter()
+                        .map(|sample| f64::from(sample.unsigned_abs()))
+                        .sum::<f64>()
+                        / (end - start) as f64;
+                    assert!(
+                        if audible { mean > 8000. } else { mean < 1000. },
+                        "audio level {mean} at {time}s"
+                    );
+                    levels.push(mean);
+                }
+                assert!(
+                    (levels[0] - levels[1]).abs() < 1500.,
+                    "preview/export levels differ at {time}s: {levels:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[test]
     fn audio_preview_and_export_follow_volume_changes_across_a_cut() {
         use crate::video::audio_tracks::VolumeSource;
@@ -991,7 +1246,10 @@ mod tests {
                 .map(|(actual, expected)| f64::from((*actual as i32 - *expected as i32).abs()))
                 .sum::<f64>()
                 / (end - start) as f64;
+            #[cfg(windows)]
             assert!(difference > 100., "keyboard click missing at {time}s");
+            #[cfg(target_os = "macos")]
+            assert!(difference > 0., "keyboard click missing at {time}s");
             assert!(
                 error < difference / 2.,
                 "keyboard click export error {error} at {time}s"
@@ -999,7 +1257,139 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires development FFmpeg"]
+    fn macos_audio_sidecars_mix_and_mute_in_preview_and_export() {
+        use crate::video::audio_tracks::VolumeSource;
+        use crate::video::preview_audio::{self, RebuildInputs};
+        use crate::windows::video_editor::model;
+        use std::collections::HashMap;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Audio sidecars.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let recording = project::recording_video_path(&project);
+        std::fs::write(
+            &recording,
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let duration = VideoDecoder::open(&recording).unwrap().info().duration;
+        assert!(duration >= 1.8);
+        for (path, first_frequency, second_frequency) in [
+            (project::system_audio_path(&project), 440, 660),
+            (project::mic_audio_path(&project), 880, 1100),
+        ] {
+            let output = std::process::Command::new(crate::video::ffmpeg_path())
+                .args(["-v", "error", "-f", "lavfi", "-i"])
+                .arg(format!(
+                    "aevalsrc=exprs='0.125*sin(2*PI*if(lt(t,0.8),{first_frequency},{second_frequency})*t)':sample_rate=48000:duration=2"
+                ))
+                .args(["-ac", "2", "-c:a", "aac_at", "-y"])
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let mut state = VideoEditorState {
+            source_duration: Some(duration),
+            segments: vec![
+                model::Segment {
+                    original_end: 0.6,
+                    ..model::Segment::spanning(duration)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: 1.0,
+                    original_end: 1.6,
+                    ..model::Segment::spanning(duration)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "10".into();
+        state.export_settings.open_in_finder = false;
+
+        for (system_enabled, microphone_enabled) in [(true, true), (true, false), (false, true)] {
+            state.audio_style.system_audio_enabled = system_enabled;
+            state.audio_style.mic_audio_enabled = microphone_enabled;
+            let built = preview_audio::build_stems(RebuildInputs::capture(
+                &project,
+                &state,
+                &HashMap::new(),
+            ));
+            assert_eq!(
+                built
+                    .stems
+                    .iter()
+                    .any(|stem| stem.volume == VolumeSource::SystemAudio),
+                system_enabled
+            );
+            assert_eq!(
+                built
+                    .stems
+                    .iter()
+                    .any(|stem| stem.volume == VolumeSource::MicAudio),
+                microphone_enabled
+            );
+            let tracks: Vec<audio::Track> = built
+                .stems
+                .iter()
+                .map(|stem| audio::Track {
+                    samples: stem.samples.as_ref().clone(),
+                    volume: stem.volume.resolve(&state),
+                })
+                .collect();
+            let preview = audio::mix(&tracks, (1.2 * f64::from(AUDIO_SAMPLE_RATE)) as usize);
+            assert_eq!(
+                build_audio(&project, &state, 1.2, 1.2),
+                Some(preview.clone())
+            );
+            let output = directory.path().join(format!(
+                "system-{system_enabled}-mic-{microphone_enabled}.mp4"
+            ));
+            run(
+                Request {
+                    project: project.clone(),
+                    output: output.clone(),
+                    state: state.clone(),
+                },
+                &mut |_| {},
+                &|| false,
+            )
+            .unwrap();
+            let exported = audio::decode(&output).expect("decode exported audio");
+            for (time, system_frequency, mic_frequency) in [(0.2, 440., 880.), (0.8, 660., 1100.)] {
+                let start = (time * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+                let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
+                for (name, samples) in [("preview", &preview), ("export", &exported)] {
+                    let system = audio::tone_strength(&samples[start..end], system_frequency);
+                    let mic = audio::tone_strength(&samples[start..end], mic_frequency);
+                    if system_enabled {
+                        assert!(system > 0.5, "{name} system tone at {time}: {system}");
+                    } else {
+                        assert!(system < 0.1, "{name} muted system at {time}: {system}");
+                    }
+                    if microphone_enabled {
+                        assert!(mic > 0.5, "{name} mic tone at {time}: {mic}");
+                    } else {
+                        assert!(mic < 0.1, "{name} muted mic at {time}: {mic}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[test]
     fn first_frame_intro_matches_preview_and_delays_exported_audio() {
         use crate::video::audio_tracks::VolumeSource;
@@ -1031,8 +1421,10 @@ mod tests {
             .collect();
         encoder.write_audio(audio::to_bytes(&samples), 0).unwrap();
         for index in 0..24 {
-            let color = if index < 12 {
+            let color = if index < 2 {
                 [32, 64, 192, 255]
+            } else if index < 12 {
+                [32, 192, 64, 255]
             } else {
                 [192, 64, 32, 255]
             };
@@ -1089,6 +1481,7 @@ mod tests {
         for (time, expected_color) in [
             (0.0, [48_u8, 32, 240]),
             (frame_duration, [32, 64, 192]),
+            (frame_duration + 2.0 / 12.0, [32, 192, 64]),
             (frame_duration + 1.0, [192, 64, 32]),
         ] {
             let preview_frame = preview.compose(time, None).unwrap();
@@ -1116,14 +1509,42 @@ mod tests {
             }
         }
 
-        let first_audio_time = first_audio_sample_time(&output) as f64 / 10_000_000.0;
-        let aac_packet_duration = 1024.0 / f64::from(AUDIO_SAMPLE_RATE);
-        assert!(
-            (first_audio_time - frame_duration).abs() <= aac_packet_duration,
-            "decoded audio starts at {first_audio_time}s, expected first-frame offset {frame_duration}s"
-        );
+        #[cfg(windows)]
+        {
+            let first_audio_time = first_audio_sample_time(&output) as f64 / 10_000_000.0;
+            let aac_packet_duration = 1024.0 / f64::from(AUDIO_SAMPLE_RATE);
+            assert!(
+                (first_audio_time - frame_duration).abs() <= aac_packet_duration,
+                "decoded audio starts at {first_audio_time}s, expected first-frame offset {frame_duration}s"
+            );
+        }
         let exported_audio = audio::decode(&output).expect("decoded exported audio");
+        #[cfg(windows)]
         assert!(audio::tone_strength(&exported_audio[..tone_window], 440.) > 0.5);
+        #[cfg(target_os = "macos")]
+        {
+            let quiet_end = (frame_duration * 0.5 * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let tone_start = ((frame_duration + 0.1) * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
+            let quiet: f64 = exported_audio[..quiet_end]
+                .iter()
+                .map(|sample| f64::from(sample.unsigned_abs()))
+                .sum::<f64>()
+                / quiet_end as f64;
+            let tone = &exported_audio[tone_start..tone_start + tone_window];
+            let active: f64 = tone
+                .iter()
+                .map(|sample| f64::from(sample.unsigned_abs()))
+                .sum::<f64>()
+                / tone.len() as f64;
+            assert!(
+                quiet < active / 20.,
+                "intro is not silent: {quiet} versus {active}"
+            );
+            assert!(
+                audio::tone_strength(tone, 440.) > 0.5,
+                "exported audio is corrupted after intro"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -1530,7 +1951,8 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[test]
     fn edited_video_exports_the_preview_and_reopens_the_saved_project() {
         use crate::editor::annotations::Annotation;
@@ -1768,6 +2190,31 @@ mod tests {
                     "the exported {style} differs from preview at {time}s"
                 );
             }
+            let scaled = preview.compose(time, Some((172, 102))).unwrap();
+            assert_eq!((scaled.width(), scaled.height()), (172, 102));
+            let scaled_pixels = to_bgra(&scaled);
+            let mut scaled_error = 0_u64;
+            for y in 34..45 {
+                for x in 0..12 {
+                    let target = (y * 172 + x) * 4;
+                    for channel in 0..3 {
+                        let mut sum = 0_u16;
+                        for dy in 0..2 {
+                            for dx in 0..2 {
+                                let source = (((y * 2 + dy) * 344 + x * 2 + dx) * 4) + channel;
+                                sum += u16::from(actual.bgra[source]);
+                            }
+                        }
+                        let decoded = ((sum + 2) / 4) as u8;
+                        scaled_error +=
+                            u64::from(decoded.abs_diff(scaled_pixels[target + channel]));
+                    }
+                }
+            }
+            assert!(
+                scaled_error as f64 / (11. * 12. * 3.) < 8.,
+                "scaled preview clipped blur differs from decoded export at {time}s"
+            );
             for (x, y) in [(0, 80), (23, 80), (10, 68), (10, 90)] {
                 let pixel = (y * info.width as usize + x) * 4;
                 let effect: u16 = expected[pixel..pixel + 3]
@@ -1803,6 +2250,121 @@ mod tests {
                     deviation <= 40,
                     "clipped blur changed an exported pixel outside its bounds at {time}s, {x},{y}: {deviation}"
                 );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an isolated native recording"]
+    fn macos_recording_trim_and_zoom_match_the_decoded_export() {
+        use crate::windows::video_editor::{model, preview};
+
+        let source = std::env::var_os("PORATAKE_TEST_RECORDING")
+            .map(PathBuf::from)
+            .expect("PORATAKE_TEST_RECORDING");
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("recording.mov");
+        std::fs::copy(source, &recording).expect("copy isolated recording");
+        let info = VideoDecoder::open(&recording).unwrap().info();
+        assert!(info.is_valid() && info.duration > 1.4, "{info:?}");
+        let mut state = VideoEditorState {
+            source_duration: Some(info.duration),
+            segments: vec![
+                model::Segment {
+                    id: "first".into(),
+                    original_start: 0.1,
+                    original_end: 0.6,
+                    ..model::Segment::spanning(info.duration)
+                },
+                model::Segment {
+                    id: "after-cut".into(),
+                    original_start: info.duration - 0.7,
+                    original_end: info.duration - 0.2,
+                    ..model::Segment::spanning(info.duration)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "8".into();
+        state.export_settings.open_in_finder = false;
+        state.zoom_segments.push(model::ZoomSegment {
+            id: "native-zoom".into(),
+            start_time: 0.,
+            end_time: 1.,
+            zoom_level: 1.5,
+            transition_in_duration: Some(0.),
+            transition_out_duration: Some(0.),
+            target_mode: Some("manual".into()),
+            focus_point: Some(model::FocusPoint { x: 0.1, y: 0.9 }),
+        });
+        model::save_state(&recording, &state);
+        let saved = model::load_state(&recording);
+        assert_eq!(saved.zoom_segments, state.zoom_segments);
+        assert_eq!(saved.segments.len(), 2);
+        for (actual, expected) in saved.segments.iter().zip(&state.segments) {
+            assert_eq!(actual.id, expected.id);
+            assert!((actual.original_start - expected.original_start).abs() < 1e-9);
+            assert!((actual.original_end - expected.original_end).abs() < 1e-9);
+        }
+        let mut preview = preview::Source::open(&recording, saved.clone()).unwrap();
+        let mut unzoomed_state = saved.clone();
+        unzoomed_state.zoom_segments.clear();
+        let mut unzoomed = preview::Source::open(&recording, unzoomed_state).unwrap();
+        let output = directory.path().join("edited.mp4");
+        run(
+            Request {
+                project: recording,
+                output: output.clone(),
+                state: saved,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("export edited recording");
+        let exported = VideoDecoder::open(&output).unwrap();
+        assert!((exported.info().duration - 1.).abs() <= 1. / 8.);
+        for time in [0., 0.25, 0.5, 0.75] {
+            let expected = to_bgra(&preview.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            assert_eq!(expected.len(), actual.bgra.len());
+            let error: u64 = expected
+                .iter()
+                .zip(actual.bgra.iter())
+                .map(|(expected, actual)| u64::from(expected.abs_diff(*actual)))
+                .sum();
+            let mean = error as f64 / expected.len() as f64;
+            assert!(mean < 8., "preview/export error {mean} at {time}s");
+            eprintln!("native trim/zoom preview/export mean error {mean:.3} at {time}s");
+            if time == 0.25 {
+                let baseline = to_bgra(&unzoomed.compose(time, None).unwrap());
+                let mut changed = 0_u64;
+                let mut edited_error = 0_u64;
+                let mut baseline_error = 0_u64;
+                for ((edited, baseline), actual) in expected
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(baseline.as_chunks::<4>().0.iter())
+                    .zip(actual.bgra.as_chunks::<4>().0.iter())
+                {
+                    if (0..3).all(|channel| edited[channel].abs_diff(baseline[channel]) < 16) {
+                        continue;
+                    }
+                    changed += 1;
+                    for channel in 0..3 {
+                        edited_error += u64::from(edited[channel].abs_diff(actual[channel]));
+                        baseline_error += u64::from(baseline[channel].abs_diff(actual[channel]));
+                    }
+                }
+                assert!(changed > 0, "zoom must visibly change the native recording");
+                assert!(
+                    edited_error < baseline_error,
+                    "export must match the zoomed preview"
+                );
+                eprintln!("native zoom affected {changed} pixels; edited error {edited_error}, unzoomed error {baseline_error}");
             }
         }
     }
@@ -2190,7 +2752,8 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[test]
     fn edited_gif_exports_match_the_preview_and_timeline_at_each_frame_rate() {
         use crate::editor::annotations::Annotation;
@@ -2272,6 +2835,8 @@ mod tests {
             let mut state = model::load_state(&recording);
             state.export_settings.frame_rate = (*rate).into();
             let mut preview = preview::Source::open(&recording, state.clone()).unwrap();
+            #[cfg(target_os = "macos")]
+            let diagnostic = prepare_gif_diagnostic(&recording, &state, fps);
             let output = directory.path().join(format!("edited-{fps}.gif"));
             let mut progress = 0.;
             run(
@@ -2294,7 +2859,10 @@ mod tests {
             let mut elapsed_ms = 0.;
             let mut max_error_ms = 0_f64;
             for (index, frame) in frames.iter().enumerate() {
+                #[cfg(windows)]
                 assert_eq!(frame.buffer().dimensions(), (184, 114));
+                #[cfg(target_os = "macos")]
+                assert_eq!(frame.buffer().dimensions(), (854, 528));
                 assert!(
                     frame
                         .buffer()
@@ -2346,7 +2914,30 @@ mod tests {
                     for pixel in preview_image.as_bytes(0).unwrap().as_chunks::<4>().0 {
                         expected.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
                     }
+                    #[cfg(target_os = "macos")]
+                    let resized = image::imageops::resize(
+                        frame.buffer(),
+                        184,
+                        114,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    #[cfg(target_os = "macos")]
+                    let actual = resized.as_raw();
+                    #[cfg(windows)]
                     let actual = frame.buffer().as_raw();
+                    #[cfg(target_os = "macos")]
+                    if let Some((directory, mp4, diagnostic_state)) =
+                        diagnostic.as_ref().filter(|_| index == fps / 4)
+                    {
+                        capture_gif_diagnostic(
+                            (directory, mp4, diagnostic_state),
+                            &recording,
+                            index as f64 / fps as f64,
+                            frame.buffer(),
+                            &expected,
+                            translucent_pixel,
+                        );
+                    }
                     let error: u64 = actual
                         .iter()
                         .zip(&expected)
@@ -2354,6 +2945,16 @@ mod tests {
                         .sum();
                     let mean = error as f64 / actual.len() as f64;
                     assert!(mean < 4., "{fps} fps, frame {index}: mean error {mean}");
+                    #[cfg(target_os = "macos")]
+                    {
+                        let large_differences = actual
+                            .iter()
+                            .zip(&expected)
+                            .filter(|(a, b)| a.abs_diff(**b) > 32)
+                            .count();
+                        let alpha = composed.data()[translucent_pixel * 4 + 3];
+                        eprintln!("{fps} fps frame {index}: mean error {mean:.3}, channels differing by more than 32: {large_differences}/{}, padding at alpha {alpha}: {:?} versus {:?}", actual.len(), &actual[translucent_pixel * 4..translucent_pixel * 4 + 3], &expected[translucent_pixel * 4..translucent_pixel * 4 + 3]);
+                    }
                     assert_eq!(
                         actual[3], 255,
                         "the GIF padding should match opaque preview"
@@ -2365,11 +2966,17 @@ mod tests {
                                 actual[pixel * 4 + channel]
                                     .abs_diff(expected[pixel * 4 + channel])
                                     <= 8,
-                                "{fps} fps frame {index} differs at padding pixel {pixel} channel {channel}"
+                                "{fps} fps frame {index} differs at padding pixel {pixel} channel {channel}: actual {}, expected {}",
+                                actual[pixel * 4 + channel],
+                                expected[pixel * 4 + channel]
                             );
                         }
                     }
-                    for (x, y, color) in [(132, 72, source_color), (42, 42, [224, 64, 64])] {
+                    for (x, y, color) in [
+                        (132, 72, source_color),
+                        (42, 42, [224, 64, 64]),
+                        (180, 100, [64, 32, 16]),
+                    ] {
                         let pixel = (y * 184 + x) * 4;
                         for (channel, expected_color) in color.into_iter().enumerate() {
                             assert!(composed.data()[pixel + channel].abs_diff(expected_color) < 8);
@@ -2387,6 +2994,10 @@ mod tests {
                     "{fps} fps: {elapsed_ms} ms, max error {max_error_ms} ms"
                 ));
             }
+            #[cfg(target_os = "macos")]
+            eprintln!(
+                "{fps} fps: elapsed {elapsed_ms:.1} ms, maximum timing error {max_error_ms:.1} ms"
+            );
         }
         assert!(timing_errors.is_empty(), "{}", timing_errors.join("; "));
     }
@@ -2481,7 +3092,8 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("; "));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[test]
     fn camera_ranges_and_zoom_export_the_preview_across_a_cut() {
         use crate::windows::video_editor::{model, preview};
@@ -2597,9 +3209,9 @@ mod tests {
         let output = directory.path().join("camera-edited.mp4");
         run(
             Request {
-                project,
+                project: project.clone(),
                 output: output.clone(),
-                state,
+                state: state.clone(),
             },
             &mut |_| {},
             &|| false,
@@ -2672,6 +3284,155 @@ mod tests {
                     "{name}: wrong camera source frame at {time}s"
                 );
             }
+        }
+
+        let mut saved = state.clone();
+        saved.export_settings.frame_rate = "24".into();
+        saved.camera_segments = vec![model::CameraSegment {
+            id: "short-at-end".into(),
+            start_time: 1.45,
+            end_time: 2.,
+        }];
+        model::save_state(&project, &saved);
+        let state_path = project::editor_state_path(&project);
+        let original_bytes = std::fs::read(&state_path).unwrap();
+        let mut loaded = model::load_state(&project);
+        model::normalize_loaded_state(Some(&project), &mut loaded, 2., false).unwrap();
+        assert!(loaded.camera_segments.is_empty());
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_bytes);
+        let time = 35. / 24.;
+        let mut unnormalized_preview = preview::Source::open(&project, saved.clone()).unwrap();
+        let visible = to_bgra(&unnormalized_preview.compose(time, None).unwrap());
+        assert!(
+            visible
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] < 90 && pixel[1] > 170)
+                .count()
+                > 1_000
+        );
+        let mut cleaned_preview = preview::Source::open(&project, loaded).unwrap();
+        let expected = to_bgra(&cleaned_preview.compose(time, None).unwrap());
+        assert_eq!(
+            expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] < 90 && pixel[1] > 170)
+                .count(),
+            0
+        );
+        let output = directory.path().join("camera-past-end.mp4");
+        run(
+            Request {
+                project: project.clone(),
+                output: output.clone(),
+                state: saved,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let actual = VideoDecoder::open(&output).unwrap().frame_at(time).unwrap();
+        let error: u64 = actual
+            .bgra
+            .iter()
+            .zip(&expected)
+            .map(|(a, b)| u64::from(a.abs_diff(*b)))
+            .sum();
+        assert!(
+            error as f64 / (expected.len() as f64) < 3.,
+            "past-end camera preview/export mismatch at {time}s"
+        );
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_bytes);
+
+        crate::windows::video_editor::timeline::edit::set_video_speed(&mut state, 0, 2., 1.5);
+        assert_eq!(state.camera_segments[0].start_time, 0.125);
+        assert_eq!(state.camera_segments[0].end_time, 0.325);
+        assert!((state.camera_segments[1].start_time - 0.575).abs() < 1e-9);
+        assert!((state.zoom_segments[0].end_time - 0.875).abs() < 1e-9);
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+        let mut preview = preview::Source::open(&project, model::load_state(&project)).unwrap();
+        let output = directory.path().join("speed-edited.mp4");
+        run(
+            Request {
+                project: project.clone(),
+                output: output.clone(),
+                state: state.clone(),
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap();
+        assert!((exported.info().duration - 1.125).abs() <= 1. / 12.);
+        for (time, visible) in [
+            (0., false),
+            (1. / 6., true),
+            (1. / 3., false),
+            (2. / 3., true),
+            (1., false),
+        ] {
+            let expected = to_bgra(&preview.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            assert!(
+                error as f64 / (expected.len() as f64) < 3.,
+                "speed preview/export mismatch at {time}s"
+            );
+            let camera_pixels = expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] < 90 && pixel[1] > 170)
+                .count();
+            assert_eq!(
+                camera_pixels > 1_000,
+                visible,
+                "camera visibility at {time}s"
+            );
+        }
+
+        state.segments.remove(1);
+        crate::windows::video_editor::timeline::edit::bound_overlay_ranges(&mut state, 0.375);
+        assert_eq!(state.camera_segments.len(), 1);
+        assert_eq!(state.zoom_segments[0].end_time, 0.375);
+        model::save_state(&project, &state);
+        assert_eq!(model::load_state(&project), state);
+        let mut preview = preview::Source::open(&project, model::load_state(&project)).unwrap();
+        let output = directory.path().join("deleted-clip.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+        let exported = VideoDecoder::open(&output).unwrap();
+        assert!((exported.info().duration - 0.375).abs() <= 1. / 12.);
+        for time in [0., 1. / 6., 1. / 3.] {
+            let expected = to_bgra(&preview.compose(time, None).unwrap());
+            let actual = exported.frame_at(time).unwrap();
+            let error: u64 = actual
+                .bgra
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            assert!(
+                error as f64 / (expected.len() as f64) < 3.,
+                "deleted clip preview/export mismatch at {time}s"
+            );
         }
     }
 
@@ -3048,7 +3809,7 @@ mod tests {
         assert_eq!(&frame.data()[4 * 4..4 * 5], &[10, 20, 30, 255]);
         let preview_bytes = preview.as_bytes(0).expect("preview pixels");
         let exported = to_bgra(&frame);
-        assert_eq!(&exported[0..4], &[32, 64, 128, 255]);
+        assert_eq!(&exported[0..4], &[16, 32, 64, 255]);
         assert_eq!(preview_bytes, exported);
     }
 

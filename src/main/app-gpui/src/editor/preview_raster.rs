@@ -669,6 +669,7 @@ pub fn aligned_image(
         .collect::<Vec<_>>();
     let stride = source.width() as usize;
     let source_pixels = source.as_raw().as_chunks::<4>().0;
+    let premultiply = cfg!(target_os = "macos") && source_pixels.iter().any(|pixel| pixel[3] < 255);
     let output: &mut [u8] = out.as_mut();
     for (y, row) in output
         .as_chunks_mut::<4>()
@@ -690,9 +691,22 @@ pub fn aligned_image(
             ];
             let mut sample = [0.0_f32; 4];
             for c in 0..4 {
-                let a = f32::from(pixels[0][c]) * (1. - fx) + f32::from(pixels[1][c]) * fx;
-                let b = f32::from(pixels[2][c]) * (1. - fx) + f32::from(pixels[3][c]) * fx;
+                let channel = |pixel: [u8; 4]| {
+                    let value = f32::from(pixel[c]);
+                    if premultiply && c < 3 {
+                        value * f32::from(pixel[3]) / 255.
+                    } else {
+                        value
+                    }
+                };
+                let a = channel(pixels[0]) * (1. - fx) + channel(pixels[1]) * fx;
+                let b = channel(pixels[2]) * (1. - fx) + channel(pixels[3]) * fx;
                 sample[c] = a * (1. - fy) + b * fy;
+            }
+            if premultiply && sample[3] > 0. {
+                for c in 0..3 {
+                    sample[c] *= 255. / sample[3];
+                }
             }
             if let Some(background) = surface.matte {
                 let alpha = sample[3] / 255.;

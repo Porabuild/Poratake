@@ -170,15 +170,10 @@ impl RenderOnce for TitleBar {
         let handlers = self.handlers.clone();
         let state = self.options.clone();
 
-        let mut tools = div()
-            .flex()
-            .flex_row()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(chrome::TITLE_BAR_GAP));
+        let mut tool_items = Vec::new();
 
         for tool in TOOLS {
-            tools = tools.child(tool_button(
+            tool_items.push(tool_button(
                 tool,
                 tool_shortcut(&self.shortcuts, tool),
                 state.tool == tool,
@@ -186,25 +181,24 @@ impl RenderOnce for TitleBar {
             ));
         }
 
-        tools = tools
-            .child(separator(&theme))
-            .child(tool_button(
-                Tool::Crop,
-                &self.shortcuts.crop,
-                state.tool == Tool::Crop,
-                &handlers,
-            ))
-            .child(tool_button(
-                Tool::Wallpaper,
-                &self.shortcuts.wallpaper,
-                state.tool == Tool::Wallpaper,
-                &handlers,
-            ));
+        tool_items.push(separator(&theme).into_any_element());
+        tool_items.push(tool_button(
+            Tool::Crop,
+            &self.shortcuts.crop,
+            state.tool == Tool::Crop,
+            &handlers,
+        ));
+        tool_items.push(tool_button(
+            Tool::Wallpaper,
+            &self.shortcuts.wallpaper,
+            state.tool == Tool::Wallpaper,
+            &handlers,
+        ));
 
         {
             let capture = handlers.action(EditorAction::CaptureToggle);
             let name = "Capture & Attach";
-            tools = tools.child(icon_button::with_tooltip_below(
+            tool_items.push(icon_button::with_tooltip_below(
                 icon_button::hinted(
                     name,
                     &format!(
@@ -222,88 +216,99 @@ impl RenderOnce for TitleBar {
             ));
         }
 
-        tools = tools
-            .child(separator(&theme))
-            .child(compact_action(
-                "undo",
-                "rotate-ccw",
-                "Undo",
-                accelerator::display("CommandOrControl+Z"),
-                EditorAction::Undo,
-                &handlers,
-                !self.can_undo,
-            ))
-            .child(compact_action(
-                "redo",
-                "rotate-cw",
-                "Redo",
-                accelerator::display("CommandOrControl+Shift+Z"),
-                EditorAction::Redo,
-                &handlers,
-                !self.can_redo,
-            ))
-            .child(action_button(
-                "action-copy",
-                if self.is_copied { "check" } else { "copy" },
-                "Copy",
-                accelerator::display("CommandOrControl+C"),
-                EditorAction::Copy,
-                &handlers,
-                false,
-                |button| button.size(Size::Sm).is_icon_only(true),
-            ))
-            .child(action_button(
-                "action-save",
-                "save",
-                "Save",
-                accelerator::display("CommandOrControl+S"),
-                EditorAction::Save,
-                &handlers,
-                false,
-                |button| button.size(Size::Sm).is_icon_only(true),
-            ))
-            .child(action_button_spinning(
-                "action-cloud",
-                if self.is_uploading {
-                    "loader-2"
-                } else if self.is_upload_done {
-                    "check"
-                } else {
-                    "cloud-upload"
-                },
-                "Upload to Cloud",
-                accelerator::display(&self.cloud_upload_shortcut),
-                EditorAction::CloudUpload,
-                &handlers,
-                self.is_uploading,
-                |button| button.size(Size::Sm).is_icon_only(true),
-                self.is_uploading,
-            ))
-            .child(action_button(
-                "action-pin",
-                "pin",
-                "Pin Screenshot",
-                String::new(),
-                EditorAction::Pin,
-                &handlers,
-                false,
-                |button| button.size(Size::Sm).is_icon_only(true),
-            ));
+        tool_items.push(separator(&theme).into_any_element());
+        tool_items.push(compact_action(
+            "undo",
+            "rotate-ccw",
+            "Undo",
+            accelerator::display("CommandOrControl+Z"),
+            EditorAction::Undo,
+            &handlers,
+            !self.can_undo,
+        ));
+        tool_items.push(compact_action(
+            "redo",
+            "rotate-cw",
+            "Redo",
+            accelerator::display("CommandOrControl+Shift+Z"),
+            EditorAction::Redo,
+            &handlers,
+            !self.can_redo,
+        ));
+        tool_items.push(action_button(
+            "action-copy",
+            if self.is_copied { "check" } else { "copy" },
+            "Copy",
+            accelerator::display("CommandOrControl+C"),
+            EditorAction::Copy,
+            &handlers,
+            false,
+            |button| button.size(Size::Sm).is_icon_only(true),
+        ));
+        tool_items.push(action_button(
+            "action-save",
+            "save",
+            "Save",
+            accelerator::display("CommandOrControl+S"),
+            EditorAction::Save,
+            &handlers,
+            false,
+            |button| button.size(Size::Sm).is_icon_only(true),
+        ));
+        tool_items.push(action_button_spinning(
+            "action-cloud",
+            if self.is_uploading {
+                "loader-2"
+            } else if self.is_upload_done {
+                "check"
+            } else {
+                "cloud-upload"
+            },
+            "Upload to Cloud",
+            accelerator::display(&self.cloud_upload_shortcut),
+            EditorAction::CloudUpload,
+            &handlers,
+            self.is_uploading,
+            |button| button.size(Size::Sm).is_icon_only(true),
+            self.is_uploading,
+        ));
+        tool_items.push(action_button(
+            "action-pin",
+            "pin",
+            "Pin Screenshot",
+            String::new(),
+            EditorAction::Pin,
+            &handlers,
+            false,
+            |button| button.size(Size::Sm).is_icon_only(true),
+        ));
+
+        let macos = chrome::is_macos();
+        let reveal = macos.then(|| {
+            crate::ui::focus_reveal::FocusReveal::new("editor-toolbar-scroll", window, cx)
+        });
+        let tool_items = tool_items.into_iter().enumerate().map(|(index, item)| {
+            if let Some(reveal) = &reveal {
+                reveal.wrap(format!("editor-toolbar-tool-{index}"), item, window, cx)
+            } else {
+                item
+            }
+        });
+        let tools = div()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(chrome::TITLE_BAR_GAP))
+            .children(tool_items);
+        let tools = if macos { tools.pr(px(4.)) } else { tools };
 
         #[cfg(feature = "parity")]
         let tools = tools.on_children_prepainted(|bounds, _, _| {
             crate::ui::parity::record("editor-tools", bounds);
         });
 
-        let mut options = div()
-            .flex()
-            .flex_row()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(chrome::TITLE_BAR_GAP));
-        for control in tool_options::render(&state, &handlers, window, cx) {
-            options = options.child(control);
-        }
+        let mut option_items = tool_options::render(&state, &handlers, window, cx);
         let is_highlight = state.tool == Tool::Highlight;
         let picker_color = if is_highlight {
             self.highlight_color.clone()
@@ -315,7 +320,7 @@ impl RenderOnce for TitleBar {
         } else {
             1.0
         };
-        options = options.child(color_trigger(
+        option_items.push(color_trigger(
             picker_color,
             picker_opacity,
             is_highlight,
@@ -323,13 +328,27 @@ impl RenderOnce for TitleBar {
             window,
             cx,
         ));
+        let option_items = option_items.into_iter().enumerate().map(|(index, item)| {
+            if let Some(reveal) = &reveal {
+                reveal.wrap(format!("editor-toolbar-option-{index}"), item, window, cx)
+            } else {
+                item
+            }
+        });
+        let options = div()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(chrome::TITLE_BAR_GAP))
+            .children(option_items);
+        let options = if macos { options.pl(px(4.)) } else { options };
 
         #[cfg(feature = "parity")]
         let options = options.on_children_prepainted(|bounds, _, _| {
             crate::ui::parity::record("editor-options", bounds);
         });
 
-        let macos = chrome::is_macos();
         let cluster = if macos {
             div()
                 .flex()
@@ -351,9 +370,14 @@ impl RenderOnce for TitleBar {
                 .child(separator(&theme))
                 .child(options)
         };
-        let cluster = cluster.id("editor-title-cluster").when(!macos, |cluster| {
-            cluster.min_w_0().flex_shrink_1().overflow_x_scroll()
-        });
+        let mut cluster = cluster
+            .id("editor-title-cluster")
+            .min_w_0()
+            .flex_shrink_1()
+            .overflow_x_scroll();
+        if let Some(reveal) = &reveal {
+            cluster = cluster.track_scroll(&reveal.scroll);
+        }
 
         let drag = crate::ui::window_controls::drag_area("editor-title-drag")
             .flex_1()

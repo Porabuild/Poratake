@@ -372,6 +372,10 @@ pub fn normalize_loaded_state(
             changes.camera_segments_changed = !state.camera_segments.is_empty();
         }
     }
+    let total =
+        super::first_frame_duration(state) + total_duration(&state.segments, source_duration);
+    changes.camera_segments_changed |=
+        super::timeline::edit::bound_ranges(&mut state.camera_segments, total);
     Some(changes)
 }
 
@@ -488,6 +492,62 @@ pub fn total_duration(segments: &[Segment], fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_camera_ranges_follow_video_duration_and_keep_valid_ranges() {
+        let camera = |id: &str, start_time, end_time| CameraSegment {
+            id: id.into(),
+            start_time,
+            end_time,
+        };
+        let mut state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: vec![Segment {
+                speed: Some(2.0),
+                ..Segment::spanning(8.0)
+            }],
+            camera_segments: vec![
+                camera("valid", 1.0, 2.0),
+                camera("crossing", 3.0, 6.0),
+                camera("too-short", 3.95, 5.0),
+                camera("after", 6.0, 7.0),
+            ],
+            ..VideoEditorState::default()
+        };
+        let original = state.clone();
+        assert!(normalize_loaded_state(None, &mut state, 0.0, false).is_none());
+        assert_eq!(state, original);
+        let changes = normalize_loaded_state(None, &mut state, 8.0, false).unwrap();
+        assert!(changes.camera_segments_changed);
+        assert_eq!(
+            state.camera_segments,
+            vec![camera("valid", 1.0, 2.0), camera("crossing", 3.0, 4.0)]
+        );
+        assert!(
+            !normalize_loaded_state(None, &mut state, 8.0, false)
+                .unwrap()
+                .camera_segments_changed
+        );
+    }
+
+    #[test]
+    fn camera_range_boundary_includes_enabled_first_frame() {
+        let mut state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![Segment::spanning(4.0)],
+            camera_segments: vec![CameraSegment {
+                id: "camera".into(),
+                start_time: 3.0,
+                end_time: 5.0,
+            }],
+            ..VideoEditorState::default()
+        };
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("image".into());
+        state.export_settings.frame_rate = "30".into();
+        normalize_loaded_state(None, &mut state, 4.0, false).unwrap();
+        assert_eq!(state.camera_segments[0].end_time, 4.0 + 1.0 / 30.0);
+    }
 
     #[test]
     fn timeline_duration_accounts_for_speed() {

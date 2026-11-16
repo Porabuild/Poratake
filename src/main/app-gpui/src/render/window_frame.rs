@@ -132,7 +132,7 @@ pub fn render_chrome(
     let Some(theme) = theme(style) else {
         return;
     };
-    let bar_height = (TITLE_BAR_HEIGHT * scale).round();
+    let bar_height = TITLE_BAR_HEIGHT * scale;
     let radius = corner_radius(style) * scale;
     let frame_width = content_width + inset * 2.0;
     let frame_height = content_height + bar_height + inset * 2.0;
@@ -277,7 +277,7 @@ pub fn preview_edges(
         y,
         content_width,
         content_height,
-        title_bar_height(style, scale),
+        TITLE_BAR_HEIGHT * scale,
         corner_radius(style) * scale,
         Some((
             scale,
@@ -663,7 +663,7 @@ mod tests {
             });
             let image = crate::editor::export::from_rgba(&source).unwrap();
             for style in ["macos-light", "macos-dark", "windows-light", "windows-dark"] {
-                for scale in [1.0, 1.25, 2.0] {
+                for scale in [1.0, 1.25, 4.0 / 3.0, 2.0] {
                     for shadow in [None, Some(shadow)] {
                         let mut expected = Canvas::new(96, 140).unwrap();
                         expected.fill_all(Color::from_rgba8(36, 104, 172, 255));
@@ -709,7 +709,7 @@ mod tests {
                         backdrop.draw_pixmap(
                             image.as_ref(),
                             15.0,
-                            (10.0 + title_bar_height(style, scale)) as f32,
+                            (10.0 + TITLE_BAR_HEIGHT * scale) as f32,
                             width as f32,
                             height as f32,
                         );

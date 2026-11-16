@@ -17,8 +17,19 @@ pub const MIN_VIDEO_TRIM_DURATION: f64 = 0.5;
 
 /// Ids are derived from the cut so a split is reproducible; the renderer uses
 /// `crypto.randomUUID`, which only has to be unique within the document.
-fn split_id(id: &str, cut_time: f64) -> String {
-    format!("{id}-{}", (cut_time * 1000.0).round() as i64)
+fn split_id(id: &str, cut_time: f64, exists: impl Fn(&str) -> bool) -> String {
+    let base = format!("{id}-{}", (cut_time * 1000.0).round() as i64);
+    if !exists(&base) {
+        return base;
+    }
+    let mut suffix = 1_u64;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn can_split(start: f64, end: f64, cut_time: f64, minimum: f64) -> bool {
@@ -36,9 +47,15 @@ pub trait TimelineRange: Clone {
     fn minimum_duration() -> f64 {
         MIN_SPLIT_DURATION
     }
+    fn exclusive() -> bool {
+        false
+    }
 }
 
 impl TimelineRange for ZoomSegment {
+    fn exclusive() -> bool {
+        true
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -58,6 +75,9 @@ impl TimelineRange for ZoomSegment {
 }
 
 impl TimelineRange for CameraSegment {
+    fn exclusive() -> bool {
+        true
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -130,7 +150,9 @@ pub fn split_ranges<T: TimelineRange>(items: &mut Vec<T>, cut_time: f64) -> bool
     let start = items[index].start();
     let end = items[index].end();
     items[index].set_range(start, cut_time);
-    right.set_id(split_id(right.id(), cut_time));
+    right.set_id(split_id(right.id(), cut_time, |id| {
+        items.iter().any(|item| item.id() == id)
+    }));
     right.set_range(cut_time, end);
     items.insert(index + 1, right);
     true
@@ -155,7 +177,9 @@ pub fn split_music(tracks: &mut Vec<MusicTrack>, cut_time: f64) -> bool {
     tracks[index].trim_end = original.trim_end + (original.end_time - cut_time) * original.speed;
 
     let mut right = original.clone();
-    right.id = split_id(&original.id, cut_time);
+    right.id = split_id(&original.id, cut_time, |id| {
+        tracks.iter().any(|track| track.id == id)
+    });
     right.start_time = cut_time;
     right.trim_start = original.trim_start + (cut_time - original.start_time) * original.speed;
     tracks.insert(index + 1, right);
@@ -176,13 +200,16 @@ pub fn split_video(segments: &mut Vec<Segment>, cut_video_time: f64) -> bool {
     };
 
     let original = segments[index].clone();
+    let id = split_id(&original.id, cut_video_time, |id| {
+        segments.iter().any(|segment| segment.id == id)
+    });
     segments[index].original_end = cut_video_time;
     segments[index].trim_max_end = cut_video_time;
 
     segments.insert(
         index + 1,
         Segment {
-            id: split_id(&original.id, cut_video_time),
+            id,
             original_start: cut_video_time,
             original_end: original.original_end,
             trim_min_start: cut_video_time,
@@ -209,12 +236,16 @@ pub fn split_all(state: &mut VideoEditorState, cut_time: f64, cut_video_time: f6
 
 /// Moves a clip, keeping its duration and staying inside `[0, total]`.
 pub fn move_range<T: TimelineRange>(items: &mut [T], id: &str, start: f64, total: f64) -> bool {
-    let Some(item) = items.iter_mut().find(|item| item.id() == id) else {
+    let Some(index) = items.iter().position(|item| item.id() == id) else {
         return false;
     };
+    let item = &items[index];
     let duration = item.end() - item.start();
     let start = start.clamp(0.0, (total - duration).max(0.0));
-    item.set_range(start, start + duration);
+    if !range_available(items, start, start + duration, Some(id)) {
+        return false;
+    }
+    items[index].set_range(start, start + duration);
     true
 }
 
@@ -227,20 +258,124 @@ pub fn resize_range<T: TimelineRange>(
     end: f64,
     total: f64,
 ) -> bool {
-    let Some(item) = items.iter_mut().find(|item| item.id() == id) else {
+    let Some(index) = items.iter().position(|item| item.id() == id) else {
         return false;
     };
     let minimum = MIN_RESIZE_DURATION;
     let start = start.clamp(0.0, (total - minimum).max(0.0));
     let end = end.clamp(start + minimum, total.max(start + minimum));
-    item.set_range(start, end);
+    if !range_available(items, start, end, Some(id)) {
+        return false;
+    }
+    items[index].set_range(start, end);
     true
+}
+
+pub fn range_available<T: TimelineRange>(
+    items: &[T],
+    start: f64,
+    end: f64,
+    exclude: Option<&str>,
+) -> bool {
+    !T::exclusive()
+        || !items
+            .iter()
+            .any(|item| Some(item.id()) != exclude && start < item.end() && end > item.start())
 }
 
 pub fn remove_range<T: TimelineRange>(items: &mut Vec<T>, id: &str) -> bool {
     let before = items.len();
     items.retain(|item| item.id() != id);
     items.len() != before
+}
+
+pub fn set_video_speed(
+    state: &mut VideoEditorState,
+    index: usize,
+    speed: f64,
+    total_duration: f64,
+) {
+    if !speed.is_finite() || speed <= 0.0 || !total_duration.is_finite() {
+        return;
+    }
+    let Some(segment) = state.segments.get(index) else {
+        return;
+    };
+    let start: f64 = state.segments[..index]
+        .iter()
+        .map(Segment::timeline_duration)
+        .sum();
+    let old_duration = segment.timeline_duration();
+    let new_duration = segment.source_duration() / speed.max(0.01);
+    let end = start + old_duration;
+    let new_total = total_duration + new_duration - old_duration;
+    state.segments[index].speed = Some(speed);
+    let adjustment = (start, end, old_duration, new_duration, new_total);
+    adjust_ranges_for_speed(&mut state.zoom_segments, adjustment);
+    adjust_ranges_for_speed(&mut state.camera_segments, adjustment);
+    adjust_ranges_for_speed(&mut state.drawing_segments, adjustment);
+}
+
+pub fn bound_overlay_ranges(state: &mut VideoEditorState, total: f64) {
+    if !total.is_finite() || total <= 0.0 {
+        return;
+    }
+    bound_ranges(&mut state.zoom_segments, total);
+    bound_ranges(&mut state.camera_segments, total);
+    bound_ranges(&mut state.drawing_segments, total);
+}
+
+pub(in crate::windows::video_editor) fn bound_ranges<T: TimelineRange>(
+    ranges: &mut Vec<T>,
+    total: f64,
+) -> bool {
+    if !ranges
+        .iter()
+        .any(|range| range.start() >= total || range.end() > total)
+    {
+        return false;
+    }
+    ranges.retain_mut(|range| {
+        let start = range.start();
+        let end = range.end().min(total);
+        if start >= total || end - start < T::minimum_duration() {
+            return false;
+        }
+        range.set_range(start, end);
+        true
+    });
+    true
+}
+
+fn adjust_ranges_for_speed<T: TimelineRange>(
+    ranges: &mut Vec<T>,
+    (segment_start, segment_end, old_duration, new_duration, new_total): (f64, f64, f64, f64, f64),
+) {
+    let delta = new_duration - old_duration;
+    ranges.retain_mut(|range| {
+        let mut start = range.start();
+        let mut end = range.end();
+        if start >= segment_end {
+            start += delta;
+            end += delta;
+        } else if old_duration > 0.0 && end > segment_start {
+            let scale = new_duration / old_duration;
+            if start >= segment_start {
+                start = segment_start + (start.min(segment_end) - segment_start) * scale;
+            }
+            end = if end > segment_end {
+                end + delta
+            } else {
+                segment_start + (end.max(segment_start) - segment_start) * scale
+            };
+        }
+        end = end.min(new_total);
+        if start >= new_total || end - start < T::minimum_duration() {
+            return false;
+        }
+        range.set_range(start, end);
+        true
+    });
 }
 
 /// Port of `handleTrimMove` in `use-segment-operations.ts`: drags one edge of
@@ -310,6 +445,121 @@ mod tests {
     }
 
     #[test]
+    fn speed_changes_map_ranges_across_segment_boundaries() {
+        let mut ranges = vec![
+            zoom("before", 0., 2.),
+            zoom("inside", 3., 5.),
+            zoom("spanning", 1., 7.),
+            zoom("inside-after", 3., 7.),
+            zoom("after", 6., 9.),
+            zoom("short", 3., 3.1),
+        ];
+        adjust_ranges_for_speed(&mut ranges, (2., 6., 4., 2., 8.));
+        let actual: Vec<_> = ranges
+            .iter()
+            .map(|range| (range.id.as_str(), range.start_time, range.end_time))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("before", 0., 2.),
+                ("inside", 2.5, 3.5),
+                ("spanning", 1., 5.),
+                ("inside-after", 2.5, 5.),
+                ("after", 4., 7.),
+            ]
+        );
+        adjust_ranges_for_speed(&mut ranges, (2., 4., 2., 4., 10.));
+        assert_eq!((ranges[1].start_time, ranges[1].end_time), (3., 5.));
+        assert_eq!((ranges[2].start_time, ranges[2].end_time), (1., 7.));
+        assert_eq!((ranges[4].start_time, ranges[4].end_time), (6., 9.));
+    }
+
+    #[test]
+    fn duration_changes_bound_overlay_types_but_preserve_music() {
+        let mut state = VideoEditorState {
+            zoom_segments: vec![
+                zoom("inside", 1., 2.),
+                zoom("crossing", 3., 6.),
+                zoom("after", 4., 5.),
+            ],
+            camera_segments: vec![CameraSegment {
+                id: "short".into(),
+                start_time: 3.95,
+                end_time: 5.,
+            }],
+            drawing_segments: vec![DrawingSegment {
+                id: "short-drawing".into(),
+                start_time: 3.8,
+                end_time: 6.,
+                ..Default::default()
+            }],
+            music_tracks: vec![MusicTrack {
+                id: "music".into(),
+                start_time: 0.,
+                end_time: 8.,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let original_music = state.music_tracks.clone();
+        bound_overlay_ranges(&mut state, 4.);
+        assert_eq!(state.zoom_segments.len(), 2);
+        assert_eq!(
+            (
+                state.zoom_segments[1].start_time,
+                state.zoom_segments[1].end_time
+            ),
+            (3., 4.)
+        );
+        assert_eq!(state.zoom_segments[1].zoom_level, 1.5);
+        assert!(state.camera_segments.is_empty());
+        assert!(state.drawing_segments.is_empty());
+        assert_eq!(state.music_tracks, original_music);
+    }
+
+    #[test]
+    fn duration_cleanup_waits_for_a_valid_timeline_and_only_runs_when_needed() {
+        let mut state = VideoEditorState {
+            zoom_segments: vec![zoom("short", 1., 1.05), zoom("crossing", 2., 5.)],
+            ..Default::default()
+        };
+        let original = state.clone();
+        for total in [0., -1., f64::NAN] {
+            bound_overlay_ranges(&mut state, total);
+            assert_eq!(state, original);
+        }
+        bound_overlay_ranges(&mut state, 5.);
+        assert_eq!(state, original);
+        bound_overlay_ranges(&mut state, 4.);
+        assert_eq!(state.zoom_segments.len(), 1);
+        assert_eq!(state.zoom_segments[0].end_time, 4.);
+    }
+
+    #[test]
+    fn speed_changes_clamp_ranges_and_reject_invalid_input() {
+        let mut state = VideoEditorState {
+            segments: vec![segment("a", 0., 2.), segment("b", 2., 6.)],
+            zoom_segments: vec![zoom("tail", 7., 9.), zoom("outside", 10., 11.)],
+            ..VideoEditorState::default()
+        };
+        let original = state.clone();
+        for speed in [0., -1., f64::NAN, f64::INFINITY] {
+            set_video_speed(&mut state, 1, speed, 10.);
+            assert_eq!(state, original);
+        }
+        set_video_speed(&mut state, 1, 2., 10.);
+        assert_eq!(state.zoom_segments.len(), 1);
+        assert_eq!(
+            (
+                state.zoom_segments[0].start_time,
+                state.zoom_segments[0].end_time
+            ),
+            (5., 7.)
+        );
+    }
+
+    #[test]
     fn a_cut_inside_a_clip_splits_it_in_two() {
         let mut segments = vec![zoom("a", 0.0, 4.0)];
         assert!(split_ranges(&mut segments, 1.5));
@@ -318,6 +568,48 @@ mod tests {
         assert_eq!((segments[1].start_time, segments[1].end_time), (1.5, 4.0));
         assert_ne!(segments[0].id, segments[1].id);
         assert_eq!(segments[1].zoom_level, 1.5);
+    }
+
+    #[test]
+    fn splitting_a_drawing_does_not_reuse_an_existing_clip_id() {
+        let mut drawings = vec![
+            DrawingSegment {
+                id: "drawing".into(),
+                start_time: 0.0,
+                end_time: 4.0,
+                ..Default::default()
+            },
+            DrawingSegment {
+                id: "drawing-2000".into(),
+                start_time: 2.0,
+                end_time: 4.0,
+                ..Default::default()
+            },
+        ];
+        assert!(split_ranges(&mut drawings, 2.0));
+        assert_eq!(drawings.len(), 3);
+        assert_ne!(drawings[1].id, drawings[2].id);
+
+        let mut video = vec![segment("video", 0., 4.), segment("video-2000", 4., 8.)];
+        assert!(split_video(&mut video, 2.));
+        assert_ne!(video[1].id, video[2].id);
+
+        let mut music = vec![
+            MusicTrack {
+                id: "music".into(),
+                start_time: 0.,
+                end_time: 4.,
+                ..Default::default()
+            },
+            MusicTrack {
+                id: "music-2000".into(),
+                start_time: 4.,
+                end_time: 8.,
+                ..Default::default()
+            },
+        ];
+        assert!(split_music(&mut music, 2.));
+        assert_ne!(music[1].id, music[2].id);
     }
 
     #[test]
@@ -480,6 +772,26 @@ mod tests {
         assert!(move_range(&mut segments, "a", -5.0, 8.0));
         assert_eq!((segments[0].start_time, segments[0].end_time), (0.0, 2.0));
         assert!(!move_range(&mut segments, "missing", 1.0, 8.0));
+    }
+
+    #[test]
+    fn exclusive_ranges_allow_touching_edges_and_reject_overlap() {
+        let mut segments = vec![zoom("a", 1.0, 3.0), zoom("b", 4.0, 6.0)];
+        assert!(!range_available(&segments, 2.0, 4.0, None));
+        assert!(range_available(&segments, 3.0, 4.0, None));
+        assert!(!move_range(&mut segments, "a", 3.0, 10.0));
+        assert_eq!((segments[0].start_time, segments[0].end_time), (1.0, 3.0));
+        assert!(move_range(&mut segments, "a", 2.0, 10.0));
+        assert_eq!((segments[0].start_time, segments[0].end_time), (2.0, 4.0));
+        assert!(!resize_range(&mut segments, "a", 2.0, 5.0, 10.0));
+        assert_eq!((segments[0].start_time, segments[0].end_time), (2.0, 4.0));
+        let drawings = vec![DrawingSegment {
+            id: "d".into(),
+            start_time: 1.0,
+            end_time: 3.0,
+            ..Default::default()
+        }];
+        assert!(range_available(&drawings, 2.0, 4.0, None));
     }
 
     #[test]

@@ -1562,7 +1562,7 @@ fn blur_region(
             None,
         );
     } else {
-        blur::blur(&mut source, sigma);
+        blur::blur_transparent(&mut source, sigma);
     }
 
     canvas.save();
@@ -2390,6 +2390,142 @@ mod tests {
             2.,
         );
         assert_eq!(canvas.pixmap().data(), &before);
+    }
+
+    #[test]
+    fn video_blur_matches_electron_on_translucent_clipped_regions() {
+        for (x, y, width, height, samples) in [
+            (
+                0.,
+                0.,
+                128.,
+                128.,
+                vec![
+                    (0, 0, [65, 128, 192, 145]),
+                    (0, 64, [65, 128, 192, 161]),
+                    (10, 64, [63, 128, 192, 186]),
+                    (64, 64, [64, 128, 191, 192]),
+                    (127, 64, [65, 128, 192, 161]),
+                ],
+            ),
+            (
+                -10.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (0, 64, [65, 128, 192, 161]),
+                    (10, 64, [63, 128, 192, 186]),
+                    (39, 64, [64, 128, 191, 192]),
+                    (63, 64, [64, 128, 191, 128]),
+                ],
+            ),
+            (
+                96.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (80, 64, [64, 128, 191, 128]),
+                    (96, 64, [63, 127, 191, 191]),
+                    (112, 64, [63, 128, 191, 190]),
+                    (127, 64, [65, 128, 192, 161]),
+                ],
+            ),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::from_rgba8(64, 128, 192, 128));
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            let rendered = crate::editor::export::to_rgba(canvas.pixmap());
+            for (sample_x, sample_y, expected) in samples {
+                let actual = rendered.get_pixel(sample_x, sample_y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "video redaction {x},{y}, pixel {sample_x},{sample_y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_blur_matches_electron_at_opaque_canvas_edges() {
+        for (x, stripe_x, samples) in [
+            (-10., 0., vec![(0, 211), (10, 72), (31, 0), (39, 0)]),
+            (96., 120., vec![(96, 0), (112, 38), (127, 211)]),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(
+                Rect::from_xywh(stripe_x, 0., 8., 128.).unwrap(),
+                Color::WHITE,
+            );
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y: 32.,
+                    width: 50.,
+                    height: 64.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            for (sample_x, expected) in samples {
+                let actual = canvas.pixmap().pixel(sample_x, 64).unwrap().red();
+                assert!(
+                    actual.abs_diff(expected) <= 3,
+                    "pixel {sample_x}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_blur_keeps_its_apparent_size_at_preview_scale() {
+        let render = |scale: f32| {
+            let side = (128. * scale).round() as u32;
+            let mut canvas = Canvas::new(side, side).unwrap();
+            canvas.scale(scale, scale);
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(Rect::from_xywh(0., 0., 8., 128.).unwrap(), Color::WHITE);
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x: -10.,
+                    y: 32.,
+                    width: 50.,
+                    height: 64.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            canvas
+        };
+        let full = render(1.);
+        let half = render(0.5);
+        for x in [0, 2, 4, 6, 8, 10, 12, 16, 19] {
+            let actual = half.pixmap().pixel(x, 32).unwrap().red();
+            let left = full.pixmap().pixel(x * 2, 64).unwrap().red();
+            let right = full.pixmap().pixel(x * 2 + 1, 64).unwrap().red();
+            let expected = ((u16::from(left) + u16::from(right) + 1) / 2) as u8;
+            assert!(
+                actual.abs_diff(expected) <= 8,
+                "pixel {x}: {actual} vs {expected}"
+            );
+        }
     }
 
     #[test]
