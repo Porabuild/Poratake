@@ -3826,7 +3826,12 @@ instead of trapping, and scroll startup validates coordinates, positive dimensio
 and the display ID before altering a session. An isolated native protocol fixture
 checks malformed numbers and display IDs, and accepts negative display origins;
 the [evidence](tests/native/evidence/macos-ui/scroll-parameter-validation-20261116.txt)
-does not start a capture.
+does not start a capture. Scroll startup also now rejects an unavailable explicit
+display ID or unmatched display origin instead of starting with an invalid ID or
+falling back to the primary display. An [AppKit metadata fixture](tests/native/evidence/macos-ui/scroll-display-resolution-20261116.txt)
+checks the available display, unavailable selections and preservation of an
+active session; it cancels before UI setup or pixel capture. Physical unplug and
+multi-display behavior remain unverified.
 The delayed post-scroll callback and queued auto-scroll start now also retain their
 original session generation: stopping and restarting cannot turn an old callback
 into a second capture or start an unrelated session. The Swift fixture holds and
