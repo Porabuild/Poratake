@@ -10,18 +10,18 @@ class ScreenRecorderModule: Module {
     @MainActor private var recorderLifecycle = RecorderModuleLifecycle()
     @MainActor private var startTask: Task<Void, Never>?
     @MainActor private var startTaskSessionID: RecorderSessionID?
+    @MainActor private var startupErrors: [(RecorderBackend, RecorderSessionID, Error)] = []
     @MainActor private let stopCoordinator = RecorderStopCoordinator()
+    #if RECORDING_TIMELINE_TEST
+    @MainActor private(set) var testErrorEvents: [String] = []
+    #endif
 
     init() {
         screenRecorder.onError = { [weak self] sessionID, error in
-            Task { @MainActor in
-                await self?.handleRecorderError(.screen, sessionID: sessionID, error: error)
-            }
+            self?.receiveRecorderError(.screen, sessionID: sessionID, error: error)
         }
         iosRecorder.onError = { [weak self] sessionID, error in
-            Task { @MainActor in
-                await self?.handleRecorderError(.ios, sessionID: sessionID, error: error)
-            }
+            self?.receiveRecorderError(.ios, sessionID: sessionID, error: error)
         }
     }
     
@@ -171,6 +171,7 @@ class ScreenRecorderModule: Module {
         outputPath: String,
         requestId: String
     ) async {
+        defer { clearStartupErrors(sessionID) }
         do {
             switch backend {
             case .ios:
@@ -200,6 +201,7 @@ class ScreenRecorderModule: Module {
                 ])
             }
             emit(event: "started", data: ["outputPath": outputPath])
+            flushStartupErrors(sessionID)
         } catch let error as RecorderError {
             recorderLifecycle.finishStart(sessionID, success: false)
             respondError(id: requestId, code: error.code, message: error.localizedDescription)
@@ -379,31 +381,112 @@ class ScreenRecorderModule: Module {
     }
 
     @MainActor
-    private func handleRecorderError(
+    private func receiveRecorderError(
         _ backend: RecorderBackend,
         sessionID: RecorderSessionID,
         error: Error
-    ) async {
-        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else {
+    ) {
+        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else { return }
+        if case .starting = recorderLifecycle.phase {
+            startupErrors.append((backend, sessionID, error))
             return
         }
-        if startTaskSessionID == sessionID {
-            await startTask?.value
+        deliverRecorderError(backend, sessionID: sessionID, error: error)
+    }
+
+    @MainActor
+    private func deliverRecorderError(
+        _ backend: RecorderBackend,
+        sessionID: RecorderSessionID,
+        error: Error
+    ) {
+        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else { return }
+        if emitRecorderError(error) { return }
+        Task { @MainActor in
+            _ = try? await self.stopRecording(sessionID)
         }
-        guard recorderLifecycle.isCurrent(sessionID) else { return }
+    }
+
+    @MainActor
+    private func flushStartupErrors(_ sessionID: RecorderSessionID) {
+        let errors = startupErrors.filter { $0.1 == sessionID }
+        clearStartupErrors(sessionID)
+        for (backend, id, error) in errors {
+            deliverRecorderError(backend, sessionID: id, error: error)
+        }
+    }
+
+    @MainActor
+    private func clearStartupErrors(_ sessionID: RecorderSessionID) {
+        startupErrors.removeAll { $0.1 == sessionID }
+    }
+
+    @MainActor
+    private func emitRecorderError(_ error: Error) -> Bool {
+        let targetClosed: Bool
         if case RecorderError.targetClosed = error {
-            emit(event: "error", data: [
-                "code": RecorderError.targetClosed.code,
-                "message": error.localizedDescription
-            ])
-            return
+            targetClosed = true
+        } else {
+            targetClosed = false
         }
+        let code = targetClosed ? RecorderError.targetClosed.code : "CAPTURE_ERROR"
+        #if RECORDING_TIMELINE_TEST
+        testErrorEvents.append(code)
+        #endif
         emit(event: "error", data: [
-            "code": "CAPTURE_ERROR",
+            "code": code,
             "message": error.localizedDescription
         ])
-        _ = try? await stopRecording(sessionID)
+        return targetClosed
     }
+
+    #if RECORDING_TIMELINE_TEST
+    @MainActor
+    func testBeginRecordingSession(backend: RecorderBackend = .screen) -> RecorderSessionID {
+        let sessionID = recorderLifecycle.beginStart(backend)!
+        precondition(recorderLifecycle.finishStart(sessionID, success: true))
+        return sessionID
+    }
+
+    @MainActor
+    func testBeginStartingSession() -> RecorderSessionID {
+        recorderLifecycle.beginStart(.screen)!
+    }
+
+    @MainActor
+    func testFinishStartingSession(_ sessionID: RecorderSessionID, success: Bool) {
+        precondition(recorderLifecycle.finishStart(sessionID, success: success))
+        if success {
+            flushStartupErrors(sessionID)
+        } else {
+            clearStartupErrors(sessionID)
+        }
+    }
+
+    @MainActor
+    func testRaiseRecorderError(sessionID: RecorderSessionID, error: Error, backend: RecorderBackend = .screen) {
+        switch backend {
+        case .screen: screenRecorder.onError?(sessionID, error)
+        case .ios: iosRecorder.onError?(sessionID, error)
+        }
+    }
+
+    @MainActor
+    func testFinishRecordingSession(_ sessionID: RecorderSessionID) {
+        precondition(recorderLifecycle.beginStop(sessionID) != nil)
+        recorderLifecycle.finishStop(sessionID)
+    }
+
+    @MainActor
+    func testBeginStoppingSession(_ sessionID: RecorderSessionID) {
+        precondition(recorderLifecycle.beginStop(sessionID) != nil)
+    }
+
+    @MainActor
+    func testFinishStoppingSession(_ sessionID: RecorderSessionID) {
+        recorderLifecycle.finishStop(sessionID)
+    }
+    #endif
     
     private func handleStatus(requestId: String) {
         Task { @MainActor in
