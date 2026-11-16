@@ -430,20 +430,21 @@ impl Canvas {
         let source_height = self.pixmap.height() as i64;
         let source = self.pixmap.data();
         let target = region.data_mut();
+        let left = (x as i64).clamp(0, source_width);
+        let right = (x as i64 + width as i64).clamp(0, source_width);
+        if left >= right {
+            return Some(region);
+        }
+        let bytes = ((right - left) * 4) as usize;
+        let target_x = left - x as i64;
         for row in 0..height as i64 {
             let source_y = y as i64 + row;
             if source_y < 0 || source_y >= source_height {
                 continue;
             }
-            for column in 0..width as i64 {
-                let source_x = x as i64 + column;
-                if source_x < 0 || source_x >= source_width {
-                    continue;
-                }
-                let from = ((source_y * source_width + source_x) * 4) as usize;
-                let to = ((row * width as i64 + column) * 4) as usize;
-                target[to..to + 4].copy_from_slice(&source[from..from + 4]);
-            }
+            let from = ((source_y * source_width + left) * 4) as usize;
+            let to = ((row * width as i64 + target_x) * 4) as usize;
+            target[to..to + bytes].copy_from_slice(&source[from..from + bytes]);
         }
         Some(region)
     }
@@ -845,6 +846,52 @@ pub fn circle_path(x: f32, y: f32, radius: f32) -> Option<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_region_retains_pixels_and_transparent_outside_padding() {
+        let mut canvas = Canvas::new(5, 4).unwrap();
+        for (index, pixel) in canvas
+            .pixmap_mut()
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            *pixel = [index as u8 * 7, index as u8 * 5, index as u8 * 3, 255];
+        }
+        for (x, y, width, height) in [
+            (0, 0, 5, 4),
+            (2, 1, 3, 2),
+            (-2, -1, 5, 4),
+            (4, 3, 4, 3),
+            (9, 9, 2, 2),
+            (-9, -8, 2, 2),
+            (i32::MIN, 0, 3, 2),
+            (i32::MAX, 0, 3, 2),
+        ] {
+            let actual = canvas.read_region(x, y, width, height).unwrap();
+            for row in 0..height {
+                for column in 0..width {
+                    let source_x = i64::from(x) + i64::from(column);
+                    let source_y = i64::from(y) + i64::from(row);
+                    let expected = if (0..5).contains(&source_x) && (0..4).contains(&source_y) {
+                        let offset = ((source_y * 5 + source_x) * 4) as usize;
+                        &canvas.pixmap().data()[offset..offset + 4]
+                    } else {
+                        &[0, 0, 0, 0]
+                    };
+                    let offset = ((row * width + column) * 4) as usize;
+                    assert_eq!(
+                        &actual.data()[offset..offset + 4],
+                        expected,
+                        "{x},{y} + {column},{row}"
+                    );
+                }
+            }
+        }
+        assert!(canvas.read_region(0, 0, 0, 1).is_none());
+    }
 
     #[test]
     fn tiled_rounded_shadows_match_fractional_full_rasterization() {
