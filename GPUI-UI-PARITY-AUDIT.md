@@ -3221,6 +3221,24 @@ It does not exercise the full
 editor, its interaction guides, other compositions or a physical display. The
 preview/export difference remains open.
 
+The GPUI Metal fixture exposed a separate image sampling mismatch at 73% zoom,
+even without annotations, for opaque and translucent generated sources. The
+primary image and simple wallpaper were snapped and scaled separately. The
+preview now uses the existing composed-backdrop path for that case and includes
+the source image identity in its cache key. In the generated dark-mode 114×99
+composition, the [previous preview](tests/native/evidence/macos-ui/scaled-backdrop-before-preview-20261116.png)
+and [reopened export](tests/native/evidence/macos-ui/scaled-backdrop-before-reopened-20261116.png)
+differed by more than two levels at 115 pixels, with a maximum channel difference
+of 59; the [new preview](tests/native/evidence/macos-ui/scaled-backdrop-after-preview-20261116.png)
+and [reopened export](tests/native/evidence/macos-ui/scaled-backdrop-after-reopened-20261116.png)
+matched at every pixel. The whole unannotated composition and the redaction
+region also passed generated comparisons at 73% and 150% zoom in light and dark
+appearances. This is not a physical-display or live-capture verification. A
+local five-run debug-build 4K backdrop microbenchmark showed a warm generation time of
+about 145–173 ms with composition versus 78–94 ms without it; it excludes GPU
+upload and does not measure interactive behavior on other hardware. Performance
+and broader wallpaper/annotation combinations remain to be checked.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners
