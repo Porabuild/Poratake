@@ -3226,6 +3226,12 @@ disconnects leaves the controls stopping. Sending the request and clearing
 camera-preview protection still use synchronous daemon calls; their behavior with
 an unresponsive daemon and actual ScreenCaptureKit timing remain open.
 
+The macOS ScreenCaptureKit delegate also now reports failures from the current
+stream during startup, including a closed window target, instead of discarding
+them while the recorder's public state is still idle. A [native callback fixture](tests/native/evidence/macos-ui/recording-start-stream-error-20261116.txt)
+checks session and error classification without starting a stream. Actual
+callback timing and errors during or after Stop remain unverified.
+
 The area variant checks that a failed start hides the temporary overlay and
 passes a synthetic toolbar ID in `excludedWindowIds`. It also writes generated
 video before rejecting the start: the old cleanup deleted it, while the new
