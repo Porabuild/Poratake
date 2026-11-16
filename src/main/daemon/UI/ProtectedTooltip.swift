@@ -85,12 +85,14 @@ final class ProtectedTooltip {
     private func makePanel(text: String, dark: Bool, point: NSPoint, screen: NSScreen) -> NSPanel {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         let maxTextWidth = max(1, min(360, screen.visibleFrame.width - 24))
-        let textRect = (text as NSString).boundingRect(
-            with: NSSize(width: maxTextWidth, height: 80),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        ).integral
-        let size = NSSize(width: min(maxTextWidth, textRect.width) + 16, height: min(80, textRect.height) + 8)
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = .labelColor
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 4
+        label.cell?.truncatesLastVisibleLine = true
+        let fitted = label.sizeThatFits(NSSize(width: maxTextWidth, height: 80))
+        let size = NSSize(width: min(maxTextWidth, ceil(fitted.width)) + 16, height: ceil(fitted.height) + 8)
         let visible = screen.visibleFrame
         let x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
         let below = point.y - 18 - size.height
@@ -117,11 +119,6 @@ final class ProtectedTooltip {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 5
         effect.layer?.masksToBounds = true
-        let label = NSTextField(labelWithString: text)
-        label.font = font
-        label.textColor = .labelColor
-        label.lineBreakMode = .byWordWrapping
-        label.maximumNumberOfLines = 4
         label.frame = NSRect(x: 8, y: 2, width: size.width - 16, height: size.height - 4)
         effect.addSubview(label)
         panel.contentView = effect

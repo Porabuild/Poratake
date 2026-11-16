@@ -767,6 +767,47 @@ struct ScrollCapturePreviewTest {
                     tooltipRegistry.currentWindowIDs().isEmpty
                 }
             }
+            let edgeText = "FIRST LINE\nSECOND LINE\nTHIRD LINE\nFOURTH LINE\nFIFTH LINE\nSIXTH LINE"
+            let visibleFrame = screen.visibleFrame
+            let edgePoints = [
+                NSPoint(x: visibleFrame.minX + 1, y: visibleFrame.minY + 1),
+                NSPoint(x: visibleFrame.maxX - 1, y: visibleFrame.minY + 1),
+                NSPoint(x: visibleFrame.minX + 1, y: visibleFrame.maxY - 1),
+                NSPoint(x: visibleFrame.maxX - 1, y: visibleFrame.maxY - 1)
+            ]
+            for (index, edgePoint) in edgePoints.enumerated() {
+                let sequence = UInt64(19 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 105, text: edgeText))
+                let visible = try await tooltip.show(sequence: sequence, owner: 105, text: edgeText, dark: index % 2 == 1, at: edgePoint)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let font = label.font,
+                      let bitmap = label.bitmapImageRepForCachingDisplay(in: label.bounds) else {
+                    preconditionFailure("The edge tooltip could not be rendered")
+                }
+                precondition(panel.frame.minX >= visibleFrame.minX && panel.frame.maxX <= visibleFrame.maxX)
+                precondition(panel.frame.minY >= visibleFrame.minY && panel.frame.maxY <= visibleFrame.maxY)
+                let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+                precondition(panel.frame.height <= ceil(lineHeight * 4) + 12)
+                precondition(label.cell?.truncatesLastVisibleLine == true)
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let quarter = bitmap.pixelsHigh / 4
+                for line in 0..<4 {
+                    let rows = (line * quarter)..<(line == 3 ? bitmap.pixelsHigh : (line + 1) * quarter)
+                    let ink = rows.contains { y in
+                        (0..<bitmap.pixelsWide).contains { x in
+                            (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+                        }
+                    }
+                    precondition(ink, "Every visible tooltip line must be painted")
+                }
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 105, text: nil))
+                await waitUntil("The edge tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
             let failureRegistry = RecordingCaptureWindowRegistry()
             failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
             let failedTooltip = ProtectedTooltip(registry: failureRegistry)
