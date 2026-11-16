@@ -6570,9 +6570,45 @@ pub(super) fn restored_pixelation(
         let top = snap(f32::from(preview_bounds.top()) * scale);
         let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
         let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+        let width = snap(f32::from(preview_bounds.right()) * scale) - left;
+        let height = snap(f32::from(preview_bounds.bottom()) * scale) - top;
+        assert_eq!(
+            (width, height),
+            (
+                snap(f32::from(flattened_bounds.right()) * scale) - flat_left,
+                snap(f32::from(flattened_bounds.bottom()) * scale) - flat_top,
+            ),
+            "pixelation preview dimensions at zoom={effective_zoom}, DPI={scale}"
+        );
+        let mismatched = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                preview
+                    .get_pixel(left + x, top + y)
+                    .0
+                    .iter()
+                    .zip(flattened_image.get_pixel(flat_left + x, flat_top + y).0)
+                    .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+            })
+            .count();
+        if mismatched > 0 {
+            for (name, image, x, y) in [
+                ("preview", &preview, left, top),
+                ("saved", &flattened_image, flat_left, flat_top),
+            ] {
+                image::imageops::crop_imm(image, x, y, width, height)
+                    .to_image()
+                    .save(scratch.join(format!(
+                        "pixelation-whole-{scale}-{effective_zoom}-{transparent}-{clipped}-{name}.png"
+                    )))
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            mismatched, 0,
+            "whole pixelation image at zoom={effective_zoom}, DPI={scale}, transparent={transparent}, clipped={clipped}"
+        );
         if scale == 1. {
-            let width = (saved.width() as f32 * effective_zoom).round() as u32;
-            let height = (saved.height() as f32 * effective_zoom).round() as u32;
             image::imageops::crop_imm(&preview, left, top, width, height)
                 .to_image()
                 .save(scratch.join(format!(
@@ -6585,18 +6621,6 @@ pub(super) fn restored_pixelation(
                     "pixelation-zoom-{effective_zoom}-{transparent}-{clipped}-saved.png"
                 )))
                 .unwrap();
-        }
-        for y in ((29. * effective_zoom).ceil() as u32)..((71. * effective_zoom).floor() as u32) {
-            for x in ((left_edge.saturating_sub(1) as f32 * effective_zoom).ceil() as u32)
-                ..(((right_edge + 1).min(200) as f32 * effective_zoom).floor() as u32)
-            {
-                let actual = preview.get_pixel(left + x, top + y).0;
-                let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
-                assert!(
-                        actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
-                        "pixelation at zoom={effective_zoom}, DPI={scale}, transparent={transparent}, clipped={clipped}, {x},{y}: {actual:?} vs {expected:?}"
-                    );
-            }
         }
     }
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())

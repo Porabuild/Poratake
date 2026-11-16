@@ -249,7 +249,8 @@ shadowed screenshot with its reopened PNG at 73%, 100% and 150% effective zoom,
 check macOS frames with and without shadows, and check redactions over a plain
 transparent image.
 Set `PORATAKE_PARITY_PIXELATION_ONLY=1` to check restored pixelation on opaque,
-transparent and clipped generated images across the simulated scale matrix.
+transparent and clipped generated images across the simulated scale matrix;
+the displayed image is compared in full with the reopened PNG.
 With the Vite server above running, run
 `env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/transparent-editor-probe.cjs`
 to check a generated transparent PNG in an isolated offscreen Electron editor.
