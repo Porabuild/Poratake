@@ -1428,9 +1428,18 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     };
     let source_width = source.width() as u64;
     let source_height = source.height() as u64;
-    let columns: Vec<usize> = (0..source_width)
-        .map(|x| ((((x * 2 + 1) * u64::from(small_width)) - 1) / (source_width * 2)) as usize)
-        .collect();
+    let mut columns: Vec<(usize, usize, usize)> = Vec::new();
+    for x in 0..source_width {
+        let sample = ((((x * 2 + 1) * u64::from(small_width)) - 1) / (source_width * 2)) as usize;
+        if let Some((_, end, _)) = columns
+            .last_mut()
+            .filter(|(_, _, column)| *column == sample)
+        {
+            *end = x as usize + 1;
+            continue;
+        }
+        columns.push((x as usize, x as usize + 1, sample));
+    }
     let small_pixels = small.data();
     for (y, row) in source
         .data_mut()
@@ -1439,9 +1448,11 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     {
         let sample_y =
             ((((y as u64 * 2 + 1) * u64::from(small_height)) - 1) / (source_height * 2)) as usize;
-        for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let sample = (sample_y * small_width as usize + columns[x]) * 4;
-            pixel.copy_from_slice(&small_pixels[sample..sample + 4]);
+        let row = row.as_chunks_mut::<4>().0;
+        for &(start, end, column) in &columns {
+            let sample = (sample_y * small_width as usize + column) * 4;
+            let color = small_pixels[sample..sample + 4].try_into().unwrap();
+            row[start..end].fill(color);
         }
     }
 
@@ -1594,6 +1605,33 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let source_height = source.height();
     let data = source.data();
     let out = target.data_mut();
+
+    if source_width % width == 0 && source_height % height == 0 {
+        let block_width = source_width / width;
+        let block_height = source_height / height;
+        let divisor = u64::from(block_width) * u64::from(block_height);
+        for y in 0..height {
+            for x in 0..width {
+                let mut sums = [0u64; 4];
+                for row in y * block_height..(y + 1) * block_height {
+                    let start = (row as usize * source_width as usize
+                        + x as usize * block_width as usize)
+                        * 4;
+                    let end = start + block_width as usize * 4;
+                    for pixel in data[start..end].chunks_exact(4) {
+                        for channel in 0..4 {
+                            sums[channel] += u64::from(pixel[channel]);
+                        }
+                    }
+                }
+                let index = ((y * width + x) * 4) as usize;
+                for channel in 0..4 {
+                    out[index + channel] = ((sums[channel] + divisor / 2) / divisor) as u8;
+                }
+            }
+        }
+        return Some(target);
+    }
 
     let divisor = u64::from(source_width) * u64::from(source_height);
     for y in 0..height {
@@ -2698,6 +2736,20 @@ mod tests {
     }
 
     #[test]
+    fn pixelation_averages_aligned_blocks_without_changing_channels() {
+        let mut source = Pixmap::new(4, 4).unwrap();
+        for (index, pixel) in source.data_mut().chunks_exact_mut(4).enumerate() {
+            let x = index % 4;
+            let y = index / 4;
+            pixel.copy_from_slice(&[(x * 50) as u8, (y * 50) as u8, ((x + y) * 20) as u8, 255]);
+        }
+        assert_eq!(
+            downsample(&source, 2, 2).unwrap().data(),
+            &[25, 25, 20, 255, 125, 25, 60, 255, 25, 125, 60, 255, 125, 125, 100, 255]
+        );
+    }
+
+    #[test]
     fn pixelation_averages_high_frequency_stripes_across_block_edges() {
         let mut source = Pixmap::new(30, 1).unwrap();
         for (x, pixel) in source
@@ -2775,6 +2827,49 @@ mod tests {
                     _ => 39,
                 };
                 assert_eq!(canvas.pixmap().data()[(x + i) * 4], expected, "{x}+{i}");
+            }
+        }
+    }
+
+    #[test]
+    fn pixelation_preserves_nearest_block_samples_for_varied_sizes() {
+        for (width, height, block) in [(7, 5, 2), (30, 11, 8), (47, 23, 6), (64, 32, 8)] {
+            let mut source = Pixmap::new(width, height).unwrap();
+            for (index, pixel) in source.data_mut().chunks_exact_mut(4).enumerate() {
+                let x = index % width as usize;
+                let y = index / width as usize;
+                pixel.copy_from_slice(&[
+                    (x * 13 % 256) as u8,
+                    (y * 31 % 256) as u8,
+                    ((x + y) * 7 % 256) as u8,
+                    255,
+                ]);
+            }
+            let small_width = (width as f32 / block as f32).round().max(1.0) as u32;
+            let small_height = (height as f32 / block as f32).round().max(1.0) as u32;
+            let small = downsample(&source, small_width, small_height).unwrap();
+            let mut canvas = Canvas::new(width + 4, height + 4).unwrap();
+            canvas.draw_pixmap(source.as_ref(), 2.0, 2.0, width as f32, height as f32);
+            pixelate_region(
+                &mut canvas,
+                2.0,
+                2.0,
+                width as f64,
+                height as f64,
+                block as f64,
+            );
+            for y in 0..height {
+                for x in 0..width {
+                    let sx = (((2 * x + 1) * small_width - 1) / (2 * width)) as usize;
+                    let sy = (((2 * y + 1) * small_height - 1) / (2 * height)) as usize;
+                    let expected = (sy * small_width as usize + sx) * 4;
+                    let actual = (((y + 2) * (width + 4) + x + 2) * 4) as usize;
+                    assert_eq!(
+                        &canvas.pixmap().data()[actual..actual + 4],
+                        &small.data()[expected..expected + 4],
+                        "{width}x{height}, {x},{y}"
+                    );
+                }
             }
         }
     }
