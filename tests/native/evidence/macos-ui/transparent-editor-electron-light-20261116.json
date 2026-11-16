@@ -1,0 +1,15 @@
+{
+  "electron": "43.4.0",
+  "theme": "light",
+  "result": {
+    "canvasSize": [170, 150],
+    "corner": [0, 0, 0, 0],
+    "rect": {
+      "x": 555,
+      "y": 310.5
+    },
+    "background": "rgb(241, 241, 244)",
+    "dpr": 1,
+    "displayedCornerBgra": [244, 241, 241, 255]
+  }
+}

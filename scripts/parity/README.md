@@ -244,6 +244,15 @@ Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout
 preview/export checks at the same width and scale on macOS.
 Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
 opaque source instead of the partially translucent generated region.
+Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,
+shadowed screenshot with its reopened PNG at 73%, 100% and 150% effective zoom,
+and to check redactions over a plain transparent image.
+Set `PORATAKE_PARITY_PIXELATION_ONLY=1` to check restored pixelation on opaque,
+transparent and clipped generated images across the simulated scale matrix.
+With the Vite server above running, run
+`env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/transparent-editor-probe.cjs`
+to check a generated transparent PNG in an isolated offscreen Electron editor.
+Set `PORATAKE_THEME=light` to repeat the check in light appearance.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser
