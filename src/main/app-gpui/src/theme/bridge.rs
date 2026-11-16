@@ -11,7 +11,7 @@ use super::vars::ThemeVars;
 use herogpui::gpui;
 use herogpui::theme::{
     ButtonStyle, ComponentColor, ComponentTheme, ComponentThemes, MenuStyle, SelectStyle,
-    SliderStyle, SwitchStyle, TextFieldStyle,
+    SliderStyle, SwitchStyle, TextFieldStyle, TooltipStyle,
 };
 use herogpui::{Color, FieldVariant, Variant};
 
@@ -39,6 +39,19 @@ pub(crate) const MENU_ROW_HEIGHT: f32 = 36.0;
 
 fn component_themes(vars: &ThemeVars) -> ComponentThemes {
     ComponentThemes::default()
+        .tooltip(
+            ComponentTheme::new(TooltipStyle::default())
+                .recipe(
+                    "native",
+                    TooltipStyle::default()
+                        .close_delay_ms(0)
+                        .offset(gpui::px(8.)),
+                )
+                .recipe(
+                    "appkit-hover",
+                    TooltipStyle::default().delay_ms(0).close_delay_ms(0),
+                ),
+        )
         .slider(ComponentTheme::new(
             SliderStyle::default().radius(gpui::px(9999.0)),
         ))

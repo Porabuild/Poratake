@@ -609,27 +609,7 @@ impl Render for ScrollControlBar {
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
-    use cocoa::base::nil;
-    use cocoa::foundation::NSString;
-    use objc::{msg_send, sel, sel_impl};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Some(handle) = HasWindowHandle::window_handle(window).ok() else {
-        return;
-    };
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return;
-    };
-    unsafe {
-        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
-        let value = tooltip
-            .map(|tooltip| NSString::alloc(nil).init_str(tooltip))
-            .unwrap_or(nil);
-        let _: () = msg_send![view, setToolTip: value];
-        if value != nil {
-            let _: () = msg_send![value, release];
-        }
-    }
+    crate::system::tooltip_macos::set_native_tooltip(window, tooltip);
 }
 
 #[cfg(test)]

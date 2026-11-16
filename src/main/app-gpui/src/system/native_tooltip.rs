@@ -2,7 +2,8 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 
-use gpui::Window;
+use gpui::{point, px, size, Bounds, Pixels, Window};
+use herogpui::components::{position_tooltip_popup, TooltipPlacement, TooltipPresentationRequest};
 use herogpui::gpui;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
@@ -16,7 +17,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetCursorPos, GetWindowRect, IsWindow, SendMessageW,
+    CreateWindowExW, DestroyWindow, GetWindowRect, IsWindow, SendMessageW,
     SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, HWND_TOPMOST, LWA_ALPHA,
     SWP_NOACTIVATE, SWP_NOOWNERZORDER, WDA_EXCLUDEFROMCAPTURE, WDA_MONITOR,
     WINDOW_DISPLAY_AFFINITY, WINDOW_EX_STYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -24,8 +25,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const TOOL_ID: usize = 1;
-const CURSOR_OFFSET_X: i32 = 16;
-const CURSOR_OFFSET_Y: i32 = 24;
 const MONITOR_GAP: i32 = 8;
 
 #[cfg(test)]
@@ -150,8 +149,8 @@ impl WindowsTooltip {
         Some(result)
     }
 
-    pub fn show(&mut self, window: &Window, text: &str) {
-        if text.is_empty() || window_hwnd(window) != Some(self.owner) {
+    pub fn show(&mut self, window: &Window, request: &TooltipPresentationRequest) {
+        if request.content.is_empty() || window_hwnd(window) != Some(self.owner) {
             self.hide();
             return;
         }
@@ -159,15 +158,23 @@ impl WindowsTooltip {
             self.hide();
             return;
         }
-        let mut cursor = POINT::default();
-        if unsafe { GetCursorPos(&mut cursor) }.is_err() {
-            self.hide();
-            return;
-        }
-        self.show_at(text, cursor);
+        self.show_at(
+            &request.content,
+            request.trigger_screen_bounds,
+            request.placement,
+            request.offset,
+            request.scale_factor,
+        );
     }
 
-    fn show_at(&mut self, text: &str, cursor: POINT) {
+    fn show_at(
+        &mut self,
+        text: &str,
+        trigger: Bounds<Pixels>,
+        placement: TooltipPlacement,
+        offset: Pixels,
+        scale: f32,
+    ) {
         if text.is_empty() || !unsafe { IsWindow(Some(self.owner)) }.as_bool() {
             self.hide();
             return;
@@ -189,6 +196,11 @@ impl WindowsTooltip {
                 )),
             );
         }
+        let center = trigger.center();
+        let cursor = POINT {
+            x: (center.x.as_f32() * scale).round() as i32,
+            y: (center.y.as_f32() * scale).round() as i32,
+        };
         let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
         let mut monitor_info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -208,8 +220,8 @@ impl WindowsTooltip {
                 windows::Win32::UI::Controls::TTM_SETMAXTIPWIDTH,
                 Some(WPARAM(0)),
                 Some(LPARAM(
-                    (monitor_info.rcMonitor.right
-                        - monitor_info.rcMonitor.left
+                    (monitor_info.rcWork.right
+                        - monitor_info.rcWork.left
                         - scale_for_dpi(MONITOR_GAP, dpi) * 2)
                         .max(1) as isize,
                 )),
@@ -229,26 +241,31 @@ impl WindowsTooltip {
             self.hide();
             return;
         }
-        let size = TooltipSize {
-            width: bounds.right - bounds.left,
-            height: bounds.bottom - bounds.top,
-        };
-        let placement = position_tooltip(
-            cursor,
-            size,
-            monitor_info.rcMonitor,
-            scale_for_dpi(CURSOR_OFFSET_X, dpi),
-            scale_for_dpi(CURSOR_OFFSET_Y, dpi),
-            scale_for_dpi(MONITOR_GAP, dpi),
+        let width = bounds.right - bounds.left;
+        let height = bounds.bottom - bounds.top;
+        let work = monitor_info.rcWork;
+        let origin = position_tooltip_popup(
+            trigger,
+            size(px(width as f32 / scale), px(height as f32 / scale)),
+            Bounds {
+                origin: point(px(work.left as f32 / scale), px(work.top as f32 / scale)),
+                size: size(
+                    px((work.right - work.left) as f32 / scale),
+                    px((work.bottom - work.top) as f32 / scale),
+                ),
+            },
+            placement,
+            offset,
+            scale,
         );
         if unsafe {
             SetWindowPos(
                 self.window,
                 Some(HWND_TOPMOST),
-                placement.x,
-                placement.y,
-                size.width,
-                size.height,
+                (origin.x.as_f32() * scale).round() as i32,
+                (origin.y.as_f32() * scale).round() as i32,
+                width,
+                height,
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             )
         }
@@ -487,50 +504,6 @@ fn window_hwnd(window: &Window) -> Option<HWND> {
     crate::windows::window_hwnd(window)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TooltipSize {
-    width: i32,
-    height: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TooltipPosition {
-    x: i32,
-    y: i32,
-}
-
-fn position_tooltip(
-    cursor: POINT,
-    size: TooltipSize,
-    monitor: RECT,
-    offset_x: i32,
-    offset_y: i32,
-    gap: i32,
-) -> TooltipPosition {
-    let monitor_width = monitor.right - monitor.left;
-    let monitor_height = monitor.bottom - monitor.top;
-    let mut x = cursor.x + offset_x;
-    if x + size.width > monitor.right {
-        x = cursor.x - size.width - gap;
-    }
-    let mut y = cursor.y + offset_y;
-    if y + size.height > monitor.bottom {
-        y = cursor.y - size.height - gap;
-    }
-    TooltipPosition {
-        x: if size.width >= monitor_width {
-            monitor.left
-        } else {
-            x.clamp(monitor.left, monitor.right - size.width)
-        },
-        y: if size.height >= monitor_height {
-            monitor.top
-        } else {
-            y.clamp(monitor.top, monitor.bottom - size.height)
-        },
-    }
-}
-
 fn scale_for_dpi(value: i32, dpi: u32) -> i32 {
     ((i64::from(value) * i64::from(dpi) + 48) / 96) as i32
 }
@@ -567,66 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_uses_space_to_the_left_and_above_cursor_at_monitor_edges() {
-        let position = position_tooltip(
-            POINT { x: 1900, y: 1060 },
-            TooltipSize {
-                width: 180,
-                height: 40,
-            },
-            RECT {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            CURSOR_OFFSET_X,
-            CURSOR_OFFSET_Y,
-            MONITOR_GAP,
-        );
-        assert_eq!(position, TooltipPosition { x: 1712, y: 1012 });
-    }
-
-    #[test]
-    fn tooltip_clamps_to_negative_and_high_monitor_origins_without_packed_coordinates() {
-        let position = position_tooltip(
-            POINT { x: -1921, y: -400 },
-            TooltipSize {
-                width: 160,
-                height: 32,
-            },
-            RECT {
-                left: -1920,
-                top: -500,
-                right: 0,
-                bottom: 580,
-            },
-            CURSOR_OFFSET_X,
-            CURSOR_OFFSET_Y,
-            MONITOR_GAP,
-        );
-        assert_eq!(position, TooltipPosition { x: -1905, y: -376 });
-
-        let position = position_tooltip(
-            POINT { x: 40000, y: 100 },
-            TooltipSize {
-                width: 180,
-                height: 40,
-            },
-            RECT {
-                left: 38400,
-                top: 0,
-                right: 40320,
-                bottom: 1080,
-            },
-            CURSOR_OFFSET_X,
-            CURSOR_OFFSET_Y,
-            MONITOR_GAP,
-        );
-        assert_eq!(position, TooltipPosition { x: 40016, y: 124 });
-    }
-
-    #[test]
     fn tooltip_text_is_null_terminated_and_stably_owned() {
         let text = "Camera settings"
             .encode_utf16()
@@ -644,8 +557,6 @@ mod tests {
 
     #[test]
     fn tooltip_offsets_follow_window_dpi() {
-        assert_eq!(scale_for_dpi(CURSOR_OFFSET_X, 144), 24);
-        assert_eq!(scale_for_dpi(CURSOR_OFFSET_Y, 144), 36);
         assert_eq!(scale_for_dpi(MONITOR_GAP, 144), 12);
     }
 
@@ -791,11 +702,23 @@ mod tests {
             }
             let mut tooltip = WindowsTooltip::new_for_owner(owner).unwrap();
             let foreground = unsafe { GetForegroundWindow() };
-            let cursor = POINT {
-                x: owner_bounds.left + 160,
-                y: owner_bounds.top + 38,
-            };
-            tooltip.show_at("Camera settings", cursor);
+            let scale = unsafe { GetDpiForWindow(owner) } as f32 / 96.;
+            tooltip.show_at(
+                "Camera settings",
+                Bounds {
+                    origin: point(
+                        px(owner_bounds.left as f32 / scale),
+                        px(owner_bounds.top as f32 / scale),
+                    ),
+                    size: size(
+                        px((owner_bounds.right - owner_bounds.left) as f32 / scale),
+                        px((owner_bounds.bottom - owner_bounds.top) as f32 / scale),
+                    ),
+                },
+                TooltipPlacement::Bottom,
+                px(8.),
+                scale,
+            );
             assert!(tooltip.active);
             assert!(unsafe { IsWindowVisible(tooltip.window) }.as_bool());
             assert_eq!(unsafe { GetForegroundWindow() }, foreground);

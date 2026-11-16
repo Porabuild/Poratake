@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/Porabuild/HeroGPUI",
-  "revision": "09ec52be169bf25a6351a14088e34e22fe89fe9f",
-  "tag": "v0.15.1",
-  "heroGpuiVersion": "0.15.1",
+  "revision": "b7b28efc12839c5d805c5a628fdea98ae79ac9a2",
+  "tag": "v0.15.2",
+  "heroGpuiVersion": "0.15.2",
   "gpuiPreVersion": "0.3.11",
   "adaptations": [
     "The active skill resolves bundled references and Poratake Cargo commands.",
@@ -12,8 +12,8 @@
     {
       "source": "skills/herogpui/SKILL.md",
       "local": "SKILL.md",
-      "sourceSha256": "5295f25a9967a7dc7e40da4a4196fa89e554525f2a723ce06578956449d02687",
-      "vendoredSha256": "0c55f68fa2ffdc3dd7bedb82ac8899c79d3b93f7eae01387079e019b9b412cbb"
+      "sourceSha256": "4903d184fa24359224989561c3087065d66f0c10b8329d10a02b79a09cde2ee6",
+      "vendoredSha256": "d8cd10c6238066f035e65ca6f75f0234afae0d97f6c7b4efd5da904f23045c38"
     },
     {
       "source": "skills/herogpui/LICENSE.txt",
@@ -30,8 +30,8 @@
     {
       "source": "llms.txt",
       "local": "references/llms.txt",
-      "sourceSha256": "649fd1a086333a8a17e2fa51b2bc0e4931bfc05cb269ed01f07a27d3250b70d8",
-      "vendoredSha256": "649fd1a086333a8a17e2fa51b2bc0e4931bfc05cb269ed01f07a27d3250b70d8"
+      "sourceSha256": "bfab357a39665bde10beab23d9dfb07394c693e4617aba326ba67936c1817f32",
+      "vendoredSha256": "bfab357a39665bde10beab23d9dfb07394c693e4617aba326ba67936c1817f32"
     },
     {
       "source": "docs/agents/workflow.md",

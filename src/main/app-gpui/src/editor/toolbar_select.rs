@@ -1,35 +1,11 @@
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, AnyElement, App};
+use gpui::{div, prelude::*, px, AnyElement};
 use herogpui::components::{PickerItem, Select};
 use herogpui::gpui;
-use herogpui::theme::ActiveTheme as _;
 
 use crate::ui::icon::icon_element;
 use crate::ui::menu::{MenuEntry, MenuItem};
-
-pub(super) fn text_width(
-    text: &gpui::SharedString,
-    size: gpui::Pixels,
-    window: &gpui::Window,
-) -> f32 {
-    let mut font = window.text_style().font();
-    font.weight = gpui::FontWeight::NORMAL;
-    let run = gpui::TextRun {
-        len: text.len(),
-        font,
-        color: gpui::black(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    f32::from(
-        window
-            .text_system()
-            .shape_line(text.clone(), size, &[run], None)
-            .width,
-    )
-}
 
 pub fn render(
     id: &'static str,
@@ -37,8 +13,6 @@ pub fn render(
     entries: Vec<MenuEntry>,
     content: impl Fn() -> AnyElement + 'static,
     show_labels: bool,
-    window: &mut gpui::Window,
-    cx: &mut App,
 ) -> AnyElement {
     let entries: Rc<Vec<MenuItem>> = Rc::new(
         entries
@@ -49,39 +23,6 @@ pub fn render(
             })
             .collect(),
     );
-    let style = cx.components().select.resolve(&["toolbar".into()]);
-    let text_size = style.row_text_size.unwrap_or(px(14.0));
-    let panel_padding = f32::from(style.panel_padding.unwrap_or(px(6.0)));
-    let row_padding = f32::from(style.row_padding_x.unwrap_or(px(10.0)));
-    let padding = panel_padding * 2.0
-        + row_padding
-        + row_padding.max(crate::ui::chrome::SELECT_INDICATOR_GUTTER);
-    let mut panel_width = f32::from(style.panel_min_width.unwrap_or(px(0.0)));
-    for item in entries.iter() {
-        let leading_width = item
-            .leading
-            .as_ref()
-            .map(|draw| {
-                let mut element = draw(cx);
-                f32::from(
-                    element
-                        .layout_as_root(gpui::AvailableSpace::min_size(), window, cx)
-                        .width,
-                )
-            })
-            .unwrap_or(0.0);
-        let label_width = if show_labels || item.leading.is_none() {
-            text_width(&item.label, text_size, window)
-        } else {
-            0.0
-        };
-        let gap = if leading_width > 0.0 && label_width > 0.0 {
-            12.0
-        } else {
-            0.0
-        };
-        panel_width = panel_width.max(leading_width + gap + label_width + padding);
-    }
     let items = entries
         .iter()
         .enumerate()
@@ -96,7 +37,7 @@ pub fn render(
         .placement(herogpui::Placement::Bottom)
         .recipe("toolbar")
         .aria_label(label)
-        .panel_min_width(px(panel_width))
+        .fit_panel_width(true)
         .value(selected)
         .value_content(move |_| content())
         .indicator(move |selected| {

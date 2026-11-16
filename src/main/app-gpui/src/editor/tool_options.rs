@@ -192,8 +192,6 @@ pub fn render(
             thickness_entries(state, handlers),
             move || thickness_bar(16.0, height, bar_color),
             false,
-            window,
-            cx,
         ));
         children.push(separator(&theme));
     }
@@ -206,8 +204,6 @@ pub fn render(
             arrow_entries(state, handlers),
             move || icon(path).size(px(20.0)).into_any_element(),
             true,
-            window,
-            cx,
         ));
         children.push(separator(&theme));
     }
@@ -219,8 +215,6 @@ pub fn render(
             highlight_entries(state, handlers),
             || icon_element("highlighter", px(16.0)),
             true,
-            window,
-            cx,
         ));
     }
 
@@ -274,8 +268,6 @@ pub fn render(
             shape_entries(state, handlers),
             move || shape_fill_preview(filled, color, 16.0),
             true,
-            window,
-            cx,
         ));
         children.push(separator(&theme));
     }
