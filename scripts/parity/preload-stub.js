@@ -16,7 +16,10 @@ const TYPE = query.get('window') || 'settings';
 /// `?image=/@fs/C:/path/to/capture.png` for the windows that show one.
 const IMAGE = query.get('image');
 const FILE = query.has('file') ? query.get('file') : 'C:\\parity.mp4';
-const BLACKOUT_SCALE_FIXTURE = query.get('fixture') === 'blackout-scale';
+const BLACKOUT_ORDER_FIXTURE = query.get('fixture') === 'blackout-order';
+const BLACKOUT_SCALE_FIXTURE =
+  query.get('fixture') === 'blackout-scale' || BLACKOUT_ORDER_FIXTURE;
+const BLACKOUT_REOPEN_FIXTURE = query.get('fixture') === 'blackout-reopen';
 const isList = channel => /list$|:list/.test(channel);
 
 const windowParams = async () => {
@@ -25,24 +28,43 @@ const windowParams = async () => {
       return {
         filePath: FILE,
         imageUrl: IMAGE,
-        ...(BLACKOUT_SCALE_FIXTURE
+        ...(BLACKOUT_SCALE_FIXTURE || BLACKOUT_REOPEN_FIXTURE
           ? {
               width: 100,
               height: 80,
-              editorState: {
-                annotations: [
-                  {
-                    id: 'parity-blackout',
-                    type: 'redact',
-                    x: 8.8,
-                    y: 3.8,
-                    width: 12.3,
-                    height: 12.3,
-                    style: 'blackout',
-                    intensity: 5,
-                  },
-                ],
-              },
+              ...(BLACKOUT_SCALE_FIXTURE
+                ? {
+                    editorState: {
+                      annotations: [
+                        ...(BLACKOUT_ORDER_FIXTURE
+                          ? [
+                              {
+                                id: 'parity-under-blackout',
+                                type: 'rectangle',
+                                x: 10,
+                                y: 6,
+                                width: 8,
+                                height: 8,
+                                stroke: '#ff0000',
+                                strokeWidth: 1,
+                                fill: '#ff0000',
+                              },
+                            ]
+                          : []),
+                        {
+                          id: 'parity-blackout',
+                          type: 'redact',
+                          x: 8.8,
+                          y: 3.8,
+                          width: 12.3,
+                          height: 12.3,
+                          style: 'blackout',
+                          intensity: 5,
+                        },
+                      ],
+                    },
+                  }
+                : {}),
             }
           : {}),
         initialPreferences: { lastTool: 'pen', color: '#f43f5e' },
