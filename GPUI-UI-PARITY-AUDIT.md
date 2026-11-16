@@ -661,6 +661,18 @@ synthetic runs do not verify native placement, input or captured pixels.
 The same local run passed the Swift fixtures for recorded-window closure
 classification, stopped-frame handling, display-coordinate conversions and
 screenshot capture geometry. Those fixtures do not start ScreenCaptureKit.
+Further isolated 720×738 and 720×500 runs passed at simulated 2× in both
+themes. The 720×500 runs rendered 173 states each, including a loaded video
+editor and horizontal toolbar and timeline-control scrolling. The generated
+screenshot editor is retained in [light](tests/native/evidence/macos-ui/compact-editor-720x500-light-20261116.png)
+and [dark](tests/native/evidence/macos-ui/compact-editor-720x500-dark-20261116.png),
+and the video editor in [light](tests/native/evidence/macos-ui/compact-video-720x500-light-20261116.png)
+and [dark](tests/native/evidence/macos-ui/compact-video-720x500-dark-20261116.png).
+The harness now checks the saved video screenshot itself for the generated red
+annotation and blue source; FFmpeg decoding also found both colors in each image.
+An image viewer again displayed the light preview black even though the decoded
+PNG contained those pixels. These headless runs use a fake daemon and are not a
+live capture, native-window or Electron visual comparison.
 
 The fixture also checks the rendered screenshot for the synthetic video's red
 annotation and blue checkerboard, in addition to comparing the in-memory preview
