@@ -120,9 +120,9 @@ final class ProtectedTooltip {
         let label = NSTextField(labelWithString: text)
         label.font = font
         label.textColor = .labelColor
-        label.lineBreakMode = .byTruncatingTail
+        label.lineBreakMode = .byWordWrapping
         label.maximumNumberOfLines = 4
-        label.frame = NSRect(x: 8, y: 4, width: size.width - 16, height: size.height - 8)
+        label.frame = NSRect(x: 8, y: 2, width: size.width - 16, height: size.height - 4)
         effect.addSubview(label)
         panel.contentView = effect
         return panel

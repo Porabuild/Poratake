@@ -734,6 +734,39 @@ struct ScrollCapturePreviewTest {
             await waitUntil("The replacement tooltip was not unregistered") {
                 tooltipRegistry.currentWindowIDs().isEmpty
             }
+            let longTooltipTexts = [
+                "Copy with a very long preset name that should wrap across multiple lines and remain readable for the user",
+                "Copy with 日本語の長いプリセット名と多言語の注釈を保存する設定日本語の長いプリセット名と多言語の注釈を保存する設定"
+            ]
+            for (index, item) in longTooltipTexts.flatMap({ text in [(text, false), (text, true)] }).enumerated() {
+                let (longText, dark) = item
+                let sequence = UInt64(11 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 104, text: longText))
+                let visible = try await tooltip.show(sequence: sequence, owner: 104, text: longText, dark: dark, at: point)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let bitmap = label.bitmapImageRepForCachingDisplay(in: label.bounds) else {
+                    preconditionFailure("The tooltip label could not be rendered")
+                }
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let midpoint = bitmap.pixelsHigh / 2
+                func hasInk(_ rows: Range<Int>) -> Bool {
+                    for y in rows {
+                        for x in 0..<bitmap.pixelsWide {
+                            if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 { return true }
+                        }
+                    }
+                    return false
+                }
+                precondition(hasInk(0..<midpoint) && hasInk(midpoint..<bitmap.pixelsHigh),
+                             "Long tooltip text must paint on both lines")
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 104, text: nil))
+                await waitUntil("The wrapped tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
             let failureRegistry = RecordingCaptureWindowRegistry()
             failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
             let failedTooltip = ProtectedTooltip(registry: failureRegistry)
