@@ -1,27 +1,12 @@
-#[cfg(any(windows, target_os = "macos"))]
-use gpui::Styled;
-use gpui::{div, prelude::*, px, AnyElement, App, Context, SharedString, Window};
+use std::sync::Arc;
+
+use gpui::{div, prelude::*, px, AnyElement, App, SharedString, Window};
 use herogpui::components::{Button, Tooltip, TooltipPlacement, Variant};
 use herogpui::gpui;
 
 use crate::theme::vars::ThemeVars;
-use crate::ui::chrome;
 use crate::ui::icon::{icon_element, Icon};
-
-pub trait NativeTooltipHost: Sized + 'static {
-    #[cfg(any(windows, target_os = "macos"))]
-    fn preview_tooltip_hover(
-        &mut self,
-        key: &gpui::ElementId,
-        tooltip: &str,
-        hovered: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    );
-
-    #[cfg(any(windows, target_os = "macos"))]
-    fn preview_tooltip_cancel(&mut self, key: &gpui::ElementId, window: &mut Window);
-}
+use crate::ui::{chrome, tooltip::NativeTooltipPresenter};
 
 pub const FINISHED_BADGE: f32 = 40.0;
 pub const FINISHED_CHECK: f32 = 20.0;
@@ -87,7 +72,7 @@ pub fn progress_bar(fraction: f32, theme: &ThemeVars) -> AnyElement {
 }
 
 pub fn circle(
-    cx: &mut Context<impl NativeTooltipHost>,
+    presenter: &Arc<NativeTooltipPresenter>,
     id: impl Into<gpui::ElementId>,
     icon: &'static str,
     busy: bool,
@@ -106,7 +91,7 @@ pub fn circle(
         busy,
         Some(tooltip.into()),
         placement,
-        cx,
+        presenter,
         move |button| {
             if busy {
                 button.child(crate::ui::icon::spinner_element(
@@ -122,7 +107,7 @@ pub fn circle(
 }
 
 pub fn pill(
-    cx: &mut Context<impl NativeTooltipHost>,
+    presenter: &Arc<NativeTooltipPresenter>,
     id: impl Into<gpui::ElementId>,
     label: &'static str,
     tooltip: Option<SharedString>,
@@ -139,13 +124,13 @@ pub fn pill(
         false,
         tooltip,
         placement,
-        cx,
+        presenter,
         move |button| button.label(label),
         on_click,
     )
 }
 
-fn chip<T: NativeTooltipHost>(
+fn chip(
     id: impl Into<gpui::ElementId>,
     recipe: &'static str,
     icon_only: bool,
@@ -154,13 +139,12 @@ fn chip<T: NativeTooltipHost>(
     disabled: bool,
     tooltip: Option<SharedString>,
     placement: TooltipPlacement,
-    #[cfg(any(windows, target_os = "macos"))] cx: &mut Context<T>,
-    #[cfg(not(any(windows, target_os = "macos")))] _: &mut Context<T>,
+    presenter: &Arc<NativeTooltipPresenter>,
     content: impl FnOnce(Button) -> Button + 'static,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id = id.into();
-    #[cfg(all(test, any(windows, target_os = "macos")))]
+    #[cfg(test)]
     let debug_selector = format!("{id}-tooltip-trigger");
     let surface = theme.background.opacity(0.8);
     let foreground = theme.foreground;
@@ -192,6 +176,7 @@ fn chip<T: NativeTooltipHost>(
     match tooltip {
         Some(tooltip) => {
             let mut tip = Tooltip::new(tooltip.clone())
+                .id((id.clone(), "preview-tooltip"))
                 .placement(placement)
                 .sx(|el| el.flex_shrink_0());
             if !icon_only {
@@ -205,35 +190,10 @@ fn chip<T: NativeTooltipHost>(
                         .into_any_element()
                 });
             }
-            #[cfg(any(windows, target_os = "macos"))]
-            {
-                let hover_tooltip = tooltip.to_string();
-                let hover_key = id.clone();
-                let press_key = hover_key.clone();
-                let trigger = div().id((id.clone(), "preview-native-tooltip"));
-                #[cfg(test)]
-                let trigger = trigger.debug_selector(move || debug_selector.clone());
-                let trigger = trigger
-                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
-                        this.preview_tooltip_hover(
-                            &hover_key,
-                            &hover_tooltip,
-                            *hovered,
-                            window,
-                            cx,
-                        );
-                    }))
-                    .capture_any_mouse_down(cx.listener(move |this, _, window, _| {
-                        this.preview_tooltip_cancel(&press_key, window);
-                    }))
-                    .child(button);
-                tip = tip
-                    .trigger(herogpui::components::TooltipTrigger::Focus)
-                    .child(trigger);
-            }
-            #[cfg(not(any(windows, target_os = "macos")))]
-            let tip = tip.child(button);
-            tip.into_any_element()
+            let trigger = div().id((id.clone(), "preview-native-tooltip"));
+            #[cfg(test)]
+            let trigger = trigger.debug_selector(move || debug_selector.clone());
+            presenter.wrap(id, tooltip, tip, trigger.child(button))
         }
         None => button.into_any_element(),
     }

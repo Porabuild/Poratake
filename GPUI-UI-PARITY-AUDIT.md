@@ -1,6 +1,6 @@
 # GPUI versus Electron verification audit
 
-Refreshed 2026-11-15 for Poratake 0.9.6.
+Dependency evidence refreshed 2026-11-16 for Poratake 0.9.6. The workflow gates below retain their 2026-11-15 evidence.
 Electron remains the product reference. This is a verification record and current
 backlog; the earlier implementation plans are historical findings, not an open-bug
 list. A source comparison or passing unit test does not establish full manual parity.
@@ -27,7 +27,7 @@ release verification; routine PR checks do not run the matrix.
 
 | Gate                                 | Status | Completion evidence                                                                                                                                                         |
 | ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                           |
+| HeroGPUI dependency                  | Done   | #44 consumer fixes use published HeroGPUI 0.15.2; GPUI remains 0.3.11.                                                                                                      |
 | Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                  |
 | Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                     |
 | Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                 |
@@ -212,14 +212,14 @@ remain unknown. No test in this pass should request that authorization.
 
 ## Versions and dependency evidence
 
-| Component          | Current source                                                                                                                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI           | Exactly 0.15.1 in `src/main/Cargo.toml`; components use the source patch below and the other three crates retain registry checksums; source tag `v0.15.1` at `09ec52be169bf25a6351a14088e34e22fe89fe9f` |
-| GPUI               | `gpui-pre` and `gpui-pre-platform` exactly 0.3.11, matching HeroGPUI's workspace                                                                                                                        |
-| Electron runtime   | 43.4.0 in `bun.lock`; manifest range `^43.4.0`                                                                                                                                                          |
-| Electron reference | `@heroui/react` and `@heroui/styles` 3.2.4 in the installed lockfile; manifest range `^3.2.4`                                                                                                           |
-| HeroGPUI reference | HeroUI 3.2.7; its component audit is separate from Poratake's app parity                                                                                                                                |
-| Bundled guide      | `.agents/skills/herogpui/upstream.json` records revision, versions, source hashes and adapted local hashes                                                                                              |
+| Component          | Current source                                                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI           | All four crates use the exact 0.15.2 registry release with locked checksums; `v0.15.2` at `b7b28efc12839c5d805c5a628fdea98ae79ac9a2`; no HeroGPUI source patches |
+| GPUI               | `gpui-pre` and `gpui-pre-platform` exactly 0.3.11, matching HeroGPUI's workspace                                                                                 |
+| Electron runtime   | 43.4.0 in `bun.lock`; manifest range `^43.4.0`                                                                                                                   |
+| Electron reference | `@heroui/react` and `@heroui/styles` 3.2.4 in the installed lockfile; manifest range `^3.2.4`                                                                    |
+| HeroGPUI reference | HeroUI 3.2.7; its component audit is separate from Poratake's app parity                                                                                         |
+| Bundled guide      | `.agents/skills/herogpui/upstream.json` records revision, versions, source hashes and adapted local hashes                                                       |
 
 [HeroGPUI #43](https://github.com/Porabuild/HeroGPUI/pull/43) is merged. The
 `v0.15.1` tag points to the release source commit. Release workflow
@@ -234,16 +234,40 @@ and broad surface-level “Match” claims have been removed from this audit.
 The existing GPUI 0.3.11 Windows backend is patched from
 `vendor/gpui-pre-windows`, with provenance and the retained Apache-2.0 license in
 `THIRD_PARTY_NOTICES.md`. Its image shader, clipboard and pointer-exit handling
-differ from the published archive; all dependency versions remain unchanged.
+differ from the published archive; the GPUI crates remain at 0.3.11.
 
-HeroGPUI components 0.15.1 resolve to `vendor/herogpui-components`. The patched
-`src/select.rs` preserves focus-ring gutters and handles accessibility expansion;
-`src/dropdown.rs` preserves scrollable menu focus gutters within the available
-panel padding; `src/slider.rs` handles accessibility value actions; and
-`src/util.rs` releases a keyboard press after focus moves into a menu. The archive
-checksum, original licenses and NOTICE are retained.
-Zero-padding dropdown recipes still have no scroll-end focus gutter; Poratake's
-current recipes use 4px or 6px of panel padding.
+[HeroGPUI #44](https://github.com/Porabuild/HeroGPUI/pull/44) is merged at
+`1f0d037df3f2a9be41e528d722016ed8d0a7b986` and included in
+[HeroGPUI 0.15.2](https://github.com/Porabuild/HeroGPUI/releases/tag/v0.15.2),
+whose release commit is `b7b28efc12839c5d805c5a628fdea98ae79ac9a2`. Poratake pins
+that exact registry version; the temporary Git-source exception is removed.
+It supplies focus gutters, Select/Slider
+accessibility actions and keyboard press ownership, replacing all four former
+component patches. Intrinsic Select widths now use `fit_panel_width(true)`.
+Recording and capture-preview tooltips use the upstream presenter lifecycle.
+Windows retains its capture-excluded native popup; macOS retains AppKit hover
+help and keyboard tooltips inside the owner window. The GPUI
+Windows image-sampling, clipboard and pointer-exit patches remain separate.
+
+The 2026-11-16 update passed `bun run checks` (2,324 JavaScript tests), all
+1,008 GPUI unit tests, the eight accessibility-adapter probes, and Clippy with
+warnings denied on macOS and the Windows cross target (including `parity`).
+The macOS debug editor opened its thickness Select, showed the last option's
+complete keyboard focus ring, and selected it with Enter. The tooltip interaction
+regression exercises delay cancellation, sibling warmup, Escape, keyboard focus,
+activation and unmount through the upstream presenter lifecycle. The macOS
+regression also checks AppKit hover cancellation and in-window focus painting.
+
+The native Windows visual matrix and capture-exclusion proof have not been rerun
+on this source. Existing Windows baseline evidence above belongs to the previous
+revision; Windows keyboard tooltips now use the external surface and need a
+reviewed baseline refresh. Native macOS tooltip QA remains unverified: neither
+preview-window CLI target produced a targetable popup, including with foreground
+access. The macOS `parity` build has two existing blockers:
+`active_intents_for_test` is Windows-only but used by a shared workflow, and the
+thumbnail-ready sender is not wrapped in `Some`. Both are present in the starting
+commit. The normal macOS dev launcher also fails with Bacon's `Empty command in
+job gpui`; the debug editor smoke used `cargo run` with an isolated profile.
 
 ## Automated visual gate
 

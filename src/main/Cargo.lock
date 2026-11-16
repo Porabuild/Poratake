@@ -1702,7 +1702,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1888,7 +1888,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3230,9 +3230,9 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "herogpui"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e52a0451f6079719bb8239f715abc134a5dd2f6dde77c948411d85f2f89ed669"
+checksum = "6d36e37ddd87234183c9be0a1f073258f1fa89ff43f68c10b36fa08100ce7ec5"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -3243,7 +3243,9 @@ dependencies = [
 
 [[package]]
 name = "herogpui-components"
-version = "0.15.1"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88a96a22c220352780e854407d5534b54c982cb0f998d4a6c2a13b06982d54c3"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -3262,18 +3264,18 @@ dependencies = [
 
 [[package]]
 name = "herogpui-core"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a60ef5a5f5f9070883f2be6279f0ee500bb376df669af4cb6f90af5df430093f"
+checksum = "a7aca73fc623d85034f10c93aedb73c3813d5dfdcbc53c0452e2d76c1050dcf9"
 dependencies = [
  "gpui-pre",
 ]
 
 [[package]]
 name = "herogpui-theme"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5af92d52f286c08cf0d738be3159bad4de7729f1670298dd08a5e7142c913a66"
+checksum = "aa79420558caab8476d628df759bfa54b8e355c84e8a17954247fb0325fb6e00"
 dependencies = [
  "gpui-pre",
  "herogpui-core",
@@ -4655,7 +4657,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6282,7 +6284,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7106,7 +7108,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8145,7 +8147,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

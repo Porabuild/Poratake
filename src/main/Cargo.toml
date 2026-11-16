@@ -6,11 +6,10 @@ members = ["daemon-common", "daemon-linux", "daemon-win", "app-gpui"]
 rust-version = "1.99"
 
 [workspace.dependencies]
-herogpui = "=0.15.1"
+herogpui = "=0.15.2"
 
 [patch.crates-io]
 gpui-pre-windows = { path = "../../vendor/gpui-pre-windows" }
-herogpui-components = { path = "../../vendor/herogpui-components" }
 
 [profile.dev]
 opt-level = 1

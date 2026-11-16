@@ -17,5 +17,6 @@ pub mod rows;
 pub mod shortcut_input;
 pub mod svg_path;
 pub mod toolbar;
+pub mod tooltip;
 pub mod window_controls;
 pub mod window_root;

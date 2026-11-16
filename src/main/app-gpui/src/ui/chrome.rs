@@ -140,7 +140,6 @@ pub const WALLPAPER_FRAME_PREVIEW_H: f32 = 48.0;
 pub const WALLPAPER_FRAME_TITLE_H: f32 = 14.0;
 pub const WALLPAPER_FRAME_PAD: f32 = 8.0;
 pub const WALLPAPER_FRAME_GAP: f32 = 6.0;
-pub const SELECT_INDICATOR_GUTTER: f32 = 28.0;
 pub const TOOL_POPOVER_PANEL_PAD: f32 = 6.0;
 pub const TOOL_POPOVER_ROW_PAD: f32 = 8.0;
 pub const TEXT_SM: f32 = 14.0;
