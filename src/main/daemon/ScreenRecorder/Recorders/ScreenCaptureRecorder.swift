@@ -205,14 +205,13 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             let mainScreenHeight = NSScreen.screens.first?.frame.height ?? screenFrame.height
             let screenTopY = mainScreenHeight - screenFrame.origin.y - screenFrame.height
 
-            let displayLocalRect = CGRect(
-                x: rect.origin.x - screenFrame.origin.x,
-                y: rect.origin.y - screenTopY,
-                width: rect.width,
-                height: rect.height
+            let displayBounds = CGRect(
+                x: screenFrame.origin.x,
+                y: screenTopY,
+                width: screenFrame.width,
+                height: screenFrame.height
             )
-
-            streamConfig.sourceRect = displayLocalRect
+            streamConfig.sourceRect = try recordingSourceRect(selection: rect, display: displayBounds)
         } else {
             videoWidth = Int(CGFloat(display.width) * scaleFactor)
             videoHeight = Int(CGFloat(display.height) * scaleFactor)
