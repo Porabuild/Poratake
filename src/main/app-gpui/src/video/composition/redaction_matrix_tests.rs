@@ -1,5 +1,5 @@
 #[test]
-fn generated_redaction_matrix_matches_full_composition_inside_effects() {
+fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
     use crate::editor::annotations::{normalize_rect, Annotation};
     use crate::windows::video_editor::model::{DrawingSegment, FocusPoint, ZoomSegment};
 
@@ -41,6 +41,11 @@ fn generated_redaction_matrix_matches_full_composition_inside_effects() {
     let mut intensities = [false; 10];
     for case in 0_u32..48 {
         let mut config = Config::new(96.0, 64.0, state());
+        let (author_width, author_height) = match case % 3 {
+            0 => (96.0, 64.0),
+            1 => (80.0, 120.0),
+            _ => (240.0, 135.0),
+        };
         if case.is_multiple_of(3) {
             config.state.camera_segments = vec![camera_segment(0.0, 3.0)];
             config.state.camera_style.visible = true;
@@ -103,10 +108,10 @@ fn generated_redaction_matrix_matches_full_composition_inside_effects() {
             regions.push(region);
             annotations.push(Annotation::Redact {
                 id: format!("effect-{effect}"),
-                x,
-                y,
-                width,
-                height,
+                x: x * author_width / 96.0,
+                y: y * author_height / 64.0,
+                width: width * author_width / 96.0,
+                height: height * author_height / 64.0,
                 style: style.into(),
                 intensity,
             });
@@ -125,10 +130,15 @@ fn generated_redaction_matrix_matches_full_composition_inside_effects() {
             id: "drawing".into(),
             start_time: 0.0,
             end_time: 3.0,
-            canvas_width: 96.0,
-            canvas_height: 64.0,
+            canvas_width: author_width,
+            canvas_height: author_height,
             annotations,
         });
+        let mut unredacted_config = Config::new(96.0, 64.0, config.state.clone());
+        unredacted_config.state.drawing_segments[0]
+            .annotations
+            .retain(|annotation| !matches!(annotation, Annotation::Redact { .. }));
+        let mut unredacted = Engine::new(unredacted_config);
         let mut engine = Engine::new(config);
         let full = engine.render_frame(1.0, frames).unwrap();
         for (width, height) in [(48, 32), (73, 49), (29, 19), (145, 97)] {
@@ -140,28 +150,31 @@ fn generated_redaction_matrix_matches_full_composition_inside_effects() {
             raw.set_shadow_scale((scale_x + scale_y) / 2.0);
             raw.scale(scale_x, scale_y);
             engine.render_into(&mut raw, 1.0, frames);
+            let mut without_effects = Canvas::new(width, height).unwrap();
+            without_effects.set_shadow_scale((scale_x + scale_y) / 2.0);
+            without_effects.scale(scale_x, scale_y);
+            unredacted.render_into(&mut without_effects, 1.0, frames);
             let preview = engine.render_frame_at(1.0, frames, width, height).unwrap();
             for y in 0..height {
                 for x in 0..width {
-                    let source_x = (x as f64 + 0.5) / f64::from(scale_x);
-                    let source_y = (y as f64 + 0.5) / f64::from(scale_y);
                     let inside = regions.iter().any(|&(left, top, w, h)| {
-                        source_x >= left + 2.0
-                            && source_x < left + w - 2.0
-                            && source_y >= top + 2.0
-                            && source_y < top + h - 2.0
+                        let right = ((left as f32 + w as f32).ceil().clamp(0.0, 96.0)) as u32;
+                        let bottom = ((top as f32 + h as f32).ceil().clamp(0.0, 64.0)) as u32;
+                        let left = (left as f32).floor().clamp(0.0, 96.0) as u32;
+                        let top = (top as f32).floor().clamp(0.0, 64.0) as u32;
+                        if left >= right || top >= bottom {
+                            return false;
+                        }
+                        let output_left =
+                            ((left as f32 * scale_x).floor() as u32).saturating_sub(1);
+                        let output_top = ((top as f32 * scale_y).floor() as u32).saturating_sub(1);
+                        let output_right = ((right as f32 * scale_x).ceil() as u32 + 1).min(width);
+                        let output_bottom =
+                            ((bottom as f32 * scale_y).ceil() as u32 + 1).min(height);
+                        (output_left..output_right).contains(&x)
+                            && (output_top..output_bottom).contains(&y)
                     });
-                    let margin_x = 3.0 / f64::from(scale_x) + 3.0;
-                    let margin_y = 3.0 / f64::from(scale_y) + 3.0;
-                    let outside = regions.iter().all(|&(left, top, w, h)| {
-                        source_x < left - margin_x
-                            || source_x >= left + w + margin_x
-                            || source_y < top - margin_y
-                            || source_y >= top + h + margin_y
-                    });
-                    if !inside && !outside {
-                        continue;
-                    }
+                    let outside = !inside;
                     let expected = if inside {
                         reference.pixmap().data()
                     } else {
@@ -173,6 +186,10 @@ fn generated_redaction_matrix_matches_full_composition_inside_effects() {
                         let expected = expected[offset + channel];
                         assert!(actual.abs_diff(expected) <= u8::from(inside),
                             "case {case} output {width}x{height} at {x},{y}, channel {channel}, inside={inside}: {actual} vs {expected}, regions={regions:?}");
+                        if outside {
+                            let untouched = without_effects.pixmap().data()[offset + channel];
+                            assert_eq!(actual, untouched, "redaction changed neighboring pixel: case {case}, output {width}x{height}, {x},{y}, channel {channel}");
+                        }
                     }
                     checked_inside += usize::from(inside);
                     checked_outside += usize::from(outside);

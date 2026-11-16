@@ -261,4 +261,100 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].targets.len(), 3);
     }
+
+    #[test]
+    fn redaction_crops_follow_segment_start_and_end_times() {
+        let mut first = DrawingSegment {
+            id: "first".into(),
+            start_time: 0.25,
+            end_time: 1.0,
+            canvas_width: 256.0,
+            canvas_height: 144.0,
+            annotations: vec![pixelate("left", 10.0, 15.0)],
+        };
+        let second = DrawingSegment {
+            id: "second".into(),
+            start_time: 1.0,
+            end_time: 2.0,
+            canvas_width: 256.0,
+            canvas_height: 144.0,
+            annotations: vec![pixelate("right", 210.0, 15.0)],
+        };
+        let mut state = VideoEditorState {
+            drawing_segments: vec![first.clone(), second],
+            ..VideoEditorState::default()
+        };
+        let mut engine = Engine::new(Config::new(256.0, 144.0, state.clone()));
+        let mut video = Pixmap::new(256, 144).unwrap();
+        for (index, pixel) in video
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 256;
+            let y = index / 256;
+            *pixel = [
+                if x.is_multiple_of(2) { 255 } else { 0 },
+                (y * 11 % 256) as u8,
+                (x * 7 % 256) as u8,
+                255,
+            ];
+        }
+        let frames = Frames {
+            video: Some(video.as_ref()),
+            camera: None,
+        };
+        for (time, expected) in [
+            (0.0, 0),
+            (0.25, 1),
+            (0.75, 1),
+            (1.0, 2),
+            (1.5, 1),
+            (2.0, 1),
+            (2.01, 0),
+        ] {
+            let groups = batches(&engine, time, 128, 72);
+            assert_eq!(groups.len(), expected, "{time}s");
+            let full = engine.render_frame(time, frames).unwrap();
+            let mut reference = Canvas::new(128, 72).unwrap();
+            reference.draw_pixmap(full.as_ref(), 0.0, 0.0, 128.0, 72.0);
+            let mut raw = Canvas::new(128, 72).unwrap();
+            raw.set_shadow_scale(0.5);
+            raw.scale(0.5, 0.5);
+            engine.render_into(&mut raw, time, frames);
+            let preview = engine.render_frame_at(time, frames, 128, 72).unwrap();
+            for y in 0..72 {
+                for x in 0..128 {
+                    let inside = groups
+                        .iter()
+                        .flat_map(|group| &group.targets)
+                        .any(|target| {
+                            (target.left..target.right).contains(&x)
+                                && (target.top..target.bottom).contains(&y)
+                        });
+                    let expected = if inside {
+                        reference.pixmap().data()
+                    } else {
+                        raw.pixmap().data()
+                    };
+                    let offset = ((y * 128 + x) * 4) as usize;
+                    for channel in 0..4 {
+                        let actual = preview.data()[offset + channel];
+                        assert!(
+                            actual.abs_diff(expected[offset + channel]) <= u8::from(inside),
+                            "{time}s, {x},{y}, channel {channel}"
+                        );
+                    }
+                }
+            }
+        }
+        if let Annotation::Redact { style, .. } = &mut first.annotations[0] {
+            *style = "blackout".into();
+        }
+        state.drawing_segments[0] = first;
+        engine.set_state(state);
+        assert!(batches(&engine, 0.75, 128, 72).is_empty());
+    }
 }
