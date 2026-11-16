@@ -3675,8 +3675,15 @@ metadata confirmed that daemon-owned panels appeared and disappeared on exit.
 The probe did not check the painted text. The panel now receives Poratake's
 resolved light or dark appearance, and the lifecycle fixture checks the
 effective AppKit appearance in both modes. A light-mode GPUI probe also displayed
-the panel while macOS was in dark mode; it did not measure its colors. Physical
-hover, placement and visual theme parity still require native verification.
+the panel while macOS was in dark mode; it did not measure its colors. A generated long preset label exposed a separate layout defect: its panel reserved
+two lines, while AppKit truncated the text to one. The label now wraps and has
+room for both lines without enlarging the panel. Isolated AppKit label snapshots
+show the [before](tests/native/evidence/macos-ui/tooltip-long-label-before-20261116.png)
+and [after](tests/native/evidence/macos-ui/tooltip-long-label-after-20261116.png)
+result; the native fixture checks painted pixels in both lines for English and
+Japanese labels in light and dark appearance. These bitmaps contain only generated label content, not desktop
+pixels. Physical hover, placement and visual theme parity still require native
+verification.
 
 An ordering review found two cross-window races in that handoff: a late exit from
 the previous window could suppress the new window's tooltip, and a new window's
