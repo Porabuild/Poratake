@@ -428,6 +428,22 @@ class ScrollCaptureModule: NSObject, Module {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "start requires valid x, y, width, height")
             return
         }
+        guard !Int32(x).addingReportingOverflow(Int32(width)).overflow,
+              !Int32(y).addingReportingOverflow(Int32(height)).overflow else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "Capture bounds exceed the supported range")
+            return
+        }
+        var requestedOrigin = [0, 0]
+        var hasRequestedOrigin = false
+        for (index, field) in ["displayOriginX", "displayOriginY"].enumerated() {
+            guard let value = params?[field], !(value.value is NSNull) else { continue }
+            guard let coordinate = value.int(), Int32(exactly: coordinate) != nil else {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid display origin")
+                return
+            }
+            requestedOrigin[index] = coordinate
+            hasRequestedOrigin = true
+        }
         var requestedDisplayID: CGDirectDisplayID?
         if let value = params?["displayId"], !(value.value is NSNull) {
             guard let number = value.value as? Int, let display = CGDirectDisplayID(exactly: number) else {
@@ -446,6 +462,28 @@ class ScrollCaptureModule: NSObject, Module {
             return
         }
 
+        let selectedDisplayID: CGDirectDisplayID
+        let selectedScreen: NSScreen?
+        if let requestedDisplayID = requestedDisplayID {
+            guard let screen = screenForDisplayId(requestedDisplayID) else {
+                respondError(id: requestId, code: "DISPLAY_UNAVAILABLE", message: "The selected display is no longer available")
+                return
+            }
+            selectedDisplayID = requestedDisplayID
+            selectedScreen = screen
+        } else if hasRequestedOrigin {
+            guard let screen = screenForTopLeftOrigin(x: requestedOrigin[0], y: requestedOrigin[1]),
+                  let display = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                respondError(id: requestId, code: "DISPLAY_UNAVAILABLE", message: "The selected display is no longer available")
+                return
+            }
+            selectedDisplayID = display
+            selectedScreen = screen
+        } else {
+            selectedDisplayID = CGMainDisplayID()
+            selectedScreen = screenForDisplayId(selectedDisplayID)
+        }
+
         finishCancelRequestIds.removeAll()
         finishRequested = false
         cancelBeforeFinish = false
@@ -459,22 +497,8 @@ class ScrollCaptureModule: NSObject, Module {
         previewSession = ScrollPreviewSession()
         publishedPreviewFrameCount = 0
 
-        displayId = CGMainDisplayID()
-        targetScreen = nil
-        if let display = requestedDisplayID {
-            displayId = display
-        } else if let originX = params?["displayOriginX"]?.int(),
-                  let originY = params?["displayOriginY"]?.int(),
-                  let screen = screenForTopLeftOrigin(x: originX, y: originY) {
-            targetScreen = screen
-            if let screenNumber = screen.deviceDescription[
-                NSDeviceDescriptionKey("NSScreenNumber")
-            ] as? CGDirectDisplayID {
-                displayId = screenNumber
-            }
-        }
-
-        targetScreen = targetScreen ?? screenForDisplayId(displayId)
+        displayId = selectedDisplayID
+        targetScreen = selectedScreen
 
         if let speed = params?["autoScrollSpeed"]?.string() {
             autoScrollSpeed = ScrollSpeed(rawValue: speed) ?? .medium
@@ -2260,6 +2284,10 @@ class ScrollCaptureModule: NSObject, Module {
         previewSession = ScrollPreviewSession()
         isCapturing = true
         isAutoScrolling = true
+    }
+
+    func testIsCapturing() -> Bool {
+        isCapturing
     }
 
     func testIsAutoScrolling() -> Bool {

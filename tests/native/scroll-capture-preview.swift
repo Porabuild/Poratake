@@ -986,6 +986,44 @@ struct ScrollCapturePreviewTest {
     @MainActor
     static func runLegacyScrollCoordinationCheck() async {
         FileHandle.standardError.write(Data("legacy scroll capture coordination: start\n".utf8))
+        let availableIDs = Set(NSScreen.screens.compactMap {
+            $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        })
+        guard let availableID = availableIDs.first else { preconditionFailure("The fixture needs a display") }
+        let unavailableID = availableIDs.contains(CGDirectDisplayID.max) ? CGDirectDisplayID(0) : CGDirectDisplayID.max
+        precondition(!availableIDs.contains(unavailableID))
+        let selectionModule = ScrollCaptureModule()
+        func startSelection(_ extra: [String: AnyCodable], id: String) {
+            var params: [String: AnyCodable] = [
+                "x": AnyCodable(0), "y": AnyCodable(0), "width": AnyCodable(80), "height": AnyCodable(160)
+            ]
+            params.merge(extra) { _, new in new }
+            selectionModule.handle(method: DaemonContract.ScrollCapture.Method.start.rawValue, params: params, requestId: id)
+        }
+        startSelection(["displayId": AnyCodable(Int(unavailableID))], id: "unavailable-display")
+        precondition(!selectionModule.testIsCapturing(), "An unavailable display must not start capture")
+        startSelection(["displayOriginX": AnyCodable(Int(Int32.max)), "displayOriginY": AnyCodable(Int(Int32.max))], id: "unavailable-origin")
+        precondition(!selectionModule.testIsCapturing(), "An unavailable origin must not start capture")
+        startSelection(["displayId": AnyCodable(Int(availableID))], id: "available-display")
+        precondition(selectionModule.testIsCapturing(), "An available display must start capture")
+        selectionModule.testCancelCapture()
+        await Task.yield()
+        precondition(!selectionModule.testIsCapturing())
+        guard let selectedScreen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == availableID
+        }), let primaryScreen = NSScreen.screens.first(where: {
+            $0.frame.minX.rounded() == 0 && $0.frame.minY.rounded() == 0
+        }) else { preconditionFailure("The fixture needs screen geometry") }
+        let originX = Int(selectedScreen.frame.minX.rounded())
+        let originY = Int((primaryScreen.frame.height - selectedScreen.frame.maxY).rounded())
+        startSelection(["displayOriginX": AnyCodable(originX), "displayOriginY": AnyCodable(originY)], id: "available-origin")
+        precondition(selectionModule.testIsCapturing(), "An available display origin must start capture")
+        startSelection(["displayId": AnyCodable(Int(unavailableID))], id: "unavailable-during-capture")
+        precondition(selectionModule.testIsCapturing(), "A rejected request must preserve the active capture")
+        selectionModule.testCancelCapture()
+        await Task.yield()
+        precondition(!selectionModule.testIsCapturing())
+
         let footerWidth = 80
         let footerHeight = 160
         let footerStep = 32

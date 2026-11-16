@@ -103,6 +103,8 @@ struct WindowIDValidationTests {
         let invalidScroll: [[String: Any]] = [
             ["x": 1e300], ["y": -1e300], ["x": Int(Int32.max) + 1],
             ["width": 0], ["height": -1], ["height": Int(Int32.max) + 1],
+            ["x": Int(Int32.max)], ["y": Int(Int32.max)],
+            ["displayOriginX": 1e300], ["displayOriginY": Int(Int32.max) + 1],
             ["displayId": -1], ["displayId": Int(UInt32.max) + 1],
             ["displayId": 1.5], ["displayId": 1e300], ["displayId": true], ["displayId": "1"]
         ]
