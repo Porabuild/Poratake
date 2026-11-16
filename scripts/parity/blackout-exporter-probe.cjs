@@ -19,7 +19,7 @@ app
     await window.loadURL(
       'http://127.0.0.1:5599/scripts/parity/blackout-exporter-probe.html'
     );
-    const samples = await window.webContents
+    const result = await window.webContents
       .executeJavaScript(`new Promise((resolve, reject) => {
       const result = document.querySelector('#result');
       const timer = setTimeout(() => reject(new Error('fixture timed out')), 15000);
@@ -39,7 +39,7 @@ app
           electron: process.versions.electron,
           chrome: process.versions.chrome,
           gpuFeatureStatus: app.getGPUFeatureStatus(),
-          samples,
+          ...result,
         },
         null,
         2

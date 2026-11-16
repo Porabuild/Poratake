@@ -4425,6 +4425,20 @@ pub(super) fn simple_inset_preview(
             (
                 false,
                 false,
+                None,
+                vec![crate::editor::annotations::Annotation::Redact {
+                    id: "fractional-boundary-blackout".into(),
+                    x: 32.5,
+                    y: 22.25,
+                    width: 20.3,
+                    height: 20.4,
+                    style: "blackout".into(),
+                    intensity: 2.,
+                }],
+            ),
+            (
+                false,
+                false,
                 Some("ordered-shape"),
                 vec![shape.clone(), blur],
             ),
@@ -4448,6 +4462,9 @@ pub(super) fn simple_inset_preview(
             ),
             (true, false, None, annotations),
         ] {
+            let fractional_boundary = current
+                .iter()
+                .any(|item| item.id() == "fractional-boundary-blackout");
             let zoomed_blackout_order = current.iter().any(|item| item.id() == "ordered-blackout")
                 && current.iter().any(|item| item.id() == "ordered-shape");
             editor
@@ -4470,6 +4487,9 @@ pub(super) fn simple_inset_preview(
                 assert_eq!(current_png, png);
             }
             let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
+            if fractional_boundary {
+                assert_eq!(saved.get_pixel(margin + 32, margin + 32).0, [0, 0, 0, 255]);
+            }
             let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
             let screenshot = cx.capture_screenshot(editor.into()).unwrap();
