@@ -69,7 +69,7 @@ impl NativeTooltipPresenter {
         self.attach(tooltip).child(child).into_any_element()
     }
 
-    #[cfg(any(test, feature = "parity"))]
+    #[cfg(all(any(windows, target_os = "macos"), any(test, feature = "parity")))]
     pub fn active_content(&self) -> Option<SharedString> {
         self.active
             .borrow()
