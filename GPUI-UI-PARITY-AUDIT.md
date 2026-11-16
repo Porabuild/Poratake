@@ -3172,6 +3172,16 @@ are retained. This validates those export operations, not the complete Electron
 editor, its native window or physical display pixels. Backend-dependent corner
 coverage remains open.
 
+The first actual-exporter fixture omitted Electron's initial rectangular blackout
+pass. Adding it did not change the 18 earlier samples because the shape covered
+those samples. A separate fractional standalone blackout exposed a different
+issue: at the left boundary Electron saved black while GPUI retained 64/255 of
+the white source. GPUI now aligns the base blackout to the saved composition's
+pixel grid, and its preview patch includes the additional covered pixels. The
+[boundary evidence](tests/native/evidence/macos-ui/blackout-fractional-boundary-20261116.txt)
+records the Electron sample and isolated GPUI checks. This fix does not resolve
+the separate rounded SVG corner rasterization difference above.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners

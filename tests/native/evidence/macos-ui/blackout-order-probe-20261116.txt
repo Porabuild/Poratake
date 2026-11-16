@@ -32,10 +32,12 @@ blackout-order-gpui.rs inside editor/export.rs's test module, run the
 blackout_order_gpui_probe Rust test with --nocapture, and remove the include.
 
 The follow-up actual-exporter fixture invokes exportAnnotationToSvg from the
-renderer source for each rectangle and blackout. On this Mac with Electron
-43.4.0 and Chromium 150.0.7871.224, its 18 sample objects matched the earlier
-Electron reproduction exactly. It does not open the complete editor or access
-capture or media devices. To repeat with the installed local dependencies:
+renderer source for each rectangle and blackout. Its first version omitted the
+initial rectangular blackout pass; after adding that pass, all 18 sampled
+objects still matched the earlier reproduction exactly because the shape covered
+those samples. The fixture also records a standalone fractional blackout boundary.
+It does not open the complete editor or access capture or media devices. To repeat
+with the installed local dependencies:
 
 node_modules/.bin/vite --config scripts/parity/vite.renderer.mts --host 127.0.0.1
 env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/blackout-exporter-probe.cjs

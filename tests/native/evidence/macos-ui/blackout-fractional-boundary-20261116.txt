@@ -1,0 +1,24 @@
+macOS fractional screenshot blackout boundary, 2026-11-16
+
+An isolated Electron 43.4.0 / Chromium 150.0.7871.224 fixture draws a white
+32 x 24 image, applies the screenshot export's integer blackout fill, then
+draws the SVG returned by the renderer's actual annotation exporter. The
+blackout has x=8.5, y=3.25, width=12.3 and height=12.4. Electron's decoded
+pixels at (8,9), (20,9) and (21,9) are opaque black, opaque black and opaque
+white. See blackout-order-actual-exporter-20261116.json for the samples.
+
+Before the fix, GPUI's screenshot composition left the first pixel at
+[64,64,64,255]. GPUI now rounds the base blackout on the saved composition's
+pixel grid; the separate rounded overlay remains unchanged. Its preview patch
+also includes the newly covered area. Tests cover translated compositions,
+negative dimensions, clipping, and preview/export patch comparisons at 1x,
+1.25x and 2x with integer and fractional composition offsets.
+
+On macOS, the annotation suite passed 39 tests, screenshot export 33 tests and
+preview rasterization 26 tests. Strict clippy passed for all GPUI parity targets.
+The isolated light and dark 1280-point, simulated 1x GPUI parity workflows
+rendered a fractional blackout on a generated image, required its saved boundary
+pixel to be black, and compared every displayed preview pixel with the saved PNG
+within two channel levels. They used a fake daemon and did not access screen
+capture or media devices. The production floating-window compositor and real
+captured screenshots were not tested.
