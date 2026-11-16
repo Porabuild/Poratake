@@ -3256,6 +3256,22 @@ are retained. Neither trial was kept in production. A correct solution still
 needs to reconcile the differently scaled preview layers with the exported
 composition while preserving annotation order.
 
+The equivalent GPUI Metal fixture found a separate sampling boundary mismatch
+at simulated 2× scale and 137% zoom: the [preview](tests/native/evidence/macos-ui/scaled-blackout-before-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/scaled-blackout-before-reopened-20261116.png)
+differed on 73 pixels in one row below the blackout, by at most 19 levels. The
+preview was white where the reopened output was slightly darker; the underlying
+red annotation remained covered. The aligned preview patch used the fractional
+annotation bounds even though export rounds the blackout out to source pixels.
+It now uses the same pixel-covered bounds as the raster patch. In light and dark
+appearances, the whole displayed image matches its reopened PNG within one
+channel level at 50%, 73%, 100% and 137% zoom and simulated 100%, 125% and
+200% scale. The fixed dark-mode [preview](tests/native/evidence/macos-ui/scaled-blackout-after-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/scaled-blackout-after-reopened-20261116.png)
+are retained. The selected source pixels are black in the PNG, and the underlying
+shape is hidden. This generated fixture does not establish live capture or
+physical display behavior.
+
 The GPUI Metal fixture exposed a separate image sampling mismatch at 73% zoom,
 even without annotations, for opaque and translucent generated sources. The
 primary image and simple wallpaper were snapped and scaled separately. The

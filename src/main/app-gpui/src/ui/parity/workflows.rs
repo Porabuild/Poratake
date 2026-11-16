@@ -3556,6 +3556,160 @@ pub(super) fn fractional_annotation_draft(cx: &mut HeadlessAppContext, scratch: 
         .unwrap();
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn scaled_blackout_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
+    use crate::editor::annotations::Annotation;
+
+    let source = scratch.join("scaled-blackout-source.png");
+    image::RgbaImage::from_pixel(200, 160, image::Rgba([255, 255, 255, 255]))
+        .save(&source)
+        .unwrap();
+    let mut failed_cases = 0;
+    for scale in [1., 1.25, 2.] {
+        for zoom in [0.5, 0.73, 1., 1.37] {
+            let editor = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    editor.history.push(vec![
+                        Annotation::Rectangle {
+                            id: "under-blackout".into(),
+                            x: 20.,
+                            y: 12.,
+                            width: 16.,
+                            height: 16.,
+                            stroke: "#ff0000".into(),
+                            stroke_width: 2.,
+                            fill: Some("#ff0000".into()),
+                        },
+                        Annotation::Redact {
+                            id: "scaled-blackout".into(),
+                            x: 17.6,
+                            y: 7.6,
+                            width: 24.6,
+                            height: 24.6,
+                            style: "blackout".into(),
+                            intensity: 5.,
+                        },
+                    ]);
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+            let saved = scratch.join("scaled-blackout-saved.png");
+            std::fs::write(&saved, png).unwrap();
+            let reopened = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(saved.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            reopened
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, reopened.into());
+            let (bounds, reopened_bounds) = cx.update(|cx| {
+                (
+                    editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                    reopened.read(cx).unwrap().bounds.borrow().unwrap(),
+                )
+            });
+            assert_eq!(bounds, reopened_bounds);
+            let preview = cx.capture_screenshot(editor.into()).unwrap();
+            let reference = cx.capture_screenshot(reopened.into()).unwrap();
+            let left = (f32::from(bounds.left()) * scale).round() as u32;
+            let top = (f32::from(bounds.top()) * scale).round() as u32;
+            let width = (f32::from(bounds.size.width) * scale).round() as u32;
+            let height = (f32::from(bounds.size.height) * scale).round() as u32;
+            let mut differences = 0;
+            let mut worst = 0;
+            let mut black_preview_lighter_reopen = 0;
+            let mut chromatic_preview = 0;
+            for y in 0..height {
+                for x in 0..width {
+                    let actual = preview.get_pixel(left + x, top + y).0;
+                    let expected = reference.get_pixel(left + x, top + y).0;
+                    let difference = actual
+                        .iter()
+                        .zip(expected)
+                        .map(|(a, b)| a.abs_diff(b))
+                        .max()
+                        .unwrap();
+                    differences += usize::from(difference > 2);
+                    worst = worst.max(difference);
+                    if actual[..3] == [0, 0, 0] && expected[..3] != [0, 0, 0] {
+                        black_preview_lighter_reopen += 1;
+                    }
+                    if actual[0] > actual[1].saturating_add(30)
+                        && actual[0] > actual[2].saturating_add(30)
+                    {
+                        chromatic_preview += 1;
+                    }
+                }
+            }
+            println!("blackout scale {scale}, zoom {zoom}: {differences} pixels above two, maximum {worst}, black preview lighter reopen {black_preview_lighter_reopen}, chromatic preview {chromatic_preview}");
+            if scale == 2. && zoom == 1.37 {
+                if let Some(output) = std::env::var_os("PORATAKE_PARITY_EVIDENCE") {
+                    let output = Path::new(&output);
+                    image::imageops::crop_imm(&preview, left, top, width, height)
+                        .to_image()
+                        .save(output.join("scaled-blackout-preview.png"))
+                        .unwrap();
+                    image::imageops::crop_imm(&reference, left, top, width, height)
+                        .to_image()
+                        .save(output.join("scaled-blackout-reopened.png"))
+                        .unwrap();
+                }
+            }
+            if differences > 0 {
+                failed_cases += 1;
+                let preview =
+                    image::imageops::crop_imm(&preview, left, top, width, height).to_image();
+                let reference =
+                    image::imageops::crop_imm(&reference, left, top, width, height).to_image();
+                preview
+                    .save(scratch.join(format!("blackout-{scale}-{zoom}-preview.png")))
+                    .unwrap();
+                reference
+                    .save(scratch.join(format!("blackout-{scale}-{zoom}-reopened.png")))
+                    .unwrap();
+            }
+            assert_eq!(
+                chromatic_preview, 0,
+                "underlying shape appeared at scale {scale}, zoom {zoom}"
+            );
+            let output = image::open(&saved).unwrap().to_rgba8();
+            for y in 8..33 {
+                for x in 18..43 {
+                    assert_eq!(
+                        output.get_pixel(x, y).0,
+                        [0, 0, 0, 255],
+                        "scale {scale}, zoom {zoom}, pixel {x},{y}"
+                    );
+                }
+            }
+            for handle in [editor, reopened] {
+                cx.update_window(handle.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+    assert_eq!(
+        failed_cases, 0,
+        "scaled blackout cases differ from reopened PNG"
+    );
+    println!("scaled blackout and underlying annotation match reopened PNG at four zooms and three scales");
+}
+
 pub(super) fn fractional_annotation_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
     let source = scratch.join("fractional-annotation-source.png");
     image::RgbaImage::from_fn(800, 740, |_, y| {

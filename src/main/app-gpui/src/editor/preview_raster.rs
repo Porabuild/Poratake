@@ -237,6 +237,35 @@ pub fn patch(
     patch_padded(paint, beneath, surface, scale, 0.)
 }
 
+fn paint_target_bounds(
+    annotation: &Annotation,
+    bounds: (f64, f64, f64, f64),
+    composition_origin: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    match annotation {
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            ..
+        } if style == "blackout" => {
+            let target = annotation.bounds();
+            let (x, y, width, height) =
+                renderer::screenshot_blackout_rect(*x, *y, *width, *height, composition_origin);
+            (
+                target.0.min(x),
+                target.1.min(y),
+                target.2.max(x + width),
+                target.3.max(y + height),
+            )
+        }
+        Annotation::Redact { .. } => annotation.bounds(),
+        _ => bounds,
+    }
+}
+
 fn patch_padded(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -260,28 +289,7 @@ fn patch_padded(
         .unwrap_or((surface.offset_x, surface.offset_y));
     let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, minimum_scale)?;
-    let target = match annotation {
-        Annotation::Redact {
-            x,
-            y,
-            width,
-            height,
-            style,
-            ..
-        } if style == "blackout" => {
-            let target = annotation.bounds();
-            let (x, y, width, height) =
-                renderer::screenshot_blackout_rect(*x, *y, *width, *height, composition_origin);
-            (
-                target.0.min(x),
-                target.1.min(y),
-                target.2.max(x + width),
-                target.3.max(y + height),
-            )
-        }
-        Annotation::Redact { .. } => annotation.bounds(),
-        _ => bounds,
-    };
+    let target = paint_target_bounds(annotation, bounds, composition_origin);
     let target = padded(target, padding);
     let mut sample = (
         bounds.0.min(target.0),
@@ -634,11 +642,12 @@ pub fn aligned_image(
     }
     let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, 1.)?;
-    let target = if matches!(annotation, Annotation::Redact { .. }) {
-        annotation.bounds()
-    } else {
-        bounds
-    };
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
+    let target = paint_target_bounds(annotation, bounds, composition_origin);
     let target = padded(target, 1.);
     let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
     let target = (
