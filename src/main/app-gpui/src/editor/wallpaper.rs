@@ -115,8 +115,7 @@ impl WallpaperSettings {
     }
 
     pub fn layer_inset(&self, has_layers: bool) -> f64 {
-        let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
-        if has_layers && (!self.balance || framed || (self.corners <= 0.0 && self.shadow <= 0.0)) {
+        if has_layers {
             self.inset.max(0.0)
         } else {
             0.0
@@ -125,11 +124,8 @@ impl WallpaperSettings {
 
     pub fn supports_edge_preview(&self, has_layers: bool) -> bool {
         let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
-        if has_layers && self.balance {
-            return !framed && self.corners <= 0.0 && self.shadow <= 0.0;
-        }
-        if has_layers && !framed {
-            return true;
+        if has_layers {
+            return !framed;
         }
         if self.balance && framed && !has_layers {
             return self.inset <= 0.0 && self.corners <= 0.0;

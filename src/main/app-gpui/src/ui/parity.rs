@@ -14,6 +14,8 @@ use herogpui::gpui;
 mod analysis_workflows;
 mod attachment_workflows;
 #[cfg(target_os = "macos")]
+mod balanced_attachments_workflow;
+#[cfg(target_os = "macos")]
 mod balanced_effects_workflow;
 mod baselines;
 pub(crate) mod daemon_fixture;
@@ -1046,6 +1048,12 @@ pub fn capture_editor_interaction_states() {
             }
         }
         cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_BALANCED_ATTACHMENTS_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        balanced_attachments_workflow::run(&mut cx, &scratch);
         return;
     }
     #[cfg(target_os = "macos")]

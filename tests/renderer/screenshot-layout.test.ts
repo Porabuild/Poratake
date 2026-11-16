@@ -48,6 +48,41 @@ describe('screenshot layout', () => {
     }
   );
 
+  it.each([
+    ['left', 292, 136, 144, 8],
+    ['right', 292, 136, 8, 8],
+    ['top', 156, 292, 8, 164],
+    ['bottom', 156, 292, 8, 8],
+  ] as [ImageLayerEdge, number, number, number, number][])(
+    'balances the primary before laying out the inset attachment on the %s',
+    (edge, width, height, offsetX, offsetY) => {
+      const result = computeScreenshotLayout({
+        ...base,
+        imageWidth: 200,
+        imageHeight: 160,
+        crop: { left: 30, top: 20, right: 30, bottom: 20 },
+        inset: 8,
+        extraLayers: [
+          {
+            id: 'attachment',
+            base64: '',
+            naturalWidth: 100,
+            naturalHeight: 100,
+            edge,
+          },
+        ],
+      });
+      expect([result.canvasWidth, result.canvasHeight]).toEqual([
+        width,
+        height,
+      ]);
+      expect([result.contentOffsetX, result.contentOffsetY]).toEqual([
+        offsetX,
+        offsetY,
+      ]);
+    }
+  );
+
   it('centers the image on a rounded widescreen canvas', () => {
     const result = computeScreenshotLayout({
       ...base,

@@ -2603,6 +2603,48 @@ mod tests {
     }
 
     #[test]
+    fn balanced_attachments_keep_their_individual_insets_and_corners() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment = directory.path().join("right.png");
+        RgbaImage::from_pixel(20, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&attachment)
+            .unwrap();
+        let layers = [ImageLayer {
+            id: "right".into(),
+            image_url: attachment.to_string_lossy().into_owned(),
+            natural_width: 20.,
+            natural_height: 20.,
+            edge: Edge::Right,
+        }];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (20..90).contains(&x) && (15..75).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        for shadow in [0., 50.] {
+            let settings = WallpaperSettings {
+                balance: true,
+                inset: 4.,
+                corners: 12.,
+                shadow,
+                ..WallpaperSettings::default()
+            };
+            let output = compose_with_layers(Some(&base), 100, 80, &[], &settings, &layers, 1.);
+            assert_eq!(output.dimensions(), (181, 83));
+            assert_eq!(output.get_pixel(14, 14).0, [64, 112, 192, 255]);
+            assert_eq!(output.get_pixel(122, 24).0, [240, 80, 64, 255]);
+            if shadow == 0. {
+                assert_eq!(output.get_pixel(0, 0).0[3], 0);
+                assert_eq!(output.get_pixel(98, 0).0[3], 0);
+            }
+        }
+    }
+
+    #[test]
     fn zero_padding_balanced_unframed_attachment_preview_matches_export() {
         use crate::editor::layers::{Edge, ImageLayer};
 
