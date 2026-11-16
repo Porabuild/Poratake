@@ -3274,6 +3274,14 @@ workflow passed after the change.
 The restored-pixelation fixture also passed after the matte change in both
 appearances at simulated 100%, 125% and 200%, with opaque and transparent
 sources, clipped and unclipped regions, and reopened PNG comparisons.
+Those comparisons now cover every displayed image pixel, at 50%, 73%, 137%
+and 150% effective zoom. For a translucent, unclipped source at 137% zoom and
+simulated 100% display scale, the [dark preview](tests/native/evidence/macos-ui/pixelation-whole-dark-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/pixelation-whole-dark-reopened-20261116.png),
+and the [light preview](tests/native/evidence/macos-ui/pixelation-whole-light-preview-20261116.png)
+and [reopened PNG](tests/native/evidence/macos-ui/pixelation-whole-light-reopened-20261116.png),
+each differ by at most one channel level across 44,936 pixels. These checks do
+not cover framed or attached images, physical display scaling or live capture.
 
 The generated transparent reopen matrix now covers both macOS frame styles,
 with and without shadow, at 73%, 100% and 150% effective zoom and simulated
