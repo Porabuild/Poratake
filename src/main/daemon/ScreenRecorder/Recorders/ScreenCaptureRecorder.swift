@@ -7,7 +7,7 @@ import ScreenCaptureKit
 @available(macOS 12.3, *)
 class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var stream: SCStream?
-    private var finalizingStream: SCStream?
+    private let streamFailures = StreamFailureInbox()
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -413,6 +413,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         stream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
+        if let stream { streamFailures.activate(ObjectIdentifier(stream)) }
 
         if capturedWindow == nil {
             guard let captureStream = stream else {
@@ -1158,6 +1159,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
                 "Cannot stop: recorder is \(state.rawValue) or a lifecycle transition is in progress"
             )
         }
+        streamFailures.markStopping()
 
         let stoppedPosition = videoQueue.sync {
             let position = screenClockTime.map { cameraTimelinePosition(at: $0) } ?? recordingDuration
@@ -1191,7 +1193,6 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         stopMicrophoneCapture()
 
-        finalizingStream = stream
         do {
             try await stream?.stopCapture()
         } catch {
@@ -1296,6 +1297,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             }
         }
 
+        for failure in streamFailures.close() {
+            handleStreamFailure(failure.error, receivedDuringStop: failure.duringStop)
+        }
         if finishingError == nil {
             finishingError = streamStopFailure
         }
@@ -1329,23 +1333,24 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let streamID = ObjectIdentifier(stream)
+        guard streamFailures.enqueue(error, from: streamID) else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.handleStreamFailure(
-                error,
-                isCurrentStream: self.stream === stream || self.finalizingStream === stream
-            )
+            for failure in self.streamFailures.drain(from: streamID) {
+                self.handleStreamFailure(failure.error, receivedDuringStop: failure.duringStop)
+            }
         }
     }
 
     @MainActor
-    private func handleStreamFailure(_ error: Error, isCurrentStream: Bool) {
-        guard isCurrentStream, let sessionID = activeSessionID else { return }
+    private func handleStreamFailure(_ error: Error, receivedDuringStop: Bool) {
+        guard let sessionID = activeSessionID else { return }
         let classified = RecorderError.streamFailure(error, capturingWindow: config?.windowID != nil)
         if lifecycle.isStopping {
             if case RecorderError.targetClosed = classified { return }
             let native = error as NSError
-            if native.domain == SCStreamErrorDomain && native.code == SCStreamError.Code.userStopped.rawValue { return }
+            if receivedDuringStop && native.domain == SCStreamErrorDomain && native.code == SCStreamError.Code.userStopped.rawValue { return }
             if streamStopFailure == nil {
                 streamStopFailure = RecorderError.capture("Screen capture stopped unexpectedly: \(error.localizedDescription)")
             }
@@ -1395,7 +1400,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         recordingDuration = 0
         activeSessionID = nil
         streamStopFailure = nil
-        finalizingStream = nil
+        _ = streamFailures.close()
     }
 }
 
@@ -1555,7 +1560,16 @@ extension ScreenCaptureRecorder: SCStreamOutput {
 
     @MainActor
     func testStreamFailure(_ error: Error, isCurrentStream: Bool) {
-        handleStreamFailure(error, isCurrentStream: isCurrentStream)
+        if isCurrentStream { handleStreamFailure(error, receivedDuringStop: lifecycle.isStopping) }
+    }
+
+    @MainActor
+    func testActivateStream(_ stream: AnyObject) {
+        streamFailures.activate(ObjectIdentifier(stream))
+    }
+
+    func testQueueStreamFailure(_ error: Error, stream: AnyObject) -> Bool {
+        streamFailures.enqueue(error, from: ObjectIdentifier(stream))
     }
 
     @MainActor

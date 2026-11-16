@@ -7,6 +7,25 @@ import ScreenCaptureKit
 struct RecordingStopStreamErrorTests {
     @MainActor
     static func main() async throws {
+        let inbox = StreamFailureInbox()
+        let activeToken = NSObject()
+        let inactiveToken = NSObject()
+        let activeID = ObjectIdentifier(activeToken)
+        let inactiveID = ObjectIdentifier(inactiveToken)
+        inbox.activate(activeID)
+        precondition(!inbox.enqueue(NSError(domain: "stale", code: 0), from: inactiveID))
+        DispatchQueue.concurrentPerform(iterations: 64) { index in
+            precondition(inbox.enqueue(NSError(domain: "concurrent", code: index), from: activeID))
+        }
+        let concurrent = inbox.drain(from: activeID)
+        precondition(concurrent.count == 64)
+        precondition(Set(concurrent.map { ($0.error as NSError).code }).count == 64)
+        precondition(concurrent.allSatisfy { !$0.duringStop })
+        inbox.markStopping()
+        precondition(inbox.enqueue(NSError(domain: "stop", code: 0), from: activeID))
+        precondition(inbox.close().first?.duringStop == true)
+        precondition(!inbox.enqueue(NSError(domain: "late", code: 0), from: activeID))
+
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -41,8 +60,15 @@ struct RecordingStopStreamErrorTests {
         recorder.testBeginStreamStartup(config: config, sessionID: 73)
         recorder.testFinishStreamStartup(recording: true)
         recorder.testConfigureStop(writer: writer, input: input)
+        let stream = NSObject()
+        recorder.testActivateStream(stream)
         recorder.testOnStopping = {
-            recorder.testStreamFailure(NSError(domain: "synthetic", code: 1), isCurrentStream: true)
+            let completed = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                precondition(recorder.testQueueStreamFailure(NSError(domain: "synthetic", code: 1), stream: stream))
+                completed.signal()
+            }
+            completed.wait()
         }
         do {
             _ = try await recorder.stop()
@@ -50,6 +76,7 @@ struct RecordingStopStreamErrorTests {
         } catch RecorderError.capture {
         }
         recorder.testOnStopping = nil
+        precondition(!recorder.testQueueStreamFailure(NSError(domain: "synthetic", code: 2), stream: stream))
         let asset = AVURLAsset(url: movie)
         let track = try await asset.loadTracks(withMediaType: .video).first!
         let reader = try AVAssetReader(asset: asset)
@@ -64,16 +91,19 @@ struct RecordingStopStreamErrorTests {
         let normal = ScreenCaptureRecorder()
         normal.testBeginStreamStartup(config: config, sessionID: 74)
         normal.testFinishStreamStartup(recording: true)
+        let normalStream = NSObject()
+        let staleStream = NSObject()
+        normal.testActivateStream(normalStream)
         normal.testOnStopping = {
-            normal.testStreamFailure(NSError(domain: "synthetic", code: 1), isCurrentStream: false)
-            normal.testStreamFailure(
+            precondition(!normal.testQueueStreamFailure(NSError(domain: "synthetic", code: 1), stream: staleStream))
+            precondition(normal.testQueueStreamFailure(
                 NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.noCaptureSource.rawValue),
-                isCurrentStream: true
-            )
-            normal.testStreamFailure(
+                stream: normalStream
+            ))
+            precondition(normal.testQueueStreamFailure(
                 NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userStopped.rawValue),
-                isCurrentStream: true
-            )
+                stream: normalStream
+            ))
         }
         _ = try await normal.stop()
         normal.testOnStopping = nil
@@ -83,11 +113,13 @@ struct RecordingStopStreamErrorTests {
         let display = ScreenCaptureRecorder()
         display.testBeginStreamStartup(config: displayConfig, sessionID: 75)
         display.testFinishStreamStartup(recording: true)
+        let displayStream = NSObject()
+        display.testActivateStream(displayStream)
         display.testOnStopping = {
-            display.testStreamFailure(
+            precondition(display.testQueueStreamFailure(
                 NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.noCaptureSource.rawValue),
-                isCurrentStream: true
-            )
+                stream: displayStream
+            ))
         }
         do {
             _ = try await display.stop()
@@ -96,8 +128,26 @@ struct RecordingStopStreamErrorTests {
         }
         display.testOnStopping = nil
 
+        let interrupted = ScreenCaptureRecorder()
+        interrupted.testBeginStreamStartup(config: config, sessionID: 77)
+        interrupted.testFinishStreamStartup(recording: true)
+        let interruptedStream = NSObject()
+        interrupted.testActivateStream(interruptedStream)
+        precondition(interrupted.testQueueStreamFailure(
+            NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userStopped.rawValue),
+            stream: interruptedStream
+        ))
+        do {
+            _ = try await interrupted.stop()
+            fatalError("A user-stopped error received before Stop must be reported")
+        } catch RecorderError.capture {
+        }
+
         recorder.testBeginStreamStartup(config: config, sessionID: 76)
         recorder.testFinishStreamStartup(recording: true)
+        let nextStream = NSObject()
+        recorder.testActivateStream(nextStream)
+        precondition(!recorder.testQueueStreamFailure(NSError(domain: "synthetic", code: 3), stream: stream))
         _ = try await recorder.stop()
         print("Stop reports stream failure after preserving a decodable movie")
     }
