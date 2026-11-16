@@ -4428,10 +4428,10 @@ pub(super) fn simple_inset_preview(
                 None,
                 vec![crate::editor::annotations::Annotation::Redact {
                     id: "fractional-boundary-blackout".into(),
-                    x: 32.5,
-                    y: 22.25,
+                    x: 32.8,
+                    y: 22.8,
                     width: 20.3,
-                    height: 20.4,
+                    height: 20.3,
                     style: "blackout".into(),
                     intensity: 2.,
                 }],
@@ -4489,6 +4489,8 @@ pub(super) fn simple_inset_preview(
             let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
             if fractional_boundary {
                 assert_eq!(saved.get_pixel(margin + 32, margin + 32).0, [0, 0, 0, 255]);
+                assert_eq!(saved.get_pixel(margin + 53, margin + 32).0, [0, 0, 0, 255]);
+                assert_eq!(saved.get_pixel(margin + 40, margin + 43).0, [0, 0, 0, 255]);
             }
             let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);

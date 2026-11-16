@@ -240,6 +240,8 @@ export frames with its preview. Set `PORATAKE_PARITY_RECORDING_ONLY=1` to run
 just those handoffs at 1280 points and 1× simulated scale.
 Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflows
 at the same width and scale, including selector exclusion IDs and cleanup.
+Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout
+preview/export checks at the same width and scale on macOS.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser

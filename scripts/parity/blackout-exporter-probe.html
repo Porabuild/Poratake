@@ -3,6 +3,7 @@
 <pre id="result">pending</pre>
 <script type="module">
   import { exportAnnotationToSvg } from '/src/renderer/components/editor/annotations/export-annotation.ts';
+  import { blackoutRegion } from '/src/renderer/hooks/useCanvasExport.ts';
 
   const results = [];
   for (const scale of [1, 1.25, 2]) {
@@ -61,12 +62,12 @@
         const context = canvas.getContext('2d');
         context.fillStyle = 'rgb(64, 128, 192)';
         context.fillRect(0, 0, width, height);
-        context.fillStyle = '#000000';
-        context.fillRect(
-          Math.floor(x),
-          Math.floor(y),
-          Math.ceil(blackout.width * scale),
-          Math.ceil(blackout.height * scale)
+        blackoutRegion(
+          context,
+          x,
+          y,
+          blackout.width * scale,
+          blackout.height * scale
         );
         context.drawImage(image, 0, 0);
         URL.revokeObjectURL(url);
@@ -97,41 +98,59 @@
     style: 'blackout',
     intensity: 5,
   };
-  const markup = exportAnnotationToSvg(annotation, {
-    offsetX: 0,
-    offsetY: 0,
-    scale: 1,
-  });
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24">${markup}</svg>`;
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-  const image = new Image();
-  await new Promise((resolve, reject) => {
-    image.onload = resolve;
-    image.onerror = reject;
-    image.src = url;
-  });
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 24;
-  const context = canvas.getContext('2d');
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, 32, 24);
-  context.fillStyle = '#000000';
-  context.fillRect(
-    Math.floor(annotation.x),
-    Math.floor(annotation.y),
-    Math.ceil(annotation.width),
-    Math.ceil(annotation.height)
+  async function renderBoundary(redaction, points) {
+    const markup = exportAnnotationToSvg(redaction, {
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+    });
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24">${markup}</svg>`;
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 24;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, 32, 24);
+    blackoutRegion(
+      context,
+      redaction.x,
+      redaction.y,
+      redaction.width,
+      redaction.height
+    );
+    context.drawImage(image, 0, 0);
+    URL.revokeObjectURL(url);
+    return points.map(([x, y]) => ({
+      x,
+      y,
+      rgba: Array.from(context.getImageData(x, y, 1, 1).data),
+    }));
+  }
+  const standaloneBoundary = await renderBoundary(annotation, [
+    [8, 9],
+    [20, 9],
+    [21, 9],
+  ]);
+  const farBoundary = await renderBoundary(
+    { ...annotation, x: 8.8, y: 3.8, height: 12.3 },
+    [
+      [20, 9],
+      [21, 9],
+      [12, 16],
+      [22, 9],
+      [12, 17],
+    ]
   );
-  context.drawImage(image, 0, 0);
-  URL.revokeObjectURL(url);
-  const standaloneBoundary = [8, 20, 21].map(x => ({
-    x,
-    y: 9,
-    rgba: Array.from(context.getImageData(x, 9, 1, 1).data),
-  }));
   document.querySelector('#result').textContent = JSON.stringify({
     samples: results,
     standaloneBoundary,
+    farBoundary,
   });
 </script>
