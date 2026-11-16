@@ -16,6 +16,7 @@ const TYPE = query.get('window') || 'settings';
 /// `?image=/@fs/C:/path/to/capture.png` for the windows that show one.
 const IMAGE = query.get('image');
 const FILE = query.has('file') ? query.get('file') : 'C:\\parity.mp4';
+const BLACKOUT_SCALE_FIXTURE = query.get('fixture') === 'blackout-scale';
 const isList = channel => /list$|:list/.test(channel);
 
 const windowParams = async () => {
@@ -24,6 +25,26 @@ const windowParams = async () => {
       return {
         filePath: FILE,
         imageUrl: IMAGE,
+        ...(BLACKOUT_SCALE_FIXTURE
+          ? {
+              width: 100,
+              height: 80,
+              editorState: {
+                annotations: [
+                  {
+                    id: 'parity-blackout',
+                    type: 'redact',
+                    x: 8.8,
+                    y: 3.8,
+                    width: 12.3,
+                    height: 12.3,
+                    style: 'blackout',
+                    intensity: 5,
+                  },
+                ],
+              },
+            }
+          : {}),
         initialPreferences: { lastTool: 'pen', color: '#f43f5e' },
         screenshotSettings: {
           closeOnCopy: false,
@@ -108,7 +129,12 @@ window.ipcRenderer = {
     };
   },
   off: () => {},
-  send: channel => {
+  send: (channel, ...args) => {
+    if (BLACKOUT_SCALE_FIXTURE && channel === 'screenshot:save-edited') {
+      window.dispatchEvent(
+        new CustomEvent('parity:screenshot-saved', { detail: args })
+      );
+    }
     const reply = REPLIES[channel];
     if (!reply) return;
     // Asynchronously, like the real IPC round trip.

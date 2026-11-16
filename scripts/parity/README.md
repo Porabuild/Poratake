@@ -255,6 +255,12 @@ With the Vite server above running, run
 `env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/transparent-editor-probe.cjs`
 to check a generated transparent PNG in an isolated offscreen Electron editor.
 Set `PORATAKE_THEME=light` to repeat the check in light appearance.
+With the same server, run
+`env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/blackout-editor-probe.cjs`
+to compare a generated 2× image's blackout preview with the PNG produced by the
+actual screenshot editor's save shortcut. The fixture hides the dashed editor
+guide for the comparison and intercepts the save through its fake preload.
+Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to retain both PNGs.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser
