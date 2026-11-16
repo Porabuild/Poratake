@@ -65,10 +65,14 @@ class ScreenRecorderModule: Module {
             respondError(
                 id: requestId,
                 code: "INVALID_PARAMS",
-                message: "\(field) has an invalid type"
+                message: "\(field) has an invalid value"
             )
             return
         }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         let coordinates = [
             params["x"]?.int(),
@@ -112,7 +116,7 @@ class ScreenRecorderModule: Module {
             width: params["width"]?.int(),
             height: params["height"]?.int(),
             displayID: params["displayId"]?.int().map { CGDirectDisplayID($0) },
-            windowID: params["windowId"]?.int().map { CGWindowID($0) },
+            windowID: params["windowId"]?.int().flatMap(CGWindowID.init(exactly:)),
             excludedWindowIDs: (params["excludedWindowIds"]?.array() ?? [])
                 .compactMap { $0 as? Int }
                 .map(Int64.init),
@@ -217,14 +221,17 @@ class ScreenRecorderModule: Module {
                 return "displayId"
             }
         }
-        if let value = params["windowId"], !(value.value is NSNull), !(value.value is Int) {
-            return "windowId"
+        if let value = params["windowId"], !(value.value is NSNull) {
+            guard let integer = value.value as? Int,
+                  let windowID = CGWindowID(exactly: integer), windowID != kCGNullWindowID else {
+                return "windowId"
+            }
         }
         if let value = params["excludedWindowIds"], !(value.value is NSNull) {
             guard let windowIDs = value.array(),
                   windowIDs.allSatisfy({
-                      guard let windowID = $0 as? Int else { return false }
-                      return CGWindowID(exactly: windowID) != nil
+                      guard let number = $0 as? Int, let windowID = CGWindowID(exactly: number) else { return false }
+                      return windowID != kCGNullWindowID
                   }) else {
                 return "excludedWindowIds"
             }
@@ -325,6 +332,7 @@ class ScreenRecorderModule: Module {
                     "outputPath": result.outputPath,
                     "cursorPath": result.cursorPath as Any,
                     "cameraPath": result.cameraPath as Any,
+                    "cameraTrackMissing": result.cameraTrackMissing,
                     "keysPath": result.keysPath as Any,
                     "systemAudioPath": result.systemAudioPath as Any,
                     "micAudioPath": result.micAudioPath as Any,
@@ -343,7 +351,8 @@ class ScreenRecorderModule: Module {
         guard recorderLifecycle.isCurrent(sessionID) else {
             throw RecorderError.invalidState("Recording session is no longer active")
         }
-        return try await stopCoordinator.stop(sessionID: sessionID) {
+        let startup = startTaskSessionID == sessionID ? startTask : nil
+        return try await stopCoordinator.stop(sessionID: sessionID, startup: startup) {
             guard let backend = self.recorderLifecycle.beginStop(sessionID) else {
                 throw RecorderError.invalidState("Recording session is no longer active")
             }
@@ -359,6 +368,7 @@ class ScreenRecorderModule: Module {
                 "outputPath": result.outputPath,
                 "cursorPath": result.cursorPath as Any,
                 "cameraPath": result.cameraPath as Any,
+                "cameraTrackMissing": result.cameraTrackMissing,
                 "keysPath": result.keysPath as Any,
                 "systemAudioPath": result.systemAudioPath as Any,
                 "micAudioPath": result.micAudioPath as Any,
@@ -381,6 +391,13 @@ class ScreenRecorderModule: Module {
             await startTask?.value
         }
         guard recorderLifecycle.isCurrent(sessionID) else { return }
+        if case RecorderError.targetClosed = error {
+            emit(event: "error", data: [
+                "code": RecorderError.targetClosed.code,
+                "message": error.localizedDescription
+            ])
+            return
+        }
         emit(event: "error", data: [
             "code": "CAPTURE_ERROR",
             "message": error.localizedDescription

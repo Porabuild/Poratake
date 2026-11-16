@@ -195,9 +195,18 @@ class FreezeScreenModule: Module {
     
     private func removeOverlays() {
         for window in overlayWindows {
+            window.alphaValue = 0
+        }
+        if !overlayWindows.isEmpty { CATransaction.flush() }
+        for window in overlayWindows {
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
         FrozenFrameStore.clear()
     }
+
+    #if RECORDING_OUTLINE_TEST
+    func testInstallOverlay(_ window: NSWindow) { overlayWindows = [window] }
+    func testRemoveOverlays() { removeOverlays() }
+    #endif
 }

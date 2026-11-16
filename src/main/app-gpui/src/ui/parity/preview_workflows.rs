@@ -55,6 +55,14 @@ impl Render for MultiDisplayPreview {
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     let native_tooltips = cfg!(any(windows, target_os = "macos"));
+    let single_window_size = size(
+        px(208.),
+        px(if cfg!(target_os = "macos") {
+            148.
+        } else {
+            604.
+        }),
+    );
     let config = cx.update(|cx| crate::state::state(cx).config.get().preview);
     let wallpaper = cx.update(|cx| crate::state::state(cx).config.get().wallpaper);
     let history: Vec<_> = crate::history_store::load_history()
@@ -100,11 +108,13 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         assert_eq!(single.left(), px(4.));
         assert_eq!(
             single.top(),
-            px(if corner.starts_with("bottom") {
-                460.
-            } else {
-                4.
-            })
+            px(
+                if corner.starts_with("bottom") && !cfg!(target_os = "macos") {
+                    460.
+                } else {
+                    4.
+                }
+            )
         );
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-single"));
@@ -116,7 +126,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 })
                 .unwrap();
             let hovered = cx
-                .open_window(size(px(208.), px(604.)), |window, cx| {
+                .open_window(single_window_size, |window, cx| {
                     window.set_scale_factor(scale);
                     cx.new(|_| HoveredPreview {
                         preview: view.clone(),
@@ -231,7 +241,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 })
                 .unwrap();
             let hovered = cx
-                .open_window(size(px(208.), px(604.)), |window, cx| {
+                .open_window(single_window_size, |window, cx| {
                     window.set_scale_factor(scale);
                     cx.new(|_| MultiDisplayPreview { preview: view })
                 })
@@ -393,6 +403,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         for path in &paths[1..] {
             cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
             settle(cx, preview);
+            cx.update_window(preview, |_, window, _| {
+                assert_eq!(window.scale_factor(), scale);
+            })
+            .unwrap();
         }
         await_preview_thumbnails(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 4));
@@ -505,7 +519,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             })
             .unwrap();
         let hovered = cx
-            .open_window(size(px(208.), px(604.)), |window, cx| {
+            .open_window(single_window_size, |window, cx| {
                 window.set_scale_factor(scale);
                 cx.new(|_| HoveredPreview {
                     preview: view.clone(),
@@ -640,7 +654,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         "idle video fallback film icon must remain visible, found {visible_pixels} contrasting pixels"
     );
     let hovered = cx
-        .open_window(size(px(208.), px(604.)), |window, cx| {
+        .open_window(single_window_size, |window, cx| {
             window.set_scale_factor(scale);
             cx.new(|_| HoveredPreview {
                 preview: view.clone(),

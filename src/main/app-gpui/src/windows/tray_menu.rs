@@ -291,13 +291,14 @@ impl TrayMenuWindow {
                 initial_bounds,
                 super::PopupWindowConfig {
                     focus: visible,
-                    show: !cfg!(windows) || !visible,
+                    show: !cfg!(target_os = "macos") && (!cfg!(windows) || !visible),
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
             ),
             |window, cx| {
                 window.set_window_title("Poratake tray menu");
+                super::remove_popup_frame(window);
                 configure_tray_menu_window(window);
                 #[cfg(windows)]
                 if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -325,6 +326,10 @@ impl TrayMenuWindow {
                 }
                 let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
                 *owner.borrow_mut() = Some(view.downgrade());
+                #[cfg(target_os = "macos")]
+                if visible {
+                    window.activate_window();
+                }
                 #[cfg(windows)]
                 if visible {
                     let generation = view.read(cx).reveal_generation;
@@ -425,6 +430,16 @@ fn build_menu(
 impl Render for TrayMenuWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = crate::ui::font::root().w_full().child(self.menu.clone());
+        #[cfg(target_os = "macos")]
+        let content = content.on_children_prepainted(|bounds, window, _| {
+            let height = bounds[0].size.height;
+            if ((height - window.viewport_size().height) * window.scale_factor()).abs() < px(0.01) {
+                return;
+            }
+            window.on_next_frame(move |window, _| {
+                window.resize(size(window.viewport_size().width, height));
+            });
+        });
         #[cfg(windows)]
         let content = {
             let weak = cx.entity().downgrade();
@@ -778,7 +793,7 @@ mod tests {
         assert_eq!(origin.y, work_area.top() + px(SCREEN_GAP));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn tray_window_fits_the_painted_menu_at_each_scale(cx: &mut gpui::TestAppContext) {
         let scratch = tempfile::tempdir().unwrap();

@@ -848,7 +848,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, width: f32, scale:
             );
         }
         if edge == "top-left" {
-            for (start, end) in [(100.25, 220.75), (300.5, 425.25), (600.75, 720.25)] {
+            let last_end = (width - 8.).min(720.25);
+            for (start, end) in [
+                (100.25, 220.75),
+                (300.5, 425.25),
+                (last_end - 119.5, last_end),
+            ] {
                 event(
                     cx,
                     window,
@@ -1018,7 +1023,7 @@ fn assert_picker_pixels(
         width - 300.,
         width - 20.,
     ] {
-        for y in [10., 55., 155., 180., 300., 380., 450., 550., 720.] {
+        for y in [10., 55., 155., 200., 300., 380., 450., 550., 720.] {
             if y < 180. && (x - width / 2.).abs() < 200. {
                 continue;
             }

@@ -236,6 +236,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 active,
                 "{name}: scroll capture must remain active until the daemon responds"
             );
+            #[cfg(target_os = "macos")]
+            if name == "finish-held" {
+                let ids = cx.update(crate::windows::scroll_capture::excluded_window_ids_for_parity);
+                assert_eq!(ids, Some(vec![7201, 7202, 7203, 7101, 7102]));
+            }
             if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
                 assert!(
                     !icons_hidden,
@@ -378,6 +383,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         assert!(
             !cx.update(crate::capture::overlay::parity_is_active),
             "{name}: selector must close"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            cx.update(crate::capture::overlay::retained_scroll_selector_count),
+            0,
+            "{name}: hidden selector windows must be released"
         );
         assert_eq!(
             cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
@@ -739,6 +750,7 @@ fn scroll_start_returns_before_daemon_reply(
             coordinator.capture_area_reserved(
                 capture,
                 CaptureIntent::ScrollCapture,
+                Vec::new(),
                 None,
                 None,
                 None,

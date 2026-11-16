@@ -9,6 +9,8 @@ pub mod devices;
 pub mod hotkeys;
 #[cfg(target_os = "linux")]
 pub mod linux_session;
+#[cfg(target_os = "macos")]
+pub mod macos_tooltip;
 pub mod native;
 #[cfg(windows)]
 pub mod native_tooltip;

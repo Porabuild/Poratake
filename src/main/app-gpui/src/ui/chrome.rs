@@ -370,13 +370,15 @@ pub fn editor_window_size(
     work_height: f32,
     stored: Option<(f32, f32)>,
 ) -> (f32, f32) {
-    let max_width = (work_width - EDITOR_SCREEN_PAD * 2.0).max(EDITOR_MIN_WIDTH);
-    let max_height = (work_height - EDITOR_SCREEN_PAD * 2.0).max(EDITOR_MIN_HEIGHT);
+    let max_width = (work_width - EDITOR_SCREEN_PAD * 2.0).max(1.0);
+    let max_height = (work_height - EDITOR_SCREEN_PAD * 2.0).max(1.0);
+    let min_width = EDITOR_MIN_WIDTH.min(max_width);
+    let min_height = EDITOR_MIN_HEIGHT.min(max_height);
     let mut width = image_width;
     let mut height = image_height + TITLE_BAR_HEIGHT;
     if width > max_width || height > max_height {
         let scale_x = max_width / image_width.max(1.0);
-        let scale_y = (max_height - TITLE_BAR_HEIGHT) / image_height.max(1.0);
+        let scale_y = (max_height - TITLE_BAR_HEIGHT).max(0.0) / image_height.max(1.0);
         let scale = scale_x.min(scale_y);
         width = (image_width * scale).floor();
         height = (image_height * scale).floor() + TITLE_BAR_HEIGHT;
@@ -385,7 +387,10 @@ pub fn editor_window_size(
         width = stored_width.min(max_width);
         height = stored_height.min(max_height);
     }
-    (width.max(EDITOR_MIN_WIDTH), height.max(EDITOR_MIN_HEIGHT))
+    (
+        width.clamp(min_width, max_width),
+        height.clamp(min_height, max_height),
+    )
 }
 
 pub fn pin_window_size(
@@ -559,6 +564,16 @@ mod tests {
                 ((3000.0 * scale).floor() + TITLE_BAR_HEIGHT).max(EDITOR_MIN_HEIGHT)
             )
         );
+    }
+
+    #[test]
+    fn editor_fits_small_work_areas_with_and_without_a_saved_size() {
+        for stored in [None, Some((1656.0, 976.0)), Some((300.0, 200.0))] {
+            let (width, height) = editor_window_size(1200.0, 800.0, 800.0, 600.0, stored);
+            assert_eq!((width, height), (720.0, 520.0));
+        }
+        let (width, height) = editor_window_size(1200.0, 800.0, 50.0, 30.0, None);
+        assert_eq!((width, height), (1.0, 1.0));
     }
 
     #[test]

@@ -137,6 +137,7 @@ daemon_methods!(QrCodeMethod, {
 });
 daemon_methods!(RecordingControlMethod, {
     ListIosDevices => "listIOSDevices",
+    SetTooltip => "setTooltip",
 });
 daemon_methods!(RecordingOverlayMethod, {
     Show => "show",

@@ -81,6 +81,7 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -113,6 +114,7 @@ impl Coordinator {
                         coordinator.capture_area_ready(
                             capture,
                             intent,
+                            excluded_window_ids,
                             reservation,
                             release_after,
                             hide,
@@ -158,6 +160,9 @@ impl Coordinator {
                     drop(transition);
                     let _ = entity.update(cx, |coordinator, cx| {
                         drop(reservation);
+                        if intent == CaptureIntent::ScrollCapture {
+                            crate::capture::overlay::release_scroll_selectors(owner, cx);
+                        }
                         if let Some(generation) = release_after {
                             crate::capture::overlay::release_frozen_screen(generation, cx);
                         }
@@ -185,6 +190,7 @@ impl Coordinator {
                     coordinator.capture_area_ready(
                         capture,
                         intent,
+                        excluded_window_ids,
                         reservation,
                         release_after,
                         hide,
@@ -196,13 +202,23 @@ impl Coordinator {
             .detach();
             return;
         }
-        self.capture_area_ready(capture, intent, reservation, release_after, hide, owner, cx);
+        self.capture_area_ready(
+            capture,
+            intent,
+            excluded_window_ids,
+            reservation,
+            release_after,
+            hide,
+            owner,
+            cx,
+        );
     }
 
     fn capture_area_ready(
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -214,6 +230,9 @@ impl Coordinator {
                 && owner.is_some_and(|owner| crate::capture::overlay::revision(cx) != owner))
         {
             drop(reservation);
+            if intent == CaptureIntent::ScrollCapture {
+                crate::capture::overlay::release_scroll_selectors(owner, cx);
+            }
             if let Some(generation) = release_after {
                 crate::capture::overlay::release_frozen_screen(generation, cx);
             }
@@ -221,16 +240,37 @@ impl Coordinator {
             return;
         }
         if intent == CaptureIntent::EditorAttach {
-            return self.attach_area(capture, reservation, release_after, hide, cx);
+            return self.attach_area(
+                capture,
+                excluded_window_ids,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         }
         if !intent.saves_to_library() {
-            return self.analyze_area(capture, intent, reservation, release_after, hide, cx);
+            return self.analyze_area(
+                capture,
+                intent,
+                excluded_window_ids,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         }
         if intent == CaptureIntent::Timer {
-            return self.run_countdown(capture, hide, owner.expect("timer selection owner"), cx);
+            return self.run_countdown(
+                capture,
+                excluded_window_ids,
+                hide,
+                owner.expect("timer selection owner"),
+                cx,
+            );
         }
         if intent == CaptureIntent::ScrollCapture {
-            return self.run_scroll_capture(capture, hide, cx);
+            return self.run_scroll_capture(capture, excluded_window_ids, owner, hide, cx);
         }
         let service = self.service.clone();
         let path = service.generate_screenshot_path();
@@ -245,7 +285,13 @@ impl Coordinator {
                 || -> anyhow::Result<_> {
                     let temporary = prepare_screenshot(&path)?;
                     service
-                        .capture_area_cached(capture, &temporary, reservation, None)
+                        .capture_area_cached(
+                            capture,
+                            &temporary,
+                            reservation,
+                            None,
+                            excluded_window_ids,
+                        )
                         .with_context(|| {
                             format!("Capture data may be available at {}", temporary.display())
                         })?;
@@ -386,6 +432,7 @@ impl Coordinator {
     fn attach_area(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -411,7 +458,13 @@ impl Coordinator {
         let task = cx.background_executor().spawn(async move {
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
-                    service.capture_area_cached(capture, &path, reservation, None)
+                    service.capture_area_cached(
+                        capture,
+                        &path,
+                        reservation,
+                        None,
+                        excluded_window_ids,
+                    )
                 });
             if result.is_err() {
                 let _ = std::fs::remove_file(&path);
@@ -530,6 +583,8 @@ impl Coordinator {
     fn run_scroll_capture(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
+        owner: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
@@ -545,7 +600,7 @@ impl Coordinator {
             boundary_only: cfg!(target_os = "macos").then_some(true),
         };
         let (tx, rx) = smol::channel::unbounded::<crate::capture::scroll::ScrollSessionSignal>();
-        let (progress_tx, progress_rx) = smol::channel::bounded(16);
+        let (progress_tx, progress_rx) = crate::capture::scroll::scroll_progress_channel();
         let (finish_tx, finish_rx) = smol::channel::unbounded::<ScrollFinishEvent>();
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
@@ -556,6 +611,7 @@ impl Coordinator {
             }
         }));
         if !crate::capture::scroll::begin() {
+            crate::capture::overlay::release_scroll_selectors(owner, cx);
             crate::capture::desktop_icons::release_for_capture(hide, cx);
             crate::windows::toast::Toast::show(
                 cx,
@@ -575,6 +631,7 @@ impl Coordinator {
                 .await;
             if !started {
                 cx.update(|cx| {
+                    crate::capture::overlay::release_scroll_selectors(owner, cx);
                     crate::capture::desktop_icons::release_for_capture(hide, cx);
                     if !crate::capture::desktop_icons::is_shutting_down() {
                         crate::windows::toast::Toast::show(
@@ -587,6 +644,7 @@ impl Coordinator {
                 return;
             }
             if crate::capture::desktop_icons::is_shutting_down() {
+                cx.update(|cx| crate::capture::overlay::release_scroll_selectors(owner, cx));
                 cx.background_executor()
                     .spawn(async move {
                         crate::capture::scroll::cancel(&service.daemon);
@@ -597,13 +655,23 @@ impl Coordinator {
             }
             #[cfg(target_os = "macos")]
             let ui = cx.update(|cx| {
-                crate::windows::scroll_capture::ScrollCaptureSession::open(
+                let ui = crate::windows::scroll_capture::ScrollCaptureSession::open(
                     cx,
                     service.daemon.clone(),
                     area,
                     tx.clone(),
-                )
+                );
+                if owner.is_some() {
+                    crate::windows::scroll_capture::ScrollCaptureSession::include_selector_windows(
+                        &ui,
+                        excluded_window_ids,
+                        cx,
+                    );
+                }
+                ui
             });
+            #[cfg(not(target_os = "macos"))]
+            let _ = excluded_window_ids;
             let mut hide = hide;
             let mut transition = hide
                 .as_ref()
@@ -851,7 +919,10 @@ impl Coordinator {
             drop(subscription);
             crate::capture::scroll::finish_session();
             #[cfg(target_os = "macos")]
-            cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+            cx.update(|cx| {
+                crate::windows::scroll_capture::ScrollCaptureSession::close(cx);
+                crate::capture::overlay::release_scroll_selectors(owner, cx);
+            });
 
             if let Some(Err(error)) = cancel_result {
                 eprintln!("[scroll-capture] cancel failed: {error}");
@@ -922,6 +993,7 @@ impl Coordinator {
     fn run_countdown(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
         hide: Option<Arc<CaptureHide>>,
         owner: u64,
         cx: &mut Context<Self>,
@@ -957,9 +1029,11 @@ impl Coordinator {
                 _ => {}
             }));
         let theme = crate::theme::vars::active_theme(cx);
+        let display_bounds = crate::capture::timer::display_bounds(capture, cx);
         if !crate::capture::timer::show(
             &daemon,
             capture,
+            display_bounds,
             crate::capture::timer::TIMER_DURATION,
             theme.accent,
             theme.accent_foreground,
@@ -1012,6 +1086,7 @@ impl Coordinator {
                         coordinator.capture_area_reserved(
                             capture,
                             CaptureIntent::Screenshot,
+                            excluded_window_ids,
                             None,
                             None,
                             hide,
@@ -1029,6 +1104,7 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -1044,7 +1120,13 @@ impl Coordinator {
         let task = cx.background_executor().spawn(async move {
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
-                    service.capture_area_cached(capture, &path, reservation, None)
+                    service.capture_area_cached(
+                        capture,
+                        &path,
+                        reservation,
+                        None,
+                        excluded_window_ids,
+                    )
                 });
             drop(hide);
             drop(transition);
@@ -1185,6 +1267,7 @@ mod tests {
                         None,
                     ),
                     crate::capture::intent::CaptureIntent::ScrollCapture,
+                    Vec::new(),
                     None,
                     None,
                     None,

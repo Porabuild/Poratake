@@ -21,6 +21,9 @@ impl Module for RecordingControlModule {
             Some(RecordingControlMethod::ListIosDevices) => {
                 Reply::Now(Ok(Some(json!({ "devices": [] }))))
             }
+            Some(RecordingControlMethod::SetTooltip) => {
+                Reply::Now(Ok(Some(json!({ "visible": false }))))
+            }
             None => method_not_found(&request.method),
         }
     }

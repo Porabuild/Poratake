@@ -285,6 +285,26 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 key(cx, window, "tab");
                 assert_focus_tooltip(cx, index, right);
             }
+            #[cfg(target_os = "macos")]
+            {
+                click_measured(cx, window, "recording-controls", 1);
+                settle(cx, window);
+                let width = cx.update(|cx| {
+                    let handle = window.downcast::<RecordingControl>().unwrap();
+                    handle
+                        .update(cx, |control, window, _| {
+                            (
+                                control.parity_bar_width().unwrap(),
+                                f32::from(window.viewport_size().width),
+                            )
+                        })
+                        .unwrap()
+                });
+                assert!(
+                    (width.0 - width.1).abs() <= 0.5,
+                    "toolbar did not shrink after pointer input: {width:?}"
+                );
+            }
             click_measured(cx, window, "recording-controls", 0);
             capture(cx, window, output, "record-control-cancel-countdown");
             escape(cx, window);
@@ -350,6 +370,45 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
         click_measured(cx, window, "recording-controls", 2);
         assert_eq!(recorder::state(), RecorderState::Recording);
+        cx.update(|cx| {
+            let daemon = crate::state::state(cx).daemon;
+            daemon.emit_parity_event(
+                "camera-preview:position-changed",
+                &serde_json::json!({"x": -315, "y": 240}),
+            );
+            daemon.emit_parity_event(
+                "camera-preview:position-changed",
+                &serde_json::json!({"x": "invalid", "y": 1}),
+            );
+        });
+        let fixture_path = output.join("capture-fixture.json");
+        let previous_fixture = std::fs::read(&fixture_path).ok();
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_vec(&serde_json::json!({"recordingCameraDisableFails": true})).unwrap(),
+        )
+        .unwrap();
+        let before_failed_toggle = super::daemon_fixture::calls(output).len();
+        click_measured(cx, window, "recording-controls", 6);
+        key(cx, window, "home");
+        key(cx, window, "enter");
+        settle(cx, window);
+        let calls = super::daemon_fixture::calls(output);
+        let failed_toggle = &calls[before_failed_toggle..];
+        assert!(failed_toggle
+            .iter()
+            .any(|call| { call["module"] == "screen-recorder" && call["method"] == "setCamera" }));
+        assert!(
+            !failed_toggle
+                .iter()
+                .any(|call| { call["module"] == "camera-preview" && call["method"] == "hide" }),
+            "a rejected camera disable must leave its preview visible"
+        );
+        if let Some(contents) = previous_fixture {
+            std::fs::write(&fixture_path, contents).unwrap();
+        } else {
+            std::fs::remove_file(&fixture_path).unwrap();
+        }
         for (index, name) in [(7, "microphone"), (6, "camera-locked")] {
             click_measured(cx, window, "recording-controls", index);
             assert!(menu_painted(cx, window));
@@ -359,6 +418,20 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 output,
                 &format!("record-control-{name}-active-open"),
             );
+            key(cx, window, "home");
+            key(cx, window, "enter");
+            settle(cx, window);
+            if name == "camera-locked" {
+                cx.update(|cx| {
+                    crate::state::state(cx).daemon.emit_parity_event(
+                        "camera-preview:position-changed",
+                        &serde_json::json!({"x": 700, "y": 800}),
+                    );
+                });
+            }
+        }
+        for _ in 0..2 {
+            click_measured(cx, window, "recording-controls", 6);
             key(cx, window, "home");
             key(cx, window, "enter");
             settle(cx, window);
@@ -397,6 +470,68 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         .unwrap();
     assert_eq!(started["params"]["cameraEnabled"], true);
     assert_eq!(started["params"]["micEnabled"], true);
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let start = requests
+            .iter()
+            .position(|request| {
+                request["module"] == "screen-recorder" && request["method"] == "start"
+            })
+            .unwrap();
+        let protected = requests[..start]
+            .iter()
+            .rposition(|request| {
+                request["module"] == "camera-preview"
+                    && request["method"] == "setContentProtection"
+                    && request["params"]["enabled"] == true
+            })
+            .expect("camera preview must be protected before recording starts");
+        let stop = requests
+            .iter()
+            .position(|request| {
+                request["module"] == "screen-recorder" && request["method"] == "stop"
+            })
+            .unwrap();
+        assert!(!requests[protected + 1..stop].iter().any(|request| {
+            request["module"] == "camera-preview"
+                && request["method"] == "setContentProtection"
+                && request["params"]["enabled"] == false
+        }));
+    }
+    let camera_calls: Vec<_> = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| {
+            request["module"] == "screen-recorder" && request["method"] == "setCamera"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(camera_calls.len(), 4);
+    assert_eq!(
+        camera_calls
+            .iter()
+            .map(|index| requests[*index]["params"]["enabled"].as_bool().unwrap())
+            .collect::<Vec<_>>(),
+        [false, false, true, false]
+    );
+    let stop = requests
+        .iter()
+        .position(|request| request["module"] == "screen-recorder" && request["method"] == "stop")
+        .unwrap();
+    assert!(requests[camera_calls[1] + 1..stop]
+        .iter()
+        .any(|request| { request["module"] == "camera-preview" && request["method"] == "hide" }));
+    assert!(
+        requests[camera_calls[1] + 1..camera_calls[2]]
+            .iter()
+            .any(|request| {
+                request["module"] == "camera-preview"
+                    && request["method"] == "show"
+                    && request["params"]["x"] == -315
+                    && request["params"]["y"] == 240
+            }),
+        "re-enabling the camera must restore its dragged position"
+    );
     for method in [
         "start",
         "pause",
@@ -410,13 +545,68 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             .iter()
             .filter(|request| request["module"] == "screen-recorder" && request["method"] == method)
             .collect();
-        assert_eq!(
-            calls.len(),
-            1,
-            "the recording workflow must call {method} exactly once"
-        );
-        if method.starts_with("set") {
+        let expected = if method == "setCamera" { 4 } else { 1 };
+        assert_eq!(calls.len(), expected, "unexpected {method} call count");
+        if method.starts_with("set") && method != "setCamera" {
             assert_eq!(calls[0]["params"]["enabled"], false);
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let fixture_path = output.join("capture-fixture.json");
+        let previous_fixture = std::fs::read(&fixture_path).ok();
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_vec(&serde_json::json!({"recordingProtectionFails": true})).unwrap(),
+        )
+        .unwrap();
+        let window = cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.recording.start_delay = 0.;
+                config.recording.camera.enabled = false;
+            });
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                crate::capture::overlay::ScreenRect {
+                    x: 40,
+                    y: 80,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                Some(1),
+                Some("Fixture capture window".into()),
+                crate::windows::recording_control::PreferenceScope::Global,
+            );
+            registry::handle(WindowKind::RecordingControl, cx).unwrap()
+        });
+        settle(cx, window);
+        let before = super::daemon_fixture::calls(output).len();
+        click_measured(cx, window, "recording-controls", 2);
+        settle(cx, window);
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let protection: Vec<_> = calls
+            .iter()
+            .filter(|call| {
+                call["module"] == "camera-preview" && call["method"] == "setContentProtection"
+            })
+            .map(|call| call["params"]["enabled"].as_bool().unwrap())
+            .collect();
+        assert_eq!(protection, [true, false]);
+        assert!(!calls
+            .iter()
+            .any(|call| { call["module"] == "screen-recorder" && call["method"] == "start" }));
+        assert_eq!(recorder::state(), RecorderState::Idle);
+        assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        assert!(std::fs::read_dir(&recordings).unwrap().next().is_none());
+        escape(cx, window);
+        if let Some(contents) = previous_fixture {
+            std::fs::write(&fixture_path, contents).unwrap();
+        } else {
+            std::fs::remove_file(&fixture_path).unwrap();
         }
     }
 
@@ -472,7 +662,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                     && line.contains("\"method\":\"hide\"")
             })
             .count();
-        click_measured(cx, window, "recording-controls", 6);
+        let close_index =
+            super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
+        click_measured(cx, window, "recording-controls", close_index);
         assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
         let hides_after = std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
             .unwrap()

@@ -79,10 +79,11 @@ pub(crate) fn open_editor_with_state(
         }
     };
     let (work_width, work_height) = cx
-        .displays()
-        .first()
+        .primary_display()
+        .or_else(|| cx.displays().into_iter().next())
+        .as_ref()
         .map(|display| {
-            let bounds = display.bounds();
+            let bounds = crate::system::work_area::work_area(display.as_ref());
             (f32::from(bounds.size.width), f32::from(bounds.size.height))
         })
         .unwrap_or((1920.0, 1080.0));
@@ -90,12 +91,14 @@ pub(crate) fn open_editor_with_state(
     let (width, height) =
         chrome::editor_window_size(image_width, image_height, work_width, work_height, stored);
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
     let opened = cx.open_window(
         windows::app_window_options(
             bounds,
             Some(size(
-                px(chrome::EDITOR_MIN_WIDTH),
-                px(chrome::EDITOR_MIN_HEIGHT),
+                px(chrome::EDITOR_MIN_WIDTH.min(width)),
+                px(chrome::EDITOR_MIN_HEIGHT.min(height)),
             )),
         ),
         |window, cx| {
@@ -130,6 +133,16 @@ fn main() {
     #[cfg(feature = "parity")]
     if std::env::args().nth(1).as_deref() == Some("--parity") {
         ui::parity::capture_editor_interaction_states();
+        return;
+    }
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    if std::env::args().nth(1).as_deref() == Some("--native-popup-frame-probe") {
+        ui::native_smoke::popup_frame_probe();
+        return;
+    }
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    if std::env::args().nth(1).as_deref() == Some("--native-ui-probe") {
+        ui::native_smoke::native_ui_probe();
         return;
     }
 
@@ -257,6 +270,8 @@ fn main() {
             // tray, and so the only way to screenshot them for a parity check.
             let mut args = std::env::args().skip(1);
             match args.next().as_deref() {
+                #[cfg(all(feature = "parity", target_os = "macos"))]
+                Some("--native-smoke-recording") => ui::native_smoke::open(cx),
                 Some("--intent") => {
                     let id = args.next();
                     // An optional second argument: a settings category, or a project

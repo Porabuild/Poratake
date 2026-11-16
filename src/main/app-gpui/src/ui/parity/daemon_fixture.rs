@@ -95,8 +95,12 @@ pub fn run() {
     let mut desktop_show_not_applied = false;
     let mut scroll_retryable_finish_attempts = 0;
     let mut recording_start_failed_after_error = false;
+    let mut recording_area_start_failed = false;
     let mut recording_target_closed_during_start = false;
     let mut recording_stop_failed_after_error = false;
+    let mut held_recording_start: Option<String> = None;
+    let mut held_recording_stop: Option<String> = None;
+    let mut recording_stop_was_held = false;
     let desktop_icons_hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -258,10 +262,17 @@ pub fn run() {
                     "a previous timer must be hidden before retry"
                 );
                 let params = request.params.as_ref().unwrap();
-                assert_eq!(params["x"], 260);
-                assert_eq!(params["y"], 40);
-                assert_eq!(params["duration"], 5);
                 let fixture = capture_fixture(&output);
+                let (x, y) = if fixture["timerEdge"].as_bool() == Some(true) {
+                    (0, if cfg!(target_os = "macos") { 20 } else { 40 })
+                } else if cfg!(target_os = "macos") {
+                    (330, 20)
+                } else {
+                    (260, 40)
+                };
+                assert_eq!(params["x"], x);
+                assert_eq!(params["y"], y);
+                assert_eq!(params["duration"], 5);
                 let result = fixture["timer"].as_str().unwrap();
                 if result == "failed" {
                     protocol::respond_error(&request.id, "UI_ERROR", "Fixture timer start failure");
@@ -489,6 +500,12 @@ pub fn run() {
                     for key in ["x", "y", "width", "height"] {
                         assert_eq!(params[key], fixture["rect"][key], "capture {key}");
                     }
+                    if let Some(expected) = fixture
+                        .get("expectedExcludedWindowIds")
+                        .filter(|value| !value.is_null())
+                    {
+                        assert_eq!(&params["excludedWindowIds"], expected, "capture exclusions");
+                    }
                 }
                 let color =
                     if params.get("cached").and_then(serde_json::Value::as_bool) == Some(true) {
@@ -609,9 +626,36 @@ pub fn run() {
                 }
             }
             ("recording-control", "listIOSDevices") => json!({"devices": []}),
+            ("recording-control", "setTooltip") => json!({"visible": false}),
             ("recording-overlay", "show") => json!({"visible": true}),
             ("recording-overlay", "showWindow") => json!({"visible": true}),
             ("screen-recorder", "start") => {
+                recording_stop_was_held = false;
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingAreaStartFails"] == true)
+                    && !recording_area_start_failed
+                    && request
+                        .params
+                        .as_ref()
+                        .is_some_and(|params| !params.contains_key("windowId"))
+                {
+                    recording_area_start_failed = true;
+                    if optional_capture_fixture(&output)
+                        .is_some_and(|fixture| fixture["recordingAreaStartWritesPartial"] == true)
+                    {
+                        let output_path = request.params.as_ref().unwrap()["outputPath"]
+                            .as_str()
+                            .unwrap();
+                        std::fs::write(output_path, include_bytes!("fixtures/capture.mov"))
+                            .unwrap();
+                    }
+                    protocol::respond_error(
+                        &request.id,
+                        "START_FAILED",
+                        "Fixture area start failure",
+                    );
+                    continue;
+                }
                 if optional_capture_fixture(&output)
                     .is_some_and(|fixture| fixture["recordingStartFailsAfterQueuedError"] == true)
                     && !recording_start_failed_after_error
@@ -631,6 +675,32 @@ pub fn run() {
                     );
                     continue;
                 }
+                if let Some(fixture) = optional_capture_fixture(&output) {
+                    let params = request.params.as_ref().unwrap();
+                    let source_key = match (
+                        params.contains_key("windowId"),
+                        fixture["recordingAreaFixtureVideo"] == true,
+                        fixture["recordingWindowFixtureVideo"] == true,
+                        fixture["recordingScreenFixtureVideo"] == true,
+                    ) {
+                        (false, true, _, _) => Some("recordingAreaSource"),
+                        (true, _, true, _) => Some("recordingWindowSource"),
+                        (false, _, _, true) => Some("recordingScreenSource"),
+                        _ => None,
+                    };
+                    if let Some(source_key) = source_key {
+                        let path = params["outputPath"].as_str().unwrap();
+                        if let Some(source) = fixture[source_key].as_str() {
+                            std::fs::copy(source, path).unwrap();
+                        } else {
+                            std::fs::write(path, include_bytes!("fixtures/capture.mov")).unwrap();
+                        }
+                    }
+                    if fixture["recordingHoldStartUntilStop"] == true {
+                        held_recording_start = Some(request.id.clone());
+                        continue;
+                    }
+                }
                 if optional_capture_fixture(&output)
                     .is_some_and(|fixture| fixture["recordingTargetClosedDuringStart"] == true)
                     && recording_start_failed_after_error
@@ -648,6 +718,69 @@ pub fn run() {
                 json!({})
             }
             ("screen-recorder", "stop") => {
+                if let Some(start_id) = held_recording_start.take() {
+                    if optional_capture_fixture(&output)
+                        .is_some_and(|fixture| fixture["recordingHeldStartStopFirst"] == true)
+                    {
+                        held_recording_start = Some(start_id);
+                        protocol::respond_error(
+                            &request.id,
+                            "INVALID_STATE",
+                            "No recording is active",
+                        );
+                        continue;
+                    }
+                    if optional_capture_fixture(&output)
+                        .is_some_and(|fixture| fixture["recordingHeldStartFails"] == true)
+                    {
+                        protocol::respond_error(
+                            &start_id,
+                            "START_FAILED",
+                            "Fixture late start failure",
+                        );
+                        protocol::respond_error(
+                            &request.id,
+                            "INVALID_STATE",
+                            "No recording is active",
+                        );
+                        continue;
+                    }
+                    protocol::respond_success(&start_id, json!({"success": true}));
+                }
+                if !recording_stop_was_held
+                    && optional_capture_fixture(&output)
+                        .is_some_and(|fixture| fixture["recordingHoldStop"] == true)
+                {
+                    recording_stop_was_held = true;
+                    held_recording_stop = Some(request.id.clone());
+                    if optional_capture_fixture(&output)
+                        .is_some_and(|fixture| fixture["recordingHeldStopTerminalError"] == true)
+                    {
+                        protocol::send_event(
+                            SCREEN_RECORDER_ERROR_EVENT,
+                            Some(
+                                json!({"code": "CAPTURE_ERROR", "message": "Fixture held stop terminal failure"}),
+                            ),
+                        );
+                    }
+                    continue;
+                }
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingErrorBeforeStopSuccess"] == true)
+                {
+                    protocol::send_event(
+                        SCREEN_RECORDER_ERROR_EVENT,
+                        Some(
+                            json!({"code": "CAPTURE_ERROR", "message": "Fixture terminal failure"}),
+                        ),
+                    );
+                }
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingStopAudioFailure"] == true)
+                {
+                    protocol::respond_error(&request.id, "CAPTURE_ERROR", "Fixture audio failure");
+                    continue;
+                }
                 if optional_capture_fixture(&output).is_some_and(|fixture| {
                     fixture["recordingStopFailsAfterQueuedTargetClosed"] == true
                 }) && !recording_stop_failed_after_error
@@ -663,6 +796,87 @@ pub fn run() {
                     protocol::respond_error(&request.id, "STOP_FAILED", "Fixture stop failure");
                     continue;
                 }
+                match optional_capture_fixture(&output) {
+                    Some(fixture) if fixture["recordingAreaFixtureVideo"] == true => {
+                        json!({"duration": fixture["recordingAreaDuration"]})
+                    }
+                    Some(fixture) if fixture["recordingWindowFixtureVideo"] == true => {
+                        json!({"duration": fixture["recordingWindowDuration"]})
+                    }
+                    Some(fixture) if fixture["recordingScreenFixtureVideo"] == true => {
+                        json!({"duration": fixture["recordingScreenDuration"]})
+                    }
+                    _ => json!({}),
+                }
+            }
+            ("screen-recorder", "setCamera")
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingCameraDisableFails"] == true)
+                    && request.params.as_ref().is_some_and(|params| {
+                        params.get("enabled").and_then(serde_json::Value::as_bool) == Some(false)
+                    }) =>
+            {
+                protocol::respond_error(&request.id, "CAMERA_FAILED", "Fixture camera failure");
+                continue;
+            }
+            ("camera-preview", "setContentProtection")
+                if held_recording_stop.is_some()
+                    && optional_capture_fixture(&output).is_some_and(|fixture| {
+                        fixture["recordingReleaseHeldStopOnProtection"] == true
+                    }) =>
+            {
+                let stop_id = held_recording_stop.take().unwrap();
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingHeldStopFails"] == true)
+                {
+                    protocol::respond_error(&stop_id, "STOP_FAILED", "Fixture late stop failure");
+                } else {
+                    protocol::respond_success(&stop_id, json!({"duration": 2.0}));
+                }
+                json!({})
+            }
+            ("camera-preview", "setContentProtection")
+                if held_recording_start.is_some()
+                    && optional_capture_fixture(&output).is_some_and(|fixture| {
+                        fixture["recordingReleaseHeldStartOnProtection"] == true
+                    }) =>
+            {
+                let start_id = held_recording_start.take().unwrap();
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingHeldStartFails"] == true)
+                {
+                    protocol::respond_error(
+                        &start_id,
+                        "START_FAILED",
+                        "Fixture late start failure",
+                    );
+                } else {
+                    protocol::respond_success(&start_id, json!({"success": true}));
+                }
+                json!({})
+            }
+            ("camera-preview", "setContentProtection")
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingProtectionFails"] == true)
+                    && request.params.as_ref().is_some_and(|params| {
+                        params.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+                    }) =>
+            {
+                protocol::respond_error(
+                    &request.id,
+                    "CONTENT_PROTECTION_ERROR",
+                    "Fixture protection failure",
+                );
+                continue;
+            }
+            ("screen-recorder", "setSystemAudio")
+                if optional_capture_fixture(&output)
+                    .is_some_and(|fixture| fixture["recordingAudioFailure"] == true) =>
+            {
+                protocol::send_event(
+                    SCREEN_RECORDER_ERROR_EVENT,
+                    Some(json!({"code": "CAPTURE_ERROR", "message": "Fixture audio failure"})),
+                );
                 json!({})
             }
             ("recording-overlay", "hide")

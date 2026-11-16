@@ -1,5 +1,6 @@
 import Cocoa
 import Foundation
+import QuartzCore
 
 class TimerControlModule: Module {
     let name = DaemonContract.TimerControl.module
@@ -78,8 +79,10 @@ class TimerControlModule: Module {
         let width: CGFloat = 140
         let height: CGFloat = 52
         
-        let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-        let cocoaY = mainScreenHeight - CGFloat(y) - height
+        let cocoaY = DisplayCoordinates.cocoaY(
+            topLeftY: CGFloat(y), height: height,
+            primaryHeight: DisplayCoordinates.primaryHeight
+        )
         
         var config = FloatingPanelConfig()
         config.cornerRadius = 10
@@ -111,6 +114,8 @@ class TimerControlModule: Module {
     }
     
     private func hidePanel() {
+        panel?.alphaValue = 0
+        if panel != nil { CATransaction.flush() }
         panel?.orderOut(nil)
         panel = nil
         timerButton = nil

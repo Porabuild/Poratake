@@ -15,6 +15,9 @@ mod analysis_workflows;
 mod attachment_workflows;
 mod baselines;
 pub(crate) mod daemon_fixture;
+#[cfg(target_os = "macos")]
+mod fractional_frame_workflow;
+mod image_sampling;
 mod overlays;
 mod pin_workflows;
 mod preview_workflows;
@@ -53,9 +56,17 @@ fn measured(group: &str, index: usize) -> Bounds<Pixels> {
     GEOMETRY.with_borrow(|geometry| geometry[group][index])
 }
 
-fn click_measured(cx: &mut HeadlessAppContext, window: AnyWindowHandle, group: &str, index: usize) {
-    if group.starts_with("editor-") && !crate::ui::chrome::is_macos() {
-        let viewport = measured("editor-chrome", 0);
+fn reveal_measured(
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+    group: &str,
+    index: usize,
+) {
+    if group.starts_with("editor-") {
+        let viewport = measured(
+            "editor-chrome",
+            if crate::ui::chrome::is_macos() { 2 } else { 0 },
+        );
         let bounds = measured(group, index);
         let delta = if bounds.left() < viewport.left() {
             viewport.left() - bounds.left()
@@ -83,8 +94,56 @@ fn click_measured(cx: &mut HeadlessAppContext, window: AnyWindowHandle, group: &
             "the toolbar control must scroll fully into view: {bounds:?}, {viewport:?}"
         );
     }
+}
+
+fn click_measured(cx: &mut HeadlessAppContext, window: AnyWindowHandle, group: &str, index: usize) {
+    reveal_measured(cx, window, group, index);
     let center = measured(group, index).center();
     click(cx, window, f32::from(center.x), f32::from(center.y));
+}
+
+fn focus_measured(
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+    group: &str,
+    index: usize,
+) -> gpui::FocusHandle {
+    let position = measured(group, index).center();
+    focus_at(cx, window, position)
+}
+
+fn focus_at(
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+    position: gpui::Point<gpui::Pixels>,
+) -> gpui::FocusHandle {
+    hover(cx, window, f32::from(position.x), f32::from(position.y));
+    event(
+        cx,
+        window,
+        PlatformInput::MouseDown(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+            first_mouse: false,
+        }),
+    );
+    let focus = cx
+        .update_window(window, |_, window, cx| window.focused(cx))
+        .unwrap()
+        .expect("control should receive pointer focus");
+    event(
+        cx,
+        window,
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: point(px(150.), px(100.)),
+            button: MouseButton::Left,
+            click_count: 1,
+            modifiers: Modifiers::none(),
+        }),
+    );
+    focus
 }
 
 fn assert_toolbar(width: f32, scale: f32) {
@@ -791,6 +850,18 @@ pub fn capture_editor_interaction_states() {
         .unwrap_or_else(|_| "1280".into())
         .parse()
         .unwrap();
+    let editor_height: f32 = std::env::var("PORATAKE_PARITY_EDITOR_HEIGHT")
+        .unwrap_or_else(|_| "738".into())
+        .parse()
+        .unwrap();
+    assert!(editor_height.is_finite() && editor_height > 0.);
+    #[cfg(any(windows, target_os = "macos"))]
+    let video_height: f32 = std::env::var("PORATAKE_PARITY_VIDEO_HEIGHT")
+        .unwrap_or_else(|_| "750".into())
+        .parse()
+        .unwrap();
+    #[cfg(any(windows, target_os = "macos"))]
+    assert!(video_height.is_finite() && video_height > 0.);
     let scale: f32 = std::env::var("PORATAKE_PARITY_SCALE")
         .unwrap_or_else(|_| "2".into())
         .parse()
@@ -855,6 +926,92 @@ pub fn capture_editor_interaction_states() {
         crate::capture::overlay::init_bindings(cx);
         crate::ui::font::register(cx);
     });
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_SCROLL_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output.join("daemon-fixture.jsonl"))
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.hide_desktop_icons = false;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.screenshot.show_preview = true;
+            });
+        });
+        scroll_workflows::run(&mut cx, &output, &scratch);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_TIMER_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output.join("daemon-fixture.jsonl"))
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.hide_desktop_icons = false;
+                config.screenshot.capture_to_clipboard = false;
+                config.screenshot.auto_copy_to_clipboard = false;
+                config.screenshot.show_preview = true;
+            });
+        });
+        workflows::timer_captures(&mut cx, &output, &scratch);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_RECORDING_CONTROLS_ONLY").is_some() {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output.join("daemon-fixture.jsonl"))
+            .unwrap();
+        recording_controls::run(&mut cx, &output, &scratch, scale);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_RECORDING_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output.join("daemon-fixture.jsonl"))
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.screenshot.hide_desktop_icons = false;
+            });
+        });
+        workflows::recording_preference_handoffs(&mut cx, &output);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_BALANCED_FRAME_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        fractional_frame_workflow::run(&mut cx, &scratch);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_FRACTIONAL_FRAME_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        workflows::framed_attachment_layout(&mut cx, &scratch, 1.3333333);
+        workflows::simple_inset_preview(&mut cx, &scratch, 1.3333333, 0., false, 8., false);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    if source.is_none() && width == 1280. {
+        workflows::fractional_annotation_draft(&mut cx, &scratch);
+        workflows::fractional_annotation_reopen(&mut cx, &scratch);
+    }
     #[cfg(windows)]
     windows_renderer::verify_image_sampling(&mut cx, &output, scale);
     #[cfg(windows)]
@@ -865,7 +1022,7 @@ pub fn capture_editor_interaction_states() {
         workflows::editor_sizes(&mut cx, &scratch);
     }
     let editor = cx
-        .open_window(size(px(width), px(738.0)), |window, cx| {
+        .open_window(size(px(width), px(editor_height)), |window, cx| {
             window.set_scale_factor(scale);
             cx.new(|cx| {
                 crate::editor::window::EditorWindow::from_file(image.to_str().unwrap(), window, cx)
@@ -874,6 +1031,9 @@ pub fn capture_editor_interaction_states() {
         .unwrap();
     let window = editor.into();
     settle(&mut cx, window);
+    if editor_height != 738.0 {
+        capture(&mut cx, window, &output, "editor-full-window");
+    }
     assert_toolbar(width, scale);
     hover(&mut cx, window, 300.0, 300.0);
     capture(&mut cx, window, &output, "image-default");
@@ -962,6 +1122,87 @@ pub fn capture_editor_interaction_states() {
             &output,
             &format!("image-{}-selected", tool.id()),
         );
+        if crate::ui::chrome::is_macos()
+            && (width == 950. || width == 720.)
+            && tool == crate::ui::colors::Tool::Rectangle
+        {
+            let viewport = measured("editor-chrome", 2);
+            assert!(measured("editor-tools", 20).right() > viewport.right());
+            let delta = viewport.right() - measured("editor-tools", 20).right();
+            event(
+                &mut cx,
+                window,
+                PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: viewport.center(),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
+                    ..Default::default()
+                }),
+            );
+            settle(&mut cx, window);
+            assert!(measured("editor-tools", 20).right() <= viewport.right() + px(0.001));
+            reveal_measured(&mut cx, window, "editor-options", 0);
+            reveal_measured(&mut cx, window, "editor-tools", 20);
+            capture(&mut cx, window, &output, "image-rectangle-toolbar-scrolled");
+            click_measured(&mut cx, window, "editor-tools", 17);
+            cx.update(|cx| assert!(editor.read(cx).unwrap().is_copied));
+            let pin_focus = focus_measured(&mut cx, window, "editor-tools", 20);
+            reveal_measured(&mut cx, window, "editor-options", 0);
+            let option_focus = focus_measured(&mut cx, window, "editor-options", 0);
+            click_measured(&mut cx, window, "editor-tools", 2);
+            assert!(
+                cx.update_window(window, |_, window, cx| window.focused(cx)
+                    != Some(pin_focus.clone()))
+                    .unwrap(),
+                "the rectangle control must have a distinct focus target"
+            );
+            let hidden_pin = measured("editor-tools", 20);
+            assert!(
+                hidden_pin.right() > viewport.right(),
+                "Pin must start outside the toolbar: {hidden_pin:?}, {viewport:?}"
+            );
+            let mut reached_pin = false;
+            for _ in 0..30 {
+                key(&mut cx, window, "tab");
+                reached_pin = cx
+                    .update_window(window, |_, window, cx| {
+                        window.focused(cx).is_some_and(|focus| focus == pin_focus)
+                    })
+                    .unwrap();
+                if reached_pin {
+                    break;
+                }
+            }
+            assert!(reached_pin, "Tab must reach the Pin control");
+            let pin = measured("editor-tools", 20);
+            assert!(
+                pin.left() >= viewport.left() + px(4.) && pin.right() <= viewport.right() - px(4.),
+                "keyboard-focused Pin is clipped: {pin:?}, viewport {viewport:?}"
+            );
+            capture(&mut cx, window, &output, "image-rectangle-keyboard-pin");
+            let hidden_option = measured("editor-options", 0);
+            assert!(hidden_option.left() < viewport.left());
+            let mut reached_option = false;
+            for _ in 0..30 {
+                key(&mut cx, window, "shift-tab");
+                reached_option = cx
+                    .update_window(window, |_, window, cx| {
+                        window
+                            .focused(cx)
+                            .is_some_and(|focus| focus == option_focus)
+                    })
+                    .unwrap();
+                if reached_option {
+                    break;
+                }
+            }
+            assert!(reached_option, "Shift-Tab must reach the first option");
+            let option = measured("editor-options", 0);
+            assert!(
+                option.left() >= viewport.left() + px(4.)
+                    && option.right() <= viewport.right() - px(4.),
+                "keyboard-focused option is clipped: {option:?}, viewport {viewport:?}"
+            );
+        }
         if matches!(
             tool,
             crate::ui::colors::Tool::Number
@@ -1043,12 +1284,13 @@ pub fn capture_editor_interaction_states() {
     capture(&mut cx, window, &output, "video-audio-open");
     overlays::run(&mut cx, &output, width, scale);
     if source.is_none() {
+        image_sampling::run(&mut cx, &output);
         pin_workflows::run(&mut cx, &output, &scratch, scale);
         preview_workflows::run(&mut cx, &output, &scratch, scale);
     }
     recording_controls::run(&mut cx, &output, &scratch, scale);
-    #[cfg(windows)]
-    workflows::video(&mut cx, &output, &scratch, width, scale);
+    #[cfg(any(windows, target_os = "macos"))]
+    workflows::video(&mut cx, &output, &scratch, width, video_height, scale);
     if source.is_none() && width == 1280. && scale == 1. {
         workflows::selection_captures(&mut cx, &output, &scratch);
         workflows::recording_preference_handoffs(&mut cx, &output);
@@ -1096,6 +1338,12 @@ pub fn capture_editor_interaction_states() {
             workflows::simple_inset_preview(&mut cx, &scratch, scale, 0., false, 8., true);
             workflows::balance_restoration(&mut cx, &scratch, scale, 0., false, 8.);
         }
+        #[cfg(target_os = "macos")]
+        workflows::framed_attachment_layout(&mut cx, &scratch, 1.3333333);
+        #[cfg(target_os = "macos")]
+        workflows::simple_inset_preview(&mut cx, &scratch, 1.3333333, 0., false, 8., false);
+        #[cfg(target_os = "macos")]
+        fractional_frame_workflow::run(&mut cx, &scratch);
         workflows::balance_restoration(&mut cx, &scratch, 1., 20., false, 8.);
         workflows::balance_restoration(&mut cx, &scratch, 1.25, 20., true, 8.);
     }

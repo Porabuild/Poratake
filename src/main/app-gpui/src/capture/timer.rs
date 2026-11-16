@@ -9,6 +9,7 @@ use poratake_daemon_common::contract::{
     TimerShowRequest, TIMER_CONTROL_HEIGHT, TIMER_CONTROL_TOP_MARGIN, TIMER_CONTROL_WIDTH,
 };
 
+use crate::capture::overlay::ScreenRect;
 use crate::capture::DisplayCapture;
 use crate::daemon::DaemonHandle;
 use crate::theme::color::Srgba;
@@ -51,8 +52,7 @@ pub fn begin() -> Option<Session> {
         .map(|_| Session)
 }
 
-/// Port of `calculateTimerPosition`.
-pub fn timer_position(capture: DisplayCapture) -> (i32, i32) {
+pub fn timer_position(capture: DisplayCapture, display_bounds: Option<ScreenRect>) -> (i32, i32) {
     let area = capture.rect;
     let scale = if cfg!(target_os = "macos") {
         1.0
@@ -62,9 +62,35 @@ pub fn timer_position(capture: DisplayCapture) -> (i32, i32) {
     let width = (TIMER_CONTROL_WIDTH as f32 * scale).round() as i32;
     let height = (TIMER_CONTROL_HEIGHT as f32 * scale).round() as i32;
     let margin = (TIMER_CONTROL_TOP_MARGIN as f32 * scale).round() as i32;
-    let x = (area.x as f32 + area.width as f32 / 2.0 - width as f32 / 2.0).round() as i32;
+    let centered_x = (area.x as f32 + area.width as f32 / 2.0 - width as f32 / 2.0).round() as i32;
+    let x = match display_bounds.filter(|bounds| bounds.width > 0) {
+        Some(bounds) => {
+            let right = bounds
+                .x
+                .saturating_add(bounds.width)
+                .saturating_sub(width)
+                .max(bounds.x);
+            centered_x.clamp(bounds.x, right)
+        }
+        None => centered_x.max(capture.display_origin().x),
+    };
     let y = area.y - height - margin;
     (x, y.max(capture.display_origin().y + margin))
+}
+
+pub fn display_bounds(capture: DisplayCapture, cx: &mut gpui::App) -> Option<ScreenRect> {
+    let display_id = capture.display_id?;
+    let display = cx
+        .displays()
+        .into_iter()
+        .find(|display| u64::from(display.id()) as u32 == display_id)?;
+    let bounds = crate::system::work_area::display_bounds(display.as_ref());
+    let rect = crate::capture::overlay::physical_rect(bounds, capture.scale_factor as f32);
+    (rect.x == capture.display_origin_x
+        && rect.y == capture.display_origin_y
+        && rect.width > 0
+        && rect.height > 0)
+        .then_some(rect)
 }
 
 fn color_hex(color: Hsla) -> String {
@@ -80,6 +106,7 @@ fn color_hex(color: Hsla) -> String {
 pub fn show(
     daemon: &DaemonHandle,
     capture: DisplayCapture,
+    display_bounds: Option<ScreenRect>,
     duration: u32,
     accent: Hsla,
     accent_foreground: Hsla,
@@ -88,7 +115,7 @@ pub fn show(
     if std::env::var_os("PORATAKE_TEST_TIMER_CONTROL").is_some() {
         return true;
     }
-    let (x, y) = timer_position(capture);
+    let (x, y) = timer_position(capture, display_bounds);
     match daemon.timer_control().show(&TimerShowRequest {
         x,
         y,
@@ -149,7 +176,7 @@ mod tests {
     #[test]
     fn centres_the_countdown_above_the_selection() {
         assert_eq!(
-            timer_position(capture(100, 400, 240, 120, 1.0, (0, 0))),
+            timer_position(capture(100, 400, 240, 120, 1.0, (0, 0)), None),
             (150, 328)
         );
     }
@@ -157,7 +184,7 @@ mod tests {
     #[test]
     fn clamps_the_countdown_to_the_top_margin() {
         assert_eq!(
-            timer_position(capture(0, 10, 100, 100, 1.0, (0, 0))).1,
+            timer_position(capture(0, 10, 100, 100, 1.0, (0, 0)), None).1,
             TIMER_CONTROL_TOP_MARGIN
         );
     }
@@ -166,11 +193,11 @@ mod tests {
     #[test]
     fn scales_the_panel_geometry_on_mixed_dpi_displays() {
         assert_eq!(
-            timer_position(capture(200, 800, 480, 240, 2.0, (0, 0))),
+            timer_position(capture(200, 800, 480, 240, 2.0, (0, 0)), None),
             (300, 656)
         );
         assert_eq!(
-            timer_position(capture(-1600, 600, 501, 200, 1.5, (-1600, 0))),
+            timer_position(capture(-1600, 600, 501, 200, 1.5, (-1600, 0)), None),
             (-1455, 492)
         );
     }
@@ -178,12 +205,83 @@ mod tests {
     #[test]
     fn clamps_to_the_selected_displays_top_edge() {
         assert_eq!(
-            timer_position(capture(0, -1070, 200, 100, 1.0, (0, -1080))).1,
+            timer_position(capture(0, -1070, 200, 100, 1.0, (0, -1080)), None).1,
             -1060
         );
         assert_eq!(
-            timer_position(capture(0, 1100, 200, 100, 1.0, (0, 1080))).1,
+            timer_position(capture(0, 1100, 200, 100, 1.0, (0, 1080)), None).1,
             1100
+        );
+    }
+
+    #[test]
+    fn keeps_the_countdown_inside_the_selected_display_at_both_edges() {
+        let display = ScreenRect {
+            x: -1200,
+            y: -300,
+            width: 1200,
+            height: 900,
+        };
+        assert_eq!(
+            timer_position(
+                capture(-1200, 100, 10, 100, 1.0, (-1200, -300)),
+                Some(display)
+            )
+            .0,
+            -1200
+        );
+        assert_eq!(
+            timer_position(
+                capture(-10, 100, 10, 100, 1.0, (-1200, -300)),
+                Some(display)
+            )
+            .0,
+            -140
+        );
+        assert_eq!(
+            timer_position(
+                capture(-600, 100, 200, 100, 1.0, (-1200, -300)),
+                Some(display)
+            )
+            .0,
+            -570
+        );
+        assert_eq!(
+            timer_position(capture(-1200, 100, 10, 100, 1.0, (-1200, -300)), None).0,
+            -1200
+        );
+    }
+
+    #[test]
+    fn aligns_to_a_display_narrower_than_the_control() {
+        let display = ScreenRect {
+            x: 100,
+            y: 0,
+            width: 100,
+            height: 400,
+        };
+        assert_eq!(
+            timer_position(capture(145, 100, 10, 100, 1.0, (100, 0)), Some(display)).0,
+            100
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn uses_scaled_control_width_for_display_edges() {
+        let display = ScreenRect {
+            x: -1600,
+            y: 0,
+            width: 1600,
+            height: 900,
+        };
+        assert_eq!(
+            timer_position(capture(-1600, 600, 10, 100, 1.5, (-1600, 0)), Some(display)).0,
+            -1600
+        );
+        assert_eq!(
+            timer_position(capture(-10, 600, 10, 100, 1.5, (-1600, 0)), Some(display)).0,
+            -210
         );
     }
 

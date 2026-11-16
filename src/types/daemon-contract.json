@@ -189,7 +189,7 @@
     },
     "recording-control": {
       "platforms": ["macos", "windows"],
-      "shared": ["listIOSDevices"],
+      "shared": ["listIOSDevices", "setTooltip"],
       "linux": []
     },
     "recording-overlay": {

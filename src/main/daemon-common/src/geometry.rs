@@ -189,6 +189,8 @@ pub struct CaptureAreaRequest {
     pub cached: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_window_ids: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -219,6 +221,7 @@ mod tests {
             path: PathBuf::from("capture.png"),
             cached: true,
             window_id: Some(42),
+            excluded_window_ids: vec![91, 92],
         };
 
         let value = serde_json::to_value(request).expect("serialize request");
@@ -228,9 +231,26 @@ mod tests {
         assert_eq!(value["scaleFactor"], 2.0);
         assert_eq!(value["displayId"], 7);
         assert_eq!(value["windowId"], 42);
+        assert_eq!(value["excludedWindowIds"], serde_json::json!([91, 92]));
         let round_trip: CaptureAreaRequest =
             serde_json::from_value(value).expect("deserialize request");
         assert_eq!(round_trip.window_id, Some(42));
+        assert_eq!(round_trip.excluded_window_ids, vec![91, 92]);
+    }
+
+    #[test]
+    fn capture_area_accepts_legacy_requests_without_exclusions() {
+        let request: CaptureAreaRequest = serde_json::from_value(serde_json::json!({
+            "x": 1, "y": 2, "width": 3, "height": 4, "path": "capture.png"
+        }))
+        .expect("deserialize request");
+        assert!(request.excluded_window_ids.is_empty());
+        assert!(
+            serde_json::to_value(request)
+                .expect("serialize request")
+                .get("excludedWindowIds")
+                .is_none()
+        );
     }
 
     #[test]

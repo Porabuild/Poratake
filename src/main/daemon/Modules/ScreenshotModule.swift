@@ -34,30 +34,109 @@ class ScreenshotModule: Module {
         }
 
         let cached = params?["cached"]?.bool() ?? false
+        if let value = params?["excludedWindowIds"], !(value.value is NSNull), value.array() == nil {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid excluded window ids")
+            return
+        }
+        let rawExcluded = params?["excludedWindowIds"]?.array() ?? []
+        guard rawExcluded.allSatisfy({ value in
+            guard let number = value as? Int, let id = CGWindowID(exactly: number) else { return false }
+            return id != kCGNullWindowID
+        }) else {
+            respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid excluded window ids")
+            return
+        }
+        let excludedWindowIDs = Set(rawExcluded.compactMap { ($0 as? Int).flatMap(CGWindowID.init(exactly:)) })
+        var displayID: CGDirectDisplayID?
+        if let value = params?["displayId"], !(value.value is NSNull) {
+            guard let number = value.value as? Int, let id = CGDirectDisplayID(exactly: number) else {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid display id")
+                return
+            }
+            displayID = id
+        }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let image = (cached ? FrozenFrameStore.crop(to: rect) : nil)
-                ?? CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
-
-            guard let image = image, self.writePng(image, to: path) else {
-                self.respondError(id: requestId, code: "CAPTURE_FAILED", message: "Failed to capture the area")
+            if cached, let image = FrozenFrameStore.crop(to: rect) {
+                self.respondCapture(image, path: path, requestId: requestId)
                 return
             }
-
-            self.respond(id: requestId, result: [
-                "path": path,
-                "width": image.width,
-                "height": image.height
-            ])
+            Task { @MainActor in
+                do {
+                    let image: CGImage? = try await coordinateAreaCapture(
+                        registry: RecordingCaptureWindowRegistry.shared,
+                        excludedWindowIDs: excludedWindowIDs,
+                        unfiltered: {
+                            await withCheckedContinuation { continuation in
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    let image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
+                                    continuation.resume(returning: image)
+                                }
+                            }
+                        },
+                        filtered: { ids in
+                            let displayBounds = NSScreen.screens.compactMap { screen -> CGRect? in
+                                guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+                                return CGDisplayBounds(number.uint32Value)
+                            }
+                            if screenshotNeedsWindowListCapture(rect: rect, displayBounds: displayBounds) {
+                                return try await self.captureAreaUsingWindowList(rect, excluding: ids)
+                            }
+                            guard #available(macOS 14.0, *) else {
+                                throw NSError(domain: "Screenshot", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cannot exclude capture controls on this macOS version"])
+                            }
+                            return try await captureAreaExcludingWindows(rect, displayID: displayID, excludedWindowIDs: ids)
+                        }
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        self.respondCapture(image, path: path, requestId: requestId)
+                    }
+                } catch {
+                    self.respondError(id: requestId, code: "CAPTURE_FAILED", message: error.localizedDescription)
+                }
+            }
         }
+    }
+
+    private func captureAreaUsingWindowList(_ rect: CGRect, excluding excludedWindowIDs: Set<CGWindowID>) async throws -> CGImage {
+        let result: Result<CGImage, Error> = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]],
+                      let ids = screenshotWindowIDs(from: windows, excluding: excludedWindowIDs) else {
+                    continuation.resume(returning: .failure(NSError(domain: "Screenshot", code: 6, userInfo: [NSLocalizedDescriptionKey: "Could not verify the capture window list"])))
+                    return
+                }
+                let numbers = ids.map { NSNumber(value: Int32(bitPattern: $0)) } as CFArray
+                guard let image = CGImage(windowListFromArrayScreenBounds: rect, windowArray: numbers, imageOption: [.bestResolution]) else {
+                    continuation.resume(returning: .failure(NSError(domain: "Screenshot", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to capture the area"])))
+                    return
+                }
+                continuation.resume(returning: .success(image))
+            }
+        }
+        return try result.get()
+    }
+
+    private func respondCapture(_ image: CGImage?, path: String, requestId: String) {
+        guard let image = image, writePng(image, to: path) else {
+            respondError(id: requestId, code: "CAPTURE_FAILED", message: "Failed to capture the area")
+            return
+        }
+        respond(id: requestId, result: ["path": path, "width": image.width, "height": image.height])
     }
 
     private func handleCaptureWindow(params: [String: AnyCodable]?, requestId: String) {
         guard
             let path = params?["path"]?.string(),
-            let windowId = params?["windowId"]?.int()
+            let rawWindowId = params?["windowId"]?.value as? Int,
+            let windowId = CGWindowID(exactly: rawWindowId),
+            windowId != kCGNullWindowID
         else {
             respondError(
                 id: requestId,
@@ -66,6 +145,10 @@ class ScreenshotModule: Module {
             )
             return
         }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -73,7 +156,7 @@ class ScreenshotModule: Module {
             let image = CGWindowListCreateImage(
                 CGRect.null,
                 .optionIncludingWindow,
-                CGWindowID(windowId),
+                windowId,
                 [.bestResolution]
             )
 

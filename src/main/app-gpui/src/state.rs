@@ -14,6 +14,8 @@ use crate::system::native::NativeBridge;
 
 pub struct AppState {
     pub service: CaptureService,
+    #[cfg(all(target_os = "macos", not(test)))]
+    _tooltip_window_close: gpui::Subscription,
 }
 
 impl gpui::Global for AppState {}
@@ -57,7 +59,14 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
 
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
-    cx.set_global(AppState { service });
+    #[cfg(all(target_os = "macos", not(test)))]
+    let tooltip_window_close =
+        crate::system::macos_tooltip::init(cx, service.daemon.clone(), config.clone());
+    cx.set_global(AppState {
+        service,
+        #[cfg(all(target_os = "macos", not(test)))]
+        _tooltip_window_close: tooltip_window_close,
+    });
     cx.set_global(UpdateState::default());
     config
 }
@@ -79,10 +88,17 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
     let daemon = DaemonHandle::with_binary(std::path::PathBuf::new());
     #[cfg(not(test))]
     let daemon = DaemonHandle::new();
-    let service = CaptureService::new(daemon, config);
+    let service = CaptureService::new(daemon, config.clone());
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
-    cx.set_global(AppState { service });
+    #[cfg(all(target_os = "macos", not(test)))]
+    let tooltip_window_close =
+        crate::system::macos_tooltip::init(cx, service.daemon.clone(), config);
+    cx.set_global(AppState {
+        service,
+        #[cfg(all(target_os = "macos", not(test)))]
+        _tooltip_window_close: tooltip_window_close,
+    });
     cx.set_global(UpdateState::default());
 }
 

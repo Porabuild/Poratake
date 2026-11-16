@@ -1,6 +1,7 @@
 import AVFoundation
 import Cocoa
 import Foundation
+import QuartzCore
 
 class CameraPreviewModule: Module {
     let name = DaemonContract.CameraPreview.module
@@ -157,6 +158,7 @@ class CameraPreviewModule: Module {
                     try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
                     throw error
                 }
+                await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
                 guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
                 panel.alphaValue = 1
                 panel.ignoresMouseEvents = false
@@ -225,6 +227,7 @@ class CameraPreviewModule: Module {
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
         }
+        await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
         guard presentationGeneration.isCurrent(generation), self.panel === panel else {
             if self.panel !== panel {
                 panel.orderOut(nil)
@@ -248,6 +251,8 @@ class CameraPreviewModule: Module {
         let panel = self.panel
         self.panel = nil
         self.contentView = nil
+        panel?.alphaValue = 0
+        if panel != nil { CATransaction.flush() }
         contentView?.stopCamera()
         panel?.orderOut(nil)
         if let panel {
@@ -259,17 +264,20 @@ class CameraPreviewModule: Module {
     @MainActor
     private func updatePosition(x: Int, y: Int) {
         guard let panel = panel else { return }
-        let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-        let cocoaY = mainScreenHeight - CGFloat(y) - panel.frame.height
+        let cocoaY = DisplayCoordinates.cocoaY(
+            topLeftY: CGFloat(y), height: panel.frame.height,
+            primaryHeight: DisplayCoordinates.primaryHeight
+        )
         panel.setFrameOrigin(NSPoint(x: CGFloat(x), y: cocoaY))
     }
     
     @MainActor
     private func calculatePosition(x: Int?, y: Int?, width: CGFloat, height: CGFloat) -> NSPoint {
-        let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-        
         if let x = x, let y = y {
-            let cocoaY = mainScreenHeight - CGFloat(y) - height
+            let cocoaY = DisplayCoordinates.cocoaY(
+                topLeftY: CGFloat(y), height: height,
+                primaryHeight: DisplayCoordinates.primaryHeight
+            )
             return NSPoint(x: CGFloat(x), y: cocoaY)
         }
         
@@ -297,14 +305,27 @@ class CameraPreviewModule: Module {
             Task { @MainActor in
                 guard let self = self, let panel = self.panel else { return }
 
-                let mainScreenHeight = NSScreen.main?.frame.height ?? 0
                 let x = Int(panel.frame.origin.x)
-                let y = Int(mainScreenHeight - panel.frame.origin.y - panel.frame.height)
+                let y = Int(DisplayCoordinates.topLeftY(
+                    cocoaY: panel.frame.origin.y, height: panel.frame.height,
+                    primaryHeight: DisplayCoordinates.primaryHeight
+                ))
 
                 self.emit(event: "position-changed", data: ["x": x, "y": y])
             }
         }
     }
+
+    #if RECORDING_OUTLINE_TEST
+    @MainActor
+    func testInstallPanel(_ panel: NSPanel) -> Bool {
+        self.panel = panel
+        return RecordingCaptureWindowRegistry.shared.register(panel) != nil
+    }
+
+    @MainActor
+    func testHidePanel() async { await hidePanel() }
+    #endif
 }
 
 private class CameraPreviewContentView: NSView {

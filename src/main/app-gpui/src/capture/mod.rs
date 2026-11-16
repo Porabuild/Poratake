@@ -247,12 +247,14 @@ impl CaptureService {
         capture: DisplayCapture,
         path: &std::path::Path,
         cached: bool,
+        excluded_window_ids: Vec<i64>,
     ) -> Result<()> {
         self.daemon.screenshot().capture_area(&CaptureAreaRequest {
             capture,
             path: path.to_path_buf(),
             cached,
             window_id: None,
+            excluded_window_ids,
         })
     }
 
@@ -333,11 +335,13 @@ impl CaptureService {
         path: &std::path::Path,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        excluded_window_ids: Vec<i64>,
     ) -> Result<()> {
         let cached = reservation
             .as_ref()
             .is_some_and(CachedCaptureReservation::wait_for_freeze);
-        let result = self.capture_area_to_file_with_options(capture, path, cached);
+        let result =
+            self.capture_area_to_file_with_options(capture, path, cached, excluded_window_ids);
         drop(reservation);
         if let Some(generation) = release_after {
             self.release_screen(generation);
@@ -432,6 +436,7 @@ impl CaptureService {
                 path: path.to_path_buf(),
                 cached: true,
                 window_id: Some(window_id),
+                excluded_window_ids: Vec::new(),
             });
         }
         self.daemon
@@ -1223,6 +1228,7 @@ fn capture_screen_target(target: ScreenTarget, owner: u64, cx: &mut gpui::App) {
         coordinator.capture_area_reserved(
             capture,
             intent::CaptureIntent::Screenshot,
+            Vec::new(),
             None,
             None,
             None,
@@ -1253,6 +1259,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
             coordinator.capture_area_reserved(
                 capture,
                 intent::CaptureIntent::Screenshot,
+                Vec::new(),
                 reservation,
                 None,
                 None,

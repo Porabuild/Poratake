@@ -86,6 +86,8 @@ pub struct RecordingControl {
     camera: bool,
     camera_locked: bool,
     camera_preview_visible: bool,
+    camera_preview_position: Arc<parking_lot::Mutex<Option<(i32, i32)>>>,
+    camera_preview_subscription: Option<crate::daemon::EventSubscription>,
     selected_mic_id: Option<String>,
     selected_camera_id: Option<String>,
     selected_ios_id: Option<String>,
@@ -96,6 +98,8 @@ pub struct RecordingControl {
     pending_device_menu: Option<(DeviceMenuKind, SharedString)>,
     menu: MenuHandle,
     bounds_subscription: Option<Subscription>,
+    #[cfg(target_os = "macos")]
+    activation_subscription: Option<Subscription>,
     started_at: Option<Instant>,
     paused_at: Option<Instant>,
     paused_total: Duration,
@@ -104,9 +108,22 @@ pub struct RecordingControl {
     countdown_active: bool,
     countdown_remaining: Option<u32>,
     measured_width: Option<f32>,
+    #[cfg(all(target_os = "macos", not(test)))]
+    pending_native_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     focus_handle: FocusHandle,
     recorder_error_subscription: Option<crate::daemon::EventSubscription>,
+    recorder_terminal_error: Option<Arc<parking_lot::Mutex<Option<String>>>>,
+    #[cfg(target_os = "macos")]
+    stop_previous_state: Option<recorder::RecorderState>,
+    #[cfg(target_os = "macos")]
+    stop_target_closed: bool,
+    #[cfg(target_os = "macos")]
+    start_target_closed: bool,
+    #[cfg(target_os = "macos")]
+    start_stop_requested: Option<bool>,
     recording_error_generation: u64,
+    #[cfg(target_os = "macos")]
+    pointer_inside: bool,
     #[cfg(any(windows, target_os = "macos"))]
     hovered_tooltip: Option<(&'static str, SharedString)>,
     #[cfg(windows)]
@@ -119,6 +136,21 @@ impl RecordingControl {
     #[cfg(feature = "parity")]
     pub(crate) fn parity_rect(&self) -> ScreenRect {
         self.rect
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_system_audio(&self) -> bool {
+        self.system_audio
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_bar_width(&self) -> Option<f32> {
+        self.measured_width
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_menu_open(&self, cx: &App) -> bool {
+        self.menu.is_present(cx)
     }
 
     #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
@@ -164,7 +196,7 @@ impl RecordingControl {
         };
         let config = config.recording;
         let width = recording_control_width(false, target_name.is_some());
-        let bounds = bar_bounds(cx, rect, width, false, false);
+        let bounds = bar_bounds(cx, rect, width, false, false, false);
         let display = display_for_rect(cx, rect);
         let platform_display_id = display.as_ref().map(|display| display.id());
         let window_bounds = display
@@ -198,6 +230,8 @@ impl RecordingControl {
                         camera: toggles.camera_enabled,
                         camera_locked: false,
                         camera_preview_visible: false,
+                        camera_preview_position: Arc::default(),
+                        camera_preview_subscription: None,
                         selected_mic_id: config.selected_mic_id.clone(),
                         selected_camera_id: config.camera.selected_device_id.clone(),
                         selected_ios_id: config.ios_device.as_ref().map(|device| device.id.clone()),
@@ -211,17 +245,32 @@ impl RecordingControl {
                         pending_device_menu: None,
                         menu: MenuHandle::new(),
                         bounds_subscription: None,
+                        #[cfg(target_os = "macos")]
+                        activation_subscription: None,
                         started_at: None,
                         paused_at: None,
                         paused_total: Duration::ZERO,
                         elapsed: 0,
                         measured_width: None,
+                        #[cfg(all(target_os = "macos", not(test)))]
+                        pending_native_bounds: Default::default(),
                         countdown_generation: 0,
                         countdown_active: false,
                         countdown_remaining: None,
                         focus_handle: cx.focus_handle(),
                         recorder_error_subscription: None,
+                        recorder_terminal_error: None,
+                        #[cfg(target_os = "macos")]
+                        stop_previous_state: None,
+                        #[cfg(target_os = "macos")]
+                        stop_target_closed: false,
+                        #[cfg(target_os = "macos")]
+                        start_target_closed: false,
+                        #[cfg(target_os = "macos")]
+                        start_stop_requested: None,
                         recording_error_generation: 0,
+                        #[cfg(target_os = "macos")]
+                        pointer_inside: false,
                         #[cfg(any(windows, target_os = "macos"))]
                         hovered_tooltip: None,
                         #[cfg(windows)]
@@ -234,6 +283,11 @@ impl RecordingControl {
                             Some(cx.observe_window_bounds(window, |this, window, cx| {
                                 this.open_pending_device_menu(window, cx);
                             }));
+                        #[cfg(target_os = "macos")]
+                        {
+                            this.activation_subscription =
+                                Some(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
+                        }
                         if this.camera {
                             if let Err(error) = this.show_camera_preview(cx) {
                                 this.camera = false;
@@ -344,6 +398,10 @@ impl RecordingControl {
             }
             return;
         }
+        #[cfg(target_os = "macos")]
+        if !self.pointer_inside {
+            return;
+        }
         self.clear_native_tooltip(window);
         self.hovered_tooltip = Some((id, tooltip.clone()));
         #[cfg(target_os = "macos")]
@@ -424,6 +482,19 @@ impl RecordingControl {
                     this.clear_native_tooltip(window);
                 }))
                 .child(child);
+            #[cfg(target_os = "macos")]
+            let trigger = trigger.on_mouse_move(cx.listener(
+                move |this, event: &gpui::MouseMoveEvent, window, cx| {
+                    if event.pressed_button.is_none()
+                        && this
+                            .hovered_tooltip
+                            .as_ref()
+                            .is_none_or(|(current, _)| *current != id)
+                    {
+                        this.hover_native_tooltip(id, tooltip.clone(), true, window, cx);
+                    }
+                },
+            ));
             component
                 .trigger(herogpui::components::TooltipTrigger::Focus)
                 .placement(placement)
@@ -454,6 +525,7 @@ impl RecordingControl {
             cx,
             rect,
             recording_control_width(false, target_name.is_some()),
+            false,
             false,
             false,
         );
@@ -497,7 +569,7 @@ impl RecordingControl {
         false
     }
 
-    fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.countdown_active {
             return;
         }
@@ -545,13 +617,69 @@ impl RecordingControl {
         .detach();
     }
 
+    fn start_failed(
+        &mut self,
+        project: &std::path::Path,
+        error: anyhow::Error,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        eprintln!("[recorder] {error}");
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
+        self.recorder_error_subscription = None;
+        self.recorder_terminal_error = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.start_target_closed = false;
+            self.start_stop_requested = None;
+        }
+        let removed = remove_empty_failed_start_project(project, &error);
+        #[cfg(target_os = "macos")]
+        if self.selected_ios_id.is_some() {
+            crate::capture::overlay::end_recording_handoff(cx);
+        } else {
+            crate::capture::overlay::rollback_recording_handoff(cx);
+        }
+        self.project = None;
+        self.mode = Mode::PreRecording;
+        self.started_at = None;
+        self.paused_at = None;
+        self.paused_total = Duration::ZERO;
+        set_pre_recording_escape(true, cx);
+        self.sync_window_bounds(
+            window,
+            cx,
+            self.pending_device_menu.is_some() || self.menu.is_present(cx),
+        );
+        let message = if removed {
+            error.to_string()
+        } else {
+            format!(
+                "{error} Partial recording files may be available at {}.",
+                project.display()
+            )
+        };
+        crate::windows::toast::Toast::show(cx, "Recording failed", message);
+        crate::intents::refresh_shell(cx);
+        cx.notify();
+    }
+
     fn begin_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let service = crate::state::state(cx);
         let recording = service.config.get().recording;
         let ios_recording = self.selected_ios_id.is_some();
         #[cfg(all(target_os = "macos", not(test)))]
+        let native_window_id = super::macos_window_id(window);
+        #[cfg(all(target_os = "macos", not(test), feature = "parity"))]
+        let native_window_id =
+            if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+                Some(PARITY_RECORDING_CONTROL_WINDOW_ID)
+            } else {
+                native_window_id
+            };
+        #[cfg(all(target_os = "macos", not(test)))]
         let excluded_window_ids = match recording_control_exclusion_ids(
-            recording_control_window_id(window),
+            native_window_id,
             self.window_id.is_some() || ios_recording,
         ) {
             Ok(window_ids) => window_ids,
@@ -614,17 +742,15 @@ impl RecordingControl {
         self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         let error_generation = self.recording_error_generation;
         self.watch_recorder_errors(window, cx, error_generation);
-        if let Err(error) = recorder::start(&service.daemon, &config) {
-            eprintln!("[recorder] {error}");
-            self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
-            self.recorder_error_subscription = None;
-            let _ = std::fs::remove_dir_all(&project);
-            #[cfg(target_os = "macos")]
-            crate::capture::overlay::end_recording_handoff(cx);
-            crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
-            return;
-        }
-        if self.camera && !self.camera_preview_visible {
+        let start = match recorder::start(&service.daemon, &config) {
+            Ok(start) => start,
+            Err(error) => {
+                self.start_failed(&project, error, window, cx);
+                return;
+            }
+        };
+        let started = matches!(&start, crate::daemon::ScreenRecordingStart::Started);
+        if started && self.camera && !self.camera_preview_visible {
             if let Err(error) = self.show_camera_preview(cx) {
                 eprintln!("[recorder] camera-preview show failed: {error}");
             }
@@ -643,7 +769,7 @@ impl RecordingControl {
         self.project = Some(project);
         self.mode = Mode::Recording;
         self.camera_locked = self.camera;
-        self.started_at = Some(cx.background_executor().now());
+        self.started_at = started.then(|| cx.background_executor().now());
         self.paused_at = None;
         self.paused_total = Duration::ZERO;
         self.elapsed = 0;
@@ -653,7 +779,90 @@ impl RecordingControl {
             self.pending_device_menu.is_some() || self.menu.is_present(cx),
         );
         crate::intents::refresh_shell(cx);
-        self.tick(cx);
+        if started {
+            self.tick(cx);
+        }
+        #[cfg(target_os = "macos")]
+        if let crate::daemon::ScreenRecordingStart::Pending(response) = start {
+            let (sender, receiver) = smol::channel::bounded(1);
+            std::thread::spawn(move || {
+                let result = match response.recv() {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(crate::daemon::DaemonRpcError {
+                        code: "DAEMON_UNAVAILABLE".into(),
+                        message: "The recorder disconnected while starting".into(),
+                    }),
+                };
+                let _ = sender.try_send(result);
+            });
+            cx.spawn_in(window, async move |entity, cx| {
+                let Ok(result) = receiver.recv().await else {
+                    return;
+                };
+                let _ = entity.update_in(cx, |this, window, cx| {
+                    if this.recording_error_generation != error_generation
+                        || this.mode != Mode::Recording
+                    {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => {
+                            let requested_stop = this.start_stop_requested.take();
+                            if this.stop_previous_state.is_none() {
+                                let terminal_error = this.recorder_terminal_error.as_ref().and_then(|pending| pending.lock().take());
+                                if let Some(error) = terminal_error {
+                                    this.fail_recording(error, window, cx);
+                                    return;
+                                }
+                            }
+                            if this.stop_previous_state == Some(recorder::RecorderState::Starting) {
+                                this.stop_previous_state = Some(recorder::RecorderState::Recording);
+                            } else {
+                                recorder::confirm_started();
+                            }
+                            this.started_at = Some(cx.background_executor().now());
+                            if this.camera && !this.camera_preview_visible && this.stop_previous_state.is_none() {
+                                if let Err(error) = this.show_camera_preview(cx) {
+                                    eprintln!("[recorder] camera-preview show failed: {error}");
+                                }
+                            }
+                            this.tick(cx);
+                            cx.notify();
+                            if std::mem::take(&mut this.start_target_closed) {
+                                if recorder::state() == recorder::RecorderState::Stopping {
+                                    this.stop_target_closed = true;
+                                } else {
+                                    this.finish(requested_stop.unwrap_or(false), window, cx);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            if error.code != "DAEMON_UNAVAILABLE" {
+                                if let Err(error) = crate::state::state(cx)
+                                    .daemon
+                                    .camera_preview()
+                                    .set_content_protection(false)
+                                {
+                                    eprintln!("[recorder] camera content protection rollback failed: {error}");
+                                }
+                            }
+                            if error.code != "DAEMON_UNAVAILABLE" && this.stop_previous_state.is_none() && this.start_stop_requested.is_none() {
+                                if let Some(project) = this.project.take() {
+                                    recorder::force_idle();
+                                    this.start_failed(&project, anyhow::Error::new(error), window, cx);
+                                    return;
+                                }
+                            }
+                            this.fail_recording(error.to_string(), window, cx);
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = start;
         cx.notify();
     }
 
@@ -762,8 +971,6 @@ impl RecordingControl {
                 report_toggle_failure(cx, &error);
                 return false;
             }
-        } else {
-            self.hide_camera_preview(cx);
         }
         if self.mode == Mode::Recording {
             let result = recorder::set_camera(&crate::state::state(cx).daemon, enabled);
@@ -775,6 +982,9 @@ impl RecordingControl {
                 return false;
             }
         }
+        if !enabled {
+            self.hide_camera_preview(cx);
+        }
         self.camera = enabled;
         self.persist_pre_recording_preference(RecordingPreference::Camera(enabled), cx);
         cx.notify();
@@ -784,9 +994,13 @@ impl RecordingControl {
     fn show_camera_preview(&mut self, cx: &mut App) -> anyhow::Result<()> {
         let service = crate::state::state(cx);
         let camera = service.config.get().recording.camera;
-        let (x, y) = camera
-            .position
-            .map(|position| (position.x as i32, position.y as i32))
+        let saved_position = *self.camera_preview_position.lock();
+        let (x, y) = saved_position
+            .or_else(|| {
+                camera
+                    .position
+                    .map(|position| (position.x as i32, position.y as i32))
+            })
             .unwrap_or_else(|| camera_preview_position(self.rect));
         let device_name = self
             .selected_camera_id
@@ -810,7 +1024,30 @@ impl RecordingControl {
             x: Some(x),
             y: Some(y),
         };
-        service.daemon.camera_preview().show(&request)?;
+        let position = self.camera_preview_position.clone();
+        self.camera_preview_subscription =
+            Some(service.daemon.subscribe(Arc::new(move |event, data| {
+                if event != "camera-preview:position-changed" {
+                    return;
+                }
+                let Some((x, y)) = data
+                    .get("x")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|x| i32::try_from(x).ok())
+                    .zip(
+                        data.get("y")
+                            .and_then(serde_json::Value::as_i64)
+                            .and_then(|y| i32::try_from(y).ok()),
+                    )
+                else {
+                    return;
+                };
+                *position.lock() = Some((x, y));
+            })));
+        if let Err(error) = service.daemon.camera_preview().show(&request) {
+            self.camera_preview_subscription = None;
+            return Err(error);
+        }
         self.camera_preview_visible = true;
         Ok(())
     }
@@ -820,6 +1057,13 @@ impl RecordingControl {
             return;
         }
         self.camera_preview_visible = false;
+        self.camera_preview_subscription = None;
+        let position = if self.mode == Mode::Recording {
+            *self.camera_preview_position.lock()
+        } else {
+            None
+        };
+        self.camera_preview_position = Arc::new(parking_lot::Mutex::new(position));
         if let Err(error) = crate::state::state(cx).daemon.camera_preview().hide() {
             eprintln!("[recorder] camera-preview hide failed: {error}");
         }
@@ -841,11 +1085,17 @@ impl RecordingControl {
             .update(&request)
         {
             eprintln!("[recorder] camera-preview update failed: {error}");
+        } else {
+            *self.camera_preview_position.lock() = Some((x, y));
         }
     }
 
     fn input_toggles(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut toggles = Vec::new();
+        let starting = matches!(
+            recorder::state(),
+            recorder::RecorderState::Starting | recorder::RecorderState::Stopping
+        );
         if self.mode == Mode::PreRecording || self.camera_locked {
             toggles.push(self.device_dropdown(
                 "camera",
@@ -877,9 +1127,14 @@ impl RecordingControl {
                 } else {
                     "Turn system sounds on"
                 },
-                self.countdown_active,
+                self.countdown_active || starting,
                 |this, _window, cx| {
-                    if this.countdown_active {
+                    if this.countdown_active
+                        || matches!(
+                            recorder::state(),
+                            recorder::RecorderState::Starting | recorder::RecorderState::Stopping
+                        )
+                    {
                         return;
                     }
                     let next = !this.system_audio;
@@ -914,14 +1169,17 @@ impl RecordingControl {
         let owner = SharedString::from(format!("recording-{id}"));
         let entity = cx.entity().downgrade();
         let menu_id = owner.clone();
+        let disabled = self.countdown_active
+            || matches!(
+                recorder::state(),
+                recorder::RecorderState::Starting | recorder::RecorderState::Stopping
+            );
         let trigger = herogpui::components::Button::new(owner)
             .aria_label(tooltip)
             .variant(herogpui::Variant::Ghost)
-            .is_disabled(self.countdown_active)
+            .is_disabled(disabled)
             .recipe("overlay-trigger")
-            .when(self.countdown_active, |button| {
-                button.recipe("overlay-disabled")
-            })
+            .when(disabled, |button| button.recipe("overlay-disabled"))
             .when(tinted, |button| button.recipe("overlay-trigger-tinted"))
             .child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
             .child(icon_element("chevron-down", px(12.0)))
@@ -1255,7 +1513,9 @@ impl RecordingControl {
                     }
                 }
             }
-            recorder::RecorderState::Idle => {}
+            recorder::RecorderState::Idle
+            | recorder::RecorderState::Starting
+            | recorder::RecorderState::Stopping => {}
         }
         cx.notify();
     }
@@ -1282,7 +1542,9 @@ impl RecordingControl {
         generation: u64,
     ) {
         let service = crate::state::state(cx);
-        let (error_tx, error_rx) = smol::channel::bounded::<(String, String)>(1);
+        let (error_tx, error_rx) = smol::channel::unbounded::<(String, String)>();
+        let terminal_error = Arc::new(parking_lot::Mutex::new(None));
+        self.recorder_terminal_error = Some(terminal_error.clone());
         self.recorder_error_subscription =
             Some(service.daemon.subscribe(Arc::new(move |event, data| {
                 if event != SCREEN_RECORDER_ERROR_EVENT {
@@ -1298,14 +1560,26 @@ impl RecordingControl {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Recording failed")
                     .to_string();
+                if code != RECORDING_TARGET_CLOSED {
+                    let mut pending = terminal_error.lock();
+                    if pending.is_none() {
+                        *pending = Some(message.clone());
+                    }
+                }
                 let _ = error_tx.try_send((code, message));
             })));
 
         let handle = window.window_handle();
         cx.spawn(async move |_, cx| loop {
-            let Ok((code, message)) = error_rx.recv().await else {
+            let Ok((mut code, mut message)) = error_rx.recv().await else {
                 break;
             };
+            while let Ok((next_code, next_message)) = error_rx.try_recv() {
+                if code == RECORDING_TARGET_CLOSED && next_code != RECORDING_TARGET_CLOSED {
+                    code = next_code;
+                    message = next_message;
+                }
+            }
             let continue_listening = cx.update(|cx| {
                 let Some(handle) = handle.downcast::<Self>() else {
                     return false;
@@ -1317,8 +1591,22 @@ impl RecordingControl {
                         {
                             return false;
                         }
+                        #[cfg(target_os = "macos")]
+                        if recorder::state() == recorder::RecorderState::Starting {
+                            if code == RECORDING_TARGET_CLOSED {
+                                this.start_target_closed = true;
+                            }
+                            return true;
+                        }
                         if code == RECORDING_TARGET_CLOSED {
+                            #[cfg(target_os = "macos")]
+                            if recorder::state() == recorder::RecorderState::Stopping {
+                                this.stop_target_closed = true;
+                                return true;
+                            }
                             !this.finish(false, window, cx)
+                        } else if recorder::state() == recorder::RecorderState::Stopping {
+                            true
                         } else {
                             this.fail_recording(message, window, cx);
                             false
@@ -1333,17 +1621,26 @@ impl RecordingControl {
         .detach();
     }
 
-    /// Port of `handleTerminalRecordingFailure`: the daemon already errored
-    /// out, so the partial project is deleted, the UI torn down and the
-    /// failure surfaced, with no stop call issued.
     fn fail_recording(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
         self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         self.recorder_error_subscription = None;
+        self.recorder_terminal_error = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.stop_previous_state = None;
+            self.stop_target_closed = false;
+            self.start_target_closed = false;
+            self.start_stop_requested = None;
+        }
         self.hide_camera_preview(cx);
         recorder::force_idle();
-        if let Some(project) = self.project.take() {
-            let _ = std::fs::remove_dir_all(&project);
-        }
+        let message = match self.project.take() {
+            Some(project) => format!(
+                "{message} Partial recording files may be available at {}.",
+                project.display()
+            ),
+            None => message,
+        };
         self.started_at = None;
         self.paused_at = None;
         self.paused_total = Duration::ZERO;
@@ -1361,20 +1658,142 @@ impl RecordingControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let duration = self.recording_duration(cx).as_secs_f64();
-        let service = crate::state::state(cx);
-        let stopped = recorder::stop(&service.daemon);
-        if !stopped {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Recording not finalized",
-                "Stop failed. The recording controls remain available so you can retry.",
-            );
+        if recorder::state() == recorder::RecorderState::Stopping {
             return false;
+        }
+        #[cfg(target_os = "macos")]
+        if recorder::state() == recorder::RecorderState::Starting {
+            self.start_stop_requested = Some(discard);
+        }
+        let fallback_duration = self.recording_duration(cx).as_secs_f64();
+        let service = crate::state::state(cx);
+        let result = match recorder::stop(&service.daemon) {
+            Ok(recorder::RecordingStop::Stopped(result)) => result,
+            #[cfg(target_os = "macos")]
+            Ok(recorder::RecordingStop::Pending(response, previous)) => {
+                self.stop_previous_state = Some(previous);
+                self.stop_target_closed = false;
+                let generation = self.recording_error_generation;
+                let (sender, receiver) = smol::channel::bounded(1);
+                std::thread::spawn(move || {
+                    let result = match response.recv() {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::daemon::DaemonRpcError {
+                            code: "DAEMON_UNAVAILABLE".into(),
+                            message: "The recorder disconnected while stopping".into(),
+                        }),
+                    };
+                    let _ = sender.try_send(result);
+                });
+                cx.spawn_in(window, async move |entity, cx| {
+                    let Ok(result) = receiver.recv().await else {
+                        return;
+                    };
+                    let _ = entity.update_in(cx, |this, window, cx| {
+                        if this.recording_error_generation != generation
+                            || this.mode != Mode::Recording
+                        {
+                            return;
+                        }
+                        let previous = this.stop_previous_state.take().unwrap_or(previous);
+                        match result {
+                            Ok(value) => {
+                                recorder::complete_stop(&crate::state::state(cx).daemon);
+                                let result = crate::daemon::recording_stop_info(&value);
+                                this.finish_stopped(discard, result, fallback_duration, window, cx);
+                            }
+                            Err(error) => {
+                                recorder::restore_after_failed_stop(previous);
+                                let target_closed = std::mem::take(&mut this.stop_target_closed);
+                                if !this.stop_failed(
+                                    anyhow::Error::new(error),
+                                    target_closed,
+                                    window,
+                                    cx,
+                                ) && target_closed
+                                {
+                                    this.finish(discard, window, cx);
+                                }
+                            }
+                        }
+                    });
+                })
+                .detach();
+                cx.notify();
+                return false;
+            }
+            Err(error) => return self.stop_failed(error, false, window, cx),
+        };
+        self.finish_stopped(discard, result, fallback_duration, window, cx)
+    }
+
+    fn stop_failed(
+        &mut self,
+        error: anyhow::Error,
+        retry_queued: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        eprintln!("[recorder] stop failed: {error}");
+        let terminal_error = self
+            .recorder_terminal_error
+            .as_ref()
+            .and_then(|pending| pending.lock().take());
+        if let Some(message) = terminal_error {
+            self.fail_recording(message, window, cx);
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        if error
+            .downcast_ref::<crate::daemon::DaemonRpcError>()
+            .is_some_and(|error| {
+                matches!(error.code.as_str(), "CAPTURE_ERROR" | "DAEMON_UNAVAILABLE")
+            })
+        {
+            self.fail_recording(error.to_string(), window, cx);
+            return true;
+        }
+        if retry_queued {
+            return false;
+        }
+        crate::windows::toast::Toast::show(
+            cx,
+            "Recording not finalized",
+            "Stop failed. The recording controls remain available so you can retry.",
+        );
+        cx.notify();
+        false
+    }
+
+    fn finish_stopped(
+        &mut self,
+        discard: bool,
+        result: crate::daemon::ScreenRecordingStopInfo,
+        fallback_duration: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let duration = result.duration.unwrap_or(fallback_duration);
+        let service = crate::state::state(cx);
+        let terminal_error = self
+            .recorder_terminal_error
+            .as_ref()
+            .and_then(|pending| pending.lock().take());
+        if let Some(error) = terminal_error {
+            self.fail_recording(error, window, cx);
+            return true;
         }
         self.hide_camera_preview(cx);
         self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         self.recorder_error_subscription = None;
+        self.recorder_terminal_error = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.stop_previous_state = None;
+            self.stop_target_closed = false;
+            self.start_target_closed = false;
+            self.start_stop_requested = None;
+        }
 
         let project = self.project.take();
         self.started_at = None;
@@ -1392,6 +1811,18 @@ impl RecordingControl {
         if discard {
             let _ = std::fs::remove_dir_all(&project);
             return true;
+        }
+
+        if result.camera_track_missing {
+            cx.defer(|_| {
+                rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("Camera recording unavailable")
+                    .set_description(
+                        "The recording was saved, but the camera video could not be saved.",
+                    )
+                    .show();
+            });
         }
 
         let (history_enabled, max_items, show_preview, recording) = {
@@ -1493,34 +1924,80 @@ impl RecordingControl {
             }
             estimate
         });
+        let keyboard_tooltip = self.keyboard_tooltip_visible(window, cx);
         let bounds = bar_bounds(
             cx,
             self.rect,
             width,
             device_menu_open,
             self.countdown_active,
+            keyboard_tooltip,
         );
         if window.bounds() == bounds {
+            #[cfg(all(target_os = "macos", not(test)))]
+            self.pending_native_bounds.set(None);
             return;
         }
-        #[cfg(all(windows, not(test)))]
-        let reposition = window.bounds().origin != bounds.origin;
-        window.resize(bounds.size);
-        #[cfg(all(windows, not(test)))]
-        if reposition {
-            if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                let scale = window.scale_factor();
-                cx.spawn(async move |_, _| {
-                    crate::system::window_composition::apply_window_origin(
-                        hwnd,
-                        bounds.origin,
-                        scale,
-                    );
-                })
-                .detach();
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            if self.pending_native_bounds.replace(Some(bounds)) == Some(bounds) {
+                return;
+            }
+            let pending = self.pending_native_bounds.clone();
+            window.on_next_frame(move |window, cx| {
+                if pending.get() != Some(bounds) {
+                    return;
+                }
+                pending.set(None);
+                if super::set_macos_window_bounds(window, bounds) {
+                    window.bounds_changed(cx);
+                } else {
+                    window.resize(bounds.size);
+                }
+            });
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            #[cfg(all(windows, not(test)))]
+            let reposition = window.bounds().origin != bounds.origin;
+            window.resize(bounds.size);
+            #[cfg(all(windows, not(test)))]
+            if reposition {
+                if let Some(hwnd) = crate::windows::window_hwnd(window) {
+                    let scale = window.scale_factor();
+                    cx.spawn(async move |_, _| {
+                        crate::system::window_composition::apply_window_origin(
+                            hwnd,
+                            bounds.origin,
+                            scale,
+                        );
+                    })
+                    .detach();
+                }
             }
         }
     }
+
+    fn keyboard_tooltip_visible(&self, window: &Window, cx: &App) -> bool {
+        let active = window.is_window_active();
+        #[cfg(feature = "parity")]
+        let active =
+            active || std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some();
+        cfg!(target_os = "macos")
+            && active
+            && herogpui::extend::focus_visible(cx)
+            && self.focus_handle.contains_focused(window, cx)
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "parity"))]
+pub(crate) const PARITY_RECORDING_CONTROL_WINDOW_ID: i64 = 7103;
+
+fn remove_empty_failed_start_project(project: &std::path::Path, error: &anyhow::Error) -> bool {
+    let definite_failure = error
+        .downcast_ref::<crate::daemon::DaemonRpcError>()
+        .is_some_and(|error| error.code != "DAEMON_UNAVAILABLE");
+    definite_failure && std::fs::remove_dir(project).is_ok()
 }
 
 fn device_menu_placement(owner: impl Into<SharedString>) -> MenuPlacement {
@@ -1608,27 +2085,6 @@ fn exclude_toolbar_from_capture(hwnd: windows::Win32::Foundation::HWND) -> bool 
     unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_ok() }
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
-fn recording_control_window_id(window: &Window) -> Option<i64> {
-    use cocoa::base::nil;
-    use objc::{msg_send, sel, sel_impl};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return None;
-    };
-    unsafe {
-        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
-        let native_window: cocoa::base::id = msg_send![view, window];
-        if native_window == nil {
-            return None;
-        }
-        let number: isize = msg_send![native_window, windowNumber];
-        (number >= 0).then_some(number as i64)
-    }
-}
-
 #[cfg(any(target_os = "macos", test))]
 fn recording_control_exclusion_ids(
     window_id: Option<i64>,
@@ -1643,6 +2099,7 @@ fn recording_control_exclusion_ids(
 }
 
 fn configure_toolbar_window(window: &Window) {
+    super::remove_popup_frame(window);
     #[cfg(all(windows, not(test)))]
     {
         let Some(hwnd) = crate::windows::window_hwnd(window) else {
@@ -1667,8 +2124,6 @@ fn configure_toolbar_window(window: &Window) {
             eprintln!("[recording-control] failed to exclude toolbar from capture");
         }
     }
-    #[cfg(any(not(windows), test))]
-    let _ = window;
 }
 
 fn bar_bounds(
@@ -1677,6 +2132,7 @@ fn bar_bounds(
     width: f32,
     device_menu_open: bool,
     countdown_active: bool,
+    keyboard_tooltip: bool,
 ) -> Bounds<gpui::Pixels> {
     let (work_x, work_y, work_width) = display_for_rect(cx, rect)
         .map(|display| {
@@ -1688,9 +2144,12 @@ fn bar_bounds(
             )
         })
         .unwrap_or((0.0, 0.0, 1920.0));
-    let (bar_x, y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
+    let (bar_x, mut y) = chrome::recording_bar_origin(work_x, work_y, work_width, width);
+    if cfg!(target_os = "macos") && !device_menu_open && !countdown_active && !keyboard_tooltip {
+        y += chrome::RECORDING_BAR_PAD_TOP;
+    }
     let (window_width, bar_offset, height) =
-        control_window_metrics(width, device_menu_open, countdown_active);
+        control_window_metrics(width, device_menu_open, countdown_active, keyboard_tooltip);
     let x = bar_x - bar_offset;
     Bounds {
         origin: gpui::point(px(x), px(y)),
@@ -1734,13 +2193,22 @@ fn control_window_metrics(
     width: f32,
     device_menu_open: bool,
     countdown_active: bool,
+    keyboard_tooltip: bool,
 ) -> (f32, f32, f32) {
-    let window_width = chrome::recording_window_width(width);
+    let compact =
+        cfg!(target_os = "macos") && !device_menu_open && !countdown_active && !keyboard_tooltip;
+    let window_width = if compact {
+        width
+    } else {
+        chrome::recording_window_width(width)
+    };
     let bar_offset = ((window_width - width) / 2.0).round();
     let height = if device_menu_open {
         DEVICE_MENU_WINDOW_HEIGHT
     } else if countdown_active {
         COUNTDOWN_WINDOW_HEIGHT
+    } else if compact {
+        chrome::recording_inner_bar_height()
     } else {
         chrome::RECORDING_WINDOW_HEIGHT
     };
@@ -1798,8 +2266,20 @@ impl Render for RecordingControl {
         }
         let theme = active_theme(cx);
         let paused = recorder::state() == recorder::RecorderState::Paused;
+        let starting = recorder::state() == recorder::RecorderState::Starting;
+        let stopping = recorder::state() == recorder::RecorderState::Stopping;
         let toggles = self.input_toggles(cx);
         let countdown = self.countdown_remaining;
+        let compact = cfg!(target_os = "macos")
+            && !self.countdown_active
+            && self.pending_device_menu.is_none()
+            && !self.menu.is_present(cx)
+            && !self.keyboard_tooltip_visible(window, cx);
+        let top_padding = if compact {
+            0.0
+        } else {
+            chrome::RECORDING_BAR_PAD_TOP
+        };
 
         let mut bar = toolbar::surface(&theme).h(px(chrome::recording_inner_bar_height()));
 
@@ -1810,7 +2290,7 @@ impl Render for RecordingControl {
                 .measured_width
                 .unwrap_or_else(|| recording_control_width(self.mode == Mode::Recording, true));
             let window_width = f32::from(window.bounds().size.width);
-            let (_, bar_offset, _) = control_window_metrics(bar_width, false, false);
+            let bar_offset = ((window_width - bar_width) / 2.0).max(0.0);
             let tooltip_body_width = (window_width
                 - bar_offset
                 - chrome::OVERLAY_BORDER_WIDTH
@@ -1875,6 +2355,7 @@ impl Render for RecordingControl {
                 )),
                 &self.menu,
                 countdown,
+                top_padding,
                 window,
                 cx,
             );
@@ -1891,7 +2372,7 @@ impl Render for RecordingControl {
                 } else {
                     "Pause recording"
                 },
-                false,
+                starting || stopping,
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
@@ -1899,6 +2380,7 @@ impl Render for RecordingControl {
                 "recording-stop",
                 stop_name,
                 toolbar::button("recording-stop", stop_name)
+                    .is_disabled(stopping)
                     .child(toolbar::filled_glyph(theme.destructive, false))
                     .on_press(cx.listener(|this, _, window, cx| {
                         this.finish(false, window, cx);
@@ -1913,7 +2395,13 @@ impl Render for RecordingControl {
                     .font_family(crate::ui::colors::MONO_FONT)
                     .text_size(px(12.0))
                     .text_center()
-                    .child(crate::util::format::format_elapsed(self.elapsed)),
+                    .child(if stopping {
+                        "Stopping".to_string()
+                    } else if starting {
+                        "Starting".to_string()
+                    } else {
+                        crate::util::format::format_elapsed(self.elapsed)
+                    }),
             )
             .child(toolbar::hairline(&theme))
             .children(toggles)
@@ -1922,7 +2410,7 @@ impl Render for RecordingControl {
                 "recording-discard",
                 "trash-2",
                 "Discard recording",
-                false,
+                stopping,
                 |this, window, cx| {
                     this.finish(true, window, cx);
                 },
@@ -1930,6 +2418,7 @@ impl Render for RecordingControl {
             )),
             &self.menu,
             None,
+            top_padding,
             window,
             cx,
         )
@@ -1941,6 +2430,7 @@ fn recording_shell(
     bar: impl IntoElement,
     menu: &MenuHandle,
     countdown: Option<u32>,
+    top_padding: f32,
     window: &mut Window,
     cx: &mut Context<RecordingControl>,
 ) -> impl IntoElement {
@@ -1955,6 +2445,8 @@ fn recording_shell(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                 #[cfg(any(windows, target_os = "macos"))]
                 this.clear_native_tooltip(window);
+                #[cfg(target_os = "macos")]
+                cx.notify();
                 if event.keystroke.key != "escape" {
                     return;
                 }
@@ -1966,7 +2458,10 @@ fn recording_shell(
                 }
             }),
         )
-        .pt(px(chrome::RECORDING_BAR_PAD_TOP))
+        .when(cfg!(target_os = "macos"), |content| {
+            content.capture_any_mouse_down(cx.listener(|_, _, _, cx| cx.notify()))
+        })
+        .pt(px(top_padding))
         .child(div().relative().child(bar).child(width_probe(cx)))
         .when_some(countdown, |el, seconds| {
             el.child(
@@ -2011,12 +2506,168 @@ fn recording_shell(
             )
         })
         .children(menu.render(cx));
+    #[cfg(target_os = "macos")]
+    let content = {
+        let control = cx.entity().downgrade();
+        let pointer_listener = gpui::canvas(
+            |_, _, _| (),
+            move |_, (), window, _| {
+                let entering = control.clone();
+                window.on_mouse_event(move |_: &gpui::MouseMoveEvent, phase, _, cx| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        let _ = entering.update(cx, |this, _| this.pointer_inside = true);
+                    }
+                });
+                let exiting = control.clone();
+                window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        let _ = exiting.update(cx, |this, _| {
+                            this.pointer_inside = false;
+                            this.clear_native_tooltip(window);
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
+        content.relative().child(pointer_listener)
+    };
     crate::ui::window_root::focus_root(content, window, cx)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_start_removes_only_empty_projects_after_definite_rejection() {
+        let root = tempfile::tempdir().unwrap();
+        let rejection = anyhow::Error::new(crate::daemon::DaemonRpcError {
+            code: "START_FAILED".into(),
+            message: "rejected".into(),
+        })
+        .context("start failed");
+        let empty = root.path().join("empty.poratake");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(remove_empty_failed_start_project(&empty, &rejection));
+        assert!(!empty.exists());
+
+        let partial = root.path().join("partial.poratake");
+        std::fs::create_dir(&partial).unwrap();
+        std::fs::write(partial.join("recording.mov"), b"partial").unwrap();
+        assert!(!remove_empty_failed_start_project(&partial, &rejection));
+        assert_eq!(
+            std::fs::read(partial.join("recording.mov")).unwrap(),
+            b"partial"
+        );
+
+        let uncertain = root.path().join("uncertain.poratake");
+        std::fs::create_dir(&uncertain).unwrap();
+        let timeout = anyhow::anyhow!("Request timeout: screen-recorder.start");
+        assert!(!remove_empty_failed_start_project(&uncertain, &timeout));
+        let disconnected = anyhow::Error::new(crate::daemon::DaemonRpcError {
+            code: "DAEMON_UNAVAILABLE".into(),
+            message: "Daemon exited".into(),
+        });
+        assert!(!remove_empty_failed_start_project(
+            &uncertain,
+            &disconnected
+        ));
+        assert!(uncertain.is_dir());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn unfocused_recording_tooltip_clears_on_exit_and_returns_on_reentry(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.recording.system_audio = false;
+            settings.recording.mic_enabled = false;
+            settings.recording.camera.enabled = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+        });
+        let control = cx
+            .update(|cx| registry::handle(RegistryKind::RecordingControl, cx))
+            .unwrap()
+            .downcast::<RecordingControl>()
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(control.into(), cx);
+        visual.settle();
+        let width = visual.update(|window, _| window.bounds().size.width.as_f32());
+        let mut start = None;
+        let mut close = None;
+        let mut system_sound = None;
+        for x in (0..width.ceil() as usize).step_by(2) {
+            let point = gpui::point(px(x as f32), px(26.));
+            visual.simulate_mouse_move(point, None, gpui::Modifiers::none());
+            visual.settle();
+            match crate::windows::scroll_capture::test_native_tooltip().as_deref() {
+                Some("Start recording") => start = Some(point),
+                Some("Close") => close = Some(point),
+                Some("Turn system sounds on") => system_sound = Some(point),
+                _ => {}
+            }
+        }
+        let start = start.expect("start control must be hit-testable");
+        let close = close.expect("close control must be hit-testable");
+        for (point, expected) in [(start, "Start recording"), (close, "Close")] {
+            visual.simulate_mouse_move(point, None, gpui::Modifiers::none());
+            visual.settle();
+            assert_eq!(
+                crate::windows::scroll_capture::test_native_tooltip().as_deref(),
+                Some(expected)
+            );
+            visual.simulate_event(gpui::MouseExitEvent {
+                position: gpui::point(px(width + 1.), px(26.)),
+                pressed_button: None,
+                modifiers: gpui::Modifiers::none(),
+            });
+            visual.settle();
+            assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+            visual.simulate_mouse_move(point, None, gpui::Modifiers::none());
+            visual.settle();
+            assert_eq!(
+                crate::windows::scroll_capture::test_native_tooltip().as_deref(),
+                Some(expected)
+            );
+        }
+        let system_sound = system_sound.expect("system sound control must be hit-testable");
+        for enabled in [true, false] {
+            visual.simulate_click(system_sound, gpui::Modifiers::none());
+            visual.settle();
+            assert_eq!(
+                control
+                    .update(&mut visual, |view, _, _| view.system_audio)
+                    .unwrap(),
+                enabled
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[herogpui::test]
@@ -2657,30 +3308,42 @@ mod tests {
     }
 
     #[test]
-    fn device_menu_window_matches_electron_bounds() {
+    fn recording_window_fits_the_bar_and_expands_for_menus() {
         assert_eq!(
-            control_window_metrics(236.0, false, false),
-            (332.0, 48.0, 52.0)
+            control_window_metrics(236.0, false, false, false),
+            if cfg!(target_os = "macos") {
+                (236.0, 0.0, 44.0)
+            } else {
+                (332.0, 48.0, 52.0)
+            }
         );
         assert_eq!(
-            control_window_metrics(236.0, false, true),
+            control_window_metrics(236.0, false, true, false),
             (332.0, 48.0, 148.0)
         );
         assert_eq!(
-            control_window_metrics(540.0, false, false),
-            (572.0, 16.0, 52.0)
+            control_window_metrics(540.0, false, false, false),
+            if cfg!(target_os = "macos") {
+                (540.0, 0.0, 44.0)
+            } else {
+                (572.0, 16.0, 52.0)
+            }
         );
         assert_eq!(
-            control_window_metrics(236.0, true, false),
+            control_window_metrics(236.0, true, false, false),
             (332.0, 48.0, 300.0)
         );
         assert_eq!(
-            control_window_metrics(400.0, true, false),
+            control_window_metrics(400.0, true, false, false),
             (432.0, 16.0, 300.0)
         );
         assert_eq!(
             (chrome::OVERLAY_TARGET_TRIGGER_WIDTH - DEVICE_DROPDOWN_WIDTH) / 2.0,
             -104.0
+        );
+        assert_eq!(
+            control_window_metrics(236.0, false, false, true),
+            (332.0, 48.0, 52.0)
         );
     }
 
@@ -2706,6 +3369,8 @@ mod tests {
                 camera: false,
                 camera_locked: false,
                 camera_preview_visible: false,
+                camera_preview_position: Arc::default(),
+                camera_preview_subscription: None,
                 selected_mic_id: Some("mic-1".into()),
                 selected_camera_id: None,
                 selected_ios_id: None,
@@ -2724,6 +3389,8 @@ mod tests {
                 pending_device_menu: None,
                 menu: MenuHandle::new(),
                 bounds_subscription: None,
+                #[cfg(target_os = "macos")]
+                activation_subscription: None,
                 started_at: None,
                 paused_at: None,
                 paused_total: Duration::ZERO,
@@ -2734,7 +3401,18 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recorder_terminal_error: None,
+                #[cfg(target_os = "macos")]
+                stop_previous_state: None,
+                #[cfg(target_os = "macos")]
+                stop_target_closed: false,
+                #[cfg(target_os = "macos")]
+                start_target_closed: false,
+                #[cfg(target_os = "macos")]
+                start_stop_requested: None,
                 recording_error_generation: 0,
+                #[cfg(target_os = "macos")]
+                pointer_inside: false,
                 #[cfg(any(windows, target_os = "macos"))]
                 hovered_tooltip: None,
                 #[cfg(windows)]
@@ -2860,6 +3538,8 @@ mod tests {
                 camera: false,
                 camera_locked: false,
                 camera_preview_visible: false,
+                camera_preview_position: Arc::default(),
+                camera_preview_subscription: None,
                 selected_mic_id: None,
                 selected_camera_id: None,
                 selected_ios_id: None,
@@ -2870,6 +3550,8 @@ mod tests {
                 pending_device_menu: None,
                 menu: MenuHandle::new(),
                 bounds_subscription: None,
+                #[cfg(target_os = "macos")]
+                activation_subscription: None,
                 started_at: None,
                 paused_at: None,
                 paused_total: Duration::ZERO,
@@ -2880,7 +3562,18 @@ mod tests {
                 measured_width: None,
                 focus_handle: cx.focus_handle(),
                 recorder_error_subscription: None,
+                recorder_terminal_error: None,
+                #[cfg(target_os = "macos")]
+                stop_previous_state: None,
+                #[cfg(target_os = "macos")]
+                stop_target_closed: false,
+                #[cfg(target_os = "macos")]
+                start_target_closed: false,
+                #[cfg(target_os = "macos")]
+                start_stop_requested: None,
                 recording_error_generation: 0,
+                #[cfg(target_os = "macos")]
+                pointer_inside: false,
                 #[cfg(any(windows, target_os = "macos"))]
                 hovered_tooltip: None,
                 #[cfg(windows)]

@@ -2,6 +2,7 @@ import Cocoa
 import Carbon.HIToolbox
 import Foundation
 import ImageIO
+import QuartzCore
 import UniformTypeIdentifiers
 
 private final class ScrollFinishJob {
@@ -329,6 +330,12 @@ private final class ScrollPreviewSession {
 }
 
 class ScrollCaptureModule: NSObject, Module {
+    private enum FrameCaptureResult {
+        case captured
+        case duplicate
+        case failed
+    }
+
     let name = DaemonContract.ScrollCapture.module
 
     private var captureArea: NSRect = .zero
@@ -352,10 +359,15 @@ class ScrollCaptureModule: NSObject, Module {
     private var testPreviewEncoder: ((CGImage) -> String?)?
     private var testPreviewResponder: ((CGImage, Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
+    private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
+    private var testScheduleAutoScroll: (() -> Void)?
+    private var testCaptureStartResult: ((Bool) -> Void)?
     private var testFinishAlignmentWaitStarted: DispatchSemaphore?
     private var testRetiredPreviewSessions: [ScrollPreviewSession] = []
 #endif
     private var isAutoScrolling = false
+    private var captureGeneration: UInt64 = 0
+    private var excludedWindowIDs: Set<CGWindowID>?
     private var autoScrollTimer: Timer?
     private var cursorMonitorTimer: Timer?
     private var isCursorOutside = false
@@ -475,9 +487,20 @@ class ScrollCaptureModule: NSObject, Module {
         duplicateFrameCount = 0
 
         let topLeftY = mainScreenHeight - cocoaY - CGFloat(height)
+        let session = previewSession
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            guard self.previewSession === session, self.isCapturing, !self.finishRequested else {
+#if SCROLL_CAPTURE_TEST
+                self.testCaptureStartResult?(false)
+#endif
+                self.respondError(id: requestId, code: "NOT_CAPTURING", message: "Scroll capture was cancelled")
+                return
+            }
+#if SCROLL_CAPTURE_TEST
+            self.testCaptureStartResult?(true)
+#endif
             if nativeControls && !self.showCaptureUI() {
                 self.cleanup()
                 self.respondError(
@@ -512,19 +535,40 @@ class ScrollCaptureModule: NSObject, Module {
             autoScrollSpeed = ScrollSpeed(rawValue: speed) ?? autoScrollSpeed
         }
 
+        var exclusions: Set<CGWindowID>?
+        if let value = params?["excludedWindowIds"], !(value.value is NSNull) {
+            guard let ids = value.array(), !ids.isEmpty,
+                  ids.allSatisfy({ ($0 as? Int).flatMap(CGWindowID.init(exactly:)).map { $0 != 0 } ?? false }) else {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid excluded window ids")
+                return
+            }
+            exclusions = Set(ids.compactMap { ($0 as? Int).flatMap(CGWindowID.init(exactly:)) })
+        }
+
+        let generation = captureGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.startAutoScroll()
-            self.respond(id: requestId, result: ["autoScrolling": true])
+            guard generation == self.captureGeneration, self.isCapturing, !self.finishRequested else {
+                self.respondError(id: requestId, code: "NOT_CAPTURING", message: "Not in capture mode")
+                return
+            }
+            guard !self.isAutoScrolling else {
+                self.respond(id: requestId, result: ["autoScrolling": true])
+                return
+            }
+            self.excludedWindowIDs = exclusions
+            if exclusions != nil {
+                self.boundaryWindows.forEach { $0.sharingType = .readOnly }
+                self.controlPanel?.sharingType = .readOnly
+            }
+            let scrolling = self.startAutoScroll()
+            self.respond(id: requestId, result: ["autoScrolling": scrolling])
         }
     }
 
     private func handleStopAutoScroll(requestId: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.stopAutoScroll()
-            self.respond(id: requestId, result: ["autoScrolling": false])
-        }
+        stopAutoScroll()
+        respond(id: requestId, result: ["autoScrolling": false])
     }
 
     private func handleFinish(params: [String: AnyCodable]?, requestId: String) {
@@ -668,7 +712,7 @@ class ScrollCaptureModule: NSObject, Module {
 
         if let result = result {
             if result.stoppedForNoOverlap && !didReportNoOverlap {
-                emitNoOverlap(frameCount: result.frameCount)
+                emitScrollEnded(reason: "no-overlap", frameCount: result.frameCount)
             }
             respondFinish(id: requestId, result: [
                 "success": true,
@@ -713,8 +757,9 @@ class ScrollCaptureModule: NSObject, Module {
         ]
     }
 
-    private func startAutoScroll() {
-        guard !isAutoScrolling else { return }
+    @discardableResult
+    private func startAutoScroll() -> Bool {
+        guard !isAutoScrolling else { return true }
 
         isAutoScrolling = true
         autoButton?.title = "Stop"
@@ -730,18 +775,18 @@ class ScrollCaptureModule: NSObject, Module {
         scrollStepRemainder = -Int32(scrollStepPoints - (stepAmount * scrollStepsPerFrame))
 
         warpCursorToCaptureCenter()
-        captureCurrentFrame()
         startCursorMonitor()
         emitAutoScrollChanged(scrolling: true)
-
-        let interval = autoScrollSpeed.stepInterval
-        autoScrollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.performAutoScrollStep()
+        captureCurrentFrame { [weak self] result in
+            guard let self = self, self.continueAfterCapture(result) else { return }
+            self.scheduleAutoScrollStep()
         }
+        return isAutoScrolling
     }
 
     private func stopAutoScroll() {
         let wasScrolling = isAutoScrolling
+        captureGeneration &+= 1
         isAutoScrolling = false
         isCursorOutside = false
         autoScrollTimer?.invalidate()
@@ -768,19 +813,17 @@ class ScrollCaptureModule: NSObject, Module {
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
 
+        let generation = captureGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self = self, self.isAutoScrolling else { return }
+            self?.captureAfterScroll(generation: generation)
+        }
+    }
 
-            let frameIndex = self.captureCurrentFrame()
+    private func captureAfterScroll(generation: UInt64) {
+        guard generation == captureGeneration, isAutoScrolling else { return }
 
-            if frameIndex == nil {
-                self.stopAutoScroll()
-                self.emit(event: "scroll-ended", data: [
-                    "reason": "duplicate",
-                    "frameCount": self.capturedFrames.count
-                ])
-                return
-            }
+        captureCurrentFrame { [weak self] result in
+            guard let self = self, self.continueAfterCapture(result) else { return }
 
             let estimatedHeight = self.calculateEstimatedHeight()
             if estimatedHeight >= self.maxHeight {
@@ -792,14 +835,26 @@ class ScrollCaptureModule: NSObject, Module {
                 ])
                 return
             }
+            self.scheduleAutoScrollStep()
+        }
+    }
 
-            self.autoScrollTimer = Timer.scheduledTimer(withTimeInterval: self.autoScrollSpeed.stepInterval, repeats: true) { [weak self] _ in
-                self?.performAutoScrollStep()
-            }
+    private func scheduleAutoScrollStep() {
+#if SCROLL_CAPTURE_TEST
+        if let testScheduleAutoScroll {
+            testScheduleAutoScroll()
+            return
+        }
+#endif
+        autoScrollTimer = Timer.scheduledTimer(withTimeInterval: autoScrollSpeed.stepInterval, repeats: true) { [weak self] _ in
+            self?.performAutoScrollStep()
         }
     }
 
     private func warpCursorToCaptureCenter() {
+#if SCROLL_CAPTURE_TEST
+        if testCaptureProvider != nil { return }
+#endif
         let centerX = captureArea.midX
         let centerY = primaryScreenHeight() - captureArea.midY
         CGWarpMouseCursorPosition(CGPoint(x: centerX, y: centerY))
@@ -852,14 +907,60 @@ class ScrollCaptureModule: NSObject, Module {
         }
     }
 
-    @discardableResult
-    private func captureCurrentFrame() -> Int? {
+    private func continueAfterCapture(_ result: FrameCaptureResult) -> Bool {
+        let reason: String
+        switch result {
+        case .captured:
+            return true
+        case .duplicate:
+            reason = "duplicate"
+        case .failed:
+            reason = "capture-error"
+        }
+        stopAutoScroll()
+        emitScrollEnded(reason: reason, frameCount: capturedFrames.count)
+        return false
+    }
+
+    private func captureCurrentFrame(completion: @escaping (FrameCaptureResult) -> Void) {
+#if SCROLL_CAPTURE_TEST
+        if let testCaptureProvider {
+            let generation = captureGeneration
+            testCaptureProvider { [weak self] image in
+                self?.completeExcludedCapture(image, generation: generation, completion: completion)
+            }
+            return
+        }
+#endif
         let captureRect = CGRect(
             x: captureArea.origin.x,
             y: primaryScreenHeight() - captureArea.origin.y - captureArea.height,
             width: captureArea.width,
             height: captureArea.height
         )
+
+        if let excludedWindowIDs = excludedWindowIDs {
+            guard #available(macOS 14.0, *) else {
+                completion(.failed)
+                return
+            }
+            var ids = excludedWindowIDs
+            for window in boundaryWindows + (controlPanel.map { [$0] } ?? []) {
+                guard let id = CGWindowID(exactly: window.windowNumber), id != 0 else {
+                    completion(.failed)
+                    return
+                }
+                ids.insert(id)
+            }
+            let generation = captureGeneration
+            let display = displayId
+            let captureIDs = ids
+            Task { @MainActor [weak self] in
+                let image = try? await captureAreaExcludingWindows(captureRect, displayID: display, excludedWindowIDs: captureIDs, requireAllWindows: true)
+                self?.completeExcludedCapture(image, generation: generation, completion: completion)
+            }
+            return
+        }
 
         CGDisplayHideCursor(displayId)
 
@@ -872,11 +973,21 @@ class ScrollCaptureModule: NSObject, Module {
 
         CGDisplayShowCursor(displayId)
 
-        guard let cgImage = cgImage else {
-            return nil
-        }
+        completion(consumeCapturedImage(cgImage))
+    }
 
-        return appendCapturedFrame(cgImage)
+    private func completeExcludedCapture(
+        _ image: CGImage?,
+        generation: UInt64,
+        completion: (FrameCaptureResult) -> Void
+    ) {
+        guard generation == captureGeneration, isCapturing, isAutoScrolling, !finishRequested else { return }
+        completion(consumeCapturedImage(image))
+    }
+
+    private func consumeCapturedImage(_ image: CGImage?) -> FrameCaptureResult {
+        guard let image = image else { return .failed }
+        return appendCapturedFrame(image) == nil ? .duplicate : .captured
     }
 
     private func appendCapturedFrame(_ cgImage: CGImage) -> Int? {
@@ -1545,6 +1656,9 @@ class ScrollCaptureModule: NSObject, Module {
 
     private func hideCaptureUI() {
         unregisterCaptureHotKeys()
+        boundaryWindows.forEach { $0.alphaValue = 0 }
+        controlPanel?.alphaValue = 0
+        if !boundaryWindows.isEmpty || controlPanel != nil { CATransaction.flush() }
         boundaryWindows.forEach { $0.orderOut(nil) }
         boundaryWindows.removeAll()
         controlPanel?.orderOut(nil)
@@ -1734,6 +1848,7 @@ class ScrollCaptureModule: NSObject, Module {
         cancelBeforeFinish = false
         cancelEventEmitted = false
         noOverlapReported = false
+        excludedWindowIDs = nil
     }
 
     private func updatePreviewImage() {
@@ -1817,7 +1932,7 @@ class ScrollCaptureModule: NSObject, Module {
                 }
                 self.stopAutoScroll()
                 self.noOverlapReported = true
-                self.emitNoOverlap(frameCount: acceptedFrameCount)
+                self.emitScrollEnded(reason: "no-overlap", frameCount: acceptedFrameCount)
             },
             compose: { [weak self] frames, alignments, isCancelled in
                 self?.composeFrames(frames: frames, alignments: alignments, isCancelled: isCancelled)
@@ -1838,8 +1953,8 @@ class ScrollCaptureModule: NSObject, Module {
         emit(event: "auto-scroll", data: ["scrolling": scrolling])
     }
 
-    private func emitNoOverlap(frameCount: Int) {
-        let data: [String: Any] = ["reason": "no-overlap", "frameCount": frameCount]
+    private func emitScrollEnded(reason: String, frameCount: Int) {
+        let data: [String: Any] = ["reason": reason, "frameCount": frameCount]
 #if SCROLL_CAPTURE_TEST
         if let testScrollEndedResponder {
             testScrollEndedResponder(data)
@@ -1906,6 +2021,77 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     #if SCROLL_CAPTURE_TEST
+    func testShowCaptureUI(rect: NSRect) -> [NSWindow] {
+        captureArea = rect
+        showBoundaryFrame()
+        let panel = NSPanel(contentRect: NSRect(x: rect.minX, y: rect.maxY + 8, width: 80, height: 30),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.orderFrontRegardless()
+        controlPanel = panel
+        return boundaryWindows + [panel]
+    }
+
+    func testHideCaptureUI() { hideCaptureUI() }
+
+    func testEnqueueCaptureStart(width: Int, height: Int) {
+        handleStart(params: [
+            "x": AnyCodable(0), "y": AnyCodable(0),
+            "width": AnyCodable(width), "height": AnyCodable(height)
+        ], requestId: "stale-scroll-start")
+    }
+
+    func testCancelCapture() {
+        handleCancel(requestId: "cancel-stale-scroll-start")
+    }
+
+    func testSetCaptureStartResult(_ responder: @escaping (Bool) -> Void) {
+        testCaptureStartResult = responder
+    }
+
+    func testEnqueueAutoScrollStart() {
+        handleStartAutoScroll(params: nil, requestId: "stale-auto-scroll-start")
+    }
+
+    func testEnqueueAutoScrollStop() {
+        handleStopAutoScroll(requestId: "stale-auto-scroll-stop")
+    }
+
+    func testSetCaptureProvider(_ provider: @escaping (@escaping (CGImage?) -> Void) -> Void) {
+        testCaptureProvider = provider
+    }
+
+    func testSetScheduleAutoScroll(_ schedule: @escaping () -> Void) {
+        testScheduleAutoScroll = schedule
+    }
+
+    func testCaptureAfterScroll(generation: UInt64) {
+        captureAfterScroll(generation: generation)
+    }
+
+    func testCaptureGeneration() -> UInt64 {
+        captureGeneration
+    }
+
+    func testStopAutoScroll() {
+        stopAutoScroll()
+    }
+
+    func testResumeAutoScroll() {
+        isAutoScrolling = true
+    }
+
+    func testCompleteExcludedCapture(_ image: CGImage?, generation: UInt64) -> Bool? {
+        var result: Bool?
+        completeExcludedCapture(image, generation: generation) {
+            result = continueAfterCapture($0)
+        }
+        return result
+    }
+
+    func testConsumeCaptureImage(_ image: CGImage?) -> Bool {
+        continueAfterCapture(consumeCapturedImage(image))
+    }
+
     func testRepeatedFrame(_ image: CGImage) -> (Int, [Int?], Int, Int?, Bool) {
         let params = [
             "x": AnyCodable(0), "y": AnyCodable(0),

@@ -36,6 +36,7 @@ const mockPrepareCapturePreview = vi.fn();
 const mockDisposeCapturePreview = vi.fn();
 const mockAddToHistory = vi.fn();
 const mockShowRecordingError = vi.fn();
+const mockShowCameraRecordingWarning = vi.fn();
 const mockCheckMic = vi.fn();
 const mockDeleteVideo = vi.fn();
 const mockGetConfig = vi.fn();
@@ -124,6 +125,7 @@ vi.mock('@/main/history', () => ({
 
 vi.mock('@/main/capture/video/permissions.ts', () => ({
   showRecordingError: (...a: unknown[]) => mockShowRecordingError(...a),
+  showCameraRecordingWarning: () => mockShowCameraRecordingWarning(),
   checkAndRequestMicrophonePermission: () => mockCheckMic(),
 }));
 
@@ -161,6 +163,7 @@ describe('recording-actions', () => {
     mockEnableCameraProtection.mockResolvedValue(undefined);
     mockDisableCameraProtection.mockResolvedValue(undefined);
     mockHideRecordingControl.mockResolvedValue(undefined);
+    mockShowCameraRecordingWarning.mockResolvedValue(undefined);
     mockStopRecording.mockResolvedValue({
       outputPath: '/p/Rec.poratake/recording.mov',
       duration: 18,
@@ -197,6 +200,20 @@ describe('recording-actions', () => {
       );
       expect(mockCreateVideoEditorWindow).not.toHaveBeenCalled();
       expect(result).toBe('/p/Rec.poratake/recording.mov');
+      expect(mockShowCameraRecordingWarning).not.toHaveBeenCalled();
+    });
+
+    it('warns after preserving a recording with no camera track', async () => {
+      mockStopRecording.mockResolvedValue({
+        outputPath: '/p/Rec.poratake/recording.mov',
+        duration: 18,
+        cameraTrackMissing: true,
+      });
+      const m = await import('@/main/capture/video/recording-actions');
+      const result = await m.stopRecordingAction();
+      expect(result).toBe('/p/Rec.poratake/recording.mov');
+      expect(mockAddToHistory).toHaveBeenCalledTimes(1);
+      expect(mockShowCameraRecordingWarning).toHaveBeenCalledTimes(1);
     });
 
     it('returns null when stop returns no path', async () => {
@@ -434,7 +451,7 @@ describe('recording-actions', () => {
       });
     });
 
-    it('cleans up even on stop error', async () => {
+    it('reports the retained recording path after a stop error', async () => {
       mockGetConfig.mockReturnValue({
         recording: { iosDevice: null, showPreview: true, camera: null },
       });
@@ -450,10 +467,18 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
 
       await m.startPendingRecording();
+      mockGetCurrentRecordingPath.mockReturnValue(
+        '/p/Rec.poratake/recording.mov'
+      );
       mockStopRecording.mockRejectedValue(new Error('boom'));
-      await expect(m.stopRecordingAction()).rejects.toThrow('boom');
+      await expect(m.stopRecordingAction()).resolves.toBeNull();
 
       expect(mockHideRecordingControl).toHaveBeenCalled();
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
+      expect(mockShowRecordingError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'boom' }),
+        '/p/Rec.poratake/recording.mov'
+      );
       expect(dispose).toHaveBeenCalledTimes(1);
     });
   });
@@ -1153,7 +1178,7 @@ describe('recording-actions', () => {
       expect(mockStartRecordingWithConfig).toHaveBeenCalledTimes(2);
     });
 
-    it('wires post-start recording failure cleanup', async () => {
+    it('retains the project and reports its path after a recording failure', async () => {
       mockGetConfig.mockReturnValue({
         recording: { iosDevice: null, showPreview: true, camera: null },
       });
@@ -1181,15 +1206,10 @@ describe('recording-actions', () => {
       expect(mockDisableCameraProtection).toHaveBeenCalled();
       expect(mockHideRecordingControl).toHaveBeenCalled();
       expect(mockHideCameraPreview).toHaveBeenCalled();
-      expect(mockDeleteVideo).toHaveBeenCalledWith(
-        '/p/Rec.poratake/recording.mov',
-        {
-          showNotification: false,
-          showErrorDialog: false,
-        }
-      );
+      expect(mockDeleteVideo).not.toHaveBeenCalled();
       expect(mockShowRecordingError).toHaveBeenCalledWith(
-        expect.objectContaining({ message: 'capture failed' })
+        expect.objectContaining({ message: 'capture failed' }),
+        '/p/Rec.poratake/recording.mov'
       );
       expect(dispose).toHaveBeenCalledTimes(1);
     });
@@ -1282,6 +1302,21 @@ describe('recording-actions', () => {
   });
 
   describe('deleteRecordingAction', () => {
+    it('does not warn about a discarded camera track', async () => {
+      mockStopRecording.mockResolvedValue({
+        outputPath: '/p/Rec.poratake/recording.mov',
+        duration: 18,
+        cameraTrackMissing: true,
+      });
+      mockGetCurrentRecordingPath.mockReturnValue(
+        '/p/Rec.poratake/recording.mov'
+      );
+      const m = await import('@/main/capture/video/recording-actions');
+      await m.deleteRecordingAction();
+      expect(mockDeleteVideo).toHaveBeenCalled();
+      expect(mockShowCameraRecordingWarning).not.toHaveBeenCalled();
+    });
+
     it('disposes the recording preview preparation', async () => {
       mockGetConfig.mockReturnValue({
         recording: { iosDevice: null, showPreview: true, camera: null },

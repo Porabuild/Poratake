@@ -17,6 +17,8 @@ final class RecordingCaptureWindowRegistry {
     private var refreshWaiters: [CheckedContinuation<Void, Error>] = []
     private var captureStartInProgress = false
     private var captureStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activeScreenshots = 0
+    private var screenshotWaiters: [CheckedContinuation<Void, Never>] = []
     #if SCROLL_CAPTURE_TEST
     var testOnRefreshCleared: (@MainActor () async -> Void)?
     #endif
@@ -50,6 +52,26 @@ final class RecordingCaptureWindowRegistry {
 
     func currentWindowIDs() -> [CGWindowID] {
         return windowIDs.sorted()
+    }
+
+    func beginScreenshot() -> Set<CGWindowID> {
+        activeScreenshots += 1
+        return windowIDs
+    }
+
+    func finishScreenshot() {
+        precondition(activeScreenshots > 0)
+        activeScreenshots -= 1
+        guard activeScreenshots == 0 else { return }
+        let waiters = screenshotWaiters
+        screenshotWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func waitForScreenshots() async {
+        while activeScreenshots > 0 {
+            await withCheckedContinuation { screenshotWaiters.append($0) }
+        }
     }
 
     func setFilterUpdater(_ updater: FilterUpdater?) {
@@ -157,6 +179,10 @@ final class RecordingCaptureWindowRegistry {
 
     var testPendingCaptureStartWaiterCount: Int {
         captureStartWaiters.count
+    }
+
+    var testPendingScreenshotWaiterCount: Int {
+        screenshotWaiters.count
     }
     #endif
 }
@@ -274,10 +300,11 @@ final class RecorderStopCoordinator {
     @MainActor private var task: Task<RecordingResult, Error>?
     #if SCROLL_CAPTURE_TEST
     @MainActor private(set) var testWaiterCount = 0
+    @MainActor private(set) var testWaitingForStart = false
     #endif
 
     @MainActor
-    func stop(sessionID: RecorderSessionID, operation: @escaping Operation) async throws -> RecordingResult {
+    func stop(sessionID: RecorderSessionID, startup: Task<Void, Never>? = nil, operation: @escaping Operation) async throws -> RecordingResult {
         if let task {
             guard self.sessionID == sessionID else {
                 throw RecorderStopCoordinatorError.differentSessionIsStopping
@@ -291,6 +318,15 @@ final class RecorderStopCoordinator {
 
         let task = Task { @MainActor in
             do {
+                if let startup = startup {
+                    #if SCROLL_CAPTURE_TEST
+                    self.testWaitingForStart = true
+                    #endif
+                    await startup.value
+                    #if SCROLL_CAPTURE_TEST
+                    self.testWaitingForStart = false
+                    #endif
+                }
                 let result = try await operation()
                 self.clear(sessionID: sessionID)
                 return result
@@ -440,6 +476,7 @@ struct RecordingResult: Sendable {
     let outputPath: String
     let cursorPath: String?
     let cameraPath: String?
+    let cameraTrackMissing: Bool
     let keysPath: String?
     let systemAudioPath: String?
     let micAudioPath: String?

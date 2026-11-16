@@ -186,6 +186,11 @@ impl DaemonHandle {
         self.inner.dispatch_event(event, &Value::Null);
     }
 
+    #[cfg(feature = "parity")]
+    pub(crate) fn emit_parity_event(&self, event: &str, data: &Value) {
+        self.inner.dispatch_event(event, data);
+    }
+
     fn insert_event_handler(&self, handler: EventHandler) -> u64 {
         let id = self
             .inner
@@ -709,10 +714,62 @@ pub struct ScreenRecorderClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+pub enum ScreenRecordingStart {
+    Started,
+    #[cfg(target_os = "macos")]
+    Pending(Receiver<std::result::Result<Value, DaemonRpcError>>),
+}
+
+pub enum ScreenRecordingStop {
+    Stopped(ScreenRecordingStopInfo),
+    #[cfg(target_os = "macos")]
+    Pending(Receiver<std::result::Result<Value, DaemonRpcError>>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScreenRecordingStopInfo {
+    pub duration: Option<f64>,
+    pub camera_track_missing: bool,
+}
+
+pub(crate) fn recording_stop_info(response: &Value) -> ScreenRecordingStopInfo {
+    ScreenRecordingStopInfo {
+        duration: recording_stop_duration(response),
+        camera_track_missing: response.get("cameraTrackMissing").and_then(Value::as_bool)
+            == Some(true),
+    }
+}
+
+pub(crate) fn recording_stop_duration(response: &Value) -> Option<f64> {
+    response
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
 impl ScreenRecorderClient<'_> {
-    pub fn start(&self, request: &ScreenRecorderStartRequest) -> Result<()> {
+    pub fn start(&self, request: &ScreenRecorderStartRequest) -> Result<ScreenRecordingStart> {
         request.validate().map_err(anyhow::Error::msg)?;
         self.daemon.ensure_running()?;
+        #[cfg(target_os = "macos")]
+        {
+            let (_, response) = self.daemon.begin_call(
+                SCREEN_RECORDER_MODULE,
+                ScreenRecorderMethod::Start.id(),
+                Some(serde_json::to_value(request)?),
+            )?;
+            match response.try_recv() {
+                Ok(Ok(_)) => Ok(ScreenRecordingStart::Started),
+                Ok(Err(error)) => Err(anyhow::Error::new(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    Ok(ScreenRecordingStart::Pending(response))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow!("Request dropped: {SCREEN_RECORDER_MODULE}.start"))
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         self.daemon
             .call_with_timeout(
                 SCREEN_RECORDER_MODULE,
@@ -720,7 +777,7 @@ impl ScreenRecorderClient<'_> {
                 Some(serde_json::to_value(request)?),
                 Duration::from_secs(60),
             )
-            .map(|_| ())
+            .map(|_| ScreenRecordingStart::Started)
     }
 
     pub fn pause(&self) -> Result<()> {
@@ -731,7 +788,26 @@ impl ScreenRecorderClient<'_> {
         self.call(ScreenRecorderMethod::Resume, None)
     }
 
-    pub fn stop(&self) -> Result<()> {
+    pub fn stop(&self) -> Result<ScreenRecordingStop> {
+        #[cfg(target_os = "macos")]
+        {
+            let (_, response) = self.daemon.begin_call(
+                SCREEN_RECORDER_MODULE,
+                ScreenRecorderMethod::Stop.id(),
+                None,
+            )?;
+            match response.try_recv() {
+                Ok(Ok(value)) => Ok(ScreenRecordingStop::Stopped(recording_stop_info(&value))),
+                Ok(Err(error)) => Err(anyhow::Error::new(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    Ok(ScreenRecordingStop::Pending(response))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow!("Request dropped: {SCREEN_RECORDER_MODULE}.stop"))
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         self.daemon
             .call_with_timeout(
                 SCREEN_RECORDER_MODULE,
@@ -739,7 +815,7 @@ impl ScreenRecorderClient<'_> {
                 None,
                 Duration::from_secs(60),
             )
-            .map(|_| ())
+            .map(|response| ScreenRecordingStop::Stopped(recording_stop_info(&response)))
     }
 
     pub fn set_microphone(&self, request: ScreenRecorderMicrophoneRequest) -> Result<()> {
@@ -779,23 +855,23 @@ pub struct ScrollCaptureClient<'a> {
 
 #[cfg(test)]
 thread_local! {
-    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<ScrollCaptureMethod>>>> = std::cell::RefCell::default();
+    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<(ScrollCaptureMethod, Vec<i64>)>>>> = std::cell::RefCell::default();
 }
 
 #[cfg(test)]
 pub(crate) fn capture_auto_scroll_for_test(
-) -> std::rc::Rc<std::cell::RefCell<Vec<ScrollCaptureMethod>>> {
+) -> std::rc::Rc<std::cell::RefCell<Vec<(ScrollCaptureMethod, Vec<i64>)>>> {
     let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     TEST_AUTO_SCROLL_CALLS.with_borrow_mut(|capture| *capture = std::rc::Rc::downgrade(&calls));
     calls
 }
 
 #[cfg(test)]
-fn record_auto_scroll_for_test(method: ScrollCaptureMethod) -> bool {
+fn record_auto_scroll_for_test(method: ScrollCaptureMethod, ids: &[i64]) -> bool {
     let Some(calls) = TEST_AUTO_SCROLL_CALLS.with_borrow(|capture| capture.upgrade()) else {
         return false;
     };
-    calls.borrow_mut().push(method);
+    calls.borrow_mut().push((method, ids.to_vec()));
     true
 }
 
@@ -847,17 +923,19 @@ impl ScrollCaptureClient<'_> {
     }
 
     #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
-    pub fn start_auto_scroll(&self) -> Result<()> {
+    pub fn start_auto_scroll(&self, excluded_window_ids: &[i64]) -> Result<()> {
         #[cfg(test)]
-        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll) {
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll, excluded_window_ids) {
             return Ok(());
         }
         self.daemon.ensure_running()?;
+        let params = (!excluded_window_ids.is_empty())
+            .then(|| serde_json::json!({ "excludedWindowIds": excluded_window_ids }));
         self.daemon
             .call(
                 SCROLL_CAPTURE_MODULE,
                 ScrollCaptureMethod::StartAutoScroll.id(),
-                None,
+                params,
             )
             .map(|_| ())
     }
@@ -865,7 +943,7 @@ impl ScrollCaptureClient<'_> {
     #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
         #[cfg(test)]
-        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll) {
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll, &[]) {
             return Ok(());
         }
         self.daemon.ensure_running()?;
@@ -880,6 +958,27 @@ impl ScrollCaptureClient<'_> {
 }
 
 impl RecordingControlClient<'_> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    pub fn set_tooltip(
+        &self,
+        owner: u32,
+        sequence: u64,
+        text: Option<&str>,
+        dark: bool,
+    ) -> Result<()> {
+        if text.is_none() && !self.daemon.is_running() {
+            return Ok(());
+        }
+        self.daemon.ensure_running()?;
+        self.daemon
+            .call(
+                RECORDING_CONTROL_MODULE,
+                RecordingControlMethod::SetTooltip.id(),
+                Some(json!({ "ownerId": owner, "sequence": sequence, "text": text, "dark": dark })),
+            )
+            .map(|_| ())
+    }
+
     pub fn list_ios_devices(&self) -> Result<Vec<MediaDevice>> {
         self.daemon.ensure_running()?;
         let response = self.daemon.call(
@@ -1170,6 +1269,41 @@ impl DaemonInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_stop_duration_accepts_only_positive_media_durations() {
+        assert_eq!(
+            recording_stop_duration(&serde_json::json!({"duration": 2.0})),
+            Some(2.0)
+        );
+        for response in [
+            serde_json::json!({}),
+            serde_json::json!({"duration": null}),
+            serde_json::json!({"duration": 0}),
+            serde_json::json!({"duration": -1}),
+            serde_json::json!({"duration": "2"}),
+        ] {
+            assert_eq!(recording_stop_duration(&response), None);
+        }
+    }
+
+    #[test]
+    fn recording_stop_info_preserves_camera_track_warning() {
+        assert_eq!(
+            recording_stop_info(&serde_json::json!({"duration": 2.0, "cameraTrackMissing": true})),
+            ScreenRecordingStopInfo {
+                duration: Some(2.0),
+                camera_track_missing: true
+            }
+        );
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"cameraTrackMissing": false}),
+            serde_json::json!({"cameraTrackMissing": "true"}),
+        ] {
+            assert!(!recording_stop_info(&value).camera_track_missing);
+        }
+    }
 
     #[test]
     fn scoped_event_subscriptions_are_removed_when_dropped() {

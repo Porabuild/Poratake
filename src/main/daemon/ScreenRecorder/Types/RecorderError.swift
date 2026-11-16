@@ -1,4 +1,5 @@
 import Foundation
+import ScreenCaptureKit
 
 enum RecorderError: LocalizedError {
     case invalidState(String)
@@ -6,6 +7,16 @@ enum RecorderError: LocalizedError {
     case capture(String)
     case notRecording
     case alreadyRecording
+    case targetClosed
+
+    static func streamFailure(_ error: Error, capturingWindow: Bool) -> Error {
+        let nativeError = error as NSError
+        guard capturingWindow,
+              nativeError.domain == SCStreamErrorDomain,
+              nativeError.code == SCStreamError.Code.noCaptureSource.rawValue
+        else { return error }
+        return RecorderError.targetClosed
+    }
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +25,7 @@ enum RecorderError: LocalizedError {
         case .capture(let msg): return msg
         case .notRecording: return "Not currently recording"
         case .alreadyRecording: return "Already recording"
+        case .targetClosed: return "The recorded window was closed"
         }
     }
     
@@ -24,6 +36,7 @@ enum RecorderError: LocalizedError {
         case .capture: return "CAPTURE_ERROR"
         case .notRecording: return "NOT_RECORDING"
         case .alreadyRecording: return "ALREADY_RECORDING"
+        case .targetClosed: return "TARGET_CLOSED"
         }
     }
 }

@@ -12,6 +12,7 @@ let borrowedOverlay: MockBrowserWindow;
 class MockBrowserWindow {
   static nextId = 1;
 
+  sourceId = MockBrowserWindow.nextId++;
   options: Electron.BrowserWindowConstructorOptions;
   handlers: Record<string, Array<(...args: unknown[]) => void>> = {};
   destroyed = false;
@@ -41,6 +42,7 @@ class MockBrowserWindow {
   });
   isDestroyed = vi.fn(() => this.destroyed);
   isVisible = vi.fn(() => this.visible);
+  getMediaSourceId = vi.fn(() => `window:${this.sourceId}:0`);
   on = vi.fn((event: string, handler: (...args: unknown[]) => void) => {
     this.handlers[event] ??= [];
     this.handlers[event].push(handler);
@@ -229,5 +231,30 @@ describe('scroll capture window', () => {
       expect.objectContaining({ preview: null, frameCount: 0 })
     );
     expect(mockConcealOverlayHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns both live macOS window IDs and rejects missing or invalid IDs', async () => {
+    const captureWindow =
+      await import('@/main/capture/scroll-capture/scroll-capture-window');
+    expect(captureWindow.getScrollCaptureExclusionWindowIds()).toBeNull();
+    captureWindow.showScrollCaptureOverlay(
+      {
+        displayId: 7,
+        area: { x: 100, y: 100, width: 400, height: 300, displayId: 7 },
+      },
+      vi.fn()
+    );
+    expect(captureWindow.getScrollCaptureExclusionWindowIds()).toEqual([
+      borrowedOverlay.sourceId,
+      windows[0].sourceId,
+    ]);
+    windows[0].getMediaSourceId.mockReturnValueOnce('window:0:0');
+    expect(captureWindow.getScrollCaptureExclusionWindowIds()).toBeNull();
+    windows[0].getMediaSourceId.mockImplementationOnce(() => {
+      throw new Error('window closed');
+    });
+    expect(captureWindow.getScrollCaptureExclusionWindowIds()).toBeNull();
+    borrowedOverlay.destroy();
+    expect(captureWindow.getScrollCaptureExclusionWindowIds()).toBeNull();
   });
 });

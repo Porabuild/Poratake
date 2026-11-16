@@ -15,6 +15,8 @@ use crate::video::project::PROJECT_EXTENSION;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecorderState {
     Idle,
+    Starting,
+    Stopping,
     Recording,
     Paused,
 }
@@ -25,6 +27,8 @@ fn store_state(state: RecorderState) {
     STATE.store(
         match state {
             RecorderState::Idle => 0,
+            RecorderState::Starting => 3,
+            RecorderState::Stopping => 4,
             RecorderState::Recording => 1,
             RecorderState::Paused => 2,
         },
@@ -36,6 +40,8 @@ pub fn state() -> RecorderState {
     match STATE.load(Ordering::SeqCst) {
         1 => RecorderState::Recording,
         2 => RecorderState::Paused,
+        3 => RecorderState::Starting,
+        4 => RecorderState::Stopping,
         _ => RecorderState::Idle,
     }
 }
@@ -121,31 +127,55 @@ pub fn create_project(store: &ConfigStore) -> std::io::Result<PathBuf> {
 
     let mut path = directory.join(&generated);
     let mut suffix = 2;
-    while path.exists() {
-        path = directory.join(format!("{stem} {suffix}{PROJECT_EXTENSION}"));
-        suffix += 1;
+    loop {
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                path = directory.join(format!("{stem} {suffix}{PROJECT_EXTENSION}"));
+                suffix += 1;
+            }
+            Err(error) => return Err(error),
+        }
     }
-    std::fs::create_dir_all(&path)?;
-    Ok(path)
 }
 
-pub fn start(daemon: &DaemonHandle, config: &RecordingConfig) -> anyhow::Result<()> {
+pub fn start(
+    daemon: &DaemonHandle,
+    config: &RecordingConfig,
+) -> anyhow::Result<crate::daemon::ScreenRecordingStart> {
     if is_recording() {
         anyhow::bail!("a recording is already active");
     }
     let request = start_request(config);
-
-    daemon
-        .screen_recorder()
-        .start(&request)
-        .map_err(|error| anyhow::anyhow!("screen-recorder start failed: {error}"))?;
-    if config.camera_enabled {
-        if let Err(error) = set_camera_content_protection(daemon, true) {
-            eprintln!("[recorder] camera content protection failed: {error}");
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Err(error) = set_camera_content_protection(daemon, true) {
+        if let Err(rollback_error) = set_camera_content_protection(daemon, false) {
+            eprintln!("[recorder] camera content protection rollback failed: {rollback_error}");
         }
+        return Err(error.context("camera preview protection failed"));
     }
-    store_state(RecorderState::Recording);
-    Ok(())
+    let result = match daemon.screen_recorder().start(&request) {
+        Ok(result) => result,
+        Err(error) => {
+            #[cfg(any(windows, target_os = "macos"))]
+            if let Err(error) = set_camera_content_protection(daemon, false) {
+                eprintln!("[recorder] camera content protection rollback failed: {error}");
+            }
+            let context = format!("screen-recorder start failed: {error}");
+            return Err(error.context(context));
+        }
+    };
+    match &result {
+        crate::daemon::ScreenRecordingStart::Started => store_state(RecorderState::Recording),
+        #[cfg(target_os = "macos")]
+        crate::daemon::ScreenRecordingStart::Pending(_) => store_state(RecorderState::Starting),
+    }
+    Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+pub fn confirm_started() {
+    let _ = STATE.compare_exchange(3, 1, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 fn start_request(config: &RecordingConfig) -> ScreenRecorderStartRequest {
@@ -192,23 +222,48 @@ pub fn resume(daemon: &DaemonHandle) {
     }
 }
 
-pub fn stop(daemon: &DaemonHandle) -> bool {
+pub enum RecordingStop {
+    Stopped(crate::daemon::ScreenRecordingStopInfo),
+    #[cfg(target_os = "macos")]
+    Pending(
+        std::sync::mpsc::Receiver<
+            std::result::Result<serde_json::Value, crate::daemon::DaemonRpcError>,
+        >,
+        RecorderState,
+    ),
+}
+
+pub fn stop(daemon: &DaemonHandle) -> anyhow::Result<RecordingStop> {
     if !is_recording() {
-        return false;
+        anyhow::bail!("no recording is active");
     }
-    let stopped = daemon.screen_recorder().stop();
-    match stopped {
-        Ok(_) => {
-            if let Err(error) = set_camera_content_protection(daemon, false) {
-                eprintln!("[recorder] camera content protection failed: {error}");
-            }
-            store_state(RecorderState::Idle);
-            true
+    let previous = state();
+    #[cfg(not(target_os = "macos"))]
+    let _ = previous;
+    match daemon.screen_recorder().stop()? {
+        crate::daemon::ScreenRecordingStop::Stopped(duration) => {
+            complete_stop(daemon);
+            Ok(RecordingStop::Stopped(duration))
         }
-        Err(error) => {
-            eprintln!("[recorder] stop failed: {error}");
-            false
+        #[cfg(target_os = "macos")]
+        crate::daemon::ScreenRecordingStop::Pending(response) => {
+            store_state(RecorderState::Stopping);
+            Ok(RecordingStop::Pending(response, previous))
         }
+    }
+}
+
+pub fn complete_stop(daemon: &DaemonHandle) {
+    if let Err(error) = set_camera_content_protection(daemon, false) {
+        eprintln!("[recorder] camera content protection failed: {error}");
+    }
+    store_state(RecorderState::Idle);
+}
+
+#[cfg(target_os = "macos")]
+pub fn restore_after_failed_stop(previous: RecorderState) {
+    if state() == RecorderState::Stopping {
+        store_state(previous);
     }
 }
 
@@ -238,23 +293,9 @@ pub fn set_system_audio(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<
 }
 
 pub fn set_camera(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
-    daemon.screen_recorder().set_camera(enabled)?;
-    if let Err(error) = set_camera_content_protection(daemon, enabled) {
-        // The camera was switched but its capture exclusion could not be, so
-        // the daemon is rolled back to the state the caller still believes in.
-        if enabled {
-            let _ = daemon.screen_recorder().set_camera(false);
-        }
-        return Err(error);
-    }
-    Ok(())
+    daemon.screen_recorder().set_camera(enabled)
 }
 
-/// The daemon's `camera_preview` module defaults `content_protected` to false
-/// and its `show` command takes no flag, so — just like Electron's
-/// `recording-actions.ts` — the shell must switch the capture affinity
-/// explicitly on start and toggle, and back off on stop. Without this the
-/// preview bubble is burned into the recording.
 fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
     daemon.camera_preview().set_content_protection(enabled)
 }
@@ -275,6 +316,44 @@ mod tests {
         assert!(name.ends_with(PROJECT_EXTENSION), "{name}");
         assert!(name.starts_with("Recording "), "{name}");
         assert!(!name.contains(".poratake."), "{name}");
+    }
+
+    #[test]
+    fn concurrent_recordings_reserve_distinct_project_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            ConfigStore::load_at(directory.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.storage.recordings_path = directory.path().to_string_lossy().into_owned();
+            config.storage.naming_pattern = "Concurrent recording".into();
+        });
+        let occupied = directory.path().join("Concurrent recording.poratake");
+        std::fs::write(&occupied, b"existing data").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(24));
+        let workers: Vec<_> = (0..24)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    create_project(&store).unwrap()
+                })
+            })
+            .collect();
+        let projects: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert!(projects.iter().all(|project| project.is_dir()));
+        assert_eq!(
+            projects
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            24
+        );
+        assert_eq!(std::fs::read(occupied).unwrap(), b"existing data");
     }
 
     #[test]
@@ -306,6 +385,14 @@ mod tests {
     fn state_transitions_are_observable() {
         store_state(RecorderState::Idle);
         assert!(!is_recording());
+        store_state(RecorderState::Starting);
+        assert!(is_recording());
+        assert_eq!(state(), RecorderState::Starting);
+        #[cfg(target_os = "macos")]
+        {
+            confirm_started();
+            assert_eq!(state(), RecorderState::Recording);
+        }
         store_state(RecorderState::Recording);
         assert!(is_recording());
         store_state(RecorderState::Paused);
