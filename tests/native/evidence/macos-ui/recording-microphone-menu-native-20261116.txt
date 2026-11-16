@@ -1,0 +1,29 @@
+macOS isolated recording microphone menu, 2026-11-16
+
+The current parity-enabled GPUI development executable ran with its generated
+checkerboard preview, an isolated configuration and the fixture daemon described
+in scripts/parity/README.md. The daemon returned generated microphone names;
+no screen capture, microphone, camera or system-audio capture was started by
+Poratake. The user's existing editor was not used. The test windows were lowered
+to normal AppKit window level so the already-authorized computer-use helper could
+inspect them. The helper captured only the generated recording-control window.
+
+In dark and light appearance, a synthetic microphone-menu click opened a
+332x300-point window centered on the display. The native helper's window image
+showed the toolbar and menu in both appearances. GPUI's own rendered scenes are
+retained in recording-microphone-menu-dark-20261116.png and
+recording-microphone-menu-light-20261116.png. Each shows one toolbar border,
+the checked generated default device, a second generated device and an
+ellipsized long device name. After the helper activated its accessibility tree,
+the dark menu exposed the full, untruncated device names. No item was selected.
+
+The fixture log showed a media-devices.list request with kinds [microphone] and
+a recording-control.setTooltip request; it did not enumerate real hardware.
+After dismissal in each appearance the window returned to 276x44 points, equal
+to the toolbar width. The AppKit hit test reached the control at its center and
+another window four points outside, with zero centering error.
+
+This verifies neither actual microphone access nor capture exclusion, and the
+normal-level probe does not establish the production floating window's appearance
+or physical pointer interaction. The images are generated scenes, not captures
+of the user's desktop. The probe processes exited normally.

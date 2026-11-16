@@ -3751,6 +3751,16 @@ reproduced the old failure and checks automatic tracking through movement,
 hiding, restoration, closure and explicit cleanup. It does not start a recording
 or verify captured pixels, another display, or finalization after target closure.
 
+The current macOS development probe also shows the microphone menu in both
+[dark](tests/native/evidence/macos-ui/recording-microphone-menu-dark-20261116.png)
+and [light](tests/native/evidence/macos-ui/recording-microphone-menu-light-20261116.png)
+appearance with generated device names. The normal-level toolbar has one border,
+and returns to its fitted width after the menu closes. The
+[native evidence](tests/native/evidence/macos-ui/recording-microphone-menu-native-20261116.txt)
+covers window capture, accessibility names and hit testing with a fixture daemon;
+it does not verify hardware access, physical input or production floating-level
+appearance.
+
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1       | Native compact-window tooltips                           | A hosted real-app probe verified a Windows recording tooltip's text, outside-window placement, dismissal, re-entry and exclusion from a WGC screenshot and three decoded full-monitor recording frames. On macOS, a daemon-owned tooltip is registered for capture exclusion before showing; a native fixture covers its lifecycle with a simulated filter. Verify saved pixels, physical hover exit, other capture targets, themes and mixed-DPI placement.                                                                                                                                                                             |
