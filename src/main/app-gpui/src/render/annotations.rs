@@ -1323,6 +1323,9 @@ struct Region {
 }
 
 fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Option<Region> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
     let transform = canvas.transform();
     let scale_x = if transform.sx == 0.0 {
         1.0
@@ -1341,10 +1344,14 @@ fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Opt
     let floored_y = origin_y.floor();
     let clamped_x = floored_x.max(0.0);
     let clamped_y = floored_y.max(0.0);
-    let clamped_width = ((width as f32 * scale_x).ceil() - (clamped_x - floored_x))
-        .min(canvas.width() as f32 - clamped_x);
-    let clamped_height = ((height as f32 * scale_y).ceil() - (clamped_y - floored_y))
-        .min(canvas.height() as f32 - clamped_y);
+    let clamped_width = (origin_x + width as f32 * scale_x)
+        .ceil()
+        .min(canvas.width() as f32)
+        - clamped_x;
+    let clamped_height = (origin_y + height as f32 * scale_y)
+        .ceil()
+        .min(canvas.height() as f32)
+        - clamped_y;
     if clamped_width <= 0.0 || clamped_height <= 0.0 {
         return None;
     }
@@ -2770,6 +2777,70 @@ mod tests {
                 assert_eq!(canvas.pixmap().data()[(x + i) * 4], expected, "{x}+{i}");
             }
         }
+    }
+
+    #[test]
+    fn fractional_pixelation_covers_the_last_partially_selected_pixel() {
+        let mut canvas = Canvas::new(12, 12).unwrap();
+        canvas.fill_all(Color::from_rgba8(0, 0, 0, 255));
+        canvas.fill_rect(
+            Rect::from_xywh(9., 9., 1., 1.).unwrap(),
+            Color::from_rgba8(255, 255, 255, 255),
+        );
+
+        pixelate_region(&mut canvas, 1.5, 1.5, 8., 8., 8.);
+
+        let offset = (9 * 12 + 9) * 4;
+        assert!(canvas.pixmap().data()[offset] < 255);
+    }
+
+    #[test]
+    fn fractional_blur_covers_the_last_partially_selected_pixel() {
+        let mut canvas = Canvas::new(12, 12).unwrap();
+        canvas.fill_all(Color::from_rgba8(0, 0, 0, 255));
+        canvas.fill_rect(
+            Rect::from_xywh(9., 9., 1., 1.).unwrap(),
+            Color::from_rgba8(255, 255, 255, 255),
+        );
+
+        blur_region(&mut canvas, 1.5, 1.5, 8., 8., 2., false);
+
+        let offset = (9 * 12 + 9) * 4;
+        assert!(canvas.pixmap().data()[offset] < 255);
+    }
+
+    #[test]
+    fn fractional_redaction_regions_clip_after_scaling() {
+        let mut canvas = Canvas::new(100, 100).unwrap();
+        for (x, y, width, height, expected) in [
+            (10.5, 20.5, 8., 8., (10, 20, 9, 9)),
+            (-0.5, -0.5, 8., 8., (0, 0, 8, 8)),
+            (95.5, 96.5, 8., 8., (95, 96, 5, 4)),
+        ] {
+            let region = clamp_region(&canvas, x, y, width, height).unwrap();
+            assert_eq!(
+                (
+                    region.device_x,
+                    region.device_y,
+                    region.device_width,
+                    region.device_height
+                ),
+                expected
+            );
+        }
+        canvas.scale(2., 2.);
+        let region = clamp_region(&canvas, 10.25, 20.25, 8., 8.).unwrap();
+        assert_eq!(
+            (
+                region.device_x,
+                region.device_y,
+                region.device_width,
+                region.device_height
+            ),
+            (20, 40, 17, 17)
+        );
+        assert!(clamp_region(&canvas, 10.25, 20.25, 0., 8.).is_none());
+        assert!(clamp_region(&canvas, 10.25, 20.25, 8., 0.).is_none());
     }
 
     #[test]

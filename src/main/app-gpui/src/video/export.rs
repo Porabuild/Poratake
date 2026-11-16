@@ -2045,8 +2045,8 @@ mod tests {
                 },
                 Annotation::Redact {
                     id: "pixelate".into(),
-                    x: 160.,
-                    y: 60.,
+                    x: 160.5,
+                    y: 60.5,
                     width: 30.,
                     height: 20.,
                     style: "pixelate".into(),
@@ -2054,8 +2054,8 @@ mod tests {
                 },
                 Annotation::Redact {
                     id: "blur".into(),
-                    x: 200.,
-                    y: 60.,
+                    x: 200.5,
+                    y: 60.5,
                     width: 30.,
                     height: 20.,
                     style: "blur".into(),

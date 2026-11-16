@@ -49,6 +49,9 @@ function createFakeContext(
     getTransform: () => ({ a: scale, b: 0, c: 0, d: scale, e: 0, f: 0 }),
     save: vi.fn(),
     restore: vi.fn(),
+    beginPath: vi.fn(),
+    rect: vi.fn(),
+    clip: vi.fn(),
     imageSmoothingEnabled: true,
     drawImage: vi.fn(),
   };
@@ -138,5 +141,104 @@ describe('renderDrawings redact scaling', () => {
       20,
       20
     );
+  });
+
+  it.each([
+    {
+      scale: 1,
+      x: 10.5,
+      y: 20.5,
+      width: 8,
+      height: 8,
+      sx: 10,
+      sy: 20,
+      sw: 9,
+      sh: 9,
+    },
+    {
+      scale: 1,
+      x: -0.5,
+      y: -0.5,
+      width: 8,
+      height: 8,
+      sx: 0,
+      sy: 0,
+      sw: 8,
+      sh: 8,
+    },
+    {
+      scale: 1,
+      x: 95.5,
+      y: 96.5,
+      width: 8,
+      height: 8,
+      sx: 95,
+      sy: 96,
+      sw: 5,
+      sh: 4,
+    },
+    {
+      scale: 2,
+      x: 10.25,
+      y: 20.25,
+      width: 8,
+      height: 8,
+      sx: 20,
+      sy: 40,
+      sw: 17,
+      sh: 17,
+    },
+  ])(
+    'includes partially covered pixels and clips to the canvas: $sx,$sy',
+    ({ scale, x, y, width, height, sx, sy, sw, sh }) => {
+      const ctx = createFakeContext(100, 100, scale);
+      const segment = makeSegment();
+      segment.annotations = [{ ...redact, x, y, width, height }];
+
+      renderDrawings(ctx as never, {
+        drawingSegments: [segment],
+        timelineTime: 1,
+        width: 100,
+        height: 100,
+      });
+
+      expect(scratchDrawImageCalls).toContainEqual({ sx, sy, sw, sh });
+    }
+  );
+
+  it.each([
+    { width: 0, height: 8 },
+    { width: 8, height: 0 },
+  ])('does not sample an empty selection', ({ width, height }) => {
+    const ctx = createFakeContext(100, 100, 1);
+    const segment = makeSegment();
+    segment.annotations = [{ ...redact, x: 10.5, y: 20.5, width, height }];
+
+    renderDrawings(ctx as never, {
+      drawingSegments: [segment],
+      timelineTime: 1,
+      width: 100,
+      height: 100,
+    });
+
+    expect(scratchDrawImageCalls).toHaveLength(0);
+    expect(ctx.drawImage).not.toHaveBeenCalled();
+  });
+
+  it('clips fractional blur to include the last partially covered pixels', () => {
+    const ctx = createFakeContext(100, 100, 1);
+    const segment = makeSegment();
+    segment.annotations = [
+      { ...redact, style: 'blur', x: 10.5, y: 20.5, width: 8, height: 8 },
+    ];
+
+    renderDrawings(ctx as never, {
+      drawingSegments: [segment],
+      timelineTime: 1,
+      width: 100,
+      height: 100,
+    });
+
+    expect(ctx.rect).toHaveBeenCalledWith(10, 20, 9, 9);
   });
 });
