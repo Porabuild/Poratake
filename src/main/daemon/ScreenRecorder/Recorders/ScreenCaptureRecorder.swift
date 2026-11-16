@@ -1319,16 +1319,20 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
-            guard let self,
-                  self.stream === stream,
-                  self.state == .recording || self.state == .paused,
-                  let sessionID = self.activeSessionID
-            else { return }
-            self.onError?(
-                sessionID,
-                RecorderError.streamFailure(error, capturingWindow: self.config?.windowID != nil)
-            )
+            guard let self else { return }
+            self.handleStreamFailure(error, isCurrentStream: self.stream === stream)
         }
+    }
+
+    @MainActor
+    private func handleStreamFailure(_ error: Error, isCurrentStream: Bool) {
+        guard isCurrentStream,
+              state == .recording || state == .paused || lifecycle.isStarting,
+              let sessionID = activeSessionID else { return }
+        onError?(
+            sessionID,
+            RecorderError.streamFailure(error, capturingWindow: config?.windowID != nil)
+        )
     }
 
     @MainActor
@@ -1517,6 +1521,25 @@ extension ScreenCaptureRecorder: SCStreamOutput {
     }
 
     #if RECORDING_TIMELINE_TEST
+    @MainActor
+    func testBeginStreamStartup(config: RecordingConfig, sessionID: RecorderSessionID) {
+        precondition(lifecycle.beginStart(state: state))
+        self.config = config
+        activeSessionID = sessionID
+    }
+
+    @MainActor
+    func testStreamFailure(_ error: Error, isCurrentStream: Bool) {
+        handleStreamFailure(error, isCurrentStream: isCurrentStream)
+    }
+
+    @MainActor
+    func testFinishStreamStartup(recording: Bool) {
+        lifecycle.finishStart()
+        state = recording ? .recording : .idle
+        if !recording { activeSessionID = nil }
+    }
+
     func testStartTimeline() {
         state = .recording
     }
