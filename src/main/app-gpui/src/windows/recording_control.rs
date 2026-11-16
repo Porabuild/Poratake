@@ -138,7 +138,7 @@ impl RecordingControl {
         self.rect
     }
 
-    #[cfg(all(feature = "parity", target_os = "macos"))]
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_system_audio(&self) -> bool {
         self.system_audio
     }
@@ -148,7 +148,7 @@ impl RecordingControl {
         self.measured_width
     }
 
-    #[cfg(all(feature = "parity", target_os = "macos"))]
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_menu_open(&self, cx: &App) -> bool {
         self.menu.is_present(cx)
     }

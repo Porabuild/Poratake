@@ -306,12 +306,12 @@ pub struct CapturePreviewWindow {
 }
 
 impl CapturePreviewWindow {
-    #[cfg(all(feature = "parity", target_os = "macos"))]
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_hovered(&self) -> bool {
         self.previews.iter().any(|preview| preview.hovered)
     }
 
-    #[cfg(all(feature = "parity", target_os = "macos"))]
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_pointer_inside(&self) -> bool {
         self.pointer_inside
     }

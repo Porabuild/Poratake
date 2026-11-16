@@ -1,9 +1,11 @@
 use std::io::BufRead;
 use std::path::PathBuf;
 
+#[cfg(not(test))]
+use herogpui::gpui::MouseExitEvent;
 use herogpui::gpui::{
-    point, px, App, AppContext, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, MouseUpEvent, PlatformInput,
+    point, px, App, AppContext, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PlatformInput,
 };
 
 use crate::capture::overlay::{AreaOverlay, ScreenRect};

@@ -1481,7 +1481,7 @@ impl AreaOverlay {
         self
     }
 
-    #[cfg(all(feature = "parity", target_os = "macos"))]
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_pointer_inside(&self) -> bool {
         self.pointer_inside
     }
