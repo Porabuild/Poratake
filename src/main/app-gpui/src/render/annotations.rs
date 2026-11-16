@@ -793,6 +793,25 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
             width,
             height,
             style,
+            ..
+        } if style == "blackout" => {
+            let (left, top, width, height) =
+                screenshot_blackout_rect(*x, *y, *width, *height, canvas.pixel_grid_origin());
+            if let Some(rect) =
+                Rect::from_xywh(left as f32, top as f32, width as f32, height as f32)
+            {
+                canvas.save();
+                canvas.set_shadow(None);
+                canvas.fill_rect(rect, Color::BLACK);
+                canvas.restore();
+            }
+        }
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
             intensity,
             ..
         } if style == "pixelate" => {
@@ -819,6 +838,22 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
         }
         _ => draw(canvas, annotation),
     }
+}
+
+pub fn screenshot_blackout_rect(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    origin: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    let (x, y, width, height) = normalize_rect(x, y, width, height);
+    (
+        (x + origin.0).floor() - origin.0,
+        (y + origin.1).floor() - origin.1,
+        width.ceil(),
+        height.ceil(),
+    )
 }
 
 pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
@@ -2371,6 +2406,37 @@ mod tests {
         };
         assert_eq!(pixel(8, 8), 0);
         assert_eq!(pixel(2, 2), 255);
+    }
+
+    #[test]
+    fn screenshot_blackout_covers_fractional_boundary_pixels() {
+        for (offset_x, offset_y, x, y, width, height, left, right, row) in [
+            (0., 0., 8.5, 3.25, 12.3, 12.4, 8, 20, 9),
+            (5.25, 4.75, 8.5, 3.25, 12.3, 12.4, 13, 25, 14),
+            (0., 0., 20.8, 15.65, -12.3, -12.4, 8, 20, 9),
+            (0., 0., -2.5, 3.25, 12.3, 12.4, 0, 9, 9),
+        ] {
+            let mut canvas = Canvas::new(40, 32).unwrap();
+            canvas.fill_all(Color::WHITE);
+            canvas.translate(offset_x, offset_y);
+            let blackout = Annotation::Redact {
+                id: "blackout".into(),
+                x,
+                y,
+                width,
+                height,
+                style: "blackout".into(),
+                intensity: 5.,
+            };
+            draw_all_screenshot(&mut canvas, &[blackout], 1.);
+            for column in left..=right {
+                assert_eq!(
+                    canvas.pixmap().pixel(column, row).unwrap().red(),
+                    0,
+                    "origin ({offset_x}, {offset_y}), rect ({x}, {y}, {width}, {height}), pixel ({column}, {row})"
+                );
+            }
+        }
     }
 
     #[test]

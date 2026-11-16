@@ -253,12 +253,34 @@ fn patch_padded(
     let minimum_scale = fit_scale(surface_width, surface_height, scale)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_width)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_height);
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
     let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, minimum_scale)?;
-    let target = if matches!(annotation, Annotation::Redact { .. }) {
-        annotation.bounds()
-    } else {
-        bounds
+    let target = match annotation {
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            ..
+        } if style == "blackout" => {
+            let target = annotation.bounds();
+            let (x, y, width, height) =
+                renderer::screenshot_blackout_rect(*x, *y, *width, *height, composition_origin);
+            (
+                target.0.min(x),
+                target.1.min(y),
+                target.2.max(x + width),
+                target.3.max(y + height),
+            )
+        }
+        Annotation::Redact { .. } => annotation.bounds(),
+        _ => bounds,
     };
     let target = padded(target, padding);
     let mut sample = (
@@ -319,11 +341,7 @@ fn patch_padded(
     let mut canvas = Canvas::new(width, height)?;
     canvas.translate(-device_x as f32, -device_y as f32);
     canvas.scale(scale as f32, scale as f32);
-    let composition_origin = surface
-        .matte_image
-        .filter(|_| surface.composite_backdrop)
-        .map(|(_, x, y)| (x, y))
-        .unwrap_or((surface.offset_x, surface.offset_y));
+    canvas.set_pixel_grid_origin(composition_origin);
     canvas.set_patch_path_anchor(
         (
             (composition_origin.0 * scale) as f32,
@@ -1750,6 +1768,72 @@ mod tests {
                     actual.abs_diff(*expected) <= 1,
                     "channel {index} at {scale}x differs: {actual} vs {expected}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_blackout_boundary_matches_export_with_composition_offsets() {
+        let base = base_pixmap(80, 60);
+        let bgra = to_bgra(&base);
+        let annotations = [Annotation::Redact {
+            id: "blackout".into(),
+            x: 8.5,
+            y: 3.25,
+            width: 12.3,
+            height: 12.4,
+            style: "blackout".into(),
+            intensity: 5.,
+        }];
+        let operations = renderer::screenshot_paints(annotations.iter());
+        let paint = PixmapPaint {
+            opacity: 1.,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        for (offset_x, offset_y, scale) in
+            [(0., 0., 1.), (5., 4., 1.), (4., 4., 1.25), (4.5, 3.5, 2.)]
+        {
+            let surface = Surface {
+                image_id: None,
+                width: base.width(),
+                height: base.height(),
+                offset_x,
+                offset_y,
+                native_scale: 1.,
+                pixels: Some(&bgra),
+                matte: None,
+                matte_image: None,
+                composite_backdrop: false,
+            };
+            let mut expected = Canvas::new((80. * scale) as u32, (60. * scale) as u32).unwrap();
+            expected.scale(scale as f32, scale as f32);
+            expected.draw_pixmap(base.as_ref(), 0., 0., 80., 60.);
+            let mut actual = expected.pixmap().clone();
+            expected.translate(offset_x as f32, offset_y as f32);
+            for (index, operation) in operations.iter().enumerate() {
+                renderer::draw_screenshot_paint(&mut expected, *operation, 1.);
+                let patch =
+                    super::patch(*operation, &operations[..index], &surface, scale).unwrap();
+                actual.draw_pixmap(
+                    ((patch.x + offset_x) * scale).round() as i32,
+                    ((patch.y + offset_y) * scale).round() as i32,
+                    patch.pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
+                for (channel, (actual, expected)) in actual
+                    .data()
+                    .iter()
+                    .zip(expected.pixmap().data())
+                    .enumerate()
+                {
+                    assert!(
+                        actual.abs_diff(*expected) <= 2,
+                        "operation {index}, offset ({offset_x}, {offset_y}), {scale}x, channel {channel}: {actual} vs {expected}"
+                    );
+                }
             }
         }
     }

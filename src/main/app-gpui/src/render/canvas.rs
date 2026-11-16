@@ -49,6 +49,7 @@ pub struct Canvas {
     stack: Vec<State>,
     shadow_scale: f32,
     patch_path_anchor: Option<((f32, f32), (f32, f32))>,
+    pixel_grid_origin: Option<(f64, f64)>,
 }
 
 impl Canvas {
@@ -63,6 +64,7 @@ impl Canvas {
             stack: Vec::new(),
             shadow_scale: 1.0,
             patch_path_anchor: None,
+            pixel_grid_origin: None,
         }
     }
 
@@ -88,6 +90,21 @@ impl Canvas {
 
     pub fn transform(&self) -> Transform {
         self.state.transform
+    }
+
+    pub fn pixel_grid_origin(&self) -> (f64, f64) {
+        if let Some(origin) = self.pixel_grid_origin {
+            return origin;
+        }
+        let transform = self.state.transform;
+        (
+            f64::from(transform.tx) / f64::from(transform.sx),
+            f64::from(transform.ty) / f64::from(transform.sy),
+        )
+    }
+
+    pub fn set_pixel_grid_origin(&mut self, origin: (f64, f64)) {
+        self.pixel_grid_origin = Some(origin);
     }
 
     pub fn set_patch_path_anchor(
