@@ -250,23 +250,38 @@ help and keyboard tooltips inside the owner window. The GPUI
 Windows image-sampling, clipboard and pointer-exit patches remain separate.
 
 The 2026-11-16 update passed `bun run checks` (2,324 JavaScript tests), all
-1,008 GPUI unit tests, the eight accessibility-adapter probes, and Clippy with
-warnings denied on macOS and the Windows cross target (including `parity`).
+1,009 macOS GPUI unit tests, the eight accessibility-adapter probes, and Clippy
+with warnings denied on macOS and the Windows cross target (including `parity`).
+[Hosted checks at `ead58c59`](https://github.com/Porabuild/Poratake/actions/runs/43895183234)
+also passed all 1,314 Windows native tests, with seven skipped, and the live native
+tooltip, capture-exclusion, capture/save/reopen and decoded recording/export checks.
 The macOS debug editor opened its thickness Select, showed the last option's
 complete keyboard focus ring, and selected it with Enter. The tooltip interaction
 regression exercises delay cancellation, sibling warmup, Escape, keyboard focus,
 activation and unmount through the upstream presenter lifecycle. The macOS
 regression also checks AppKit hover cancellation and in-window focus painting.
 
-The native Windows visual matrix and capture-exclusion proof have not been rerun
-on this source. Existing Windows baseline evidence above belongs to the previous
-revision; Windows keyboard tooltips now use the external surface and need a
-reviewed baseline refresh. Neither macOS preview-window CLI target was exposed by
+The [full Windows visual run at `ead58c59`](https://github.com/Porabuild/Poratake/actions/runs/43894010527)
+completed the workflow assertions and all 2,912 captures in 16 profiles on Microsoft
+Basic Render Driver 10.0.26100.33648. Every profile reached image comparison; its
+only failures were 164 changed references. All changes were reviewed: Select and
+menu sizing/focus gutters, native keyboard help moving outside the recording
+owner, focus-ring corner rendering, and a few countdown-text antialiasing pixels.
+Only the matching Microsoft Basic references were refreshed; NVIDIA references
+remain stale and unverified. The unchanged Rust comparator passed all 2,912
+recorded captures against the final references, including exact state coverage,
+dimensions and RGBA pixels. The follow-up changes only reference PNGs and this audit; app
+sources, assets, dependencies and workflow fixtures remain at `ead58c59`, so their
+rendering and workflow results are reusable. Final PR-head checks are recorded in
+[PR #24](https://github.com/Porabuild/Poratake/pull/24).
+
+Neither macOS preview-window CLI target was exposed by
 the inspection tool at its native popup window level. A UI-only debug harness
 subsequently opened the production recording
 control and preview entities with an isolated profile and normal window level for
-inspection. Native AppKit hover help displayed and was captured; registration
-changed with the hovered control and cleared after leaving it. Tab showed the
+inspection. Native AppKit Copy hover help appeared in the on-screen-only window
+list and was captured directly; registration changed with the hovered control and
+cleared after leaving it. Tab showed the
 recording control's in-window keyboard help, and Escape dismissed it without
 closing the toolbar. This does not establish macOS capture exclusion.
 The macOS `parity` build has two existing blockers:
