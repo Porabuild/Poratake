@@ -3182,6 +3182,17 @@ pixel grid, and its preview patch includes the additional covered pixels. The
 records the Electron sample and isolated GPUI checks. This fix does not resolve
 the separate rounded SVG corner rasterization difference above.
 
+A second fractional case crossed the far pixel boundary. The previous width
+rounding left a touched right-edge pixel white in GPUI and at 229/255 in
+Electron; a bottom-edge pixel also retained 229/255 in Electron. Both screenshot
+export paths now round the far edge outward; sampled pixels beyond the touched
+area remain unchanged. [Electron before/after samples](tests/native/evidence/macos-ui/blackout-far-edge-electron-20261116.json)
+come from its actual export helper and SVG exporter in an isolated offscreen
+window. GPUI tests cover the saved boundary, preview patch, clipped and empty
+rectangles. An isolated GPUI Metal workflow in light and dark mode also checked
+the right and bottom export pixels and compared its displayed preview with the
+saved PNG. These generated cases do not prove all live redaction geometries.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners
