@@ -816,6 +816,8 @@ mod tests {
 
     include!("redaction_crop_tests.rs");
     include!("redaction_layer_tests.rs");
+    include!("redaction_matrix_tests.rs");
+    include!("redaction_timing_tests.rs");
 
     fn camera_engine(
         camera_segments: Vec<crate::windows::video_editor::model::CameraSegment>,
