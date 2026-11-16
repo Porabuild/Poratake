@@ -3238,6 +3238,11 @@ local five-run debug-build 4K backdrop microbenchmark showed a warm generation t
 about 145–173 ms with composition versus 78–94 ms without it; it excludes GPU
 upload and does not measure interactive behavior on other hardware. Performance
 and broader wallpaper/annotation combinations remain to be checked.
+The editor now borrows its existing RGBA source when converting it for the
+backdrop, inset-color detection and export, avoiding one temporary 31.6 MiB
+source copy for a 3840×2160 image. A non-RGBA source still uses the conversion
+fallback. Alternating local debug timings were too variable to establish a
+reliable latency improvement, so the 4K performance concern remains open.
 The full dark-mode GPUI parity workflow subsequently completed at simulated 1×,
 including generated capture and recording handoffs, screenshot save/reopen,
 large attachments and wallpaper cases at simulated 1.25× and 2×. It used the
