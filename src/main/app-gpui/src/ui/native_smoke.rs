@@ -206,10 +206,12 @@ pub fn native_ui_probe() {
                 }
                 let visible: BOOL = unsafe { msg_send![native, isVisible] };
                 let shadow: BOOL = unsafe { msg_send![native, hasShadow] };
+                let level: isize = unsafe { msg_send![native, level] };
                 let style: NSWindowStyleMask = unsafe { msg_send![native, styleMask] };
                 let frame: NSRect = unsafe { msg_send![native, frame] };
                 assert_eq!(visible, YES);
                 assert_eq!(shadow == YES, native_shadow && kind == WindowKind::RecordingControl);
+                assert!(if normal_level { level == 0 } else { level > 0 });
                 assert!(!style.contains(NSWindowStyleMask::NSTitledWindowMask));
                     if kind == WindowKind::CapturePreview {
                         let screen: id = unsafe { msg_send![native, screen] };
@@ -223,7 +225,7 @@ pub fn native_ui_probe() {
                         assert!((bottom - expected).abs() <= 0.5, "bottom margin {bottom}");
                         println!("capture preview: bottom and right AppKit work-area margins {bottom:.0},{right:.0} points");
                     }
-                println!("{name}: visible, borderless, native shadow={}; frame {:.0},{:.0} {:.0}x{:.0}", shadow == YES, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
+                println!("{name}: visible, borderless, native shadow={}, level={level}; frame {:.0},{:.0} {:.0}x{:.0}", shadow == YES, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
             }).unwrap();
         }
             let (tx, rx) = smol::channel::unbounded::<String>();
