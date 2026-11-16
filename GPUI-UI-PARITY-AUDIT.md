@@ -3275,6 +3275,21 @@ The restored-pixelation fixture also passed after the matte change in both
 appearances at simulated 100%, 125% and 200%, with opaque and transparent
 sources, clipped and unclipped regions, and reopened PNG comparisons.
 
+The generated transparent reopen matrix now covers both macOS frame styles,
+with and without shadow, at 73%, 100% and 150% effective zoom and simulated
+125% and 200% display scales in both app appearances. It includes an inset and overlapping
+blur, blackout, pixelation and shape annotations. Each whole-composition
+preview matched its reopened PNG within two channel levels. For the dark frame
+with shadow at 73% and simulated 125% display scale, the [dark preview](tests/native/evidence/macos-ui/transparent-framed-dark-preview-20261116.png)
+and [reopened image](tests/native/evidence/macos-ui/transparent-framed-dark-reopened-20261116.png),
+and the [light preview](tests/native/evidence/macos-ui/transparent-framed-light-preview-20261116.png)
+and [reopened image](tests/native/evidence/macos-ui/transparent-framed-light-reopened-20261116.png),
+each have a maximum channel difference of one across 16,740 pixels. The
+[unshadowed PNG](tests/native/evidence/macos-ui/transparent-framed-no-shadow-20261116.png)
+retains 14,880 fully transparent pixels. These are generated images rendered
+by the native GPUI Metal fixture; they do not verify real capture, physical
+display scaling or Electron's frame pixels.
+
 The Electron comparison initially could not load its stylesheet: Tailwind scanned
 a vendored Rust test and generated an invalid CSS declaration. The stylesheet
 now excludes the vendor directory from automatic source scanning. A fresh Vite
