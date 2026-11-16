@@ -334,6 +334,7 @@ struct ScrollCapturePreviewTest {
 
     @MainActor
     static func runRecordingCoordinationChecks() async throws {
+        await runLegacyScrollCoordinationCheck()
         try await runScreenCaptureExclusionCheck()
         let screenExclusions = recordingExclusionWindowIDs(
             requested: [31, 41, 31, -1, Int64.max],
@@ -906,6 +907,89 @@ struct ScrollCapturePreviewTest {
         }
         precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
         FileHandle.standardError.write(Data("capture filter failure: complete\n".utf8))
+    }
+
+    @MainActor
+    static func runLegacyScrollCoordinationCheck() async {
+        FileHandle.standardError.write(Data("legacy scroll capture coordination: start\n".utf8))
+        let footerWidth = 80
+        let footerHeight = 160
+        let footerStep = 32
+        let generatedFrame = frame(start: 0, width: footerWidth, height: footerHeight)
+        let coordinatedModule = ScrollCaptureModule()
+        coordinatedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        coordinatedModule.testSetPreviewEncoder { _ in "preview" }
+        var coordinatedRequests: [Set<CGWindowID>?] = []
+        var coordinatedCallbacks: [(CGImage?) -> Void] = []
+        var coordinatedSchedules = 0
+        var coordinatedEvents: [[String: Any]] = []
+        coordinatedModule.testSetCoordinatedCaptureProvider { ids, callback in
+            coordinatedRequests.append(ids)
+            coordinatedCallbacks.append(callback)
+        }
+        coordinatedModule.testSetScheduleAutoScroll { coordinatedSchedules += 1 }
+        coordinatedModule.testSetScrollEndedResponder { coordinatedEvents.append($0) }
+        var coordinatedGeneration = coordinatedModule.testCaptureGeneration()
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The direct scroll frame did not start") { coordinatedRequests.count == 1 }
+        precondition(coordinatedRequests[0] == nil)
+        let scrollRegistry = RecordingCaptureWindowRegistry.shared
+        let protectedID: CGWindowID = 812345678
+        scrollRegistry.register(windowID: protectedID)
+        var overlayMayShow = false
+        let overlayPresentation = Task { @MainActor in
+            await scrollRegistry.waitForScreenshots()
+            overlayMayShow = true
+        }
+        await waitUntil("The overlay did not wait for the scroll frame") {
+            scrollRegistry.testPendingScreenshotWaiterCount > 0
+        }
+        precondition(!overlayMayShow)
+        coordinatedCallbacks[0](generatedFrame)
+        await waitUntil("The direct frame did not finish") { coordinatedSchedules == 1 }
+        await overlayPresentation.value
+        precondition(overlayMayShow)
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        coordinatedModule.testStopAutoScroll()
+        coordinatedModule.testResumeAutoScroll()
+        await Task.yield()
+        precondition(coordinatedRequests.count == 1, "A stale scroll task must not start a capture")
+        coordinatedGeneration = coordinatedModule.testCaptureGeneration()
+        let scrollWindows = coordinatedModule.testShowCaptureUI(rect: NSRect(x: 10, y: 10, width: footerWidth, height: footerHeight))
+        let scrollWindowIDs = Set(scrollWindows.compactMap { CGWindowID(exactly: $0.windowNumber) })
+        precondition(scrollWindowIDs.count == scrollWindows.count)
+        let expectedExclusions = scrollWindowIDs.union([protectedID])
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The filtered scroll frame did not start") { coordinatedRequests.count == 2 }
+        precondition(coordinatedRequests[1] == expectedExclusions)
+        coordinatedCallbacks[1](frame(start: footerStep, width: footerWidth, height: footerHeight))
+        await waitUntil("The filtered frame did not finish") { coordinatedSchedules == 2 }
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The next filtered frame did not start") { coordinatedRequests.count == 3 }
+        precondition(coordinatedRequests[2] == expectedExclusions)
+        coordinatedCallbacks[2](nil)
+        await waitUntil("The failed filtered frame did not stop capture") { !coordinatedModule.testIsAutoScrolling() }
+        precondition((coordinatedEvents.first?["reason"] as? String) == "capture-error")
+        let coordinatedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-coordinated-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: coordinatedOutput) }
+        var coordinatedResult: [String: Any]?
+        coordinatedModule.testSetFinishResponder { _, result in coordinatedResult = result }
+        coordinatedModule.handle(
+            method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+            params: ["outputPath": AnyCodable(coordinatedOutput.path)],
+            requestId: "coordinated-scroll-finish"
+        )
+        await waitUntil("The coordinated scroll capture did not finish") { coordinatedResult != nil }
+        precondition((coordinatedResult?["frameCount"] as? Int) == 2)
+        let coordinatedSource = CGImageSourceCreateWithURL(coordinatedOutput as CFURL, nil)!
+        let coordinatedSaved = CGImageSourceCreateImageAtIndex(coordinatedSource, 0, nil)!
+        let expectedCapture = frame(start: 0, width: footerWidth, height: footerHeight + footerStep)
+        precondition(pixels(coordinatedSaved) == pixels(expectedCapture))
+        coordinatedModule.testHideCaptureUI()
+        scrollRegistry.unregister(windowID: protectedID)
+        await scrollRegistry.waitForScreenshots()
+        FileHandle.standardError.write(Data("legacy scroll capture coordination: complete\n".utf8))
     }
 
     @MainActor

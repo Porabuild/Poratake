@@ -360,6 +360,7 @@ class ScrollCaptureModule: NSObject, Module {
     private var testPreviewResponder: ((CGImage, Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
     private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
+    private var testCoordinatedCaptureProvider: ((Set<CGWindowID>?, @escaping (CGImage?) -> Void) -> Void)?
     private var testScheduleAutoScroll: (() -> Void)?
     private var testCaptureStartResult: ((Bool) -> Void)?
     private var testFinishAlignmentWaitStarted: DispatchSemaphore?
@@ -962,18 +963,62 @@ class ScrollCaptureModule: NSObject, Module {
             return
         }
 
-        CGDisplayHideCursor(displayId)
-
-        let cgImage = CGWindowListCreateImage(
-            captureRect,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            [.bestResolution, .boundsIgnoreFraming]
-        )
-
-        CGDisplayShowCursor(displayId)
-
-        completion(consumeCapturedImage(cgImage))
+        let generation = captureGeneration
+        let display = displayId
+        Task { @MainActor [weak self] in
+            guard let self = self,
+                  generation == self.captureGeneration, self.isCapturing,
+                  self.isAutoScrolling, !self.finishRequested else { return }
+            let image: CGImage?
+            do {
+                image = try await coordinateAreaCapture(
+                    registry: RecordingCaptureWindowRegistry.shared,
+                    excludedWindowIDs: [],
+                    unfiltered: {
+#if SCROLL_CAPTURE_TEST
+                        if let provider = self.testCoordinatedCaptureProvider {
+                            return await withCheckedContinuation { continuation in
+                                provider(nil) { continuation.resume(returning: $0) }
+                            }
+                        }
+#endif
+                        CGDisplayHideCursor(display)
+                        defer { CGDisplayShowCursor(display) }
+                        return CGWindowListCreateImage(
+                            captureRect,
+                            .optionOnScreenOnly,
+                            kCGNullWindowID,
+                            [.bestResolution, .boundsIgnoreFraming]
+                        )
+                    },
+                    filtered: { ids in
+                        var protectedIDs = ids
+                        for window in self.boundaryWindows + (self.controlPanel.map { [$0] } ?? []) {
+                            guard let id = CGWindowID(exactly: window.windowNumber), id != 0 else {
+                                throw RecordingCaptureFilterError.unavailableWindows([])
+                            }
+                            protectedIDs.insert(id)
+                        }
+#if SCROLL_CAPTURE_TEST
+                        if let provider = self.testCoordinatedCaptureProvider {
+                            return await withCheckedContinuation { continuation in
+                                provider(protectedIDs) { continuation.resume(returning: $0) }
+                            }
+                        }
+#endif
+                        guard #available(macOS 14.0, *) else {
+                            throw RecordingCaptureFilterError.unavailableWindows(Array(protectedIDs))
+                        }
+                        return try await captureAreaExcludingWindows(
+                            captureRect, displayID: display, excludedWindowIDs: protectedIDs
+                        )
+                    }
+                )
+            } catch {
+                image = nil
+            }
+            self.completeExcludedCapture(image, generation: generation, completion: completion)
+        }
     }
 
     private func completeExcludedCapture(
@@ -2058,6 +2103,10 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testSetCaptureProvider(_ provider: @escaping (@escaping (CGImage?) -> Void) -> Void) {
         testCaptureProvider = provider
+    }
+
+    func testSetCoordinatedCaptureProvider(_ provider: @escaping (Set<CGWindowID>?, @escaping (CGImage?) -> Void) -> Void) {
+        testCoordinatedCaptureProvider = provider
     }
 
     func testSetScheduleAutoScroll(_ schedule: @escaping () -> Void) {
