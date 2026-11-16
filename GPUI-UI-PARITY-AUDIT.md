@@ -4115,6 +4115,16 @@ this does not measure live playback or slower machines. The result and
 reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
 `tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
 
+Fitted video previews previously used the unrounded fit scale after rounding
+their output dimensions, whereas export scales to the dimensions actually
+allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA
+channels, by up to 11 levels, from composition at the same export dimensions.
+Fitted previews now use the same dimension-based rendering path as export.
+[Native evidence](tests/native/evidence/macos-ui/video-preview-rounded-size-20261116.txt)
+covers generated landscape, portrait and odd-sized frames, an edited H.264
+export, and isolated fake-daemon recording workflows in both themes. It does not
+resolve the scaled pixelation difference above or verify a live recording.
+
 Fractional redaction bounds previously omitted the last partially covered row or
 column when calculating the source region. GPUI and Electron now round the far
 edge independently before clipping to the canvas for video and screenshot blur
