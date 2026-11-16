@@ -3321,6 +3321,19 @@ also matches within one level at four zooms and three simulated scales in dark
 appearance. These generated tests do not verify physical input, captured content,
 larger patches or all wallpaper and attachment combinations.
 
+The framed-attachment Metal workflow now also places a narrow red annotation
+before and after blur and pixelation crossing the primary/right-attachment seam.
+For macOS light and dark frame styles, translucent source content, both app
+appearances and simulated 100%, 125% and 200% scale, all 72 generated cases
+match their saved compositions within two channel levels across the whole stage.
+The redaction changes pixels on both sides of the seam, filters the earlier
+annotation, and leaves a later annotation red. The [dark](tests/native/evidence/macos-ui/ordered-framed-redactions-dark-20261116.txt)
+and [light](tests/native/evidence/macos-ui/ordered-framed-redactions-light-20261116.txt)
+measurements and representative 125% dark [preview](tests/native/evidence/macos-ui/ordered-framed-redaction-dark-preview-20261116.png)
+and [export over the editor matte](tests/native/evidence/macos-ui/ordered-framed-redaction-dark-expected-20261116.png)
+are retained. These use generated editor content and do not verify real
+capture, physical DPI, selection input or all attachment and wallpaper layouts.
+
 The equivalent GPUI Metal fixture found a separate sampling boundary mismatch
 at simulated 2× scale and 137% zoom: the [preview](tests/native/evidence/macos-ui/scaled-blackout-before-preview-20261116.png)
 and [reopened PNG](tests/native/evidence/macos-ui/scaled-blackout-before-reopened-20261116.png)

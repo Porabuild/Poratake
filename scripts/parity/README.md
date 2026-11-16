@@ -251,6 +251,11 @@ before and after a shape with their reopened PNGs at simulated 1× and 2× scale
 and 73%, 100% and 137% zoom.
 The fixture checks that the shape is filtered only when it precedes the effect.
 `PORATAKE_PARITY_EVIDENCE` retains the 2× filtered previews and reopened PNGs.
+Set `PORATAKE_PARITY_REDACTION_FRAME_ONLY=1` to check annotations before and
+after redactions that cross a framed attachment seam at simulated 1×, 1.25× and
+2× scale. Set `PORATAKE_PARITY_SCALE=1` for this entry point; it selects the
+individual simulated scales itself. It compares the full preview with the saved
+PNG over the editor matte.
 Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
 opaque source instead of the partially translucent generated region.
 Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,

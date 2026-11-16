@@ -6389,73 +6389,118 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             let baseline = cx.update(|cx| reopened.read(cx).unwrap().export_png().unwrap());
             let baseline = image::load_from_memory(&baseline).unwrap().to_rgba8();
             for style in ["blur", "pixelate"] {
-                reopened
-                    .update(cx, |editor, _, cx| {
-                        editor.history.replace_current(vec![Annotation::Redact {
-                            id: format!("framed-seam-{style}"),
-                            x: 145.,
-                            y: 70.,
-                            width: 40.,
-                            height: 24.,
-                            style: style.into(),
-                            intensity: 5.,
-                        }]);
-                        cx.notify();
-                    })
-                    .unwrap();
-                settle(cx, reopened.into());
-                let (png, matte, stage) = cx.update(|cx| {
-                    let editor = reopened.read(cx).unwrap();
-                    let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
-                    (
-                        editor.export_png().unwrap(),
-                        image::Rgba([
-                            (theme.r * 255.).round() as u8,
-                            (theme.g * 255.).round() as u8,
-                            (theme.b * 255.).round() as u8,
-                            255,
-                        ]),
-                        super::measured("editor-stage", 0),
-                    )
-                });
-                let saved = image::load_from_memory(&png).unwrap().to_rgba8();
-                let mut modified = [false, false];
-                for (x, y, pixel) in saved.enumerate_pixels() {
-                    if pixel != baseline.get_pixel(x, y) {
-                        modified[usize::from(x >= primary_width)] = true;
+                let mut plain_stripe = None;
+                for shape_order in ["none", "before", "after"] {
+                    reopened
+                        .update(cx, |editor, _, cx| {
+                            let stripe = Annotation::Rectangle {
+                                id: "framed-seam-stripe".into(),
+                                x: 156.,
+                                y: 70.,
+                                width: 2.,
+                                height: 24.,
+                                stroke: "#ff0000".into(),
+                                stroke_width: 1.,
+                                fill: Some("#ff0000".into()),
+                            };
+                            let redact = Annotation::Redact {
+                                id: format!("framed-seam-{style}"),
+                                x: 145.,
+                                y: 70.,
+                                width: 40.,
+                                height: 24.,
+                                style: style.into(),
+                                intensity: 5.,
+                            };
+                            let annotations = match shape_order {
+                                "before" => vec![stripe, redact],
+                                "after" => vec![redact, stripe],
+                                _ => vec![redact],
+                            };
+                            editor.history.replace_current(annotations);
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, reopened.into());
+                    let (png, matte, stage) = cx.update(|cx| {
+                        let editor = reopened.read(cx).unwrap();
+                        let theme =
+                            gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+                        (
+                            editor.export_png().unwrap(),
+                            image::Rgba([
+                                (theme.r * 255.).round() as u8,
+                                (theme.g * 255.).round() as u8,
+                                (theme.b * 255.).round() as u8,
+                                255,
+                            ]),
+                            super::measured("editor-stage", 0),
+                        )
+                    });
+                    let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+                    let stripe = saved
+                        .get_pixel(
+                            157,
+                            top_height.round() as u32 + title_bar.round() as u32 + 80,
+                        )
+                        .0;
+                    if shape_order == "none" {
+                        plain_stripe = Some(stripe);
                     }
-                }
-                assert_eq!(
-                    modified,
-                    [true, true],
-                    "{style} must affect both sides of the seam"
-                );
-                let mut expected =
-                    image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
-                image::imageops::overlay(&mut expected, &saved, 0, 0);
-                let screenshot = cx.capture_screenshot(reopened.into()).unwrap();
-                let left = (f32::from(stage.left()) * scale).round() as u32;
-                let top = (f32::from(stage.top()) * scale).round() as u32;
-                let actual = image::imageops::crop_imm(
-                    &screenshot,
-                    left,
-                    top,
-                    saved.width(),
-                    saved.height(),
-                )
-                .to_image();
-                actual
-                    .save(scratch.join(format!("gpui-{name}-{style}-preview.png")))
-                    .unwrap();
-                expected
-                    .save(scratch.join(format!("gpui-{name}-{style}-expected.png")))
-                    .unwrap();
-                for (x, y, actual) in actual.enumerate_pixels() {
-                    let expected = expected.get_pixel(x, y);
-                    assert!(
+                    if shape_order == "before" {
+                        assert!(stripe[1] > 0, "{name} {style} filtered stripe: {stripe:?}");
+                        assert_ne!(
+                            Some(stripe),
+                            plain_stripe,
+                            "{name} {style} must filter the earlier stripe"
+                        );
+                    }
+                    if shape_order == "after" {
+                        assert_eq!(stripe, [255, 0, 0, 255], "{name} {style} upper stripe");
+                    }
+                    let mut modified = [false, false];
+                    for (x, y, pixel) in saved.enumerate_pixels() {
+                        if pixel != baseline.get_pixel(x, y) {
+                            modified[usize::from(x >= primary_width)] = true;
+                        }
+                    }
+                    assert_eq!(
+                        modified,
+                        [true, true],
+                        "{style} must affect both sides of the seam"
+                    );
+                    let mut expected =
+                        image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+                    image::imageops::overlay(&mut expected, &saved, 0, 0);
+                    let screenshot = cx.capture_screenshot(reopened.into()).unwrap();
+                    let left = (f32::from(stage.left()) * scale).round() as u32;
+                    let top = (f32::from(stage.top()) * scale).round() as u32;
+                    let actual = image::imageops::crop_imm(
+                        &screenshot,
+                        left,
+                        top,
+                        saved.width(),
+                        saved.height(),
+                    )
+                    .to_image();
+                    actual
+                        .save(
+                            scratch.join(format!("gpui-{name}-{style}-{shape_order}-preview.png")),
+                        )
+                        .unwrap();
+                    expected
+                        .save(
+                            scratch.join(format!("gpui-{name}-{style}-{shape_order}-expected.png")),
+                        )
+                        .unwrap();
+                    for (x, y, actual) in actual.enumerate_pixels() {
+                        let expected = expected.get_pixel(x, y);
+                        assert!(
                         actual.0.iter().zip(expected.0).all(|(a, b)| a.abs_diff(b) <= 2),
                         "{name} {style} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
                     );
+                    }
+                    println!("{name} {style} shape {shape_order}: stripe {stripe:?}, preview matches export within two levels");
                 }
             }
         }

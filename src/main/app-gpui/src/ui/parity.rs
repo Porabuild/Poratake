@@ -1016,6 +1016,15 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_REDACTION_FRAME_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        for scale in [1., 1.25, 2.] {
+            workflows::framed_attachment_layout(&mut cx, &scratch, scale);
+        }
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_ROUNDED_REOPEN_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         workflows::simple_inset_preview(&mut cx, &scratch, 1.25, 20., false, 8., false);
