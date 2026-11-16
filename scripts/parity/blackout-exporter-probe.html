@@ -3,7 +3,11 @@
 <pre id="result">pending</pre>
 <script type="module">
   import { exportAnnotationToSvg } from '/src/renderer/components/editor/annotations/export-annotation.ts';
-  import { blackoutRegion } from '/src/renderer/hooks/useCanvasExport.ts';
+  import { blackoutRegion } from '/src/renderer/utils/redact.ts';
+  import RedactOverlay from '/src/renderer/components/editor/redact/redact-overlay.tsx';
+  import { createElement } from 'react';
+  import { flushSync } from 'react-dom';
+  import { createRoot } from 'react-dom/client';
 
   const results = [];
   for (const scale of [1, 1.25, 2]) {
@@ -148,9 +152,63 @@
       [12, 17],
     ]
   );
+  const source = document.createElement('canvas');
+  source.width = 100;
+  source.height = 80;
+  const sourceContext = source.getContext('2d');
+  sourceContext.fillStyle = '#ffffff';
+  sourceContext.fillRect(0, 0, 100, 80);
+  const sourceImage = new Image();
+  await new Promise((resolve, reject) => {
+    sourceImage.onload = resolve;
+    sourceImage.onerror = reject;
+    sourceImage.src = source.toDataURL('image/png');
+  });
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const previewAnnotation = { ...annotation, x: 8.8, y: 3.8, height: 12.3 };
+  flushSync(() =>
+    root.render(
+      createElement(RedactOverlay, {
+        image: sourceImage,
+        imageWidth: 100,
+        imageHeight: 80,
+        canvasWidth: 100,
+        canvasHeight: 80,
+        offsetX: 0,
+        offsetY: 0,
+        annotations: [previewAnnotation],
+        currentAnnotation: null,
+      })
+    )
+  );
+  const previewCanvas = container.querySelector('canvas');
+  const ratio = previewCanvas.width / 100;
+  const composed = document.createElement('canvas');
+  composed.width = previewCanvas.width;
+  composed.height = previewCanvas.height;
+  const composedContext = composed.getContext('2d');
+  composedContext.fillStyle = '#ffffff';
+  composedContext.fillRect(0, 0, composed.width, composed.height);
+  composedContext.drawImage(previewCanvas, 0, 0);
+  const previewBoundary = [
+    [Math.floor(21.05 * ratio), Math.floor(9 * ratio)],
+    [Math.floor(12 * ratio), Math.floor(16.05 * ratio)],
+    [Math.ceil(21.1 * ratio), Math.floor(9 * ratio)],
+    [Math.floor(12 * ratio), Math.ceil(16.1 * ratio)],
+  ].map(([x, y]) => ({
+    x,
+    y,
+    rgba: Array.from(composedContext.getImageData(x, y, 1, 1).data),
+  }));
+  root.unmount();
+  container.remove();
   document.querySelector('#result').textContent = JSON.stringify({
     samples: results,
     standaloneBoundary,
     farBoundary,
+    previewPixelRatio: ratio,
+    previewBoundary,
   });
 </script>
