@@ -4027,7 +4027,12 @@ recordings remain unverified. Weighting fractional pixelation-block edges by
 area reduced the same comparison to 5.67 levels against decoded export and 4.51
 against the full-size preview; it did not remove the mismatch. A separate
 high-frequency stripe probe also shows a difference from Electron's current
-pixel sampling. The result and reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
+pixel sampling. Composing the whole 4K frame at source resolution for every
+playback preview would add substantial CPU cost: a local synthetic case measured
+41.09 ms at full size versus 4.90 ms at 960×540, excluding decode, resizing and
+upload. See `tests/native/evidence/macos-ui/video-redaction-preview-timing-20261116.txt`;
+this does not measure live playback or slower machines. The result and
+reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
 `tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
 
 ## Review gate

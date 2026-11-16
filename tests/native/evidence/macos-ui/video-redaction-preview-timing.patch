@@ -1,0 +1,50 @@
+diff --git a/src/main/app-gpui/src/video/composition/mod.rs b/src/main/app-gpui/src/video/composition/mod.rs
+index c7e3ad1d..00d49abc 100644
+--- a/src/main/app-gpui/src/video/composition/mod.rs
++++ b/src/main/app-gpui/src/video/composition/mod.rs
+@@ -778,0 +779,45 @@ mod tests {
++    #[test]
++    #[ignore]
++    fn synthetic_redaction_preview_timing_probe() {
++        use crate::editor::annotations::Annotation;
++        use crate::windows::video_editor::model::DrawingSegment;
++        let mut config = Config::new(3840.0, 2160.0, state());
++        config.state.drawing_segments.push(DrawingSegment {
++            id: "timing".into(),
++            start_time: 0.0,
++            end_time: 4.0,
++            canvas_width: 3840.0,
++            canvas_height: 2160.0,
++            annotations: vec![Annotation::Redact {
++                id: "redact".into(),
++                x: 600.0,
++                y: 400.0,
++                width: 800.0,
++                height: 600.0,
++                style: "pixelate".into(),
++                intensity: 5.0,
++            }],
++        });
++        let mut engine = Engine::new(config);
++        let video = source(3840, 2160, Color::from_rgba8(127, 89, 31, 255));
++        let frames = || Frames {
++            video: Some(video.as_ref()),
++            camera: None,
++        };
++        for full in [false, true] {
++            let mut times = Vec::new();
++            for _ in 0..7 {
++                let start = std::time::Instant::now();
++                let frame = if full {
++                    engine.render_frame(1.0, frames())
++                } else {
++                    engine.render_frame_scaled(1.0, frames(), 960, 540)
++                };
++                std::hint::black_box(frame.unwrap());
++                times.push(start.elapsed().as_secs_f64() * 1000.0);
++            }
++            times.sort_by(|a, b| a.total_cmp(b));
++            eprintln!("TIMING full={full} median_ms={:.2}", times[3]);
++        }
++    }
++
