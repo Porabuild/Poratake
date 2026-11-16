@@ -3146,8 +3146,7 @@ coverage difference from the surrounding annotation stack, but Chrome is not
 the pinned Electron runtime and supersampling does not reproduce its pixels.
 The [samples and probe sources](tests/native/evidence/macos-ui/blackout-corner-results.json)
 are retained alongside the JSON; no production rendering change was made. The
-rounded-corner mismatch remains open pending a broader pinned-Electron comparison
-and preview/export verification.
+rounded-corner mismatch was observed before the ordering changes below.
 
 A later local macOS probe used the already-present Electron 43.4.0 runtime
 (Chromium 150) with a hidden, isolated window. For a synthetic magenta rectangle
@@ -3169,8 +3168,9 @@ order cases matched the earlier Electron reproduction exactly, including the
 rounded-blackout samples. The [actual-exporter samples](tests/native/evidence/macos-ui/blackout-order-actual-exporter-20261116.json)
 and [probe instructions](tests/native/evidence/macos-ui/blackout-order-probe-20261116.txt)
 are retained. This validates those export operations, not the complete Electron
-editor, its native window or physical display pixels. Backend-dependent corner
-coverage remains open.
+editor, its native window or physical display pixels. The later ordering changes
+below replace the compared composition sequence; the rasterizer coverage
+difference itself still exists for rounded geometry.
 
 The first actual-exporter fixture omitted Electron's initial rectangular blackout
 pass. Adding it did not change the 18 earlier samples because the shape covered
@@ -3293,6 +3293,33 @@ offscreen Electron harness has occasionally timed out during load and succeeded
 on retry; a framed top-attachment case timed out on its sizing condition in the
 latest run after an earlier pass. None of these generated tests verifies live
 capture or recording.
+
+After Electron switched to annotation-order composition, GPUI still applied
+all screenshot redactions before vector annotations. A generated regression
+confirmed that a red stripe under a later pixelation stayed fully red in the
+saved GPUI image. GPUI now applies each redaction and highlight in annotation
+order in both export and preview; selection hit testing follows the same order.
+The old rounded-blackout comparison above no longer describes a shape followed
+by blackout: the rectangular blackout now covers that shape first, as in the
+current Electron composition. This does not establish equal antialiasing for
+other rounded shapes.
+
+The native-scale cached blackout patch also rounded its width and height
+independently of the fractional origin, which could omit the last covered row
+or column. Its bounds now round the far edges, with tests for reversed and
+clipped rectangles and empty selections. An isolated GPUI Metal fixture compares
+the entire generated editor image with its saved and reopened PNG for both
+orders of pixelation and blur over a red stripe. In light and dark appearance at
+simulated 100% and 200% scale and 73%, 100% and 137% zoom, all 24 cases per
+theme match within one channel level; the stripe is filtered when below the effect and remains red when
+above it. The [dark](tests/native/evidence/macos-ui/ordered-redactions-dark-20261116.txt)
+and [light](tests/native/evidence/macos-ui/ordered-redactions-light-20261116.txt)
+measurements, plus the 2× pixelation [preview](tests/native/evidence/macos-ui/ordered-pixelate-preview-20261116.png)
+and [reopened image](tests/native/evidence/macos-ui/ordered-pixelate-reopened-20261116.png),
+are retained. The [blackout matrix](tests/native/evidence/macos-ui/ordered-redactions-blackout-20261116.txt)
+also matches within one level at four zooms and three simulated scales in dark
+appearance. These generated tests do not verify physical input, captured content,
+larger patches or all wallpaper and attachment combinations.
 
 The equivalent GPUI Metal fixture found a separate sampling boundary mismatch
 at simulated 2× scale and 137% zoom: the [preview](tests/native/evidence/macos-ui/scaled-blackout-before-preview-20261116.png)
@@ -4062,7 +4089,7 @@ appearance.
 | P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                                                                                     |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                                                                                             |
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance.                                                                      |
-| P1       | Screenshot annotation order                              | GPUI CPU preview/export match within two levels at tested fractional origins and scales, but the rounded blackout corner differs in the pinned Electron probe: GPUI `[191, 0, 191]`, Electron `[158, 0, 158]`. The GPUI regression test checks its current result within two levels; the Electron mismatch remains open. An older assertion expected 169, but its source has not been established. Verify live GPUI pixels, other corners, complex compositions and physical DPI. Electron shares screenshot preview and export; verify live editing.                                                                                    |
+| P1       | Screenshot annotation order                              | GPUI and Electron now apply redactions and highlights in annotation order. Generated GPUI Metal tests cover blur and pixelation in both orders, both themes, 73%/100%/137% zoom and simulated 100%/200% scale, and compare the entire preview with the reopened PNG. The earlier blackout corner comparison used the old order; rounded raster coverage can still differ. Verify live editing, other annotations, zooms, complex compositions and physical DPI.                                                                                                                                                                          |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                                                                                     |
 | P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |

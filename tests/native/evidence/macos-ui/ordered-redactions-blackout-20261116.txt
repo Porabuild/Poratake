@@ -1,0 +1,13 @@
+blackout scale 1, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1.37: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.5: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+scaled blackout and underlying annotation match reopened PNG at four zooms and three scales

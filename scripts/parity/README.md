@@ -246,6 +246,11 @@ Set `PORATAKE_PARITY_SCALED_BLACKOUT_ONLY=1` to compare a fractional blackout
 over a shape with its reopened PNG at four zooms and three simulated scales.
 Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to retain the 2×,
 137% comparison images.
+Set `PORATAKE_PARITY_REDACTION_ORDER_ONLY=1` to compare blur and pixelation
+before and after a shape with their reopened PNGs at simulated 1× and 2× scale
+and 73%, 100% and 137% zoom.
+The fixture checks that the shape is filtered only when it precedes the effect.
+`PORATAKE_PARITY_EVIDENCE` retains the 2× filtered previews and reopened PNGs.
 Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
 opaque source instead of the partially translucent generated region.
 Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,
@@ -405,11 +410,11 @@ in both themes. Local light/dark NVIDIA workflows at 1280px and 100% passed the
 updated checks and 191 exact baselines per theme; hosted verification is pending.
 A CPU case confirms the
 sampled backdrop matches export at a rounded fractional origin. Screenshot export
-and CPU preview patches now apply redactions before vectors and highlights, with
-an ordered rounded blackout pass. Eight Electron center samples are within two
-levels; one rounded corner differs by 22. Both blackout/shape orders match
-reopened PNG pixels at 73% and 150% zoom in those local workflows. The live editor
-case remains unverified.
+and CPU preview patches now apply redactions, vectors and highlights in annotation
+order, with a rounded blackout pass. Earlier Electron corner samples used the
+previous composition order. Both blackout/shape orders match reopened PNG pixels
+at 73% and 150% zoom in those local workflows. The live editor case remains
+unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain
