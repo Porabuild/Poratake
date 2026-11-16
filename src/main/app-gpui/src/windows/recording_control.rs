@@ -2161,8 +2161,6 @@ pub(crate) fn display_for_rect(
     cx: &mut App,
     rect: ScreenRect,
 ) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
-    let center_x = rect.x as f32 + rect.width as f32 / 2.0;
-    let center_y = rect.y as f32 + rect.height as f32 / 2.0;
     let displays = cx.displays();
     let geometries: Vec<_> = displays
         .iter()
@@ -2172,11 +2170,36 @@ pub(crate) fn display_for_rect(
             capture_display_geometry(bounds, scale)
         })
         .collect();
-    let selected = chrome::display_containing(&geometries, center_x, center_y)?;
+    #[cfg(target_os = "macos")]
+    let selected = *geometries.get(display_matching_rect(&geometries, rect)?)?;
+    #[cfg(not(target_os = "macos"))]
+    let selected = chrome::display_containing(
+        &geometries,
+        rect.x as f32 + rect.width as f32 / 2.0,
+        rect.y as f32 + rect.height as f32 / 2.0,
+    )?;
     displays
         .into_iter()
         .zip(geometries)
         .find_map(|(display, geometry)| (geometry == selected).then_some(display))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn display_matching_rect(displays: &[(f32, f32, f32, f32)], rect: ScreenRect) -> Option<usize> {
+    let (left, top) = (rect.x as f32, rect.y as f32);
+    let (right, bottom) = (left + rect.width as f32, top + rect.height as f32);
+    let mut best = None;
+    let mut best_area = 0.0;
+    for (index, &(x, y, width, height)) in displays.iter().enumerate() {
+        let overlap_width = (right.min(x + width) - left.max(x)).max(0.0);
+        let overlap_height = (bottom.min(y + height) - top.max(y)).max(0.0);
+        let area = overlap_width * overlap_height;
+        if area > best_area {
+            best = Some(index);
+            best_area = area;
+        }
+    }
+    best.or_else(|| (!displays.is_empty()).then_some(0))
 }
 
 fn capture_display_geometry(bounds: Bounds<Pixels>, scale: f32) -> (f32, f32, f32, f32) {
@@ -3305,6 +3328,75 @@ mod tests {
             chrome::display_containing(&displays, 1_920.0 * scale + 1_280.0 * scale / 2.0, 500.0),
             Some(second)
         );
+    }
+
+    #[test]
+    fn macos_recording_controls_use_the_largest_display_intersection() {
+        let displays = [(0.0, 0.0, 1000.0, 1000.0), (1000.0, 300.0, 1000.0, 300.0)];
+        let spanning = ScreenRect {
+            x: 700,
+            y: 100,
+            width: 800,
+            height: 800,
+        };
+        assert_eq!(
+            chrome::display_containing(&displays, 1100.0, 500.0),
+            Some(displays[1])
+        );
+        assert_eq!(display_matching_rect(&displays, spanning), Some(0));
+
+        let separated = [(0.0, 0.0, 800.0, 800.0), (1000.0, 0.0, 800.0, 800.0)];
+        assert_eq!(
+            display_matching_rect(
+                &separated,
+                ScreenRect {
+                    x: 700,
+                    y: 0,
+                    width: 500,
+                    height: 200
+                }
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            display_matching_rect(
+                &separated,
+                ScreenRect {
+                    x: 700,
+                    y: 0,
+                    width: 400,
+                    height: 200
+                }
+            ),
+            Some(0)
+        );
+
+        let negative_origins = [(-1600.0, -200.0, 1600.0, 900.0), (0.0, 0.0, 1920.0, 1080.0)];
+        assert_eq!(
+            display_matching_rect(
+                &negative_origins,
+                ScreenRect {
+                    x: -200,
+                    y: 100,
+                    width: 800,
+                    height: 400
+                }
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            display_matching_rect(
+                &displays,
+                ScreenRect {
+                    x: 1900,
+                    y: 700,
+                    width: 200,
+                    height: 200
+                }
+            ),
+            Some(0)
+        );
+        assert_eq!(display_matching_rect(&[], spanning), None);
     }
 
     #[test]

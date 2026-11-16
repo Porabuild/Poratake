@@ -316,6 +316,7 @@ pub fn recording_bar_origin(
     (x, y)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn display_containing(
     displays: &[(f32, f32, f32, f32)],
     point_x: f32,

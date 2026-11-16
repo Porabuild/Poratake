@@ -4211,6 +4211,18 @@ instead of passing an out-of-display source rectangle to ScreenCaptureKit.
 cover negative origins, all edges and connected-display metadata. An old area
 that still fits after a display rearrangement cannot be detected by this check;
 live rearrangement and the resulting error presentation remain unverified.
+For a window spanning displays, GPUI's macOS recording control and scroll panel
+now choose the display with the largest intersection with the target bounds,
+instead of choosing the display containing the bounds' center. This follows
+[Chromium's macOS display-matching rule](https://github.com/chromium/chromium/blob/150.0.7871.224/ui/display/mac/screen_mac.mm)
+for positive intersections. [Geometry tests](tests/native/evidence/macos-ui/recording-control-display-placement-20261117.txt)
+cover unequal overlaps, gaps, ties and negative origins; isolated
+[light](tests/native/evidence/macos-ui/recording-control-placement-light-20261117.png)
+and [dark](tests/native/evidence/macos-ui/recording-control-placement-dark-20261117.png)
+control fixtures also pass. When there is no intersection, GPUI retains its
+previous first-display fallback; Chromium uses the focused screen. Equal-area
+ties depend on display enumeration order. This machine has one physical display,
+so placement across real displays and mixed scale factors remains unverified.
 The delayed post-scroll callback and queued auto-scroll start now also retain their
 original session generation: stopping and restarting cannot turn an old callback
 into a second capture or start an unrelated session. The Swift fixture holds and
