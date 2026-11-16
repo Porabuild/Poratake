@@ -4023,8 +4023,11 @@ region. A separate comparison without encoding still differed by 10.14 levels
 between half-size and reduced full-size previews; the full-size preview versus
 decoded export differed by 1.84, and the unredacted control matched at the two
 preview sizes. This indicates an effect-scaling discrepancy in the fixture; live
-recordings remain unverified. The result and reproducible instrumentation patch
-are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
+recordings remain unverified. Weighting fractional pixelation-block edges by
+area reduced the same comparison to 5.67 levels against decoded export and 4.51
+against the full-size preview; it did not remove the mismatch. A separate
+high-frequency stripe probe also shows a difference from Electron's current
+pixel sampling. The result and reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
 `tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
 
 ## Review gate
