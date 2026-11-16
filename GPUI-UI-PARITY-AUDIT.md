@@ -4115,6 +4115,17 @@ this does not measure live playback or slower machines. The result and
 reproducible instrumentation patch are in `tests/native/evidence/macos-ui/video-pixelation-scaled-20261116.txt` and
 `tests/native/evidence/macos-ui/video-pixelation-scaled-diagnostic.patch`.
 
+Pixelation now averages aligned source blocks directly and fills repeated
+nearest-neighbor samples in runs; fractional block averaging retains the
+previous calculation. Generated tests check the block values and boundaries.
+A source-resolution crop experiment matched a full composition in one
+overlapping-redaction case and corrected the sampled half-size preview in that
+fixture. In a local synthetic 4K timing, the crop median decreased from 9.36 ms
+to 6.84 ms after the pixelation optimization; a separate small preview took
+4.91 ms. The crop is not used by the production preview, and its alpha, zoom,
+clipping, other scales and playback cost need broader verification. See the
+[fixture and timings](tests/native/evidence/macos-ui/video-redaction-crop-20261116.txt).
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA
