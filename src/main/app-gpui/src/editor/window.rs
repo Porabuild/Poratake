@@ -883,8 +883,7 @@ impl EditorWindow {
             background.timer(std::time::Duration::from_millis(16)).await;
             let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
                 base_image.as_ref().and_then(|base| {
-                    let base = base.to_rgba8();
-                    let pixmap = crate::editor::export::from_rgba(&base)?;
+                    let pixmap = crate::editor::export::from_dynamic_image(base)?;
                     crate::render::color_detection::dominant_inset_color(
                         pixmap.as_ref(),
                         balance_crop,

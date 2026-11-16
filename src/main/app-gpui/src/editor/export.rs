@@ -95,7 +95,7 @@ pub fn compose_with_layers(
         None => return RgbaImage::new(width, height),
     };
     if let Some(base) = base {
-        if let Some(pixmap) = from_rgba(&base.to_rgba8()) {
+        if let Some(pixmap) = from_dynamic_image(base) {
             canvas.draw_pixmap(pixmap.as_ref(), 0.0, 0.0, width as f32, height as f32);
         }
     }
@@ -826,7 +826,7 @@ pub fn render_backdrop(
     bool,
 )> {
     if composites_primary_backdrop(wallpaper, layers) {
-        let primary = from_rgba(&base?.to_rgba8())?;
+        let primary = from_dynamic_image(base?)?;
         let composite =
             compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
@@ -837,7 +837,7 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     if framed_composite_required(wallpaper, layers) {
-        let primary = from_rgba(&base?.to_rgba8())?;
+        let primary = from_dynamic_image(base?)?;
         let balance = wallpaper
             .balance
             .then(|| balance_bounds_pixmap(&primary))
@@ -864,7 +864,7 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
-        let primary = from_rgba(&base?.to_rgba8())?;
+        let primary = from_dynamic_image(base?)?;
         let cropped = wallpaper
             .balance
             .then(|| balance_bounds_pixmap(&primary))
@@ -1092,6 +1092,13 @@ pub fn render_backdrop(
     ))
 }
 
+pub fn from_dynamic_image(source: &image::DynamicImage) -> Option<Pixmap> {
+    match source.as_rgba8() {
+        Some(rgba) => from_rgba(rgba),
+        None => from_rgba(&source.to_rgba8()),
+    }
+}
+
 /// Converts an `image` RGBA buffer into a premultiplied pixmap.
 pub fn from_rgba(source: &RgbaImage) -> Option<Pixmap> {
     let mut pixmap = Pixmap::new(source.width().max(1), source.height().max(1))?;
@@ -1180,6 +1187,21 @@ pub fn redact_region(
 mod tests {
     use super::*;
     use crate::editor::wallpaper::preset;
+
+    #[test]
+    fn converts_dynamic_rgba_and_rgb_sources_identically() {
+        let rgba = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(256, 1, |x, _| {
+            image::Rgba([x as u8, 255 - x as u8, 80, x as u8])
+        }));
+        let rgb = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 1, |x, _| {
+            image::Rgb([x as u8, 255 - x as u8, 80])
+        }));
+        for source in [rgba, rgb] {
+            let actual = from_dynamic_image(&source).unwrap();
+            let expected = from_rgba(&source.to_rgba8()).unwrap();
+            assert_eq!(actual.data(), expected.data());
+        }
+    }
 
     #[test]
     fn tiled_preview_shadow_matches_the_full_rasterizer() {
