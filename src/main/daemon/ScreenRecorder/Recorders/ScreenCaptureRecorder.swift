@@ -7,6 +7,7 @@ import ScreenCaptureKit
 @available(macOS 12.3, *)
 class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var stream: SCStream?
+    private var finalizingStream: SCStream?
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -44,6 +45,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var lifecycle = RecorderLifecycleGuard()
     private var config: RecordingConfig?
     private var activeSessionID: RecorderSessionID?
+    private var streamStopFailure: Error?
     private var recordingDuration: Double = 0
     private var videoWidth: Int = 1920
     private var videoHeight: Int = 1080
@@ -69,6 +71,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var firstMicTime: CMTime?
 #if RECORDING_TIMELINE_TEST
     private(set) var testMicrophoneWrites: [(CMTime, CMTime)] = []
+    @MainActor var testOnStopping: (() -> Void)?
     private var testCameraClockTime: CMTime?
     private var testVideoBackpressure = false
     private var testMicrophoneClock: AnyObject?
@@ -1166,6 +1169,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             lifecycle.finishStop()
         }
 
+        #if RECORDING_TIMELINE_TEST
+        testOnStopping?()
+        #endif
+
         let cursorFilePath = cursorTracker.stop()
 
         var keysFilePath: String? = nil
@@ -1184,6 +1191,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         stopMicrophoneCapture()
 
+        finalizingStream = stream
         do {
             try await stream?.stopCapture()
         } catch {
@@ -1288,6 +1296,9 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             }
         }
 
+        if finishingError == nil {
+            finishingError = streamStopFailure
+        }
         if let finishingError { throw finishingError }
 
         if let path = finalSystemAudioPath, !systemAudioEverActive {
@@ -1320,18 +1331,30 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.handleStreamFailure(error, isCurrentStream: self.stream === stream)
+            self.handleStreamFailure(
+                error,
+                isCurrentStream: self.stream === stream || self.finalizingStream === stream
+            )
         }
     }
 
     @MainActor
     private func handleStreamFailure(_ error: Error, isCurrentStream: Bool) {
-        guard isCurrentStream,
-              state == .recording || state == .paused || lifecycle.isStarting,
-              let sessionID = activeSessionID else { return }
+        guard isCurrentStream, let sessionID = activeSessionID else { return }
+        let classified = RecorderError.streamFailure(error, capturingWindow: config?.windowID != nil)
+        if lifecycle.isStopping {
+            if case RecorderError.targetClosed = classified { return }
+            let native = error as NSError
+            if native.domain == SCStreamErrorDomain && native.code == SCStreamError.Code.userStopped.rawValue { return }
+            if streamStopFailure == nil {
+                streamStopFailure = RecorderError.capture("Screen capture stopped unexpectedly: \(error.localizedDescription)")
+            }
+            return
+        }
+        guard state == .recording || state == .paused || lifecycle.isStarting else { return }
         onError?(
             sessionID,
-            RecorderError.streamFailure(error, capturingWindow: config?.windowID != nil)
+            classified
         )
     }
 
@@ -1371,6 +1394,8 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         totalPauseDuration = .zero
         recordingDuration = 0
         activeSessionID = nil
+        streamStopFailure = nil
+        finalizingStream = nil
     }
 }
 
