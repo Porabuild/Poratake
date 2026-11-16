@@ -3848,6 +3848,12 @@ window's current display when that display is available. A
 [native selection fixture](tests/native/evidence/macos-ui/recording-display-selection-20261116.txt)
 checks generated and active-display metadata; live unplug, actual recording and
 the startup error's presentation remain unverified.
+The recorder now also rejects an area that no longer fits the chosen display
+instead of passing an out-of-display source rectangle to ScreenCaptureKit.
+[Native geometry checks](tests/native/evidence/macos-ui/recording-area-display-bounds-20261116.txt)
+cover negative origins, all edges and connected-display metadata. An old area
+that still fits after a display rearrangement cannot be detected by this check;
+live rearrangement and the resulting error presentation remain unverified.
 The delayed post-scroll callback and queued auto-scroll start now also retain their
 original session generation: stopping and restarting cannot turn an old callback
 into a second capture or start an unrelated session. The Swift fixture holds and
