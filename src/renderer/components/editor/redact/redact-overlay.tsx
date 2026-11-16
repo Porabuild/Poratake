@@ -8,6 +8,7 @@ import {
 import type { Annotation, RedactAnnotation } from '@/types/editor';
 import type { BalanceCrop } from '@/renderer/utils/color-detection';
 import {
+  blackoutRegion,
   pixelateImageData,
   REDACT_INTENSITY_MAP,
 } from '@/renderer/utils/redact';
@@ -159,30 +160,6 @@ const blurRegion = (
   );
 };
 
-const blackoutRegion = (
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  scale: number
-) => {
-  const scaledX = Math.floor(x * scale);
-  const scaledY = Math.floor(y * scale);
-  const scaledWidth = Math.ceil(width * scale);
-  const scaledHeight = Math.ceil(height * scale);
-
-  const clampedX = Math.max(0, scaledX);
-  const clampedY = Math.max(0, scaledY);
-  const clampedWidth = scaledWidth - (clampedX - scaledX);
-  const clampedHeight = scaledHeight - (clampedY - scaledY);
-
-  if (clampedWidth <= 0 || clampedHeight <= 0) return;
-
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(clampedX, clampedY, clampedWidth, clampedHeight);
-};
-
 const applyRedactEffect = (
   ctx: CanvasRenderingContext2D,
   sourceCanvas: HTMLCanvasElement,
@@ -232,7 +209,13 @@ const applyRedactEffect = (
       );
       break;
     case 'blackout':
-      blackoutRegion(ctx, rectX, rectY, rectW, rectH, scale);
+      blackoutRegion(
+        ctx,
+        rectX * scale,
+        rectY * scale,
+        rectW * scale,
+        rectH * scale
+      );
       break;
   }
 };

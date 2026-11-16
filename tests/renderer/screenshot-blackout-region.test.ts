@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { blackoutRegion } from '@/renderer/hooks/useCanvasExport';
+import { blackoutRegion } from '@/renderer/utils/redact';
 
 describe('screenshot blackout pixel coverage', () => {
   it.each([

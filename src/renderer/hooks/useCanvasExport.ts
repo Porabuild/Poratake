@@ -18,6 +18,7 @@ import { renderNoise } from '@/renderer/utils/noise';
 import { pointsToCoordinates } from '@/renderer/utils/annotation-geometry';
 import { loadImage } from '@/renderer/utils/image';
 import {
+  blackoutRegion,
   pixelateImageData,
   REDACT_INTENSITY_MAP,
 } from '@/renderer/utils/redact';
@@ -201,26 +202,6 @@ const blurRegion = (
     clampedWidth,
     clampedHeight
   );
-};
-
-export const blackoutRegion = (
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number
-) => {
-  if (width <= 0 || height <= 0) return;
-
-  const clampedX = Math.max(0, Math.floor(x));
-  const clampedY = Math.max(0, Math.floor(y));
-  const clampedWidth = Math.ceil(x + width) - clampedX;
-  const clampedHeight = Math.ceil(y + height) - clampedY;
-
-  if (clampedWidth <= 0 || clampedHeight <= 0) return;
-
-  ctx.fillStyle = '#000000';
-  ctx.fillRect(clampedX, clampedY, clampedWidth, clampedHeight);
 };
 
 const applyHighlightEffect = (
