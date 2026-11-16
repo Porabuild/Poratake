@@ -2755,7 +2755,7 @@ impl VideoEditorWindow {
         }
     }
 
-    fn preview_content_rect(&self) -> Option<drawing_overlay::Rect> {
+    pub(crate) fn preview_content_rect(&self) -> Option<drawing_overlay::Rect> {
         let composition = self.composition_size?;
         let bounds = (*self.preview_bounds.borrow())?;
         drawing_overlay::contain_rect(drawing_overlay::Rect::from_bounds(bounds), composition)

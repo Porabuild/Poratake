@@ -207,7 +207,7 @@ fn recorded_editor_and_export(
     target: &str,
 ) {
     use crate::windows::registry::{self, WindowKind};
-    use crate::windows::video_editor::{model, preview, VideoEditorWindow};
+    use crate::windows::video_editor::{model, preview, sidebar::SidebarTab, VideoEditorWindow};
 
     let video = cx.update(|cx| {
         registry::handle(WindowKind::VideoEditor, cx)
@@ -253,9 +253,44 @@ fn recorded_editor_and_export(
             .unwrap()
     });
     cx.advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| {
+                editor.activate_tab(SidebarTab::Drawing, cx);
+                editor.update_drawing_tools(cx, |tools| {
+                    tools.active_tool = "rectangle".into();
+                    tools.selected_color = "#ff0000".into();
+                    tools.shape_fill_mode = "filled".into();
+                });
+            })
+            .unwrap();
+    });
+    settle(cx, window);
+    let content = cx.update(|cx| {
+        video
+            .read(cx)
+            .unwrap()
+            .preview_content_rect()
+            .expect("recording preview bounds")
+    });
+    drag_rectangle(
+        cx,
+        window,
+        point(px(content.x), px(content.y)),
+        (content.width * 0.2, content.height * 0.2),
+        (content.width * 0.4, content.height * 0.4),
+    );
+    settle(cx, window);
+    cx.advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
     let state = model::load_state(project);
     assert_eq!(state.zoom_segments.len(), 1);
+    assert!(matches!(
+        state.drawing_segments.as_slice(),
+        [model::DrawingSegment { annotations, .. }]
+            if matches!(annotations.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
+    ));
     assert!((state.zoom_segments[0].start_time - 0.25).abs() < 0.02);
     assert!((state.zoom_segments[0].end_time - 1.5).abs() < 0.02);
     let mut preview = preview::Source::open(project, state.clone()).unwrap();
@@ -311,6 +346,28 @@ fn recorded_editor_and_export(
     without_zoom.zoom_segments.clear();
     let mut baseline = preview::Source::open(project, without_zoom).unwrap();
     let baseline = preview::to_render_image_opaque(&baseline.compose(1.0, None).unwrap()).unwrap();
+    let mut without_drawing = state.clone();
+    without_drawing.drawing_segments.clear();
+    let mut undrawn = preview::Source::open(project, without_drawing).unwrap();
+    let undrawn = preview::to_render_image_opaque(&undrawn.compose(1.0, None).unwrap()).unwrap();
+    let drawing_changes = expected
+        .as_bytes(0)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(undrawn.as_bytes(0).unwrap().as_chunks::<4>().0.iter())
+        .filter(|(edited, original)| {
+            edited[..3]
+                .iter()
+                .zip(&original[..3])
+                .any(|(edited, original)| edited.abs_diff(*original) >= 16)
+        })
+        .count();
+    assert!(
+        drawing_changes > 20,
+        "{target} drawing did not change the preview"
+    );
     assert_ne!(
         expected.as_bytes(0),
         baseline.as_bytes(0),
@@ -369,6 +426,34 @@ fn recorded_editor_and_export(
             "{target} preview and decoded export differ at {time}s: {mean}"
         );
         if time == 1.0 {
+            let undrawn = undrawn.as_bytes(0).unwrap();
+            let mut drawing_pixels = 0_u64;
+            let mut drawing_error = 0_u64;
+            let mut undrawn_error = 0_u64;
+            for ((edited, original), actual) in expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(undrawn.as_chunks::<4>().0.iter())
+                .zip(decoded.bgra.as_chunks::<4>().0.iter())
+            {
+                if !(0..3).any(|channel| edited[channel].abs_diff(original[channel]) >= 16) {
+                    continue;
+                }
+                drawing_pixels += 1;
+                for channel in 0..3 {
+                    drawing_error += u64::from(edited[channel].abs_diff(actual[channel]));
+                    undrawn_error += u64::from(original[channel].abs_diff(actual[channel]));
+                }
+            }
+            assert!(drawing_pixels > 20);
+            assert!(
+                drawing_error < undrawn_error,
+                "{target} export does not contain the drawing: {drawing_error} vs {undrawn_error}"
+            );
+            eprintln!(
+                "fixture {target} drawing export error: edited {drawing_error}, undrawn {undrawn_error} across {drawing_pixels} pixels"
+            );
             let original = baseline.as_bytes(0).unwrap();
             let mut changed_pixels = 0;
             let mut edited_error = 0_u64;
