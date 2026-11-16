@@ -3232,9 +3232,14 @@ them while the recorder's public state is still idle. A [native callback fixture
 checks session and error classification without starting a stream. Actual
 callback timing remains unverified. The recorder now also retains unexpected
 current-stream failures handled during Stop until its writers finish, then
-reports the error while preserving the movie. A [generated-movie fixture](tests/native/evidence/macos-ui/recording-stop-stream-error-20261116.txt)
-decodes the retained file and checks normal closure and user-stop cases. Real
-callbacks handled too late in finalization or after Stop remain unverified.
+reports the error while preserving the movie. A stream-specific synchronized
+inbox now also carries a callback received before finalization even if main-thread
+delivery is delayed, and the recorder module emits active-session errors before
+scheduling cleanup. A [generated-movie fixture](tests/native/evidence/macos-ui/recording-stop-stream-error-20261116.txt)
+decodes the retained file and checks delayed callbacks, stale streams, normal
+closure and user-stop cases. Startup errors are emitted after successful Start
+and before a queued Stop completes. Live startup timing and real callbacks
+arriving after the inbox closes or after Stop remain unverified.
 
 The area variant checks that a failed start hides the temporary overlay and
 passes a synthetic toolbar ID in `excludedWindowIds`. It also writes generated

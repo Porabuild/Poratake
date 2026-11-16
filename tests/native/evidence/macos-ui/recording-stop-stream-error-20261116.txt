@@ -4,7 +4,7 @@ The recorder changed its public state to idle before awaiting ScreenCaptureKit's
 stop, so a failure delivered to its callback handler while Stop was in progress
 was ignored. It now retains an unexpected failure from the current stream and
 returns CAPTURE_ERROR after finishing its writers. A closed window and a
-user-stopped stream remain normal stop cases. The stream reference is retained
+user-stopped stream remain normal stop cases. Stream identity is retained
 through finalization so a callback handled after the active stream is cleared can
 still be associated with the stopping session.
 
@@ -22,3 +22,33 @@ The complete daemon typechecked for arm64 and x86_64 macOS, and the generated
 recording-timeline fixture passed. This fixture does not exercise a real
 ScreenCaptureKit delegate. A callback delivered too late to be handled before
 finalization or after the Stop response remains unverified.
+
+Queued callback follow-up, 2026-11-16
+
+A second fixture ordering records a synthetic failure from a background queue
+while the main actor is occupied by Stop, then deliberately leaves its
+main-actor handler undelivered. The previous finalization returned success.
+The recorder now records callbacks in a synchronized, stream-specific inbox and
+drains it before the Stop response. The generated movie remains decodable and
+Stop reports the failure. The fixture checks concurrent inbox delivery, stale
+streams, callbacks after the inbox closes, a new session, normal window closure,
+and user-stop errors received before versus during explicit Stop.
+
+This establishes the injected ordering, not ScreenCaptureKit's real callback
+schedule. A callback received after the inbox is closed remains outside the
+completed stop result; real-device timing and post-response errors remain open.
+
+A separate module fixture injects recorder errors immediately before and during
+Stop. Previously the module queued event delivery, so Stop could clear the
+session before that task ran. Active-session errors are now emitted before
+cleanup is scheduled; the fixture checks capture errors, window closure and a
+stale session. Errors received while startup is still pending retain their
+startup ordering: they wait for a successful Start response and are then
+emitted synchronously before a queued Stop can complete. The fixture also
+checks multiple startup errors and rejects errors from a failed startup in the
+replacement session. Live timing remains unverified.
+The module fixture covers both screen and iOS recorder event routes using
+synthetic errors; it does not enumerate or access an iOS device.
+
+find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 | xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings tests/native/recording-module-error-order.swift -o /tmp/poratake-recording-module-error-order
+/tmp/poratake-recording-module-error-order
