@@ -3193,6 +3193,18 @@ rectangles. An isolated GPUI Metal workflow in light and dark mode also checked
 the right and bottom export pixels and compared its displayed preview with the
 saved PNG. These generated cases do not prove all live redaction geometries.
 
+Electron's screenshot preview had a separate copy of the older rounding rule,
+so it could still leave a far-edge pixel visible after export was fixed. Preview
+and export now share the same coverage helper. A component test exercises the
+preview at simulated 1× and 2×. In an isolated Electron 43.4.0 offscreen window,
+the actual preview component and exporter produced black at the tested far-edge
+pixels and white just outside them at 1×; the [samples](tests/native/evidence/macos-ui/blackout-preview-electron-20261116.json)
+use a generated image. An attempt to use DevTools device emulation crashed the
+isolated Electron process, and a separate fixture-only ratio override stalled
+and was terminated. Neither establishes a product defect or a physical 2×
+result. The preview and export use different pixel grids when their scale factors
+differ, so broader pixel equality remains unverified.
+
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
 red levels. In the same Electron process, an SVG rectangle with rounded corners

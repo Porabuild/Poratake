@@ -45,3 +45,13 @@ env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/blackout-e
 The Electron process uses a temporary user-data directory and a hidden offscreen
 window. Stop the Vite server when finished. Output is JSON with Electron version,
 GPU status and sample pixels; no exact match is assumed across GPU backends.
+
+The probe also renders the actual Electron RedactOverlay component over a
+generated white image, then composites its canvas over white for sampling. At
+the offscreen window's 1x device pixel ratio, the tested far-edge preview pixels
+and the corresponding export pixels were black, while sampled pixels just
+outside were white. blackout-preview-electron-20261116.json records those
+samples. The component regression additionally checks simulated 2x canvas
+dimensions, reversed and clipped selections, and offsets. The offscreen probe
+does not establish physical 2x output or compare all pixels at unequal preview
+and export scales.
