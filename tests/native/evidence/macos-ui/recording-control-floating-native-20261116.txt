@@ -31,4 +31,6 @@ tooltip presentation, real capture and output exclusion were not tested here.
 Verification: cargo fmt --check and strict clippy on the parity executable
 passed. Strict clippy with --all-targets and --features parity failed in the
 test target on existing unused parity-only imports and helper methods; it did
-not report an error in the executable target.
+not report an error in the executable target. A follow-up gated those helpers
+to the standalone probe, and strict clippy then passed with --all-targets and
+--features parity on macOS.

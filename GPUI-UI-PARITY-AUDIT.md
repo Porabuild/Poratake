@@ -897,6 +897,10 @@ windows. The [native measurements](tests/native/evidence/macos-ui/recording-cont
 also record a normal-level control check and timer edge calculations on the one
 available display. No real capture, physical hover or tooltip presentation was
 tested in this probe.
+The macOS parity-feature test build now excludes standalone native-probe helpers
+from unit-test builds. Strict clippy passes for all parity targets, and the
+parity-enabled recording-control, capture-preview and selector-overlay suites
+pass 15, 39 and 30 tests respectively. These suites use simulated interaction.
 A background click on the generated preview was delivered to the lowered probe
 window, but the helper observed no change and the hover controls did not appear.
 The physical pointer did not enter the window, so this does not establish whether
