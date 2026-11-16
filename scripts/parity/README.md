@@ -246,7 +246,8 @@ Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
 opaque source instead of the partially translucent generated region.
 Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,
 shadowed screenshot with its reopened PNG at 73%, 100% and 150% effective zoom,
-and to check redactions over a plain transparent image.
+check macOS frames with and without shadows, and check redactions over a plain
+transparent image.
 Set `PORATAKE_PARITY_PIXELATION_ONLY=1` to check restored pixelation on opaque,
 transparent and clipped generated images across the simulated scale matrix.
 With the Vite server above running, run

@@ -1005,6 +1005,7 @@ pub fn capture_editor_interaction_states() {
     if std::env::var_os("PORATAKE_PARITY_ROUNDED_REOPEN_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         workflows::simple_inset_preview(&mut cx, &scratch, 1.25, 20., false, 8., false);
+        workflows::simple_inset_preview(&mut cx, &scratch, 2., 20., false, 8., false);
         workflows::simple_inset_preview(&mut cx, &scratch, 1.25, 0., false, 0., false);
         cx.update(|cx| crate::state::state(cx).daemon.stop());
         return;

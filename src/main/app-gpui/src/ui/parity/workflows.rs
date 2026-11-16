@@ -3429,7 +3429,11 @@ fn check_inset_reopen(
             (width, height),
             "{label} stage size at {effective_zoom}"
         );
-        if label == "rounded-inset-transparent" && effective_zoom == 0.73 {
+        if matches!(
+            label,
+            "rounded-inset-transparent" | "transparent-macos-dark-50"
+        ) && effective_zoom == 0.73
+        {
             for (name, image, x, y) in [
                 ("preview", &preview, left, top),
                 ("reopened", &reopened, flat_left, flat_top),
@@ -3998,6 +4002,28 @@ pub(super) fn simple_inset_preview(
                         .unwrap();
                 }
                 assert_eq!(mismatched, 0, "framed inset {scale}x, {style}, shadow {shadow}, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
+                if [1.25, 2.].contains(&scale)
+                    && padding_setting == 20.
+                    && !with_background
+                    && !clipped_blur
+                    && style.starts_with("macos-")
+                {
+                    if shadow == 0. {
+                        assert_eq!(saved.get_pixel(0, 0).0[3], 0);
+                    }
+                    let path = scratch.join(format!("transparent-{style}-{shadow}.png"));
+                    saved.save(&path).unwrap();
+                    check_inset_reopen(
+                        cx,
+                        editor,
+                        scale,
+                        &path,
+                        (margin, margin + title),
+                        scratch,
+                        &format!("transparent-{style}-{shadow}"),
+                        &[0.73, 1.0, 1.5],
+                    );
+                }
                 if scale == 1.25
                     && padding_setting == 20.
                     && with_background
