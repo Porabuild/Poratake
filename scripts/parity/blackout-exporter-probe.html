@@ -5,7 +5,8 @@
   import { exportAnnotationToSvg } from '/src/renderer/components/editor/annotations/export-annotation.ts';
   import { blackoutRegion } from '/src/renderer/utils/redact.ts';
   import RedactOverlay from '/src/renderer/components/editor/redact/redact-overlay.tsx';
-  import { createElement } from 'react';
+  import SvgAnnotationsOverlay from '/src/renderer/components/editor/svg-annotations-overlay.tsx';
+  import { createElement, Fragment } from 'react';
   import { flushSync } from 'react-dom';
   import { createRoot } from 'react-dom/client';
 
@@ -153,11 +154,11 @@
     ]
   );
   const source = document.createElement('canvas');
-  source.width = 100;
-  source.height = 80;
+  source.width = 200;
+  source.height = 160;
   const sourceContext = source.getContext('2d');
   sourceContext.fillStyle = '#ffffff';
-  sourceContext.fillRect(0, 0, 100, 80);
+  sourceContext.fillRect(0, 0, 200, 160);
   const sourceImage = new Image();
   await new Promise((resolve, reject) => {
     sourceImage.onload = resolve;
@@ -170,17 +171,32 @@
   const previewAnnotation = { ...annotation, x: 8.8, y: 3.8, height: 12.3 };
   flushSync(() =>
     root.render(
-      createElement(RedactOverlay, {
-        image: sourceImage,
-        imageWidth: 100,
-        imageHeight: 80,
-        canvasWidth: 100,
-        canvasHeight: 80,
-        offsetX: 0,
-        offsetY: 0,
-        annotations: [previewAnnotation],
-        currentAnnotation: null,
-      })
+      createElement(
+        Fragment,
+        null,
+        createElement(RedactOverlay, {
+          image: sourceImage,
+          imageWidth: 100,
+          imageHeight: 80,
+          canvasWidth: 100,
+          canvasHeight: 80,
+          offsetX: 0,
+          offsetY: 0,
+          annotations: [previewAnnotation],
+          currentAnnotation: null,
+        }),
+        createElement(SvgAnnotationsOverlay, {
+          annotations: [previewAnnotation],
+          currentAnnotation: null,
+          width: 100,
+          height: 80,
+          selectedAnnotationIds: [],
+          onSelect: () => {},
+          editingTextId: null,
+          activeTool: 'select',
+          showBlackoutFill: true,
+        })
+      )
     )
   );
   const previewCanvas = container.querySelector('canvas');
@@ -202,6 +218,117 @@
     y,
     rgba: Array.from(composedContext.getImageData(x, y, 1, 1).data),
   }));
+  const previewSvg = container.querySelector('svg').cloneNode(true);
+  previewSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  previewSvg
+    .querySelectorAll('rect[fill="transparent"]')
+    .forEach(node => node.remove());
+  const previewUrl = URL.createObjectURL(
+    new Blob([previewSvg.outerHTML], { type: 'image/svg+xml' })
+  );
+  const previewImage = new Image();
+  await new Promise((resolve, reject) => {
+    previewImage.onload = resolve;
+    previewImage.onerror = reject;
+    previewImage.src = previewUrl;
+  });
+  composedContext.drawImage(
+    previewImage,
+    0,
+    0,
+    composed.width,
+    composed.height
+  );
+  URL.revokeObjectURL(previewUrl);
+  const nativeExport = document.createElement('canvas');
+  nativeExport.width = 200;
+  nativeExport.height = 160;
+  const exportContext = nativeExport.getContext('2d');
+  exportContext.fillStyle = '#ffffff';
+  exportContext.fillRect(0, 0, 200, 160);
+  blackoutRegion(
+    exportContext,
+    previewAnnotation.x * 2,
+    previewAnnotation.y * 2,
+    previewAnnotation.width * 2,
+    previewAnnotation.height * 2
+  );
+  const exportMarkup = exportAnnotationToSvg(previewAnnotation, {
+    offsetX: 0,
+    offsetY: 0,
+    scale: 2,
+  });
+  const exportSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160">${exportMarkup}</svg>`;
+  const exportUrl = URL.createObjectURL(
+    new Blob([exportSvg], { type: 'image/svg+xml' })
+  );
+  const exportImage = new Image();
+  await new Promise((resolve, reject) => {
+    exportImage.onload = resolve;
+    exportImage.onerror = reject;
+    exportImage.src = exportUrl;
+  });
+  exportContext.drawImage(exportImage, 0, 0);
+  URL.revokeObjectURL(exportUrl);
+  const nativeRegion = exportContext.getImageData(17, 7, 26, 26).data;
+  let nativeRegionNonBlack = 0;
+  for (let i = 0; i < nativeRegion.length; i += 4) {
+    if (
+      nativeRegion[i] ||
+      nativeRegion[i + 1] ||
+      nativeRegion[i + 2] ||
+      nativeRegion[i + 3] !== 255
+    ) {
+      nativeRegionNonBlack++;
+    }
+  }
+  const scaledExport = document.createElement('canvas');
+  scaledExport.width = composed.width;
+  scaledExport.height = composed.height;
+  const scaledContext = scaledExport.getContext('2d');
+  scaledContext.imageSmoothingEnabled = true;
+  scaledContext.imageSmoothingQuality = 'high';
+  scaledContext.drawImage(
+    nativeExport,
+    0,
+    0,
+    scaledExport.width,
+    scaledExport.height
+  );
+  const scaleComparison = [
+    [8, 9],
+    [21, 9],
+    [12, 3],
+    [12, 16],
+  ].map(([x, y]) => ({
+    x,
+    y,
+    preview: Array.from(composedContext.getImageData(x, y, 1, 1).data),
+    export: Array.from(scaledContext.getImageData(x, y, 1, 1).data),
+  }));
+  const previewPixels = composedContext.getImageData(
+    0,
+    0,
+    composed.width,
+    composed.height
+  ).data;
+  const exportPixels = scaledContext.getImageData(
+    0,
+    0,
+    scaledExport.width,
+    scaledExport.height
+  ).data;
+  let differentPixels = 0;
+  let maximumDifference = 0;
+  for (let i = 0; i < previewPixels.length; i += 4) {
+    const difference = Math.max(
+      ...Array.from({ length: 4 }, (_, channel) =>
+        Math.abs(previewPixels[i + channel] - exportPixels[i + channel])
+      )
+    );
+    if (difference > 2) differentPixels++;
+    maximumDifference = Math.max(maximumDifference, difference);
+  }
   root.unmount();
   container.remove();
   document.querySelector('#result').textContent = JSON.stringify({
@@ -210,5 +337,16 @@
     farBoundary,
     previewPixelRatio: ratio,
     previewBoundary,
+    scaleComparison,
+    scaleComparisonMetrics: {
+      differentPixels,
+      maximumDifference,
+      nativeRegionPixels: 676,
+      nativeRegionNonBlack,
+    },
+    scaleComparisonImages: {
+      preview: composed.toDataURL('image/png'),
+      export: scaledExport.toDataURL('image/png'),
+    },
   });
 </script>
