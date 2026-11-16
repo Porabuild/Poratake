@@ -143,6 +143,11 @@ impl RenderOnce for EditorCanvas {
             && (wallpaper.inset <= 0.0 || inset_unframed || layered_composite)
             && (wallpaper.corners <= 0.0 || overlay_above)
             && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
+        let frame_surface = if wallpaper.is_active_with_layers(!snap.layers.is_empty()) {
+            theme.surface
+        } else {
+            theme.background
+        };
         let stage_bounds = Rc::new(RefCell::new(None));
         let mut frame = div()
             .relative()
@@ -159,7 +164,7 @@ impl RenderOnce for EditorCanvas {
             .when(wallpaper.shadow > 0.0 && !transparent_backdrop, |el| {
                 el.shadow_2xl()
             })
-            .when(!transparent_backdrop, |el| el.bg(theme.surface));
+            .when(!transparent_backdrop, |el| el.bg(frame_surface));
 
         if !layered_composite {
             if let Some(image) = snap.image.clone() {
@@ -227,7 +232,7 @@ impl RenderOnce for EditorCanvas {
             if transparent_backdrop && self.snapshot.borrow().backdrop.is_none() {
                 theme.surface_secondary
             } else {
-                theme.surface
+                frame_surface
             },
         );
         let stage_surface =

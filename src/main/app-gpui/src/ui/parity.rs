@@ -1002,6 +1002,27 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_ROUNDED_REOPEN_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        workflows::simple_inset_preview(&mut cx, &scratch, 1.25, 20., false, 8., false);
+        workflows::simple_inset_preview(&mut cx, &scratch, 1.25, 0., false, 0., false);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_PIXELATION_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        for scale in [1., 1.25, 2.] {
+            for transparent in [false, true] {
+                for clipped in [false, true] {
+                    workflows::restored_pixelation(&mut cx, &scratch, scale, transparent, clipped);
+                }
+            }
+        }
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_BALANCED_FRAME_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         fractional_frame_workflow::run(&mut cx, &scratch);

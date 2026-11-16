@@ -3429,6 +3429,18 @@ fn check_inset_reopen(
             (width, height),
             "{label} stage size at {effective_zoom}"
         );
+        if label == "rounded-inset-transparent" && effective_zoom == 0.73 {
+            for (name, image, x, y) in [
+                ("preview", &preview, left, top),
+                ("reopened", &reopened, flat_left, flat_top),
+            ] {
+                image::imageops::crop_imm(image, x, y, width, height)
+                    .to_image()
+                    .save(scratch.join(format!("{label}-{name}-crop.png")))
+                    .unwrap();
+            }
+            eprintln!("{label} crop: {left},{top} {width}x{height}");
+        }
         let mismatched = (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .filter(|&(x, y)| {
@@ -3449,6 +3461,33 @@ fn check_inset_reopen(
                 .unwrap();
         }
         assert_eq!(mismatched, 0, "{label} reopen at {effective_zoom}x");
+        if label == "rounded-inset-transparent" {
+            let margin = 8;
+            let mismatched = (0..height + margin * 2)
+                .flat_map(|y| (0..width + margin * 2).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    preview
+                        .get_pixel(left - margin + x, top - margin + y)
+                        .0
+                        .iter()
+                        .zip(
+                            reopened
+                                .get_pixel(flat_left - margin + x, flat_top - margin + y)
+                                .0,
+                        )
+                        .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                })
+                .count();
+            if mismatched > 0 {
+                preview
+                    .save(scratch.join(format!("{label}-{effective_zoom}-outer-preview.png")))
+                    .unwrap();
+                reopened
+                    .save(scratch.join(format!("{label}-{effective_zoom}-outer-reopened.png")))
+                    .unwrap();
+            }
+            assert_eq!(mismatched, 0, "{label} outer pixels at {effective_zoom}x");
+        }
     }
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())
         .unwrap();
@@ -3720,13 +3759,7 @@ pub(super) fn simple_inset_preview(
     let (bounds, png, matte) = cx.update(|cx| {
         let editor = editor.read(cx).unwrap();
         let theme = crate::theme::vars::active_theme(cx);
-        let theme = gpui::Rgba::from(
-            if inset_setting == 0. && padding_setting == 0. && !with_background {
-                theme.surface
-            } else {
-                theme.background
-            },
-        );
+        let theme = gpui::Rgba::from(theme.background);
         (
             editor.bounds.borrow().unwrap(),
             editor.export_png().unwrap(),
@@ -3833,11 +3866,7 @@ pub(super) fn simple_inset_preview(
                 (100 + margin * 2, 80 + margin * 2),
                 "inset {name} must surround the image in the saved PNG"
             );
-            if scale == 1.25
-                && padding_setting == 20.
-                && with_background
-                && name == "rounded-shadow"
-            {
+            if scale == 1.25 && padding_setting == 20. && name == "rounded-shadow" {
                 saved
                     .save(scratch.join("rounded-inset-output.png"))
                     .unwrap();
@@ -3871,11 +3900,7 @@ pub(super) fn simple_inset_preview(
                     .unwrap();
             }
             assert_eq!(mismatched, 0, "inset {name} preview differs from export at {scale}x, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
-            if scale == 1.25
-                && padding_setting == 20.
-                && with_background
-                && name == "rounded-shadow"
-            {
+            if scale == 1.25 && padding_setting == 20. && name == "rounded-shadow" {
                 let path = scratch.join("rounded-inset-output.png");
                 check_inset_reopen(
                     cx,
@@ -3884,7 +3909,11 @@ pub(super) fn simple_inset_preview(
                     &path,
                     (offset_x, offset_y),
                     scratch,
-                    "rounded-inset",
+                    if with_background {
+                        "rounded-inset"
+                    } else {
+                        "rounded-inset-transparent"
+                    },
                     &[0.73, 1.0, 1.5],
                 );
             }
@@ -6444,7 +6473,7 @@ pub(super) fn restored_pixelation(
     settle(cx, editor.into());
     let (bounds, png, matte) = cx.update(|cx| {
         let editor = editor.read(cx).unwrap();
-        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).surface);
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
         (
             editor.bounds.borrow().unwrap(),
             editor.export_png().unwrap(),
