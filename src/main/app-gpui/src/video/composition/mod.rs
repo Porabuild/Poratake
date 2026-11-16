@@ -804,6 +804,8 @@ mod tests {
         }
     }
 
+    include!("redaction_crop_tests.rs");
+
     fn camera_engine(
         camera_segments: Vec<crate::windows::video_editor::model::CameraSegment>,
     ) -> Engine {
