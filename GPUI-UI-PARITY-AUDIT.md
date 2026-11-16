@@ -885,6 +885,18 @@ and [light](tests/native/evidence/macos-ui/native-preview-normal-level-light-202
 The helper captured those windows through its own ScreenCaptureKit access; no
 Poratake capture or recording was made. The production floating level, physical
 hover, native tooltip presentation and capture exclusion remain unverified.
+A later isolated probe checked both themes at the actual AppKit popup level 101.
+AppKit reported borderless windows without native shadows; after layout the
+recording control measured 276×44 points, with no transparent side margin, and
+an outside hit test reached another window. The generated GPUI scenes contain a
+single toolbar border in [dark](tests/native/evidence/macos-ui/recording-control-floating-scene-dark-20261116.png)
+and [light](tests/native/evidence/macos-ui/recording-control-floating-scene-light-20261116.png).
+These images omit the macOS compositor, so the outer wrapper in the user's
+screenshot remains unresolved. The helper still could not target the floating
+windows. The [native measurements](tests/native/evidence/macos-ui/recording-control-floating-native-20261116.txt)
+also record a normal-level control check and timer edge calculations on the one
+available display. No real capture, physical hover or tooltip presentation was
+tested in this probe.
 A background click on the generated preview was delivered to the lowered probe
 window, but the helper observed no change and the hover controls did not appear.
 The physical pointer did not enter the window, so this does not establish whether
