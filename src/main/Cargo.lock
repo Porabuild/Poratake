@@ -2618,8 +2618,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9303c771abf2acff2a96d706f69d9a82088c4770173a07cce88f0002431d887d"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2689,8 +2687,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-apple"
 version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c0bea8ffa563d3a1ada533e148bb55be7fb873c178979e889a3d1204f8e1b91"
 dependencies = [
  "anyhow",
  "async-task",
@@ -2849,8 +2845,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7410cfdaa1fa55a414346cc492d18ce340e3a8b6d0ac3213b984ed690c82b92"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -6154,8 +6148,6 @@ dependencies = [
 [[package]]
 name = "rfd"
 version = "0.15.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef2bee61e6cffa4635c72d7d81a84294e28f0930db0ddcb0f66d10244674ebed"
 dependencies = [
  "ashpd 0.11.1",
  "block2 0.6.2",

@@ -1,5 +1,8 @@
 default_job = "gpui"
 
+[all_jobs]
+kill = ["taskkill", "/T", "/F", "/PID"]
+
 [jobs.gpui]
 command = [
   "cargo",
@@ -13,7 +16,6 @@ need_stdout = true
 allow_warnings = true
 background = false
 on_change_strategy = "kill_then_restart"
-kill = ["taskkill", "/T", "/F", "/PID"]
 default_watch = false
 apply_gitignore = false
 watch = [

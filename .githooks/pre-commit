@@ -16,6 +16,7 @@ IFS='
 '
 for FILE in $(git diff --cached --name-only --diff-filter=ACMR); do
   case "$FILE" in
+    vendor/*) continue ;;
     *.ts | *.tsx | *.mts | *.cts | *.js | *.jsx | *.mjs | *.cjs | *.json | *.css | *.md) ;;
     *) continue ;;
   esac

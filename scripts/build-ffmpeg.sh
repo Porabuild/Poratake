@@ -136,6 +136,7 @@ build_for_arch() {
         --disable-libx265 \
         --disable-libvpx \
         --disable-libaom \
+        --enable-zlib \
         --enable-videotoolbox \
         --enable-audiotoolbox \
         --disable-doc \

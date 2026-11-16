@@ -25,7 +25,7 @@ if (baconVersion.status !== 0 || !baconVersion.stdout.startsWith('bacon 3.')) {
 await runDevSession('dev:gpui', ({ root, env }) => {
   const args = ['--headless', '--project', 'src/main', '--job', 'gpui'];
   if (process.platform !== 'win32') {
-    args.push('--config-toml', '[jobs.gpui]\nkill = ["kill", "-TERM"]');
+    args.push('--config-toml', '[all_jobs]\nkill = ["kill", "-TERM"]');
   }
   const child = spawn('bacon', args, {
     stdio: 'inherit',
