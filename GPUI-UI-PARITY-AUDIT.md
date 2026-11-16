@@ -4143,12 +4143,14 @@ interactive playback and slower Macs remain unmeasured. The [results and
 commands](tests/native/evidence/macos-ui/video-redaction-preview-fix-20261116.txt)
 record the limits and the isolated fake-daemon checks.
 
-A deterministic 48-case redaction matrix subsequently checked 49,197 pixels
-inside effects against the resized full composition within one channel level,
-and 783,568 pixels away from effects against the unchanged scaled composition
-exactly. Its 89 generated effects included blur and pixelation at all ten
+A deterministic 48-case redaction matrix subsequently checked 99,258 pixels
+in affected output rectangles, including their boundaries, against the resized
+full composition within one channel level. The other 847,734 pixels matched
+both the unchanged scaled composition and a preview without redactions exactly.
+The drawings used three authoring-canvas sizes. Its 89 generated effects included blur and pixelation at all ten
 intensities, clipped and reverse-dragged rectangles, ten overlaps, and selected
-camera/zoom cases. A shared canvas region read now copies bounded rows rather
+camera/zoom cases. A separate generated test checks composed pixels at segment
+start and end times, including two effects active at the same instant. A shared canvas region read now copies bounded rows rather
 than testing every pixel. It preserves transparent padding for clipped and
 off-canvas reads. In two alternating same-process trials on an 800×600 region,
 the previous read took upper medians of 2.154 and 2.021 ms versus 0.275 and
