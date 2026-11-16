@@ -848,12 +848,14 @@ pub fn screenshot_blackout_rect(
     origin: (f64, f64),
 ) -> (f64, f64, f64, f64) {
     let (x, y, width, height) = normalize_rect(x, y, width, height);
-    (
-        (x + origin.0).floor() - origin.0,
-        (y + origin.1).floor() - origin.1,
-        width.ceil(),
-        height.ceil(),
-    )
+    let left = (x + origin.0).floor();
+    let top = (y + origin.1).floor();
+    if width <= 0. || height <= 0. {
+        return (left - origin.0, top - origin.1, 0., 0.);
+    }
+    let right = (x + origin.0 + width).ceil();
+    let bottom = (y + origin.1 + height).ceil();
+    (left - origin.0, top - origin.1, right - left, bottom - top)
 }
 
 pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
@@ -2415,6 +2417,7 @@ mod tests {
             (5.25, 4.75, 8.5, 3.25, 12.3, 12.4, 13, 25, 14),
             (0., 0., 20.8, 15.65, -12.3, -12.4, 8, 20, 9),
             (0., 0., -2.5, 3.25, 12.3, 12.4, 0, 9, 9),
+            (0., 0., 8.8, 3.8, 12.3, 12.3, 8, 21, 9),
         ] {
             let mut canvas = Canvas::new(40, 32).unwrap();
             canvas.fill_all(Color::WHITE);
@@ -2436,6 +2439,54 @@ mod tests {
                     "origin ({offset_x}, {offset_y}), rect ({x}, {y}, {width}, {height}), pixel ({column}, {row})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn screenshot_blackout_covers_bottom_edge_without_extending_past_it() {
+        let mut canvas = Canvas::new(32, 24).unwrap();
+        canvas.fill_all(Color::WHITE);
+        draw_all_screenshot(
+            &mut canvas,
+            &[Annotation::Redact {
+                id: "blackout".into(),
+                x: 8.8,
+                y: 3.8,
+                width: 12.3,
+                height: 12.3,
+                style: "blackout".into(),
+                intensity: 5.,
+            }],
+            1.,
+        );
+        assert_eq!(canvas.pixmap().pixel(12, 16).unwrap().red(), 0);
+        assert_eq!(canvas.pixmap().pixel(12, 17).unwrap().red(), 255);
+        assert_eq!(canvas.pixmap().pixel(22, 9).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn empty_screenshot_blackout_does_not_paint_a_pixel() {
+        for (width, height) in [(0., 12.3), (12.3, 0.)] {
+            let mut canvas = Canvas::new(32, 24).unwrap();
+            canvas.fill_all(Color::WHITE);
+            draw_all_screenshot(
+                &mut canvas,
+                &[Annotation::Redact {
+                    id: "empty".into(),
+                    x: 8.8,
+                    y: 3.8,
+                    width,
+                    height,
+                    style: "blackout".into(),
+                    intensity: 5.,
+                }],
+                1.,
+            );
+            assert!(canvas
+                .pixmap()
+                .pixels()
+                .iter()
+                .all(|pixel| pixel.red() == 255));
         }
     }
 

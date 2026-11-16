@@ -203,19 +203,19 @@ const blurRegion = (
   );
 };
 
-const blackoutRegion = (
+export const blackoutRegion = (
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   width: number,
   height: number
 ) => {
-  const flooredX = Math.floor(x);
-  const flooredY = Math.floor(y);
-  const clampedX = Math.max(0, flooredX);
-  const clampedY = Math.max(0, flooredY);
-  const clampedWidth = Math.ceil(width) - (clampedX - flooredX);
-  const clampedHeight = Math.ceil(height) - (clampedY - flooredY);
+  if (width <= 0 || height <= 0) return;
+
+  const clampedX = Math.max(0, Math.floor(x));
+  const clampedY = Math.max(0, Math.floor(y));
+  const clampedWidth = Math.ceil(x + width) - clampedX;
+  const clampedHeight = Math.ceil(y + height) - clampedY;
 
   if (clampedWidth <= 0 || clampedHeight <= 0) return;
 

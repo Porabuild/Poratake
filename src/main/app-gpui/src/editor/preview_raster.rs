@@ -1778,10 +1778,10 @@ mod tests {
         let bgra = to_bgra(&base);
         let annotations = [Annotation::Redact {
             id: "blackout".into(),
-            x: 8.5,
-            y: 3.25,
+            x: 8.8,
+            y: 3.8,
             width: 12.3,
-            height: 12.4,
+            height: 12.3,
             style: "blackout".into(),
             intensity: 5.,
         }];
