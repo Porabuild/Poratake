@@ -1,0 +1,70 @@
+{
+  "electron": "43.4.0",
+  "preview": {
+    "x": 590,
+    "y": 345.5,
+    "width": 100,
+    "height": 80,
+    "dpr": 1,
+    "composition": {
+      "width": 200,
+      "height": 160,
+      "rect": {
+        "x": 590,
+        "y": 345.5,
+        "width": 100,
+        "height": 80,
+        "top": 345.5,
+        "right": 690,
+        "bottom": 425.5,
+        "left": 590
+      },
+      "cssWidth": "100px",
+      "cssHeight": "80px"
+    }
+  },
+  "bounds": {
+    "x": 1180,
+    "y": 691,
+    "width": 200,
+    "height": 160
+  },
+  "differentPixels": 1356,
+  "maximumDifference": 208,
+  "differentOuterPixels": 716,
+  "differentNearBlackoutPixels": 640,
+  "nonBlackInSelection": 676,
+  "blackPreviewWhiteExport": 0,
+  "blackPreviewWhiteExportBounds": null,
+  "nonFixtureExportPixels": 676,
+  "reopenedPreview": {
+    "x": 590,
+    "y": 345.5,
+    "width": 100,
+    "height": 80,
+    "dpr": 1,
+    "composition": {
+      "width": 200,
+      "height": 160,
+      "rect": {
+        "x": 590,
+        "y": 345.5,
+        "width": 100,
+        "height": 80,
+        "top": 345.5,
+        "right": 690,
+        "bottom": 425.5,
+        "left": 590
+      },
+      "cssWidth": "100px",
+      "cssHeight": "80px"
+    }
+  },
+  "differentReopenedPixels": 0,
+  "maximumReopenedDifference": 0,
+  "blackPreviewLighterReopened": 0,
+  "blackPreviewWhiteReopened": 0,
+  "chromaticPreviewInSelection": 668,
+  "pureRedInSelection": 0,
+  "canvasEqual": true
+}

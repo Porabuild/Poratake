@@ -6,7 +6,11 @@ import {
   forwardRef,
   useImperativeHandle,
 } from 'react';
-import type { Annotation, ToolType } from '@/types/editor';
+import type {
+  Annotation,
+  AnnotationExportGeometry,
+  ToolType,
+} from '@/types/editor';
 import {
   getBoundingBox,
   boxesIntersect,
@@ -40,7 +44,11 @@ import {
 } from './annotations';
 
 export interface SvgAnnotationsOverlayHandle {
-  getSvgForExport: (scale: number) => string;
+  getSvgForExport: (
+    scale: number,
+    annotations?: Annotation[],
+    geometry?: AnnotationExportGeometry
+  ) => string;
 }
 
 interface SvgAnnotationsOverlayProps {
@@ -63,6 +71,8 @@ interface SvgAnnotationsOverlayProps {
   zoom?: number;
   activeTool?: ToolType;
   showBlackoutFill?: boolean;
+  hidePaint?: boolean;
+  showDraft?: boolean;
 }
 
 interface MarqueeState {
@@ -123,6 +133,8 @@ const SvgAnnotationsOverlay = forwardRef<
       zoom = 1,
       activeTool = 'select',
       showBlackoutFill = false,
+      hidePaint = false,
+      showDraft = false,
     },
     ref
   ) => {
@@ -658,7 +670,12 @@ const SvgAnnotationsOverlay = forwardRef<
       }
     };
 
-    const renderAnnotation = (ann: Annotation, isPreview = false) => {
+    const renderAnnotation = (
+      ann: Annotation,
+      isPreview = false,
+      decorationOnly = false,
+      hitOnly = false
+    ) => {
       const isSelected = selectedAnnotationIds.includes(ann.id);
 
       const commonProps = {
@@ -666,6 +683,8 @@ const SvgAnnotationsOverlay = forwardRef<
         offsetY,
         isSelected,
         isPreview,
+        decorationOnly,
+        hitOnly,
         onMouseDown: handleMouseDown,
         onDoubleClick: handleDoubleClick,
       };
@@ -695,7 +714,7 @@ const SvgAnnotationsOverlay = forwardRef<
           return renderRedact({
             annotation: ann,
             ...commonProps,
-            showBlackoutFill,
+            showBlackoutFill: showBlackoutFill && !decorationOnly,
           });
         default:
           return null;
@@ -703,13 +722,21 @@ const SvgAnnotationsOverlay = forwardRef<
     };
 
     const getSvgForExport = useCallback(
-      (scale: number): string => {
-        const scaledWidth = width * scale;
-        const scaledHeight = height * scale;
+      (
+        scale: number,
+        annotationOverride?: Annotation[],
+        geometry?: AnnotationExportGeometry
+      ): string => {
+        const scaledWidth = geometry?.width ?? width * scale;
+        const scaledHeight = geometry?.height ?? height * scale;
 
-        const exportProps = { offsetX, offsetY, scale };
+        const exportProps = {
+          offsetX: geometry?.offsetX ?? offsetX,
+          offsetY: geometry?.offsetY ?? offsetY,
+          scale,
+        };
 
-        const annotationsContent = annotations
+        const annotationsContent = (annotationOverride ?? annotations)
           .map(ann => exportAnnotationToSvg(ann, exportProps))
           .join('');
 
@@ -745,9 +772,32 @@ const SvgAnnotationsOverlay = forwardRef<
         onMouseMove={handleCombinedMouseMove}
         onMouseUp={handleCombinedMouseUp}
       >
-        <g>
-          {annotations.map(ann => renderAnnotation(ann))}
+        <g
+          opacity={hidePaint ? 0 : 1}
+          visibility={hidePaint ? 'hidden' : 'visible'}
+        >
+          {annotations.map(ann =>
+            renderAnnotation(ann, false, false, hidePaint)
+          )}
           {currentAnnotation && renderAnnotation(currentAnnotation, true)}
+        </g>
+        {hidePaint &&
+          annotations
+            .filter(
+              ann =>
+                selectedAnnotationIds.includes(ann.id) ||
+                (activeTool === 'select' && ann.type === 'redact')
+            )
+            .map(ann => renderAnnotation(ann, false, true))}
+        {hidePaint &&
+          showDraft &&
+          currentAnnotation &&
+          renderAnnotation(
+            currentAnnotation,
+            true,
+            currentAnnotation.type === 'redact'
+          )}
+        <g>
           {annotations.map(ann => (
             <g key={`handles-${ann.id}`}>{renderResizeHandles(ann)}</g>
           ))}

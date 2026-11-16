@@ -22,6 +22,7 @@ export function renderRedact({
   isPreview,
   onMouseDown,
   showBlackoutFill = false,
+  hitOnly = false,
 }: RedactRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
   const x = ann.x + offsetX;
@@ -38,7 +39,7 @@ export function renderRedact({
       key={key}
       style={{
         cursor: isPreview ? 'default' : 'move',
-        pointerEvents: isPreview ? 'none' : 'auto',
+        pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >

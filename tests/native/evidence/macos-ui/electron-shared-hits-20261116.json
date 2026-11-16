@@ -1,0 +1,14 @@
+{
+  "electron": "43.4.0",
+  "selected": [
+    "rectangle",
+    "circle",
+    "number",
+    "arrow",
+    "line",
+    "redact",
+    "text",
+    "pen",
+    "highlight"
+  ]
+}

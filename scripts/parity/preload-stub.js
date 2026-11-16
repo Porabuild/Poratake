@@ -20,6 +20,17 @@ const BLACKOUT_ORDER_FIXTURE = query.get('fixture') === 'blackout-order';
 const BLACKOUT_SCALE_FIXTURE =
   query.get('fixture') === 'blackout-scale' || BLACKOUT_ORDER_FIXTURE;
 const BLACKOUT_REOPEN_FIXTURE = query.get('fixture') === 'blackout-reopen';
+const ORDER_SHAPE = {
+  id: 'parity-shape',
+  type: 'rectangle',
+  x: 10,
+  y: 6,
+  width: 8,
+  height: 8,
+  stroke: '#ff0000',
+  strokeWidth: 1,
+  fill: '#ff0000',
+};
 const isList = channel => /list$|:list/.test(channel);
 
 const windowParams = async () => {
@@ -30,25 +41,42 @@ const windowParams = async () => {
         imageUrl: IMAGE,
         ...(BLACKOUT_SCALE_FIXTURE || BLACKOUT_REOPEN_FIXTURE
           ? {
-              width: 100,
-              height: 80,
+              width: Number(query.get('displayWidth') || 100),
+              height: Number(query.get('displayHeight') || 80),
               ...(BLACKOUT_SCALE_FIXTURE
                 ? {
                     editorState: {
+                      wallpaper: {
+                        aspectRatio: query.get('aspectRatio') || 'auto',
+                        inset: Number(query.get('inset') || 0),
+                        windowFrame: { style: query.get('frame') || 'none' },
+                        noise: Number(query.get('noise') || 0),
+                        gradient: query.has('noise')
+                          ? {
+                              id: 'parity-noise',
+                              colors: ['#5080b0', '#5080b0'],
+                              angle: 0,
+                            }
+                          : null,
+                      },
+                      layers: query.has('attachment')
+                        ? [
+                            {
+                              id: 'parity-attachment',
+                              base64: query.get('attachment'),
+                              naturalWidth: 40,
+                              naturalHeight: 22,
+                              edge: query.get('attachmentEdge') || 'right',
+                            },
+                          ]
+                        : [],
                       annotations: [
-                        ...(BLACKOUT_ORDER_FIXTURE
+                        ...(BLACKOUT_ORDER_FIXTURE &&
+                        query.get('shapeAfter') !== '1'
                           ? [
-                              {
-                                id: 'parity-under-blackout',
-                                type: 'rectangle',
-                                x: 10,
-                                y: 6,
-                                width: 8,
-                                height: 8,
-                                stroke: '#ff0000',
-                                strokeWidth: 1,
-                                fill: '#ff0000',
-                              },
+                              query.has('brokenSvg')
+                                ? { ...ORDER_SHAPE, fill: '#ff0000" invalid<' }
+                                : ORDER_SHAPE,
                             ]
                           : []),
                         {
@@ -58,9 +86,17 @@ const windowParams = async () => {
                           y: 3.8,
                           width: 12.3,
                           height: 12.3,
-                          style: 'blackout',
+                          style: query.get('redactStyle') || 'blackout',
                           intensity: 5,
                         },
+                        ...(BLACKOUT_ORDER_FIXTURE &&
+                        query.get('shapeAfter') === '1'
+                          ? [
+                              query.has('brokenSvg')
+                                ? { ...ORDER_SHAPE, fill: '#ff0000" invalid<' }
+                                : ORDER_SHAPE,
+                            ]
+                          : []),
                       ],
                     },
                   }

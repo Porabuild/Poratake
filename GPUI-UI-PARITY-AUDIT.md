@@ -3219,7 +3219,8 @@ and probe are retained. All 676 pixels touched by the selection were opaque
 black in the native-resolution export; the difference appears after resampling.
 It does not exercise the full
 editor, its interaction guides, other compositions or a physical display. The
-preview/export difference remains open.
+preview/export difference was reproduced in the full editor below and has since
+been addressed there.
 
 An offscreen Electron 43.4.0 screenshot-editor fixture now reproduces the
 scaled blackout difference through the actual save shortcut. It uses a generated
@@ -3252,15 +3253,46 @@ red rectangle underneath the blackout appeared in 388 preview pixels while the
 saved selection was black. The [baseline ordering result](tests/native/evidence/macos-ui/blackout-editor-order-baseline-20261116.json),
 [trial measurements](tests/native/evidence/macos-ui/blackout-editor-order-trial-20261116.json)
 and [trial preview](tests/native/evidence/macos-ui/blackout-editor-order-trial-preview-20261116.png)
-are retained. Neither trial was kept in production. A correct solution still
-needs to reconcile the differently scaled preview layers with the exported
-composition while preserving annotation order.
-Electron's export hook now exposes its composed canvas separately from PNG or
-JPEG encoding as preparation for sharing that composition. An isolated
-Electron fixture checks byte-identical canvas and encoded PNG results for four
-generated frame, transparency and attachment combinations in light and dark
-styles. The interactive editor still paints separate layers, so this refactor
-does not yet resolve the blackout preview mismatch.
+are retained. Neither trial was kept in production.
+
+Electron's screenshot editor now previews the same native-pixel composition it
+exports. Geometry is shared for the image, aspect ratio, frame, inset and
+attachments, and the compositor applies vector annotations and redactions in
+their recorded order. The generated offscreen editor comparison now finds zero
+same-size differences from the reopened PNG in the original blackout case,
+including the previously misleading edge. The [preview](tests/native/evidence/macos-ui/electron-shared-blackout-preview-20261116.png),
+[saved PNG](tests/native/evidence/macos-ui/electron-shared-blackout-export-20261116.png),
+[reopened image](tests/native/evidence/macos-ui/electron-shared-blackout-reopened-20261116.png)
+and [measurements](tests/native/evidence/macos-ui/electron-shared-blackout-result-20261116.json)
+are retained. A shape underneath remains covered;
+an earlier shape is filtered by pixelation or blur, and a later shape remains
+visible. Selection, dragging and resizing are exercised before save and reopen.
+The fixture also covers generated attachment, frame, zoom and transparency
+cases, and nine annotation types remain selectable through the interaction
+layer. The [interaction](tests/native/evidence/macos-ui/electron-shared-interaction-20261116.json),
+[attachment](tests/native/evidence/macos-ui/electron-shared-attachment-20261116.json),
+[aspect-ratio](tests/native/evidence/macos-ui/electron-shared-aspect-20261116.json),
+[pixelation](tests/native/evidence/macos-ui/electron-shared-pixelate-before-20261116.json),
+[blur](tests/native/evidence/macos-ui/electron-shared-blur-before-20261116.json)
+and [selection](tests/native/evidence/macos-ui/electron-shared-hits-20261116.json)
+measurements are retained. An invalid SVG or attached image produces a preview error and prevents
+the incomplete composition from being saved. The previous preview stays visible
+with an updating indicator while a new one is composed.
+
+Noise now uses a repeatable varied pattern: a generated 50%-noise case that
+previously differed at 2,104 displayed pixels matches its reopened image in the
+offscreen fixture ([measurements](tests/native/evidence/macos-ui/electron-shared-noise-20261116.json)).
+The background is cached while noise is enabled; a separate generated fixture
+checks [cache invalidation](tests/native/evidence/macos-ui/electron-shared-cache-20261116.json).
+A local 4K
+synthetic canvas render and forced pixel readback measured roughly 14–27 ms
+without noise and 33–48 ms for a warm noisy background; the first noisy render
+was about 689 ms. These are not interactive latency or memory measurements, and
+large redactions, slower hardware and physical displays remain unverified. The
+offscreen Electron harness has occasionally timed out during load and succeeded
+on retry; a framed top-attachment case timed out on its sizing condition in the
+latest run after an earlier pass. None of these generated tests verifies live
+capture or recording.
 
 The equivalent GPUI Metal fixture found a separate sampling boundary mismatch
 at simulated 2× scale and 137% zoom: the [preview](tests/native/evidence/macos-ui/scaled-blackout-before-preview-20261116.png)
@@ -4030,7 +4062,7 @@ appearance.
 | P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, rounded inset tiles, plain or framed shadows and unshadowed frames have CPU checks; real GPUI GPU previews and other combinations remain unverified.                                                                                                                                                     |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                                                                                             |
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance.                                                                      |
-| P1       | Screenshot annotation order                              | GPUI CPU preview/export match within two levels at tested fractional origins and scales, but the rounded blackout corner differs in the pinned Electron probe: GPUI `[191, 0, 191]`, Electron `[158, 0, 158]`. The GPUI regression test checks its current result within two levels; the Electron mismatch remains open. An older assertion expected 169, but its source has not been established. Verify live GPUI pixels, other corners, complex compositions and physical DPI. Electron screenshot preview paints blackout in export order; DOM tests cover both orders and selection.                                                |
+| P1       | Screenshot annotation order                              | GPUI CPU preview/export match within two levels at tested fractional origins and scales, but the rounded blackout corner differs in the pinned Electron probe: GPUI `[191, 0, 191]`, Electron `[158, 0, 158]`. The GPUI regression test checks its current result within two levels; the Electron mismatch remains open. An older assertion expected 169, but its source has not been established. Verify live GPUI pixels, other corners, complex compositions and physical DPI. Electron shares screenshot preview and export; verify live editing.                                                                                    |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, real stitching, clipboard and remaining attachment cases; compare output with Electron.                                                                                                                                                                                                                                                                                     |
 | P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |

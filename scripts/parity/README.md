@@ -265,12 +265,22 @@ to compare a generated 2× image's blackout preview with its saved and reopened
 PNG using the actual screenshot editor. The fixture hides the dashed editor
 guide for the comparison and intercepts the save through its fake preload.
 Set `PORATAKE_BLACKOUT_ORDER=1` to add a shape under the blackout and check that
-it stays hidden. Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to
-retain the preview, saved and reopened PNGs.
+it stays hidden; `PORATAKE_SHAPE_AFTER=1` places the shape afterward. Set
+`PORATAKE_REDACT_STYLE` to `pixelate` or `blur` to check those effects instead.
+`PORATAKE_ZOOM_STEPS`, `PORATAKE_ASPECT_RATIO`, `PORATAKE_FRAME`,
+`PORATAKE_ATTACHMENT`, `PORATAKE_TRANSPARENT` and `PORATAKE_NOISE` vary the
+generated composition. `PORATAKE_INTERACTION=1` selects, drags and resizes the
+blackout before saving and comparing the reopened image. Set
+`PORATAKE_PARITY_EVIDENCE` to an existing directory to retain the preview, saved
+and reopened PNGs. The fixture checks generated pixels and does not capture a
+display. Its offscreen Electron load can time out under heavy system load.
 Run `env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/shared-composition-probe.cjs`
 to compare the shared export canvas with the encoded PNG for generated framed,
-transparent and attached images in both appearances. This checks the renderer
-and encoder; the interactive preview still uses separate layers.
+transparent and attached images in both appearances. The screenshot editor now
+uses this same composition for its preview. `PORATAKE_ANNOTATION_HITS=1` checks
+selection of nine annotation types, and `PORATAKE_COMPOSITION_CACHE=1` checks
+cached background invalidation. `PORATAKE_COMPOSITION_PERF=1` measures a
+synthetic 4K render; add `PORATAKE_COMPOSITION_PERF_NOISE=1` to include noise.
 Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
 cancellation, timeout, retry and display-edge fixture workflows.
 The balanced macOS frame reference runs the Electron export hook in a browser

@@ -68,6 +68,8 @@ export function renderHighlight({
   offsetY,
   isSelected,
   isPreview,
+  decorationOnly = false,
+  hitOnly = false,
   onMouseDown,
 }: HighlightRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
@@ -87,7 +89,7 @@ export function renderHighlight({
       key={key}
       style={{
         cursor: isPreview ? 'default' : 'move',
-        pointerEvents: isPreview ? 'none' : 'auto',
+        pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
         mixBlendMode: 'multiply',
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
@@ -100,7 +102,9 @@ export function renderHighlight({
           strokeWidth={3}
         />
       )}
-      <path d={pathData} fill={ann.fill} opacity={ann.opacity} />
+      {!decorationOnly && (
+        <path d={pathData} fill={ann.fill} opacity={ann.opacity} />
+      )}
     </g>
   );
 }

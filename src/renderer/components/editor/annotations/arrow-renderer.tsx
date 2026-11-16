@@ -87,6 +87,8 @@ export function renderArrow({
   offsetY,
   isSelected,
   isPreview,
+  decorationOnly = false,
+  hitOnly = false,
   onMouseDown,
 }: ArrowRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
@@ -111,7 +113,7 @@ export function renderArrow({
       key={key}
       style={{
         cursor: isPreview ? 'default' : 'move',
-        pointerEvents: isPreview ? 'none' : 'auto',
+        pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >
@@ -136,22 +138,26 @@ export function renderArrow({
           )}
         </>
       )}
-      <path
-        d={linePath}
-        fill="none"
-        stroke={ann.stroke}
-        strokeWidth={ann.strokeWidth}
-        strokeLinecap="round"
-      />
-      {headPath && (
-        <path
-          d={headPath}
-          fill={isPolygonHead ? ann.stroke : 'none'}
-          stroke={ann.stroke}
-          strokeWidth={isPolygonHead ? 1 : ann.strokeWidth}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+      {!decorationOnly && (
+        <>
+          <path
+            d={linePath}
+            fill="none"
+            stroke={ann.stroke}
+            strokeWidth={ann.strokeWidth}
+            strokeLinecap="round"
+          />
+          {headPath && (
+            <path
+              d={headPath}
+              fill={isPolygonHead ? ann.stroke : 'none'}
+              stroke={ann.stroke}
+              strokeWidth={isPolygonHead ? 1 : ann.strokeWidth}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+        </>
       )}
     </g>
   );

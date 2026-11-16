@@ -39,6 +39,7 @@ import {
 import { getFontFamilyCSS } from '@/renderer/components/editor/text/text-utils';
 import type {
   Annotation,
+  AnnotationExportGeometry,
   ArrowStyle,
   HighlightColor,
   HighlightOpacity,
@@ -309,14 +310,17 @@ export default function ScreenshotWindow({
     applyPreset,
   } = useWallpaperState(initialEditorState?.wallpaper);
 
+  const resolvedWidth = width || imageElement?.width || 0;
+  const resolvedHeight = height || imageElement?.height || 0;
+
   const {
     nativeBalanceCrop,
     canvasWidth: totalCanvasWidth,
     canvasHeight: totalCanvasHeight,
   } = useContentDimensions({
     image: imageElement,
-    imageWidth: width || 0,
-    imageHeight: height || 0,
+    imageWidth: resolvedWidth,
+    imageHeight: resolvedHeight,
     wallpaper,
     extraLayers,
   });
@@ -324,12 +328,21 @@ export default function ScreenshotWindow({
   const { copyAnnotations, pasteAnnotations, hasClipboard } =
     useAnnotationClipboard();
 
-  const { exportToImage } = useCanvasExport({
+  const getSvgForExport = useCallback(
+    (
+      scale: number,
+      selected?: Annotation[],
+      geometry?: AnnotationExportGeometry
+    ) => canvasRef.current?.getSvgForExport(scale, selected, geometry) ?? '',
+    []
+  );
+
+  const { exportToImage, renderToCanvas } = useCanvasExport({
     padding: wallpaper.padding,
     inset: wallpaper.inset,
     image: imageElement,
-    imageWidth: width || 0,
-    imageHeight: height || 0,
+    imageWidth: resolvedWidth,
+    imageHeight: resolvedHeight,
     cornerRadius: wallpaper.corners,
     shadow: wallpaper.shadow,
     spacing: wallpaper.spacing,
@@ -337,11 +350,11 @@ export default function ScreenshotWindow({
     backgroundImage: wallpaper.backgroundImage,
     backgroundBlur: wallpaper.backgroundBlur,
     noise: wallpaper.noise,
-    getSvgForExport: (scale: number) =>
-      canvasRef.current?.getSvgForExport(scale) ?? '',
+    getSvgForExport,
     annotations,
     windowFrame: wallpaper.windowFrame?.style,
     balance: wallpaper.balance,
+    aspectRatio: wallpaper.aspectRatio,
     extraLayers,
     extraLayerImages,
   });
@@ -1377,6 +1390,7 @@ export default function ScreenshotWindow({
                 onCrop={handleCrop}
                 onSelectionChange={handleSelectionChange}
                 wallpaper={wallpaper}
+                renderToCanvas={renderToCanvas}
                 zoom={zoom}
                 textBackground={textBackground}
                 textFontSize={textFontSize}

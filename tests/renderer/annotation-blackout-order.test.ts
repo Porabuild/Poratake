@@ -156,4 +156,73 @@ describe('screenshot blackout annotation order', () => {
     expect(container.querySelector('rect[fill="#000000"]')).toBeNull();
     expect(container.querySelector('rect[fill="transparent"]')).not.toBeNull();
   });
+
+  it('keeps selection and the blackout guide available over a composed preview', async () => {
+    const onSelect = vi.fn();
+    await act(() =>
+      root.render(
+        createElement(SvgAnnotationsOverlay, {
+          annotations: [shape, blackout],
+          currentAnnotation: null,
+          width: 100,
+          height: 100,
+          selectedAnnotationIds: [shape.id],
+          onSelect,
+          editingTextId: null,
+          activeTool: 'select',
+          showBlackoutFill: true,
+          hidePaint: true,
+        })
+      )
+    );
+
+    const hidden = container.querySelector('svg > g[opacity="0"]');
+    expect(hidden?.querySelector('rect[fill="#ff00ff"]')).not.toBeNull();
+    const visibleShapes = Array.from(
+      container.querySelectorAll('rect[fill="#ff00ff"]')
+    ).filter(rect => !rect.closest('g[opacity="0"]'));
+    expect(visibleShapes).toHaveLength(0);
+    const guide = hidden?.querySelector('rect[fill="transparent"]');
+    expect(guide).toBeDefined();
+    expect(hidden?.getAttribute('visibility')).toBe('hidden');
+    expect(
+      (guide?.parentElement as SVGElement | null)?.style.pointerEvents
+    ).toBe('painted');
+    await act(() => {
+      guide?.dispatchEvent(
+        new browser.MouseEvent('mousedown', { bubbles: true, cancelable: true })
+      );
+    });
+    expect(onSelect).toHaveBeenCalledWith('blackout', false);
+  });
+
+  it('shows a draft blackout guide without implying coverage while the preview updates', async () => {
+    await act(() =>
+      root.render(
+        createElement(SvgAnnotationsOverlay, {
+          annotations: [],
+          currentAnnotation: blackout,
+          width: 100,
+          height: 100,
+          selectedAnnotationIds: [],
+          onSelect: () => {},
+          editingTextId: null,
+          activeTool: 'redact',
+          showBlackoutFill: true,
+          hidePaint: true,
+          showDraft: true,
+        })
+      )
+    );
+    const blackRects = Array.from(
+      container.querySelectorAll('rect[fill="#000000"]')
+    );
+    expect(
+      blackRects.every(rect => rect.closest('g[visibility="hidden"]'))
+    ).toBe(true);
+    const guide = Array.from(
+      container.querySelectorAll('rect[fill="transparent"]')
+    ).find(rect => !rect.closest('g[visibility="hidden"]'));
+    expect(guide).toBeDefined();
+  });
 });
