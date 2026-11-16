@@ -179,14 +179,12 @@ impl Engine {
         if scale >= 1.0 {
             return self.render_frame(timeline_time, frames);
         }
-        let mut canvas = Canvas::new(
+        self.render_frame_at(
+            timeline_time,
+            frames,
             (width as f32 * scale).round().max(1.0) as u32,
             (height as f32 * scale).round().max(1.0) as u32,
-        )?;
-        canvas.set_shadow_scale(scale);
-        canvas.scale(scale, scale);
-        self.render_into(&mut canvas, timeline_time, frames);
-        Some(canvas.into_pixmap())
+        )
     }
 
     pub fn render_frame_at(
@@ -774,6 +772,36 @@ mod tests {
             )
             .expect("frame");
         assert_eq!((composed.width(), composed.height()), (640, 360));
+    }
+
+    #[test]
+    fn fitted_preview_uses_the_same_dimensions_as_export_after_rounding() {
+        for (width, height, maximum, expected) in [
+            (31, 19, 12, (12, 7)),
+            (19, 31, 12, (7, 12)),
+            (343, 201, 172, (172, 101)),
+        ] {
+            let mut engine = Engine::new(Config::new(width as f64, height as f64, state()));
+            let mut video = source(width, height, Color::from_rgba8(255, 32, 0, 255));
+            for (index, pixel) in video.data_mut().chunks_exact_mut(4).enumerate() {
+                let row = index / width as usize;
+                let column = index % width as usize;
+                pixel[0] = (row * 13 % 256) as u8;
+                pixel[1] = (column * 7 % 256) as u8;
+            }
+            let frames = Frames {
+                video: Some(video.as_ref()),
+                camera: None,
+            };
+            let preview = engine
+                .render_frame_scaled(0.0, frames, maximum, maximum)
+                .unwrap();
+            assert_eq!((preview.width(), preview.height()), expected);
+            let export = engine
+                .render_frame_at(0.0, frames, expected.0, expected.1)
+                .unwrap();
+            assert_eq!(preview.data(), export.data(), "{width}x{height}");
+        }
     }
 
     fn camera_engine(
