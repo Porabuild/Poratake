@@ -3238,6 +3238,13 @@ local five-run debug-build 4K backdrop microbenchmark showed a warm generation t
 about 145–173 ms with composition versus 78–94 ms without it; it excludes GPU
 upload and does not measure interactive behavior on other hardware. Performance
 and broader wallpaper/annotation combinations remain to be checked.
+The full dark-mode GPUI parity workflow subsequently completed at simulated 1×,
+including generated capture and recording handoffs, screenshot save/reopen,
+large attachments and wallpaper cases at simulated 1.25× and 2×. It used the
+fake daemon and generated media; it does not establish live capture, real
+device access or physical-display behavior. The GPUI editor unit suite passed
+334 tests with two ignored, and the same-size source replacement test and
+parity-feature Clippy check passed.
 
 An additional native comparison found that Core Graphics was closer on average
 to the pinned Electron rounded-rectangle samples but still differed by up to 24
