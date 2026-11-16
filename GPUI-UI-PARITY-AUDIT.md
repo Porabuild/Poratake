@@ -3682,8 +3682,17 @@ show the [before](tests/native/evidence/macos-ui/tooltip-long-label-before-20261
 and [after](tests/native/evidence/macos-ui/tooltip-long-label-after-20261116.png)
 result; the native fixture checks painted pixels in both lines for English and
 Japanese labels in light and dark appearance. These bitmaps contain only generated label content, not desktop
-pixels. Physical hover, placement and visual theme parity still require native
-verification.
+pixels. A subsequent generated-label probe found that longer text could exceed
+the intended four lines and that explicit line breaks could wrap prematurely.
+The panel now uses the text field's fitted size and truncates its last visible
+line. Isolated label bitmaps show [long text before](tests/native/evidence/macos-ui/tooltip-four-line-before-20261116.png)
+and [after](tests/native/evidence/macos-ui/tooltip-four-line-after-20261116.png),
+and [explicit lines before](tests/native/evidence/macos-ui/tooltip-explicit-lines-before-20261116.png)
+and [after](tests/native/evidence/macos-ui/tooltip-explicit-lines-after-20261116.png).
+A native fixture also checks painting and placement at all four corners of this
+Mac's visible display, alternating light and dark appearance. It does not test
+physical pointer input, multiple displays or tooltip capture exclusion. Physical
+hover, placement and visual theme parity still require native verification.
 
 An ordering review found two cross-window races in that handoff: a late exit from
 the previous window could suppress the new window's tooltip, and a new window's
