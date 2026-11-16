@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import '@heroui/styles';
+@source not '../../../vendor';
 
 @font-face {
   font-family: 'Geist';
