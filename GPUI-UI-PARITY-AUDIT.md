@@ -3241,6 +3241,17 @@ closure and user-stop cases. Startup errors are emitted after successful Start
 and before a queued Stop completes. Live startup timing and real callbacks
 arriving after the inbox closes or after Stop remain unverified.
 
+The screen recorder now checks the stream identity on sample callbacks as well
+as error callbacks. A generated frame from a previous stream previously could
+anchor the next session's timeline; the [native fixture](tests/native/evidence/macos-ui/recording-stream-identity-20261116.txt)
+checks that it is ignored and that the current stream's frame starts the
+timeline. An empty generated writer returns an error when stopped without a
+video frame. Neither fixture establishes whether ScreenCaptureKit actually
+delivers a late callback in a real session. Frames arriving while startup is
+still in the idle state are currently ignored; whether a static screen can
+then fail to deliver another frame is unverified. Capture-window exclusion
+and audio synchronization must be preserved in any startup change.
+
 The area variant checks that a failed start hides the temporary overlay and
 passes a synthetic toolbar ID in `excludedWindowIds`. It also writes generated
 video before rejecting the start: the old cleanup deleted it, while the new
