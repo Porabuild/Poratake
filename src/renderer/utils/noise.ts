@@ -26,8 +26,12 @@ export function renderNoise(
   if (noiseCtx) {
     const imageData = noiseCtx.createImageData(width, height);
     const data = imageData.data;
+    let state = 0x9e3779b9;
     for (let i = 0; i < data.length; i += 4) {
-      const value = Math.random() * 255;
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      const value = state >>> 24;
       data[i] = value;
       data[i + 1] = value;
       data[i + 2] = value;
