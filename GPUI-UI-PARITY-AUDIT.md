@@ -3221,6 +3221,29 @@ It does not exercise the full
 editor, its interaction guides, other compositions or a physical display. The
 preview/export difference remains open.
 
+An offscreen Electron 43.4.0 screenshot-editor fixture now reproduces the
+scaled blackout difference through the actual save shortcut. It uses a generated
+200×160 white PNG, a 100×80 editor image, renderer device pixel ratio 1 and a
+200×160 offscreen capture; the dashed editor guide is hidden for comparison.
+In the [preview](tests/native/evidence/macos-ui/blackout-editor-scale-preview-20261116.png),
+26 pixels immediately below the blackout appear fully black but are white in
+the [saved PNG](tests/native/evidence/macos-ui/blackout-editor-scale-export-20261116.png).
+This could give misleading assurance about adjacent real content. All 676
+native pixels touched by the selected rectangle were black in the saved PNG,
+which contained only the synthetic white source and black redaction colors.
+The [measurements](tests/native/evidence/macos-ui/blackout-editor-scale-comparison-20261116.json)
+also show 716 differing pixels at the outer image perimeter and 250 near the
+blackout; a repeat produced the same measurements. This verifies neither a
+physical display nor exclusion of live capture controls.
+
+A local trial rendering the redaction layer at the source scale instead of the
+renderer scale did not solve the mismatch: differences near the blackout rose
+from 250 to 412 pixels, and some preview pixels remained dark where the export
+was white. The [trial preview](tests/native/evidence/macos-ui/blackout-editor-scale-trial-preview-20261116.png)
+is retained; the production renderer was not changed. A correct solution still
+needs to reconcile the differently scaled preview layers with the exported
+composition without exposing or obscuring extra source pixels.
+
 The GPUI Metal fixture exposed a separate image sampling mismatch at 73% zoom,
 even without annotations, for opaque and translucent generated sources. The
 primary image and simple wallpaper were snapped and scaled separately. The
