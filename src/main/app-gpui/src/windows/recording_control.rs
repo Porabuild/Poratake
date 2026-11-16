@@ -2009,6 +2009,26 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(150));
         cx.run_until_parked();
         assert!(crate::system::native_tooltip::take_test_requests().is_empty());
+
+        for label in [
+            "Start recording",
+            "Select camera",
+            "Select microphone",
+            "Turn system sounds off",
+            "Close",
+            "Start recording",
+        ] {
+            visual.press("tab");
+            for _ in 0..3 {
+                visual.settle();
+            }
+            let tooltip = control
+                .update(&mut visual, |control, _, _| {
+                    control.tooltip_presenter.active_content()
+                })
+                .unwrap();
+            assert_eq!(tooltip.as_deref(), Some(label));
+        }
     }
 
     #[cfg(any(target_os = "linux", windows))]

@@ -269,10 +269,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             capture(cx, window, output, "record-control-keyboard-focused");
             #[cfg(any(windows, target_os = "macos"))]
             for label in [
-                "Close",
+                "Select camera",
                 "Select microphone",
                 "Turn system sounds off",
-                "Select camera",
+                #[cfg(target_os = "macos")]
+                "Select iPhone or iPad",
+                "Close",
             ] {
                 key(cx, window, "tab");
                 assert_focus_tooltip(cx, label);
