@@ -9,6 +9,7 @@ pub mod device_frame;
 pub mod drawing;
 pub mod keyboard;
 pub mod opaque;
+mod redaction;
 pub mod segments;
 pub mod subtitle;
 pub mod wallpaper;
@@ -204,7 +205,10 @@ impl Engine {
         canvas.set_shadow_scale((scale_x + scale_y) / 2.0);
         canvas.scale(scale_x, scale_y);
         self.render_into(&mut canvas, timeline_time, frames);
-        Some(canvas.into_pixmap())
+        if width == 0 || height == 0 {
+            return Some(canvas.into_pixmap());
+        }
+        redaction::apply(self, canvas.into_pixmap(), timeline_time, frames)
     }
 
     /// Port of `renderFrame`.
@@ -783,7 +787,13 @@ mod tests {
         ] {
             let mut engine = Engine::new(Config::new(width as f64, height as f64, state()));
             let mut video = source(width, height, Color::from_rgba8(255, 32, 0, 255));
-            for (index, pixel) in video.data_mut().chunks_exact_mut(4).enumerate() {
+            for (index, pixel) in video
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let row = index / width as usize;
                 let column = index % width as usize;
                 pixel[0] = (row * 13 % 256) as u8;
@@ -805,6 +815,7 @@ mod tests {
     }
 
     include!("redaction_crop_tests.rs");
+    include!("redaction_layer_tests.rs");
 
     fn camera_engine(
         camera_segments: Vec<crate::windows::video_editor::model::CameraSegment>,
