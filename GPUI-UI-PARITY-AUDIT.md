@@ -3614,6 +3614,18 @@ edited preview versus 118.72 against the undrawn preview; this narrower result i
 less precise than the checkerboard workflow above. The [measurements](tests/native/evidence/macos-ui/recording-drawing-narrow-20261116.txt)
 do not establish physical window resizing or live playback.
 
+The retained narrow export is [H.264 with 4:2:0 chroma](tests/native/evidence/macos-ui/narrow-video-codec-20261117.json). An uncompressed
+RGB → 4:2:0 → RGB conversion of its preview reproduces the red outline's
+difference from the decoded video. Across 1,196 red-dominant preview pixels,
+the RGB mean error is 20.770 against the decoded frame and 20.770 against the
+uncompressed conversion; the conversion and decoded frame differ by 0.025 on
+average, at most two levels per channel. The [conversion](tests/native/evidence/macos-ui/narrow-video-chroma-roundtrip-20261117.png)
+and [measurements](tests/native/evidence/macos-ui/narrow-video-chroma-comparison-20261117.json)
+were generated with FFmpeg 9.0.2. This isolates the dominant difference in this
+one synthetic frame to color subsampling, not a displaced annotation. It does
+not prove that other colors, content, export settings or hardware have the same
+error, or that live preview and export match. No encoding settings were changed.
+
 The same fixture exposed a capture-exclusion ordering gap: GPUI started the
 recorder before applying camera-preview protection, and removed that protection
 on a camera-off toggle. On macOS and Windows it now enables protection before

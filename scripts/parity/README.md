@@ -230,6 +230,11 @@ and run the ignored `drawing_tool_ui_edit_survives_reopen_and_matches_export`
 Rust test to draw, reopen and export at 720×520. Set
 `PORATAKE_TEST_VIDEO_EVIDENCE` to an existing absolute directory to retain the
 synthetic preview frames, decoded frames, MP4 and comparison measurements.
+For the retained narrow fixture, run
+`python3 scripts/parity/video-chroma-comparison.py tests/native/evidence/macos-ui/narrow-video-preview.png tests/native/evidence/macos-ui/narrow-video-export-frame.png --ffmpeg /absolute/path/to/ffmpeg`
+to compare its red drawing pixels with both the decoded frame and an uncompressed
+4:2:0 conversion. This isolates chroma-sampling effects for that fixture; it is
+not a general codec or playback test.
 On macOS, the 1280-point workflow uses generated media for area, screen and
 window recording handoffs. `PORATAKE_PARITY_AREA_RECORDING`,
 `PORATAKE_PARITY_SCREEN_RECORDING` and `PORATAKE_PARITY_WINDOW_RECORDING` can
