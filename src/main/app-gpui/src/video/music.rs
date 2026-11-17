@@ -14,10 +14,27 @@ pub const SUPPORTED_EXTENSIONS: [&str; 5] = ["mp3", "m4a", "wav", "aac", "ogg"];
 /// `DEFAULT_MUSIC_TRACK_VOLUME`.
 pub const DEFAULT_VOLUME: f64 = 0.8;
 
+pub(crate) fn file_path(folder: &Path, file_name: &str) -> Option<std::path::PathBuf> {
+    let name = std::ffi::OsStr::new(file_name);
+    if Path::new(file_name).file_name() != Some(name) {
+        return None;
+    }
+    match std::fs::symlink_metadata(folder) {
+        Ok(metadata) if !metadata.file_type().is_dir() => return None,
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return None,
+        _ => {}
+    }
+    let path = folder.join(name);
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return None;
+    }
+    Some(path)
+}
+
 /// `getUniqueFileName` — an existing name gains a ` (n)` suffix rather than
 /// overwriting the file already in the folder.
 pub fn unique_file_name(folder: &Path, original: &str) -> String {
-    if !folder.join(original).exists() {
+    if std::fs::symlink_metadata(folder.join(original)).is_err() {
         return original.to_string();
     }
     let path = Path::new(original);
@@ -34,7 +51,7 @@ pub fn unique_file_name(folder: &Path, original: &str) -> String {
     let mut counter = 1;
     loop {
         let candidate = format!("{stem} ({counter}){extension}");
-        if !folder.join(&candidate).exists() {
+        if std::fs::symlink_metadata(folder.join(&candidate)).is_err() {
             return candidate;
         }
         counter += 1;
@@ -48,15 +65,34 @@ pub fn add(project_path: &Path, source: &Path, timeline_start: f64) -> Result<Mu
         .ok_or_else(|| "this recording has no project folder".to_string())?;
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("could not create the music folder: {error}"))?;
+    if !std::fs::symlink_metadata(&folder).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+        return Err("the music folder is not a directory".to_string());
+    }
 
     let original = source
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "the file has no name".to_string())?;
-    let file_name = unique_file_name(&folder, original);
-    let destination = folder.join(&file_name);
-    std::fs::copy(source, &destination)
-        .map_err(|error| format!("could not copy the file: {error}"))?;
+    let mut input =
+        std::fs::File::open(source).map_err(|error| format!("could not open the file: {error}"))?;
+    let (file_name, destination, mut output) = loop {
+        let file_name = unique_file_name(&folder, original);
+        let destination = folder.join(&file_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+        {
+            Ok(output) => break (file_name, destination, output),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("could not create the file: {error}")),
+        }
+    };
+    if let Err(error) = std::io::copy(&mut input, &mut output) {
+        let _ = std::fs::remove_file(&destination);
+        return Err(format!("could not copy the file: {error}"));
+    }
+    drop(output);
 
     let duration = probe_duration(&destination);
     if duration <= 0.0 {
@@ -96,7 +132,9 @@ pub fn remove(project_path: &Path, file_name: &str, still_referenced: bool) {
     let Some(folder) = project::music_folder(project_path) else {
         return;
     };
-    let _ = std::fs::remove_file(folder.join(file_name));
+    if let Some(path) = file_path(&folder, file_name) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// `probeAudioDuration` — decoding is the only probe this shell has, and it is
@@ -174,5 +212,88 @@ mod tests {
         remove(&project, "song.mp3", false);
         assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn removing_music_cannot_delete_a_file_outside_the_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("take.poratake");
+        std::fs::create_dir_all(project.join("music")).unwrap();
+        let outside = directory.path().join("outside.wav");
+        std::fs::write(&outside, b"keep").unwrap();
+        remove(&project, "../../outside.wav", false);
+        assert!(outside.is_file());
+        remove(&project, outside.to_str().unwrap(), false);
+        assert!(outside.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_music_folder_cannot_delete_or_import_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("take.poratake");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("music")).unwrap();
+        let file = outside.join("source.wav");
+        std::fs::write(&file, b"keep").unwrap();
+        remove(&project, "source.wav", false);
+        assert!(file.is_file());
+        let source = directory.path().join("new.wav");
+        std::fs::write(&source, b"source").unwrap();
+        assert!(add(&project, &source, 0.0).is_err());
+        assert!(!outside.join("new.wav").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn importing_music_cannot_follow_a_dangling_destination_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("take.poratake");
+        let music = project.join("music");
+        std::fs::create_dir_all(&music).unwrap();
+        let outside = directory.path().join("outside.wav");
+        std::os::unix::fs::symlink(&outside, music.join("source.wav")).unwrap();
+        assert!(file_path(&music, "source.wav").is_none());
+        assert_eq!(unique_file_name(&music, "source.wav"), "source (1).wav");
+        let source = directory.path().join("source.wav");
+        std::fs::write(&source, b"not an audio file").unwrap();
+        let _ = add(&project, &source, 0.0);
+        assert!(!outside.exists());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[test]
+    fn concurrent_imports_with_the_same_name_do_not_overwrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("take.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let source = directory.path().join("source.wav");
+        let wav = crate::video::transcription::wav_bytes(&vec![5000; 4800], 48000);
+        std::fs::write(&source, &wav).unwrap();
+        let barrier = std::sync::Barrier::new(3);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                barrier.wait();
+                add(&project, &source, 0.0).unwrap()
+            });
+            let second = scope.spawn(|| {
+                barrier.wait();
+                add(&project, &source, 0.0).unwrap()
+            });
+            barrier.wait();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_ne!(first.file_name, second.file_name);
+        assert_eq!(
+            std::fs::read(project.join("music").join(first.file_name)).unwrap(),
+            wav
+        );
+        assert_eq!(
+            std::fs::read(project.join("music").join(second.file_name)).unwrap(),
+            wav
+        );
     }
 }

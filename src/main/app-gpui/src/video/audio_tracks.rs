@@ -40,12 +40,7 @@ impl Sources {
         match track.source.as_str() {
             SYSTEM_SOURCE => self.system.clone(),
             MIC_SOURCE => self.mic.clone(),
-            _ => {
-                if track.file_name.is_empty() {
-                    return None;
-                }
-                Some(self.music_folder.as_ref()?.join(&track.file_name))
-            }
+            _ => crate::video::music::file_path(self.music_folder.as_deref()?, &track.file_name),
         }
     }
 }
@@ -284,6 +279,24 @@ mod tests {
             trim_min_start: start,
             trim_max_end: end,
             speed: None,
+        }
+    }
+
+    #[test]
+    fn music_track_paths_reject_parent_and_absolute_names() {
+        let sources = sources();
+        let mut track = MusicTrack {
+            source: MUSIC_SOURCE.into(),
+            file_name: "song.wav".into(),
+            ..MusicTrack::default()
+        };
+        assert_eq!(
+            sources.path_for(&track),
+            Some(PathBuf::from("/project/music/song.wav"))
+        );
+        for name in ["../outside.wav", "../../outside.wav", "/outside.wav", ""] {
+            track.file_name = name.into();
+            assert!(sources.path_for(&track).is_none(), "{name}");
         }
     }
 
