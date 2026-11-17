@@ -862,6 +862,50 @@ struct ScrollCapturePreviewTest {
                 tooltipRegistry.currentWindowIDs().isEmpty
             }
 
+            let centeredTexts = ["Start recording", longTooltipTexts[0]]
+            for (index, item) in centeredTexts.flatMap({ text in [(text, false), (text, true)] }).enumerated() {
+                let (text, dark) = item
+                let sequence = UInt64(31 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 108, text: text))
+                let visible = try await tooltip.show(sequence: sequence, owner: 108, text: text, dark: dark, at: point)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let content = panel.contentView,
+                      let label = content.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let bitmap = NSBitmapImageRep(
+                        bitmapDataPlanes: nil,
+                        pixelsWide: Int(label.bounds.width * 2),
+                        pixelsHigh: Int(label.bounds.height * 2),
+                        bitsPerSample: 8,
+                        samplesPerPixel: 4,
+                        hasAlpha: true,
+                        isPlanar: false,
+                        colorSpaceName: .deviceRGB,
+                        bytesPerRow: 0,
+                        bitsPerPixel: 0
+                      ) else {
+                    preconditionFailure("The tooltip label could not be rendered at 2x")
+                }
+                bitmap.size = label.bounds.size
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let inkRows = (0..<bitmap.pixelsHigh).filter { y in
+                    (0..<bitmap.pixelsWide).contains { x in
+                        (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+                    }
+                }
+                guard let first = inkRows.first, let last = inkRows.last else {
+                    preconditionFailure("The tooltip label did not paint")
+                }
+                let top = Int((content.bounds.height - label.frame.maxY) * 2) + first
+                let bottom = Int(label.frame.minY * 2) + bitmap.pixelsHigh - 1 - last
+                precondition(abs(top - bottom) <= 3, "Tooltip label ink is not vertically centered: top \(top), bottom \(bottom)")
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 108, text: nil))
+                await waitUntil("The centered tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
+
             let failureRegistry = RecordingCaptureWindowRegistry()
             failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
             let failedTooltip = ProtectedTooltip(registry: failureRegistry)

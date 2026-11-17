@@ -111,7 +111,9 @@ final class ProtectedTooltip {
         label.maximumNumberOfLines = 4
         label.cell?.truncatesLastVisibleLine = true
         let fitted = label.sizeThatFits(NSSize(width: maxTextWidth, height: 80))
-        let size = NSSize(width: min(maxTextWidth, ceil(fitted.width)) + 16, height: ceil(fitted.height) + 8)
+        let labelSize = NSSize(width: min(maxTextWidth, ceil(fitted.width)), height: ceil(fitted.height))
+        let padding = NSSize(width: 8, height: 4)
+        let size = NSSize(width: labelSize.width + padding.width * 2, height: labelSize.height + padding.height * 2)
         let visible = screen.visibleFrame
         let x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
         let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
@@ -143,7 +145,7 @@ final class ProtectedTooltip {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 5
         effect.layer?.masksToBounds = true
-        label.frame = NSRect(x: 8, y: 2, width: size.width - 16, height: size.height - 4)
+        label.frame = NSRect(origin: NSPoint(x: padding.width, y: padding.height), size: labelSize)
         effect.addSubview(label)
         panel.contentView = effect
         return panel
