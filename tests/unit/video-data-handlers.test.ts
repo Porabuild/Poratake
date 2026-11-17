@@ -386,13 +386,14 @@ describe('state handlers', () => {
     ).toBe(false);
   });
 
-  it('resetState unlinks file and regenerates', async () => {
+  it('resetState requests replacement with the saved recording metadata', async () => {
+    const projectPath = '/p/Rec.poratake/recording.mov';
     mockGetWindowData.mockReturnValue({
-      filePath: '/p/Rec.poratake/recording.mov',
+      filePath: projectPath,
     });
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
-      JSON.stringify({ recordingType: 'ios-device' })
+      JSON.stringify({ recordingType: 'ios-device', sourceDuration: 12 })
     );
     mockGenerateInitialEditorState.mockResolvedValue(true);
     const { registerStateHandlers } =
@@ -401,8 +402,13 @@ describe('state handlers', () => {
     const result = await ipcHandle['video-editor:resetState']({
       sender: { id: 1 },
     });
-    expect(mockUnlinkSync).toHaveBeenCalled();
-    expect(mockGenerateInitialEditorState).toHaveBeenCalled();
+    expect(mockUnlinkSync).not.toHaveBeenCalled();
+    expect(mockGenerateInitialEditorState).toHaveBeenCalledExactlyOnceWith({
+      projectPath,
+      recordingType: 'ios-device',
+      duration: 12,
+      replaceExisting: true,
+    });
     expect(result).toBe(true);
   });
 });
