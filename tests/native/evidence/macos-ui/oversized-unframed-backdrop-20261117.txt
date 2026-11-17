@@ -9,6 +9,12 @@ the reopened PNG had 8,800 pixels more than two channel levels apart, maximum
 87. The editor now tiles the separate backdrop on macOS and retires those tiles
 when the backdrop changes.
 
+Native fixture images of the generated content:
+  oversized-rounded-100-before-20261117.png
+  oversized-rounded-100-reopened-20261117.png
+  oversized-rounded-125-preview-20261117.png
+  oversized-rounded-125-reopened-20261117.png
+
 For dark and light appearances, 25% and 50% zoom, and simulated 100% and 200%
 scales, the four orientation/alpha cases were compared before and after
 panning to a tile seam. All 64 visible-region comparisons had no pixels more
@@ -25,17 +31,21 @@ always produce the same sampled pixels as the flattened PNG. An experimental
 shared-grid adjustment reduced the first 50% case to two mismatched boundary
 rows but did not eliminate the discrepancy; it was not kept.
 
-A separate dark-appearance run with corners 0, shadow 50, inset 0 or 8,
-25% or 50% zoom and simulated 100%, 125% and 200% completed the same four
-orientation/alpha cases before and after panning. The shadow-off controls
-changed exported pixels. This is limited coverage of unframed shadows, not a
-full shadow matrix.
+A separate 60-run matrix checked both appearances, 25% and 50% zoom and
+simulated 100%, 125% and 200%. It covered (corners, shadow, inset) settings
+(0,50,0), (0,50,8), (24,0,8), (24,50,0) and (24,50,8). The same four
+orientation/alpha cases were compared before and after panning. All 480
+visible-region comparisons had no pixels more than two levels apart; the
+maximum difference was one. The 144 corner-off and 192 shadow-off controls
+each changed exported pixels. This does not cover every effect setting.
 
 cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
 PORATAKE_PARITY_OUTPUT=/tmp/poratake-unframed-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1 PORATAKE_PARITY_LARGE_ZOOM=0.25 PORATAKE_PARITY_LARGE_FRAME=none PORATAKE_PARITY_LARGE_SHADOW=0 PORATAKE_PARITY_LARGE_INSET=0 PORATAKE_PARITY_LARGE_CORNERS=24 PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
 
 The rounded check used DPI 1, 1.25 and 2; zoom 0.25 and 0.5; theme dark and
-light. Every run used generated content and an isolated profile.
+light. The effect matrix used the same command with the five corner, shadow
+and inset combinations listed above. Every run used generated content and an
+isolated profile.
 
 cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui editor::
 346 passed, 4 ignored. The tile lifetime test includes backdrop retirement.

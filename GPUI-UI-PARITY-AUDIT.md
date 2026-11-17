@@ -2568,8 +2568,9 @@ Bugs fixed in this pass:
   inset and framed 17,000px-wide and -tall captures retain shadows in saved and
   reopened PNGs. CPU preview shadow checks match the saved output. An isolated
   GPUI Metal fixture now checks visible portions of oversized framed previews
-  with padding, inset and shadow against reopened PNGs; unframed large shadows
-  and physical display behavior remain unverified.
+  with padding, inset and shadow against reopened PNGs. The unframed matrix
+  below also covers selected inset, corner and shadow settings; physical
+  display behavior remains unverified.
 - A plain screenshot wider or taller than the GPUI atlas limit could render as
   the editor background. The editor now tiles oversized source images, keeping
   neighboring pixels at each edge and retaining the original image for export
@@ -2617,8 +2618,15 @@ Bugs fixed in this pass:
   flattened PNG: the first horizontal opaque case had 17,218 pixels more than
   two levels apart at 25% zoom and 45,978 at 50%. This remains open; the
   check stops at the first mismatch and does not establish the other 125%
-  cases. It uses generated content and does not verify physical displays,
-  capture, annotations, or interactive performance.
+  cases. The generated-content [125% preview](tests/native/evidence/macos-ui/oversized-rounded-125-preview-20261117.png)
+  and [reopened PNG](tests/native/evidence/macos-ui/oversized-rounded-125-reopened-20261117.png)
+  are retained. This does not verify physical displays, capture, annotations,
+  or interactive performance.
+  A further 60 runs covered five unframed corner, shadow and inset combinations
+  in both appearances at all three simulated scales and both zooms. All 480
+  visible-region comparisons matched reopened PNGs within one level, and
+  controls confirmed that the enabled corner and shadow settings changed the
+  exported pixels.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
@@ -4324,7 +4332,7 @@ appearance.
 | P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Balanced macOS frames with and without inset match in the matrix above. Verify more styles and zooms, transparent reopen, additional inset settings, attached layers and physical DPI transitions. |
 | P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Oversized unframed rounded captures without shadow or inset still mismatch reopened PNGs at simulated 125%: see the unframed evidence above. Verify that case, frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                               |
 | P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Unframed attached insets are checked on all edges by CPU and on the right edge by GPU. Balanced unframed single and attached images with corners, shadows and insets now match preview/export in generated light/dark GPU fixtures. Attachment checks cover all four edges, padding, seam blackouts, blur and pixelation. Verify physical DPI, real input, other content and zooms, framed attachments and more inset combinations.                                                                                      |
-| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, CPU checks cover rounded inset tiles and shadows; generated macOS Metal checks now cover framed previews with padding, inset and shadow against reopened PNGs. Verify unframed large shadows, physical displays and other combinations.                                                                  |
+| P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, CPU checks cover rounded inset tiles and shadows; generated macOS Metal checks cover framed previews and selected unframed corner, inset and shadow combinations against reopened PNGs. Verify other shadow settings, physical displays and other combinations.                                          |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                                                                                             |
 | P1       | Screenshot blur preview and Electron parity              | Earlier, blur and nearby annotations matched flattened PNG pixels within two levels at 50%, 73%, 137% and 150% zoom for unframed light/dark cases and simulated 100%, 125% and 200% DPI. Whole-frame differences remain outside that region, and oversized patches use the old path. Simple unframed gradient and inset samples now filter the composed backdrop; new annotation order passed local GPU checks. Verify broader fractional offsets in GPUI, frames, balance, corners, shadows, attachments, physical DPI, large patches and interactive performance.                                                                      |
 | P1       | Screenshot annotation order                              | GPUI and Electron now apply redactions and highlights in annotation order. Generated GPUI Metal tests cover blur and pixelation in both orders, both themes, 73%/100%/137% zoom and simulated 100%/200% scale, and compare the entire preview with the reopened PNG. The earlier blackout corner comparison used the old order; rounded raster coverage can still differ. Verify live editing, other annotations, zooms, complex compositions and physical DPI.                                                                                                                                                                          |
