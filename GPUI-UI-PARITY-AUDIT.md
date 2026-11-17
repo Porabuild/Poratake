@@ -4717,6 +4717,17 @@ and [measurements](tests/native/evidence/macos-ui/video-rectangle-pixelation-gpu
 are retained. This does not verify a live recording, hardware access, target
 movement or closure, physical display placement, or capture exclusion.
 
+For that generated redaction area, a same-resolution 4:2:0 control was within
+eight levels of all 469 GPUI decoded channels whose error exceeded 32; its mean
+difference from the decoded frame was 0.170 RGB levels. This is consistent with
+chroma subsampling explaining the large errors in this case. An isolated
+single-frame Electron WebCodecs probe on the same input also showed large edge
+errors, but only 33 of its 333 channels above 32 were within eight levels of
+the same control. The [GPUI measurements](tests/native/evidence/macos-ui/video-redaction-chroma-gpui-20261117.json),
+[Electron measurements](tests/native/evidence/macos-ui/video-redaction-chroma-electron-20261117.json)
+and [method](tests/native/evidence/macos-ui/video-redaction-chroma-20261117.txt)
+do not establish equivalence with the complete Electron exporter or other media.
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA
