@@ -1,0 +1,39 @@
+macOS GPUI live smoke, 2026-11-17
+
+Environment
+- Built and launched the un-packaged GPUI development binary with the parity feature. No dependencies were installed.
+- Used temporary GPUI profiles and generated images. No capture or media device was opened; no privacy setting changed and no permission dialog appeared.
+- The Mac has one built-in Liquid Retina XDR display at 3456x2234 pixels. It is the main online display. The GPUI work area is 1728x1117 points.
+- The visible Electron window belonged to the Poracode workspace. It was left untouched; the user-supplied Electron control screenshot was the qualitative reference.
+
+Appearance and windows
+- Opened GPUI Settings at 880x700 points in Dark, changed Appearance to Light, captured both appearances, then restored Dark in the temporary profile.
+- The screenshot editor rendered at 950x650 points, its minimum size. The 960x540 source image fit inside the editor with its toolbar and zoom controls visible.
+- The native recording control measured 276x44 points and appeared as one bordered pill in both themes. Its accessible buttons were Start recording, Select camera, Select microphone, Turn system sounds on, Select iPhone or iPad, and Close.
+- The capture preview measured 208x148 points. Its frame was 20 points from the right and bottom edges of the 1728x1117-point work area. Idle screenshots are available in both themes.
+- A single click on the generated Light-theme preview image exposed the Close preview, Delete screenshot, Edit, Copy and Upload to Cloud controls. Dark synthetic hover states covered Close and Delete. Tooltip status was Close preview, Delete screenshot and Start recording; simulated exit cleared each status. A native tooltip bubble was not visible in the window-only screenshots, so physical tooltip painting and capture exclusion remain unverified.
+
+Annotation, save and reopen
+- In the live screenshot editor, drew a red arrow over a generated 960x540 test image. Undo removed it and Redo restored it. Saved to the temporary directory and reopened the saved PNG; the arrow remained visible.
+- FFmpeg decoded the original and saved PNGs at 960x540 with 2,073,600 RGBA bytes each. They differed at 774 pixels. The saved file contains the image dimensions, not the editor toolbar; this proves editor export behavior, not real capture-overlay exclusion.
+- In the native UI probe, a generated 640x360 checkerboard received a rectangle annotation. The editor export changed 1,790 pixels; save-to-fixture, decoded output and reopen matched the editor export exactly. The saved generated image is retained beside this report.
+- The direct screenshot-editor output is retained beside this report.
+
+Other checks and limits
+- The native probe positioned the timer for narrow areas at both display edges: left x=0, right x=1588, y=128; the 140-point timer control stayed within the 1728-point display width. This is geometry only, not a countdown or capture.
+- No GPUI Screen Recording grant was confirmed. Area, window, screen, timer and scroll capture; selector cleanup during real capture; recording through edit/export; target movement or closure; and decoded export versus editor preview were not exercised.
+- Microphone, camera and system-audio menus were not opened because their grants were not confirmed. Multi-display placement could not be checked on this single-display Mac.
+- No new visual defect was confirmed in the tested settings, preview, recording-control or screenshot-editor states. Physical tooltip paint and real capture-pixel exclusion remain open.
+
+Retained images
+- native-settings-appearance-dark-live-20261117.png
+- native-settings-appearance-light-live-20261117.png
+- native-recording-control-dark-live-20261117.png
+- native-recording-control-light-live-20261117.png
+- native-capture-preview-dark-live-20261117.png
+- native-capture-preview-light-live-20261117.png
+- native-capture-preview-light-physical-hover-20261117.png
+- native-capture-preview-close-hover-dark-live-20261117.png
+- native-capture-preview-delete-hover-dark-live-20261117.png
+- macos-screenshot-editor-arrow-save-reopen-20261117.png
+- macos-native-ui-probe-annotation-save-reopen-20261117.png
