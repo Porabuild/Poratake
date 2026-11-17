@@ -2627,6 +2627,14 @@ Bugs fixed in this pass:
   visible-region comparisons matched reopened PNGs within one level, and
   controls confirmed that the enabled corner and shadow settings changed the
   exported pixels.
+  An [annotation seam check](tests/native/evidence/macos-ui/oversized-rounded-annotation-20261117.txt)
+  exercises blackout, blur and pixelation across a tile boundary. At simulated
+  100% and 200%, 192 visible-region comparisons matched reopened PNGs within
+  two levels. At 125%, the full preview still differs after panning. A small
+  sample in the first opaque horizontal redaction matched, which does not
+  establish full redaction parity at that scale. A separate export test guards
+  annotation and blackout clipping at rounded corners; moving annotations
+  above the wallpaper composition without equivalent clipping changes output.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
