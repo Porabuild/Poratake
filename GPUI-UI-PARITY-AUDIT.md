@@ -4750,6 +4750,17 @@ scaled pixelation discrepancy above or establish parity for a live recording. A
 [macOS fixture](tests/native/evidence/macos-ui/fractional-redaction-bounds-20261116.txt)
 also checks the changed corner through Electron's offscreen drawing renderer.
 
+Recording preview controls previously tinted the thumbnail without Electron's
+background blur. GPUI now produces a blurred thumbnail from each decoded video
+frame while controls are active, using the screenshot preview's blur. On macOS,
+the capture-preview unit suite passed 38 tests; a generated decoded-frame test
+checks both thumbnail variants against the same pixels loaded as a screenshot.
+Blur work runs on the existing background decoder worker and is skipped while
+controls are inactive. A newly hovered frame can remain sharp until the next
+thumbnail decode completes. This check does not exercise a physical hover or a
+live recording, and does not establish a pixel comparison with Electron's CSS
+blur.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                   |
