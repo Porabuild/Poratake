@@ -23,6 +23,8 @@ pub(crate) mod daemon_fixture;
 mod fractional_frame_workflow;
 mod image_sampling;
 #[cfg(target_os = "macos")]
+mod large_framed_workflow;
+#[cfg(target_os = "macos")]
 mod large_redaction_workflow;
 #[cfg(target_os = "macos")]
 mod large_texture_sampling;
@@ -1018,6 +1020,12 @@ pub fn capture_editor_interaction_states() {
     if std::env::var_os("PORATAKE_PARITY_BLACKOUT_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         workflows::simple_inset_preview(&mut cx, &scratch, 1., 20., true, 8., false);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_LARGE_FRAMED_ONLY").is_some() {
+        large_framed_workflow::run(&mut cx, &scratch);
         cx.update(|cx| crate::state::state(cx).daemon.stop());
         return;
     }

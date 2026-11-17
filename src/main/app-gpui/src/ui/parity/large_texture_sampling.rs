@@ -323,7 +323,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
     }
 }
 
-fn pan(
+pub(super) fn pan(
     cx: &mut HeadlessAppContext,
     editor: gpui::WindowHandle<EditorWindow>,
     horizontal: bool,
