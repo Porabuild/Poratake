@@ -27,6 +27,7 @@ pub struct Surface<'a> {
     pub height: u32,
     pub offset_x: f64,
     pub offset_y: f64,
+    pub source_is_composed: bool,
     pub native_scale: f64,
     pub pixels: Option<&'a [u8]>,
     pub matte: Option<[u8; 3]>,
@@ -83,9 +84,13 @@ pub struct SamplingGrid {
 }
 
 pub fn needs_bounded_composition(surface: &Surface) -> bool {
+    needs_bounded_output(surface, 1.)
+}
+
+pub fn needs_bounded_output(surface: &Surface, scale: f64) -> bool {
     let (left, top, right, bottom) = surface.bounds();
-    let width = right - left;
-    let height = bottom - top;
+    let width = (right - left) * scale;
+    let height = (bottom - top) * scale;
     width > MAX_PATCH_DIMENSION - 1.
         || height > MAX_PATCH_DIMENSION - 1.
         || width * height > MAX_PATCH_PIXELS
@@ -486,6 +491,7 @@ fn render_patch(
             height: image.size(0).height.into(),
             offset_x,
             offset_y,
+            source_is_composed: true,
             native_scale: surface.native_scale,
             pixels: Some(pixels),
             matte: None,
@@ -579,6 +585,7 @@ fn draw_backdrop(
         return;
     };
     let target = crop.data_mut();
+    let rounding = if surface.source_is_composed { 127 } else { 0 };
     for row in 0..crop_height as usize {
         let from = (y0 as usize + row) * stride + x0 as usize * 4;
         let to = row * crop_width as usize * 4;
@@ -586,7 +593,7 @@ fn draw_backdrop(
             let source = from + column * 4;
             let pixel = to + column * 4;
             let alpha = pixels[source + 3] as u32;
-            let premultiply = |value: u8| ((value as u32 * alpha + 127) / 255) as u8;
+            let premultiply = |value: u8| ((value as u32 * alpha + rounding) / 255) as u8;
             target[pixel] = premultiply(pixels[source + 2]);
             target[pixel + 1] = premultiply(pixels[source + 1]);
             target[pixel + 2] = premultiply(pixels[source]);
@@ -695,6 +702,74 @@ pub fn image(
     Some(value)
 }
 
+#[derive(Clone, Copy)]
+struct AlignedBounds {
+    left: f64,
+    top: f64,
+    scale_x: f64,
+    scale_y: f64,
+    pixels: (f64, f64, f64, f64),
+}
+
+fn aligned_bounds(
+    paint: ScreenshotPaint<'_>,
+    surface: &Surface,
+    grid: SamplingGrid,
+) -> Option<AlignedBounds> {
+    let snap = |value: f32| {
+        let value = value * grid.dpi;
+        (value.abs() - 0.5).ceil().copysign(value) as f64
+    };
+    let left = snap(grid.stage_bounds.0);
+    let top = snap(grid.stage_bounds.1);
+    let scale_x = (snap(grid.stage_bounds.0 + grid.stage_bounds.2) - left) / grid.stage_size.0;
+    let scale_y = (snap(grid.stage_bounds.1 + grid.stage_bounds.3) - top) / grid.stage_size.1;
+    if scale_x <= 0. || scale_y <= 0. {
+        return None;
+    }
+    let annotation = paint.annotation();
+    let bounds = raster_bounds(annotation, surface, 1.)?;
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
+    let target = padded(
+        paint_target_bounds(annotation, bounds, composition_origin),
+        1.,
+    );
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
+    let target = (
+        target.0.max(surface_left),
+        target.1.max(surface_top),
+        target.2.min(surface_right),
+        target.3.min(surface_bottom),
+    );
+    if target.2 <= target.0 || target.3 <= target.1 {
+        return None;
+    }
+    let mut x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
+    let mut y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
+    let mut x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
+    let mut y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
+    if let Some((x, y, width, height)) = grid.viewport {
+        x0 = x0.max(f64::from(x * grid.dpi).floor() - 1.);
+        y0 = y0.max(f64::from(y * grid.dpi).floor() - 1.);
+        x1 = x1.min(f64::from((x + width) * grid.dpi).ceil() + 1.);
+        y1 = y1.min(f64::from((y + height) * grid.dpi).ceil() + 1.);
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(AlignedBounds {
+        left,
+        top,
+        scale_x,
+        scale_y,
+        pixels: (x0, y0, x1, y1),
+    })
+}
+
 pub fn aligned_image(
     keys: &FrameKeys,
     index: usize,
@@ -702,6 +777,74 @@ pub fn aligned_image(
     beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     grid: SamplingGrid,
+) -> Option<PatchImage> {
+    aligned_tile(keys, index, paint, beneath, surface, grid, None)
+}
+
+pub fn aligned_images(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+) -> Option<Vec<PatchImage>> {
+    aligned_images_with_limit(keys, index, paint, beneath, surface, grid, MAX_PATCH_PIXELS)
+}
+
+fn aligned_images_with_limit(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+    max_pixels: f64,
+) -> Option<Vec<PatchImage>> {
+    if !max_pixels.is_finite() || max_pixels < 1. {
+        return None;
+    }
+    let bounds = aligned_bounds(paint, surface, grid)?.pixels;
+    let width = bounds.2 - bounds.0;
+    let height = bounds.3 - bounds.1;
+    if width <= MAX_PATCH_DIMENSION && height <= MAX_PATCH_DIMENSION && width * height <= max_pixels
+    {
+        return Some(vec![aligned_image(
+            keys, index, paint, beneath, surface, grid,
+        )?]);
+    }
+    let tile_size = max_pixels.sqrt().floor().min(MAX_PATCH_DIMENSION);
+    let mut patches = Vec::new();
+    let mut y = bounds.1;
+    while y < bounds.3 {
+        let bottom = (y + tile_size).min(bounds.3);
+        let mut x = bounds.0;
+        while x < bounds.2 {
+            let right = (x + tile_size).min(bounds.2);
+            patches.push(aligned_tile(
+                keys,
+                index,
+                paint,
+                beneath,
+                surface,
+                grid,
+                Some((x, y, right, bottom)),
+            )?);
+            x = right;
+        }
+        y = bottom;
+    }
+    Some(patches)
+}
+
+fn aligned_tile(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+    clip: Option<(f64, f64, f64, f64)>,
 ) -> Option<PatchImage> {
     surface.pixels?;
     let snap = |value: f32| {
@@ -743,6 +886,19 @@ pub fn aligned_image(
     } else {
         hasher.write_u8(0);
     }
+    if let Some((left, top, right, bottom)) = clip {
+        hasher.write_u8(1);
+        for value in [
+            left - snap(grid.origin.0),
+            top - snap(grid.origin.1),
+            right - left,
+            bottom - top,
+        ] {
+            hasher.write_u64(value.to_bits());
+        }
+    } else {
+        hasher.write_u8(0);
+    }
     let key = hasher.finish();
     let frame = FRAME.with(|frame| frame.get());
     let cached = CACHE.with(|cache| {
@@ -754,43 +910,19 @@ pub fn aligned_image(
     if let Some(cached) = cached {
         return Some(cached);
     }
-    let stage_x = grid.stage_bounds.0;
-    let stage_y = grid.stage_bounds.1;
-    let left = snap(stage_x);
-    let top = snap(stage_y);
-    let scale_x = (snap(stage_x + grid.stage_bounds.2) - left) / grid.stage_size.0;
-    let scale_y = (snap(stage_y + grid.stage_bounds.3) - top) / grid.stage_size.1;
-    if scale_x <= 0. || scale_y <= 0. {
-        return None;
-    }
-    let annotation = paint.annotation();
-    let bounds = raster_bounds(annotation, surface, 1.)?;
-    let composition_origin = surface
-        .matte_image
-        .filter(|_| surface.composite_backdrop)
-        .map(|(_, x, y)| (x, y))
-        .unwrap_or((surface.offset_x, surface.offset_y));
-    let target = paint_target_bounds(annotation, bounds, composition_origin);
-    let target = padded(target, 1.);
-    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
-    let target = (
-        target.0.max(surface_left),
-        target.1.max(surface_top),
-        target.2.min(surface_right),
-        target.3.min(surface_bottom),
-    );
-    if target.2 <= target.0 || target.3 <= target.1 {
-        return None;
-    }
-    let mut x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
-    let mut y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
-    let mut x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
-    let mut y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
-    if let Some((x, y, width, height)) = grid.viewport {
-        x0 = x0.max(f64::from(x * grid.dpi).floor() - 1.);
-        y0 = y0.max(f64::from(y * grid.dpi).floor() - 1.);
-        x1 = x1.min(f64::from((x + width) * grid.dpi).ceil() + 1.);
-        y1 = y1.min(f64::from((y + height) * grid.dpi).ceil() + 1.);
+    let bounds = aligned_bounds(paint, surface, grid)?;
+    let AlignedBounds {
+        left,
+        top,
+        scale_x,
+        scale_y,
+        pixels: (mut x0, mut y0, mut x1, mut y1),
+    } = bounds;
+    if let Some((clip_left, clip_top, clip_right, clip_bottom)) = clip {
+        x0 = x0.max(clip_left);
+        y0 = y0.max(clip_top);
+        x1 = x1.min(clip_right);
+        y1 = y1.min(clip_bottom);
     }
     if x1 <= x0 || y1 <= y0 {
         return None;
@@ -1037,6 +1169,7 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u32(surface.height);
     hasher.write_u64(surface.offset_x.to_bits());
     hasher.write_u64(surface.offset_y.to_bits());
+    hasher.write_u8(u8::from(surface.source_is_composed));
     hasher.write_u64(surface.native_scale.to_bits());
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.matte.hash(&mut hasher);
@@ -1148,6 +1281,131 @@ mod tests {
     }
 
     #[test]
+    fn aligned_output_tiles_cover_the_single_patch_without_seams() {
+        let base = base_pixmap(120, 90);
+        let image = render_image(&base);
+        let surface = Surface {
+            image_id: Some(image.id),
+            width: 120,
+            height: 90,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            native_scale: 1.,
+            pixels: image.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let grid = SamplingGrid {
+            origin: (100.25, 50.75),
+            stage_bounds: (100.25, 50.75, 150., 112.5),
+            viewport: Some((100., 50., 150., 113.)),
+            stage_size: (120., 90.),
+            offset: (0., 0.),
+            zoom: 1.25,
+            dpi: 1.,
+        };
+        for style in ["pixelate", "blur"] {
+            let annotation = Annotation::Redact {
+                id: style.into(),
+                x: 0.,
+                y: 0.,
+                width: 120.,
+                height: 90.,
+                style: style.into(),
+                intensity: 2.,
+            };
+            let paint = ScreenshotPaint::Annotation(&annotation);
+            let keys = super::begin_frame(&[paint]);
+            let full = super::aligned_image(&keys, 0, paint, &[], &surface, grid).unwrap();
+            let tiles =
+                super::aligned_images_with_limit(&keys, 0, paint, &[], &surface, grid, 400.)
+                    .unwrap();
+            let repeated =
+                super::aligned_images_with_limit(&keys, 0, paint, &[], &surface, grid, 400.)
+                    .unwrap();
+            assert!(tiles.len() > 1);
+            let size = full.image.size(0);
+            let width = u32::from(size.width) as usize;
+            let height = u32::from(size.height) as usize;
+            let source = full.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+            let mut coverage = vec![false; width * height];
+            for (tile, cached) in tiles.iter().zip(&repeated) {
+                assert!(Arc::ptr_eq(&tile.image, &cached.image));
+                let size = tile.image.size(0);
+                let tile_width = u32::from(size.width) as usize;
+                let tile_height = u32::from(size.height) as usize;
+                let x = ((tile.x - full.x) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+                let y = ((tile.y - full.y) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+                let pixels = tile.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+                for row in 0..tile_height {
+                    for column in 0..tile_width {
+                        let index = (y + row) * width + x + column;
+                        assert!(!coverage[index]);
+                        coverage[index] = true;
+                        assert_eq!(
+                            pixels[row * tile_width + column],
+                            source[index],
+                            "{style}, pixel {index}"
+                        );
+                    }
+                }
+            }
+            assert!(coverage.into_iter().all(|covered| covered));
+        }
+    }
+
+    #[test]
+    fn transparent_source_redactions_match_the_export_pixels() {
+        let rgba = image::RgbaImage::from_fn(64, 48, |x, y| {
+            image::Rgba([
+                if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 },
+                (y % 32 * 6) as u8,
+                80,
+                ((x + y * 3) % 256) as u8,
+            ])
+        });
+        let mut bgra = rgba.clone();
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let source = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+            bgra
+        )]));
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 64,
+            height: 48,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: false,
+            native_scale: 1.,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        for style in ["pixelate", "blur"] {
+            let annotation = Annotation::Redact {
+                id: style.into(),
+                x: 0.,
+                y: 0.,
+                width: 64.,
+                height: 48.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            let mut expected = Canvas::new(64, 48).unwrap();
+            let image = crate::editor::export::from_rgba(&rgba).unwrap();
+            expected.draw_pixmap(image.as_ref(), 0., 0., 64., 48.);
+            renderer::draw_screenshot(&mut expected, &annotation, 1.);
+            let actual = patch(&annotation, &[], &surface, 1.).unwrap();
+            assert_eq!(actual.pixmap.data(), expected.pixmap().data(), "{style}");
+        }
+    }
+
+    #[test]
     fn bounded_redaction_replay_matches_a_full_resolution_patch() {
         let base = base_pixmap(120, 90);
         let bgra = to_bgra(&base);
@@ -1157,6 +1415,7 @@ mod tests {
             height: 90,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
@@ -1227,6 +1486,7 @@ mod tests {
                 height: 90,
                 offset_x,
                 offset_y,
+                source_is_composed: true,
                 native_scale: 1.,
                 pixels: Some(&bgra),
                 matte: None,
@@ -1347,6 +1607,7 @@ mod tests {
             height: base.height(),
             offset_x: 0.0,
             offset_y: 0.0,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
@@ -1476,6 +1737,7 @@ mod tests {
             height: 140,
             offset_x: 0.0,
             offset_y: 0.0,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: first.as_bytes(0),
             matte: None,
@@ -1589,6 +1851,7 @@ mod tests {
             height: backdrop.height(),
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
+            source_is_composed: true,
             native_scale: 1.0,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
@@ -1711,6 +1974,7 @@ mod tests {
             height: export.height(),
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
+            source_is_composed: true,
             native_scale: 1.0,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
@@ -1873,6 +2137,7 @@ mod tests {
             height: 80,
             offset_x: 0.25,
             offset_y: 0.25,
+            source_is_composed: true,
             native_scale: 1.0,
             pixels: None,
             matte: None,
@@ -1913,6 +2178,7 @@ mod tests {
             height: 140,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: first.as_bytes(0),
             matte: Some([240, 240, 240]),
@@ -2107,6 +2373,7 @@ mod tests {
             height: 160,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: Some(&[]),
             matte: None,
@@ -2175,6 +2442,7 @@ mod tests {
             height: base.height(),
             offset_x: 48.,
             offset_y: 20.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
@@ -2245,6 +2513,7 @@ mod tests {
                 height: base.height(),
                 offset_x,
                 offset_y,
+                source_is_composed: true,
                 native_scale: 1.,
                 pixels: Some(&bgra),
                 matte: None,
@@ -2305,6 +2574,7 @@ mod tests {
                     height,
                     offset_x: 0.,
                     offset_y: 0.,
+                    source_is_composed: true,
                     native_scale: 1.,
                     pixels: Some(&bgra),
                     matte: None,
@@ -2379,6 +2649,7 @@ mod tests {
             height: 80,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: source.as_bytes(0),
             matte: None,
@@ -2476,6 +2747,7 @@ mod tests {
             height: 120,
             offset_x: 90.,
             offset_y: -20.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: Some(&bgra),
             matte: None,
@@ -2543,6 +2815,7 @@ mod tests {
             height: 80,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: source.as_bytes(0),
             matte: Some([240, 240, 240]),
@@ -2625,6 +2898,7 @@ mod tests {
                     height: 80,
                     offset_x: 0.,
                     offset_y: 0.,
+                    source_is_composed: true,
                     native_scale: 1.,
                     pixels: source.as_bytes(0),
                     matte: Some(matte),
@@ -2743,6 +3017,7 @@ mod tests {
                 height: 80,
                 offset_x: 0.,
                 offset_y: 0.,
+                source_is_composed: true,
                 native_scale: 1.,
                 pixels: source.as_bytes(0),
                 matte: None,
@@ -2783,6 +3058,7 @@ mod tests {
             height: 3000,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 2.,
             pixels: None,
             matte: None,
@@ -2832,6 +3108,7 @@ mod tests {
                 height: 256,
                 offset_x,
                 offset_y,
+                source_is_composed: true,
                 native_scale: 1.25,
                 pixels: Some(&bgra),
                 matte: None,
@@ -3013,6 +3290,7 @@ mod tests {
                 height: height as u32,
                 offset_x: 0.,
                 offset_y: 0.,
+                source_is_composed: true,
                 native_scale: 1.,
                 pixels: None,
                 matte: None,
@@ -3039,6 +3317,7 @@ mod tests {
             height: 20,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
             native_scale: 1.,
             pixels: None,
             matte: None,

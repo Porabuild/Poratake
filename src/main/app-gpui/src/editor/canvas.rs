@@ -644,6 +644,7 @@ fn paint_annotations(
         }),
         offset_x,
         offset_y,
+        source_is_composed: snapshot.backdrop_composite,
         native_scale: snapshot.frame_scale,
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
         matte: snapshot.backdrop_composite.then_some(stage_background),
@@ -777,6 +778,9 @@ fn paint_annotations(
         let at_native_scale = (scale - 1.).abs() <= 0.0001;
         let bounded = preview_raster::needs_bounded_composition(&surface)
             || preview_raster::needs_bounded_composition(&redaction_surface);
+        let bounded_output = bounded
+            || preview_raster::needs_bounded_output(&surface, scale)
+            || preview_raster::needs_bounded_output(&redaction_surface, scale);
         let aligned = (!at_native_scale
             || (bounded
                 && (committed_blur
@@ -849,7 +853,7 @@ fn paint_annotations(
             } else {
                 surface
             };
-            let patch = if aligned {
+            let patches = if aligned {
                 let (stage_size, offset) = if let Some((image, x, y)) = matte_image {
                     let size = image.size(0);
                     (
@@ -880,7 +884,7 @@ fn paint_annotations(
                     },
                     ..*surface
                 };
-                preview_raster::aligned_image(
+                preview_raster::aligned_images(
                     &keys,
                     index,
                     *paint,
@@ -888,7 +892,7 @@ fn paint_annotations(
                     &aligned_surface,
                     preview_raster::SamplingGrid {
                         origin: (f32::from(origin.x), f32::from(origin.y)),
-                        viewport: bounded.then(|| {
+                        viewport: bounded_output.then(|| {
                             let bounds = window.content_mask().bounds;
                             (
                                 f32::from(bounds.origin.x),
@@ -932,19 +936,22 @@ fn paint_annotations(
                         scale
                     },
                 )
+                .map(|patch| vec![patch])
             });
-            if let Some(patch) = patch {
-                paint_patch(
-                    window,
-                    origin,
-                    zoom,
-                    patch.image,
-                    patch.x,
-                    patch.y,
-                    patch.width,
-                    patch.height,
-                    clear_plain_pixelation.then_some(stage_surface),
-                );
+            if let Some(patches) = patches {
+                for patch in patches {
+                    paint_patch(
+                        window,
+                        origin,
+                        zoom,
+                        patch.image,
+                        patch.x,
+                        patch.y,
+                        patch.width,
+                        patch.height,
+                        clear_plain_pixelation.then_some(stage_surface),
+                    );
+                }
             }
             continue;
         }

@@ -29,10 +29,18 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(1.);
+    let wide = std::env::var_os("PORATAKE_PARITY_LARGE_WIDE").is_some();
+    let transparent = std::env::var_os("PORATAKE_PARITY_LARGE_TRANSPARENT").is_some();
+    let window_size = if wide { (4600., 2600.) } else { (1280., 738.) };
     let source = scratch.join(format!("large-{style}.png"));
     image::RgbaImage::from_fn(source_width, 2160, |x, y| {
         let red = if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 };
-        image::Rgba([red, (y % 32 * 6) as u8, 80, 255])
+        let alpha = if transparent {
+            ((x + y * 3) % 256) as u8
+        } else {
+            255
+        };
+        image::Rgba([red, (y % 32 * 6) as u8, 80, alpha])
     })
     .save(&source)
     .unwrap();
@@ -63,7 +71,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         true,
     );
     let editor = cx
-        .open_window(size(px(1280.), px(738.)), |window, cx| {
+        .open_window(size(px(window_size.0), px(window_size.1)), |window, cx| {
             window.set_scale_factor(dpi);
             cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
         })
@@ -83,9 +91,9 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         .flat_map(|y| (0..32).map(move |x| (x * 31, y * 31)))
         .filter(|&(x, y)| original.get_pixel(x, y) != exported.get_pixel(x, y))
         .count();
-    if style == "none" {
+    if style == "none" && !transparent {
         assert_eq!(modified, 0);
-    } else {
+    } else if style != "none" {
         assert!(modified > 0, "the redaction must alter source pixels");
     }
     drop(original);
@@ -93,7 +101,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     let flattened_path = scratch.join(format!("large-{style}-flattened.png"));
     std::fs::write(&flattened_path, &png).unwrap();
     let flattened = cx
-        .open_window(size(px(1280.), px(738.)), |window, cx| {
+        .open_window(size(px(window_size.0), px(window_size.1)), |window, cx| {
             window.set_scale_factor(dpi);
             cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
         })
@@ -181,9 +189,12 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         assert_eq!(bounds, flat_bounds);
         let left = snap(f32::from(bounds.left()).max(300.));
         let top = snap(f32::from(bounds.top()).max(160.));
-        let right = snap(f32::from(bounds.right()).min(950.));
-        let bottom = snap(f32::from(bounds.bottom()).min(650.));
+        let right = snap(f32::from(bounds.right()).min(window_size.0 - 330.));
+        let bottom = snap(f32::from(bounds.bottom()).min(window_size.1 - 88.));
         assert!(right > left && bottom > top);
+        if wide {
+            assert!(u64::from(right - left) * u64::from(bottom - top) > 8_388_608);
+        }
         (left, top, left, top, right - left, bottom - top)
     };
     let mut changed = 0u64;
@@ -204,10 +215,6 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
             changed += u64::from(difference > 2);
         }
     }
-    assert_eq!(
-        changed, 0,
-        "{style} preview differs from the reopened export"
-    );
     image::imageops::crop_imm(&preview, left, top, width, height)
         .to_image()
         .save(scratch.join(format!("large-{style}-preview.png")))
@@ -220,6 +227,10 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         "large {source_width}x2160 {style} at {zoom}x, display {dpi}x: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
         width * height,
         total as f64 / f64::from(width * height)
+    );
+    assert_eq!(
+        changed, 0,
+        "{style} preview differs from the reopened export"
     );
     for window in [editor, flattened] {
         cx.update_window(window.into(), |_, window, _| window.remove_window())
