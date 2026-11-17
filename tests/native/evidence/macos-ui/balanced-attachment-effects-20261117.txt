@@ -18,17 +18,19 @@ cargo clippy --offline --locked --manifest-path src/main/app-gpui/Cargo.toml --f
 Result: passed; the vendored rfd crate emits existing dependency warnings.
 
 PORATAKE_PARITY_OUTPUT=<temporary directory> PORATAKE_PARITY_THEME=<dark|light> PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_BALANCED_ATTACHMENTS_ONLY=1 cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --parity
-Result: both appearances passed 168 generated cases each, before and after
-reopening. The cases cover four attachment edges, simulated 100%, 125% and
+Result at commit 96ac8400: both appearances passed 168 generated cases each,
+before and after reopening. The cases cover four attachment edges, simulated 100%, 125% and
 200% scales, 0px and 8px insets, rounded and/or shadowed images, and zero-padding
 transparent and padded solid backgrounds. Each uses a partially translucent
 primary, a solid attachment, a shape and a blackout. A second blackout crosses
 each attachment seam; saved pixels on both sides must be black. Additional
-right-seam cases apply blur or pixelation and verify a change on both sides. Full preview comparisons allow at most one pixel three levels away
-from the exported PNG over the editor background and all others at most two.
+right-seam cases apply blur or pixelation and verify a change on both sides.
+Full preview comparisons allow at most one pixel three levels away from the
+exported PNG over the editor background and all others at most two.
 
 The retained dark and light images show the 1x right attachment, 8px inset and
 rounded-corner case. The test uses generated content and an isolated profile;
-it does not verify live capture, physical DPI, blur/pixelation across the other three seams, or interactive
-editing. It does not establish exact
-Electron raster equality beyond the separately checked layout.
+it does not verify live capture, physical DPI or interactive editing. It does
+not establish exact Electron raster equality beyond the separately checked
+layout. The subsequent balanced-attachment-all-seams-20261117.txt records
+blur/pixelation tests on all four attachment edges.

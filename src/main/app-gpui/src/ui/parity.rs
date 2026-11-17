@@ -1051,6 +1051,12 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_BALANCED_ATTACHMENT_SEAMS_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        balanced_attachments_workflow::run_seam_effects(&mut cx, &scratch);
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_BALANCED_ATTACHMENTS_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         balanced_attachments_workflow::run(&mut cx, &scratch);

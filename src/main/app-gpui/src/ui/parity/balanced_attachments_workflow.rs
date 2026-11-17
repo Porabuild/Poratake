@@ -26,17 +26,23 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
             }
         }
     }
+    run_seam_effects(cx, scratch);
+}
+
+pub(super) fn run_seam_effects(cx: &mut HeadlessAppContext, scratch: &Path) {
     for scale in [1., 1.25, 2.] {
-        for inset in [0., 8.] {
-            for background in [false, true] {
-                for style in ["blur", "pixelate"] {
-                    run_case(
-                        cx,
-                        scratch,
-                        scale,
-                        Edge::Right,
-                        (inset, 20., 0., background, style),
-                    );
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            for inset in [0., 8.] {
+                for background in [false, true] {
+                    for style in ["blur", "pixelate"] {
+                        run_case(
+                            cx,
+                            scratch,
+                            scale,
+                            edge,
+                            (inset, 20., 0., background, style),
+                        );
+                    }
                 }
             }
         }
@@ -291,10 +297,13 @@ fn run_case(
             if style == "blackout" {
                 assert_eq!(saved.get_pixel(x, y).0, [0, 0, 0, 255], "{name} seam");
             } else {
-                let original = if index == 0 {
-                    [230, 230, 230, 255]
+                let primary = [230, 230, 230, 255];
+                let attachment = [240, 80, 64, 255];
+                let primary_first = matches!(edge, Edge::Right | Edge::Bottom);
+                let original = if (index == 0) == primary_first {
+                    primary
                 } else {
-                    [240, 80, 64, 255]
+                    attachment
                 };
                 assert_ne!(saved.get_pixel(x, y).0, original, "{name} seam");
             }

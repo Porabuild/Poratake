@@ -1,0 +1,22 @@
+macOS GPUI balanced attachment seam effects, 2026-11-17
+
+PORATAKE_PARITY_OUTPUT=<temporary directory> PORATAKE_PARITY_THEME=<dark|light> PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_BALANCED_ATTACHMENT_SEAMS_ONLY=1 cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --parity
+
+Both appearances passed 96 generated cases each, before and after reopening:
+three simulated scales (100%, 125%, 200%), four attachment edges, two insets
+(0px, 8px), zero-padding transparent and padded solid backgrounds, and blur or
+pixelation. Each case places the effect across the primary/attachment seam and
+checks that it changes the saved pixels on both sides. The full Metal preview is
+compared with the saved PNG composited over the editor background. At most one
+pixel may differ by three levels; all others must be within two levels. A shape,
+blackout and a translucent primary region are also present.
+
+The retained images show the 100% right-edge blur case with an 8px inset. This
+uses generated images and an isolated profile. Real capture, physical DPI,
+interactive redaction, other zooms, other image content and exact Electron
+raster equality were not tested by this fixture. See
+balanced-attachment-effects-20261117.txt for the earlier layout comparison,
+blackout checks and previous fixture results.
+
+cargo clippy --offline --locked --manifest-path src/main/app-gpui/Cargo.toml --features parity -- -D warnings
+Result: passed. The vendored rfd crate emits existing dependency warnings.
