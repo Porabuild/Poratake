@@ -16,7 +16,13 @@ the debounce, then reopened state.json and verified both the track and its
 file. The 17-test music selection also passed with two ignored; the generated
 WAV reimport/preview test passed separately using the installed FFmpeg.
 
-This verifies orderly close and the file replacement contract, not a physical
-power-loss test. Electron's separate persistence path and safe collection of
-retired music files still require work. File syncing occurs during GPUI save;
+Electron's video state handler now uses a matching atomic replacement. Three
+temporary-file tests covered successful replacement, failure preserving the
+old file, and a failed exclusive create not deleting another writer's file.
+The state-handler tests also checked error reporting. The three targeted
+Electron test files passed 16 tests and TypeScript typecheck passed.
+
+This verifies orderly GPUI close and the file replacement contract, not a
+physical power-loss test. Electron's pending close-time save and safe collection
+of retired music files still require work. File syncing occurs during GPUI save;
 its effect on interactive latency for slow filesystems was not measured.

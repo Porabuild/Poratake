@@ -4918,7 +4918,9 @@ concurrent editors and interrupted sessions.
 GPUI now replaces its editor state atomically and flushes a pending edit on
 orderly close. The [persistence checks](tests/native/evidence/macos-ui/video-editor-atomic-save-20261117.txt)
 cover concurrent readers, a failed replacement and closing just after undo.
-Electron's separate state persistence and music-file collection remain open.
+Electron now also replaces its video state atomically; a failed replacement
+leaves the previous state in place. Flushing Electron's pending edit on close
+and music-file collection remain open.
 
 ## Review gate
 
