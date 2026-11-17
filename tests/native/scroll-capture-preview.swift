@@ -677,6 +677,26 @@ struct ScrollCapturePreviewTest {
         await directRegistry.waitForScreenshots()
         FileHandle.standardError.write(Data("direct screenshot coordination: complete\n".utf8))
 
+        FileHandle.standardError.write(Data("screenshot frame deadline: start\n".utf8))
+        var lateFrame: (@Sendable (Int?, Error?) -> Void)?
+        do {
+            let unexpectedFrame: Int = try await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: { preconditionFailure("The registered window must stay excluded") },
+                filtered: { _ in
+                    try await awaitScreenshotFrame(timeout: .zero) { lateFrame = $0 }
+                }
+            )
+            preconditionFailure("A screenshot without a frame returned \(unexpectedFrame)")
+        } catch ScreenshotFrameError.timedOut {}
+        guard let lateFrame else { preconditionFailure("The screenshot must have requested a frame") }
+        lateFrame(41, nil)
+        await directRegistry.waitForScreenshots()
+        let nextFrame: Int = try await awaitScreenshotFrame { $0(42, nil) }
+        precondition(nextFrame == 42)
+        FileHandle.standardError.write(Data("screenshot frame deadline: complete\n".utf8))
+
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {

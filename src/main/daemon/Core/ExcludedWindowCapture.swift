@@ -1,6 +1,53 @@
 import Cocoa
 import ScreenCaptureKit
 
+enum ScreenshotFrameError: LocalizedError {
+    case timedOut
+    case missingImage
+
+    var errorDescription: String? {
+        switch self {
+        case .timedOut: "ScreenCaptureKit did not return a screenshot in time"
+        case .missingImage: "ScreenCaptureKit did not return a screenshot image"
+        }
+    }
+}
+
+@MainActor
+func awaitScreenshotFrame<Frame: Sendable>(
+    timeout: Duration = .seconds(15),
+    start: (@escaping @Sendable (Frame?, Error?) -> Void) -> Void
+) async throws -> Frame {
+    try Task.checkCancellation()
+    let (frames, result) = AsyncThrowingStream<Frame, Error>.makeStream(bufferingPolicy: .bufferingOldest(1))
+    let deadline = Task {
+        do {
+            try await Task.sleep(for: timeout)
+        } catch {
+            return
+        }
+        result.finish(throwing: ScreenshotFrameError.timedOut)
+    }
+    defer {
+        deadline.cancel()
+        result.finish()
+    }
+    start { frame, error in
+        if let error {
+            result.finish(throwing: error)
+            return
+        }
+        guard let frame else {
+            result.finish(throwing: ScreenshotFrameError.missingImage)
+            return
+        }
+        result.yield(frame)
+        result.finish()
+    }
+    for try await frame in frames { return frame }
+    throw CancellationError()
+}
+
 @MainActor
 func coordinateAreaCapture<T>(
     registry: RecordingCaptureWindowRegistry,
@@ -67,5 +114,7 @@ func captureAreaExcludingWindows(
     config.showsCursor = false
     config.capturesAudio = false
     config.captureResolution = .best
-    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    return try await awaitScreenshotFrame { completion in
+        SCScreenshotManager.captureImage(contentFilter: filter, configuration: config, completionHandler: completion)
+    }
 }
