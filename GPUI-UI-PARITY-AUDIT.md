@@ -5202,6 +5202,35 @@ request returned `CAPTURE_FAILED` after 15.33 seconds. A pending protected
 tooltip became visible in the same daemon immediately afterward, dismissed
 normally, and no PNG was published for the timed-out request.
 
+### 2026-11-17 and 2026-11-18 Display P3 screenshot color verification
+
+The 840×520 native area fixture carries a Display P3 ICC profile. GPUI's old
+decoder treated its channels as sRGB. The green sample at (450, 115) therefore
+exported as `[100, 204, 101]` while the ColorSync sRGB reference measured
+`[39, 207, 86]`. The native editor window showed the same color error after
+its captured pixels were converted to sRGB for comparison. An offscreen canvas
+in Poratake's Electron 43.4.0 runtime measured `[39, 207, 86]` as well.
+
+GPUI now converts embedded RGB ICC profiles into its sRGB working space
+before preview, editing, pinning, color picking, thumbnail generation, and
+clipboard encoding. The original capture keeps its embedded profile. The
+decoder preserves alpha and 16-bit precision. Edited exports and clipboard
+PNGs carry a standard PNG sRGB tag. The tag has no timestamp, so re-exporting
+the same image produces identical bytes. Existing screenshot history thumbnails
+regenerate from the original using a versioned cache key, with the previous
+thumbnail available when the original cannot be decoded.
+
+The [native comparison](tests/native/evidence/macos-ui/native-p3-editor-comparison-20261117.png)
+shows the editor window before and after conversion. The corrected green sample
+exported as `[39, 207, 86]`, and the full PNG differed from ColorSync and Electron
+by at most one RGB level per channel. An sRGB input exported
+pixel-identically. A generated 16-bit Display P3 input also matched the ColorSync
+reference exactly in the editor's 8-bit export. Sampling the corrected native
+window and the window opened from an already-converted sRGB reference produced
+the same green at (1100, 620).
+The headless Metal parity runs also completed with the tagged native file in the
+default dark editor and a 950×700 light editor.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
