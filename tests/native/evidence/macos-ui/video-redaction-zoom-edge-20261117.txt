@@ -1,0 +1,37 @@
+macOS generated video redaction sampling investigation, 2026-11-17
+
+The 4,096-case diagnostic described in video-redaction-rectangle-corners-fix-
+20261117.txt found 17 channels more than one level away from the resized full
+composition, maximum two. They occurred in seven generated cases: 66, 123, 333,
+876, 1110, 2763 and 3792. This is a synthetic composition comparison, not a
+live capture or decoded-export check.
+
+The seven cases were rerun with individual changes to the generated scenes:
+baseline: 17 channels; camera disabled: 11; camera shadow disabled: 11; camera
+corners disabled: 15; zoom disabled: zero; rectangles removed: 16. Each variant
+was compared with its own full composition. These interventions do not prove
+the cause of every mismatch or establish that all zoomed scenes differ.
+
+For cases 66 and 333, the full-resolution source and the corresponding cropped
+composition were compared before output scaling. With drawings and camera
+removed, respectively 63 and 84 channels differed, each by at most one level.
+With all layers present, case 333 reached a two-level difference. Disabling
+zoom eliminated differences in the two sampled source regions. Removing both
+video and camera also produced identical sampled source regions.
+
+Combining the zoom transforms in a trial did not remove the output mismatches
+in cases 66 and 333 and increased one sampled source region's differences.
+Skipping rectangular clipping in another trial did not change those results.
+Both trials were discarded. The mechanism and a performant fix remain open.
+
+Reproduce the two source comparisons in an isolated clean checkout:
+
+git apply tests/native/evidence/macos-ui/video-redaction-zoom-edge-diagnostic-20261117.patch
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui generated_redaction_matrix_matches_full_composition_at_effect_boundaries -- --nocapture
+
+The diagnostic patch changes the test to report mismatches rather than assert
+on them, restricts rendering to cases 66 and 333, and renders a full frame for
+every redaction batch. It is slow diagnostic instrumentation, not a production
+change. To rerun the seven-case controls, replace the selected case list with
+the seven IDs above and set PORATAKE_RED_DIAG to camera-off, shadow-off,
+corners-off, zoom-off or rectangles-off. The patch must be discarded afterward.

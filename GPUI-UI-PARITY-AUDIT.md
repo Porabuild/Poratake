@@ -4704,6 +4704,16 @@ sequential synthetic runs omit decode and GPU upload. The [measurements](tests/n
 retain the commands and the open residual cases; live capture and physical
 display verification remain open.
 
+A follow-up grouped the 17 residual channels into seven generated cases. With
+zoom disabled those cases had no differences above one level; disabling the
+camera or its shadow left 11. In two cases the cropped source already differed
+from the full composition by one level with drawings and camera removed, before
+output scaling. Combining the zoom transforms or omitting rectangular clipping
+did not resolve the tested cases, and both trials were discarded. The
+[diagnostic evidence](tests/native/evidence/macos-ui/video-redaction-zoom-edge-20261117.txt)
+records the controls and reproduction; the mechanism and a performant fix
+remain open.
+
 An isolated GPUI fixture now draws pixelation across a rectangle corner, reopens
 the project and captures its 640×360 scrubbing preview before export. In the
 affected area, the displayed preview matched its unencoded composition within
