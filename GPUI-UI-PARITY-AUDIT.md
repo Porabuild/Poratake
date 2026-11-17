@@ -2561,6 +2561,15 @@ Bugs fixed in this pass:
   inset and framed 17,000px-wide and -tall captures retain shadows in saved and
   reopened PNGs. CPU preview shadow checks match the saved output; GPUI GPU
   rendering at those dimensions remains unverified.
+- A plain screenshot wider or taller than the GPUI atlas limit could render as
+  the editor background. The editor now tiles oversized source images, keeping
+  neighboring pixels at each edge and retaining the original image for export
+  and redaction. A generated 17,000×100 image was blank at a sampled pixel
+  before the change. The [macOS Metal evidence](tests/native/evidence/macos-ui/oversized-screenshot-preview-20261117.txt)
+  checks both orientations, panning, save and reopen in light and dark themes
+  at simulated display scales. CPU tests cover tile bytes, alpha, crop and undo.
+  This does not verify an actual scroll capture, physical display scaling or
+  interactive performance on large two-dimensional images.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
