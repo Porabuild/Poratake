@@ -1954,9 +1954,23 @@ impl VideoEditorWindow {
     fn accept_music_track(
         &mut self,
         project: &std::path::Path,
-        track: model::MusicTrack,
+        mut track: model::MusicTrack,
         cx: &mut Context<Self>,
     ) {
+        let base = track.id.clone();
+        let mut id = base.clone();
+        let mut suffix = 1;
+        while self
+            .state
+            .music_tracks
+            .iter()
+            .any(|existing| existing.id == id || model::group_key(existing) == id)
+        {
+            id = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        track.id = id.clone();
+        track.group_id = id;
         if let Some(folder) = crate::video::project::music_folder(project) {
             self.preview_audio
                 .invalidate(&folder.join(&track.file_name));
@@ -5514,6 +5528,56 @@ mod keyboard_demo_tests {
                 assert_ne!(original, expected[1000]);
                 assert_eq!(refreshed.stems[0].samples[1000], expected[1000]);
                 assert!(refreshed.stems[0].samples.as_ref() == &expected);
+            })
+            .unwrap();
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[herogpui::test]
+    fn imported_music_with_colliding_names_remains_independent(cx: &mut gpui::TestAppContext) {
+        use crate::video::{music, transcription};
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let first_path = directory.path().join("mix-1.wav");
+        let second_path = directory.path().join("mix 1.wav");
+        let third_path = directory.path().join("mix_1.wav");
+        let wav = transcription::wav_bytes(&vec![5000; 4800], 48000);
+        std::fs::write(&first_path, &wav).unwrap();
+        std::fs::write(&second_path, &wav).unwrap();
+        std::fs::write(&third_path, &wav).unwrap();
+        let first = music::add(&project, &first_path, 0.0).unwrap();
+        let second = music::add(&project, &second_path, 0.0).unwrap();
+        let third = music::add(&project, &third_path, 0.0).unwrap();
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                let project = editor.path.clone().unwrap();
+                editor.accept_music_track(&project, first, cx);
+                editor.accept_music_track(&project, second, cx);
+                editor.accept_music_track(&project, third, cx);
+                let first = editor.state.music_tracks[0].clone();
+                let second = editor.state.music_tracks[1].clone();
+                let third = editor.state.music_tracks[2].clone();
+                assert_ne!(first.id, second.id);
+                assert_ne!(first.id, third.id);
+                assert_ne!(second.id, third.id);
+                assert_ne!(model::group_key(&first), model::group_key(&second));
+                editor.set_music_volume(first.id.clone().into(), 0.25, cx);
+                assert_eq!(editor.state.music_tracks[0].volume, 0.25);
+                assert_ne!(editor.state.music_tracks[1].volume, 0.25);
+                model::save_state(&project, &editor.state);
+                let restored = model::load_state(&project);
+                assert_eq!(restored.music_tracks, editor.state.music_tracks);
+                editor.remove_music_track(first.id.into(), cx);
+                assert_eq!(editor.state.music_tracks.len(), 2);
+                assert_eq!(editor.state.music_tracks[0].id, second.id);
+                assert_eq!(editor.state.music_tracks[1].id, third.id);
+                assert!(project.join("music").join(second.file_name).is_file());
+                assert!(project.join("music").join(third.file_name).is_file());
             })
             .unwrap();
     }
