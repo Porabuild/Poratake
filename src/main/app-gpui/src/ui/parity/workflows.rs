@@ -209,6 +209,26 @@ fn recorded_editor_and_export(
     use crate::windows::registry::{self, WindowKind};
     use crate::windows::video_editor::{model, preview, sidebar::SidebarTab, VideoEditorWindow};
 
+    if let Some(source) = std::env::var_os(format!(
+        "PORATAKE_PARITY_{}_RECORDING",
+        target.to_uppercase()
+    )) {
+        let expected = crate::video::decoder::VideoDecoder::open(Path::new(&source))
+            .unwrap()
+            .frame_at(1.)
+            .unwrap();
+        let actual = crate::video::decoder::VideoDecoder::open(
+            &project.join(crate::video::project::RECORDING),
+        )
+        .unwrap()
+        .frame_at(1.)
+        .unwrap();
+        assert!(
+            actual.bgra == expected.bgra,
+            "{target} project did not retain its supplied source frame"
+        );
+    }
+
     let video = cx.update(|cx| {
         registry::handle(WindowKind::VideoEditor, cx)
             .unwrap()
@@ -284,6 +304,33 @@ fn recorded_editor_and_export(
     settle(cx, window);
     cx.advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        use crate::windows::video_editor::timeline::tracks::TrackKind;
+
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.cut_at(0.75, Some(TrackKind::Video), cx);
+                    editor.cut_at(1.0, Some(TrackKind::Video), cx);
+                })
+                .unwrap();
+        });
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        let cut = model::load_state(project);
+        assert_eq!(cut.segments.len(), 3);
+        let removed = cut.segments[1].id.clone();
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.delete_clip(TrackKind::Video, removed.into(), cx);
+                    editor.set_playhead(1.0, cx);
+                })
+                .unwrap();
+        });
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+    }
     let state = model::load_state(project);
     assert_eq!(state.zoom_segments.len(), 1);
     assert!(matches!(
@@ -293,6 +340,11 @@ fn recorded_editor_and_export(
     ));
     assert!((state.zoom_segments[0].start_time - 0.25).abs() < 0.02);
     assert!((state.zoom_segments[0].end_time - 1.5).abs() < 0.02);
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        assert_eq!(state.segments.len(), 2);
+        assert!((state.segments[0].original_end - 0.75).abs() < 0.001);
+        assert!((state.segments[1].original_start - 1.0).abs() < 0.001);
+    }
     let mut preview = preview::Source::open(project, state.clone()).unwrap();
     let expected = preview::to_render_image_opaque(&preview.compose(1.0, None).unwrap()).unwrap();
     cx.update(|cx| {
@@ -396,6 +448,11 @@ fn recorded_editor_and_export(
         output,
         &format!("recording-{target}-edited-preview"),
     );
+    let screenshot = cx.capture_screenshot(window).unwrap();
+    let content = cx.update(|cx| video.read(cx).unwrap().preview_content_rect().unwrap());
+    let display_scale = cx
+        .update_window(window, |_, window, _| window.scale_factor())
+        .unwrap();
     let exported = output.join(format!("recording-{target}-edited.mp4"));
     crate::video::export::run(
         crate::video::export::Request {
@@ -426,6 +483,18 @@ fn recorded_editor_and_export(
             "{target} preview and decoded export differ at {time}s: {mean}"
         );
         if time == 1.0 {
+            let (rendered_mean, rendered_above_twelve) =
+                super::recording_preview_comparison::compare(
+                    &screenshot,
+                    content,
+                    display_scale,
+                    &decoded,
+                );
+            assert!(
+                rendered_mean < 5.,
+                "{target} rendered preview differs from decoded export: {rendered_mean}"
+            );
+            eprintln!("fixture {target} rendered preview/export mean RGB error: {rendered_mean:.3}, channels above 12: {rendered_above_twelve}");
             let undrawn = undrawn.as_bytes(0).unwrap();
             let mut drawing_pixels = 0_u64;
             let mut drawing_error = 0_u64;
@@ -1642,6 +1711,10 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             crate::capture::overlay::close_all(cx);
         });
         cx.run_until_parked();
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        super::recording_preview_comparison::assert_distinct_exports(output);
     }
     #[cfg(target_os = "macos")]
     for (on_stop, queued, during_stop) in [

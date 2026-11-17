@@ -28,6 +28,8 @@ mod overlays;
 mod pin_workflows;
 mod preview_workflows;
 mod recording_controls;
+#[cfg(target_os = "macos")]
+mod recording_preview_comparison;
 mod scroll_workflows;
 #[cfg(windows)]
 mod windows_renderer;
