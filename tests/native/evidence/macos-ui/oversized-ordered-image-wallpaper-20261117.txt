@@ -21,8 +21,10 @@ difference was two. Outer wallpaper alpha was checked in every saved PNG.
 
 Before the fix, the blurred alpha-128 wallpaper exported alpha 192: GPUI drew
 the blurred pixels over the original. A gradient regression also failed before
-the fix. The shared background painter now blurs in place, and that regression
-passes for alpha 0, 64, 128 and 255 while checking that blur changes pixels.
+the fix. At e9d24294 the shared background painter blurred in place, and that
+regression passed for alpha 0, 64, 128 and 255 while checking that blur changes
+pixels. A later wallpaper-blur-cover-20261117.txt comparison changed the
+geometry to include the expanded source used by Electron.
 Electron's wallpaper renderer applies blur to a single background draw; these
 fixtures do not establish exact visual equivalence to Electron's blur kernel or
 image cover calculation. The blur fix is e9d24294.

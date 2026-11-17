@@ -2637,9 +2637,14 @@ Bugs fixed in this pass:
   a tile seam. Its 120 generated preview comparisons matched reopened PNGs
   within two channel levels. It also exposed a separate transparency bug:
   background blur drew a second copy over the original, raising a 50%-alpha
-  wallpaper to 75% alpha. The shared renderer now blurs in place. The check
-  includes image wallpapers with and without blur; exact equivalence to
-  Electron's blur kernel and image cover remains unverified.
+  wallpaper to 75% alpha. The shared renderer now applies the blurred source
+  once. The check includes image wallpapers with and without blur.
+  A later [Electron comparison](tests/native/evidence/macos-ui/wallpaper-blur-cover-20261117.txt)
+  found that GPUI omitted Electron's expansion of the wallpaper before blur.
+  The renderer now uses expanded cover geometry, reducing the maximum error in
+  one high-contrast margin from 43 to 13 channel levels. A patterned wallpaper
+  still differs visibly: the tested margins have mean maximum-channel errors
+  around seven levels and maxima up to 18. The remaining cause is unconfirmed.
   An [annotation seam check](tests/native/evidence/macos-ui/oversized-rounded-annotation-20261117.txt)
   exercises blackout, blur and pixelation across a tile boundary. At simulated
   100% and 200%, 192 visible-region comparisons matched reopened PNGs within

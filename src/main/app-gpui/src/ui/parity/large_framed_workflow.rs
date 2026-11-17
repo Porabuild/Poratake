@@ -51,7 +51,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .unwrap_or(0.);
     let wallpaper_path = scratch.join("large-wallpaper.png");
     if let Some(alpha) = image_background {
+        let patterned = std::env::var_os("PORATAKE_PARITY_LARGE_IMAGE_PATTERN").is_some();
         image::RgbaImage::from_fn(64, 48, |x, y| {
+            if patterned {
+                let shade = if (x / 4 + y / 4) % 2 == 0 { 0 } else { 255 };
+                return image::Rgba([shade, shade, shade, alpha]);
+            }
             image::Rgba([(x * 3) as u8, (y * 5) as u8, (x * 2 + y) as u8, alpha])
         })
         .save(&wallpaper_path)
@@ -214,11 +219,20 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
             });
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
             if let Some(alpha) = image_background {
-                assert_eq!(output.get_pixel(0, 0).0[3], alpha);
-                assert_ne!(
-                    output.get_pixel(0, 0),
-                    output.get_pixel(output.width() - 1, output.height() - 1)
-                );
+                let (x, y) = if horizontal {
+                    (output.width() / 2, 0)
+                } else {
+                    (0, output.height() / 2)
+                };
+                assert_eq!(output.get_pixel(x, y).0[3], alpha);
+                assert!((1..128).any(|index| {
+                    let (x, y) = if horizontal {
+                        (index * (output.width() - 1) / 127, 0)
+                    } else {
+                        (0, index * (output.height() - 1) / 127)
+                    };
+                    output.get_pixel(0, 0) != output.get_pixel(x, y)
+                }));
             } else if transparent_background {
                 assert_eq!(output.get_pixel(0, 0).0[3], 0);
             } else if background == "#20306080" {
