@@ -4915,6 +4915,10 @@ removing track references, and GPUI removes a split group in one undo step.
 cover removal, undo, redo and reimport. Safe collection remains open: retained
 files can accumulate until cleanup accounts for history, persisted state,
 concurrent editors and interrupted sessions.
+GPUI now replaces its editor state atomically and flushes a pending edit on
+orderly close. The [persistence checks](tests/native/evidence/macos-ui/video-editor-atomic-save-20261117.txt)
+cover concurrent readers, a failed replacement and closing just after undo.
+Electron's separate state persistence and music-file collection remain open.
 
 ## Review gate
 
