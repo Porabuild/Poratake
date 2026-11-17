@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, createElement } from 'react';
+import { act, createElement, useLayoutEffect } from 'react';
 import type { Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
 import { useEditorStatePersistence } from '@/renderer/components/video-editor/hooks/use-editor-state-persistence';
@@ -8,6 +8,7 @@ type Values = Parameters<typeof useEditorStatePersistence>[0]['values'];
 let root: Root;
 let browser: Window;
 let events: Map<string, (...args: unknown[]) => void>;
+let resetState: () => Promise<boolean>;
 const invoke = vi.fn();
 const send = vi.fn();
 
@@ -18,7 +19,7 @@ function Harness({
   tracks: string[];
   duration?: number;
 }) {
-  useEditorStatePersistence({
+  const persistence = useEditorStatePersistence({
     isReady: true,
     values: {
       sourceDuration: duration,
@@ -29,6 +30,9 @@ function Harness({
       drawingSegments: [],
     } as unknown as Values,
   });
+  useLayoutEffect(() => {
+    resetState = persistence.resetState;
+  }, [persistence.resetState]);
   return null;
 }
 
@@ -161,5 +165,69 @@ describe('video editor close persistence', () => {
     expect(send).toHaveBeenCalledWith('video-editor:close-save-failed');
     expect(send).not.toHaveBeenCalledWith('video-editor:close-confirmed');
     error.mockRestore();
+  });
+
+  it('waits for reset and does not save stale edits after it succeeds', async () => {
+    vi.useFakeTimers();
+    let finishReset: ((value: boolean) => void) | undefined;
+    invoke.mockImplementation(channel => {
+      if (channel === 'video-editor:resetState') {
+        return new Promise<boolean>(resolve => {
+          finishReset = resolve;
+        });
+      }
+      return Promise.resolve(true);
+    });
+    let pending: Promise<boolean> | undefined;
+    await act(async () => {
+      pending = resetState();
+    });
+    expect(finishReset).toBeDefined();
+    await act(() =>
+      root.render(createElement(Harness, { tracks: ['stale.wav'] }))
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    await act(async () => events.get('video-editor:prepare-close')?.());
+    expect(invoke).not.toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.anything()
+    );
+    expect(send).not.toHaveBeenCalledWith('video-editor:close-confirmed');
+    await act(async () => finishReset?.(true));
+    expect(await pending).toBe(true);
+    expect(invoke).not.toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.anything()
+    );
+    expect(send).toHaveBeenCalledWith('video-editor:close-confirmed');
+  });
+
+  it('saves the latest edit when reset fails', async () => {
+    vi.useFakeTimers();
+    let finishReset: ((value: boolean) => void) | undefined;
+    invoke.mockImplementation(channel => {
+      if (channel === 'video-editor:resetState') {
+        return new Promise<boolean>(resolve => {
+          finishReset = resolve;
+        });
+      }
+      return Promise.resolve(true);
+    });
+    let pending: Promise<boolean> | undefined;
+    await act(async () => {
+      pending = resetState();
+    });
+    await act(() =>
+      root.render(createElement(Harness, { tracks: ['latest.wav'] }))
+    );
+    await act(async () => events.get('video-editor:prepare-close')?.());
+    expect(send).not.toHaveBeenCalledWith('video-editor:close-confirmed');
+    await act(async () => finishReset?.(false));
+    expect(await pending).toBe(false);
+    expect(invoke).toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.objectContaining({ musicTracks: [{ fileName: 'latest.wav' }] })
+    );
+    expect(send).toHaveBeenCalledWith('video-editor:close-confirmed');
   });
 });

@@ -70,6 +70,8 @@ export function useEditorStatePersistence({
   const hasAppliedStateRef = useRef(false);
   const isMountedRef = useRef(true);
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const resetPromiseRef = useRef<Promise<boolean> | null>(null);
+  const resetCompletedRef = useRef(false);
   const latestRef = useRef({ isReady, isStateLoaded, loadedState, values });
   useLayoutEffect(() => {
     latestRef.current = { isReady, isStateLoaded, loadedState, values };
@@ -110,7 +112,7 @@ export function useEditorStatePersistence({
     }
   }, [isReady, values.segments.length]);
 
-  const saveState = useCallback((): Promise<boolean> => {
+  const enqueueSave = useCallback((): Promise<boolean> => {
     const save = saveQueueRef.current
       .catch(() => false)
       .then(async () => {
@@ -172,6 +174,15 @@ export function useEditorStatePersistence({
     return save;
   }, []);
 
+  const saveState = useCallback((): Promise<boolean> => {
+    if (resetCompletedRef.current) return Promise.resolve(true);
+    const pendingReset = resetPromiseRef.current;
+    if (pendingReset) {
+      return pendingReset.then(success => (success ? true : enqueueSave()));
+    }
+    return enqueueSave();
+  }, [enqueueSave]);
+
   useEffect(() => {
     const remove = window.ipcRenderer.on('video-editor:prepare-close', () => {
       if (saveTimeoutRef.current) {
@@ -217,20 +228,36 @@ export function useEditorStatePersistence({
     };
   }, [isStateLoaded, isReady, values, saveState]);
 
-  const resetState = useCallback(async (): Promise<boolean> => {
+  const resetState = useCallback((): Promise<boolean> => {
+    if (resetCompletedRef.current) return Promise.resolve(true);
+    if (resetPromiseRef.current) return resetPromiseRef.current;
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     }
 
-    try {
-      await saveQueueRef.current;
-      return await window.ipcRenderer.invoke('video-editor:resetState');
-    } catch (err) {
-      console.error('Failed to reset editor state:', err);
-      return false;
-    }
-  }, []);
+    const reset = saveQueueRef.current
+      .catch(() => false)
+      .then(async () => {
+        try {
+          return (
+            (await window.ipcRenderer.invoke('video-editor:resetState')) ===
+            true
+          );
+        } catch (err) {
+          console.error('Failed to reset editor state:', err);
+          return false;
+        }
+      })
+      .then(success => {
+        resetPromiseRef.current = null;
+        resetCompletedRef.current = success;
+        if (!success && isMountedRef.current) void enqueueSave();
+        return success;
+      });
+    resetPromiseRef.current = reset;
+    return reset;
+  }, [enqueueSave]);
 
   return {
     loadedState,
