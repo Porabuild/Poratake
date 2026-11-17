@@ -35,6 +35,7 @@ pub struct RedactPatch {
 
 pub struct CanvasSnapshot {
     pub image: Option<std::sync::Arc<gpui::RenderImage>>,
+    pub image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     /// Redacted pixels for committed redactions, rendered from the same code
     /// the export uses so the preview shows exactly what is written out.
     pub redact_patches: std::collections::HashMap<String, RedactPatch>,
@@ -83,6 +84,26 @@ pub struct EditorCanvas {
     /// The stage scrolls when the zoomed image is larger than the window, the
     /// way `overflow-auto` does in the renderer.
     pub scroll: ScrollHandle,
+}
+
+fn preview_tile(tile: &crate::editor::export::PreviewEdgeImage, zoom: f32) -> impl IntoElement {
+    let size = tile.image.size(0);
+    div()
+        .absolute()
+        .left(px(tile.x as f32 * zoom))
+        .top(px(tile.y as f32 * zoom))
+        .w(px(tile.width as f32 * zoom))
+        .h(px(tile.height as f32 * zoom))
+        .overflow_hidden()
+        .child(
+            img(tile.image.clone())
+                .object_fit(gpui::ObjectFit::Fill)
+                .absolute()
+                .left(px(-(tile.inset_x as f32) * zoom))
+                .top(px(-(tile.inset_y as f32) * zoom))
+                .w(px(u32::from(size.width) as f32 * zoom))
+                .h(px(u32::from(size.height) as f32 * zoom)),
+        )
 }
 
 impl EditorCanvas {
@@ -166,7 +187,11 @@ impl RenderOnce for EditorCanvas {
             })
             .when(!transparent_backdrop, |el| el.bg(frame_surface));
 
-        if !layered_composite {
+        if !layered_composite && !snap.image_tiles.is_empty() {
+            for tile in &snap.image_tiles {
+                frame = frame.child(preview_tile(tile, snap.zoom));
+            }
+        } else if !layered_composite {
             if let Some(image) = snap.image.clone() {
                 frame = frame.child(
                     canvas(
@@ -407,24 +432,7 @@ impl RenderOnce for EditorCanvas {
             );
             if layered_composite {
                 for edge in &self.snapshot.borrow().preview_edges {
-                    let size = edge.image.size(0);
-                    backdrop = backdrop.child(
-                        div()
-                            .absolute()
-                            .left(px(edge.x as f32 * zoom))
-                            .top(px(edge.y as f32 * zoom))
-                            .w(px(edge.width as f32 * zoom))
-                            .h(px(edge.height as f32 * zoom))
-                            .overflow_hidden()
-                            .child(
-                                img(edge.image.clone())
-                                    .absolute()
-                                    .left(px(-(edge.inset_x as f32) * zoom))
-                                    .top(px(-(edge.inset_y as f32) * zoom))
-                                    .w(px(u32::from(size.width) as f32 * zoom))
-                                    .h(px(u32::from(size.height) as f32 * zoom)),
-                            ),
-                    );
+                    backdrop = backdrop.child(preview_tile(edge, zoom));
                 }
             }
             let mut stage = div()

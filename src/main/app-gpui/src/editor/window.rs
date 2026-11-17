@@ -437,6 +437,7 @@ pub struct EditorWindow {
     backdrop: Option<Arc<gpui::RenderImage>>,
     backdrop_composite: bool,
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
+    image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     retired_preview_edges: Vec<Arc<gpui::RenderImage>>,
     backdrop_key: Option<(
         crate::editor::wallpaper::WallpaperSettings,
@@ -493,6 +494,10 @@ impl EditorWindow {
             }
         };
 
+        let image_tiles = image
+            .as_deref()
+            .map(crate::editor::image_tiles::create)
+            .unwrap_or_default();
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
@@ -521,6 +526,7 @@ impl EditorWindow {
             backdrop: None,
             backdrop_composite: false,
             preview_edges: Vec::new(),
+            image_tiles,
             retired_preview_edges: Vec::new(),
             backdrop_key: None,
             backdrop_generation: 0,
@@ -582,6 +588,7 @@ impl EditorWindow {
             redact_patches: std::collections::HashMap::new(),
             snapshot: Rc::new(RefCell::new(CanvasSnapshot {
                 image: None,
+                image_tiles: Vec::new(),
                 redact_patches: std::collections::HashMap::new(),
                 image_width: width,
                 image_height: height,
@@ -753,6 +760,15 @@ impl EditorWindow {
     fn retire_preview_edges(&mut self) {
         self.retired_preview_edges
             .extend(self.preview_edges.drain(..).map(|edge| edge.image));
+    }
+
+    fn replace_image(&mut self, image: Arc<gpui::RenderImage>) {
+        self.retired_preview_edges
+            .extend(self.image_tiles.drain(..).map(|tile| tile.image));
+        if let Some(previous) = self.image.replace(image.clone()) {
+            self.retired_preview_edges.push(previous);
+        }
+        self.image_tiles = crate::editor::image_tiles::create(&image);
     }
 
     fn retire_backdrop(&mut self) {
@@ -950,6 +966,7 @@ impl EditorWindow {
             snap.layers = self.layers.clone();
             snap.spacing = wallpaper.spacing;
             snap.image = self.image.clone();
+            snap.image_tiles = self.image_tiles.clone();
             snap.image_width = self.image_width;
             snap.image_height = self.image_height;
             snap.zoom = self.zoom;
@@ -1866,7 +1883,7 @@ impl EditorWindow {
             self.image_height = cropped.height() as f32;
 
             let base = image::DynamicImage::ImageRgba8(cropped);
-            self.image = Some(render_image_from_base(&base));
+            self.replace_image(render_image_from_base(&base));
             self.base_image = Some(Arc::new(base));
             self.inset_color = None;
             self.balance_crop = None;
@@ -3831,7 +3848,7 @@ impl EditorWindow {
         if let Some(pre) = self.pre_crop.take() {
             self.image_width = pre.width;
             self.image_height = pre.height;
-            self.image = Some(render_image_from_base(&pre.base_image));
+            self.replace_image(render_image_from_base(&pre.base_image));
             self.base_image = Some(pre.base_image);
             self.inset_color = None;
             self.balance_crop = None;
@@ -4313,6 +4330,61 @@ mod tests {
             report_screenshot_save_failure(cx, Some(Path::new("capture.png")), &error);
         });
         assert_eq!(&*notifications.borrow(), &["Screenshot Save Failed"]);
+    }
+
+    #[herogpui::test]
+    fn oversized_image_tiles_follow_crop_and_undo(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("long.png");
+        image::RgbaImage::from_pixel(17_000, 4, image::Rgba([220, 40, 60, 128]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let old: Vec<_> = editor
+                    .image_tiles
+                    .iter()
+                    .map(|tile| tile.image.id)
+                    .collect();
+                assert_eq!(old.len(), 3);
+                editor.crop = Some((100., 0., 5_000., 4.));
+                editor.apply_crop(cx);
+                assert!(editor.image_tiles.is_empty());
+                assert!(old.iter().all(|id| editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == *id)));
+                assert_eq!(editor.image_width, 5_000.);
+                editor.undo(cx);
+                assert_eq!(editor.image_width, 17_000.);
+                assert_eq!(editor.image_tiles.len(), 3);
+                assert!(editor
+                    .image_tiles
+                    .iter()
+                    .all(|tile| !old.contains(&tile.image.id)));
+                assert_eq!(
+                    editor
+                        .base_image
+                        .as_ref()
+                        .unwrap()
+                        .to_rgba8()
+                        .get_pixel(0, 0)
+                        .0,
+                    [220, 40, 60, 128]
+                );
+            });
+        });
     }
 
     #[herogpui::test]

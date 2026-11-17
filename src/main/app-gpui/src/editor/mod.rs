@@ -7,6 +7,7 @@ pub mod background;
 pub mod canvas;
 pub mod export;
 pub mod filename;
+mod image_tiles;
 pub mod layers;
 pub mod open;
 pub mod options;
