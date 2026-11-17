@@ -37,7 +37,7 @@ release verification; routine PR checks do not run the matrix.
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Native area, window, timer, and screen capture and screen, area, and window recording now have live evidence. Real recordings were edited, saved, reopened, exported, and compared with decoded export frames. A generated system-audio tone survived recording and export. Scroll stitching, physical tooltip paint, microphone/camera authorization, and additional displays remain open. |
+| macOS critical capture and recording | Open   | Native screenshot and recording workflows have earlier live evidence. Real recordings were edited, saved, reopened, and compared with decoded exports. System audio survived recording and export. The latest area, window and timer screenshot reruns failed. Fixed-header scroll stitching, ordinary pointer hover, microphone/camera authorization, and additional displays remain open. |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
@@ -5141,6 +5141,34 @@ The native Save sheet was also used to export a generated color-bar clip from an
 isolated GPUI editor. The resulting H.264 MP4 decoded at 3840×2160, with 60 frames
 over two seconds, and the decoded first frame showed the expected color bars. The
 earlier real screen, area and window takes supply the preview/export comparisons.
+
+### 2026-11-17 live screenshot diagnostic
+
+An independent daemon call excluded the live GPUI selector while it was still
+visible. Two filtered 840×520 captures matched the decoded RGB of the generated
+pattern exactly. In a later run, 946 of 436,800 pixels differed along two sharp
+color boundaries, with a mean channel difference of 0.075.
+
+The screenshot requests initiated from `--native-smoke-recording` repeatedly
+failed on macOS 27.2. The area selector closed, the five-second timer completed,
+and both requests passed the temporary daemon's screen-access preflight and
+obtained ScreenCaptureKit shareable content. Neither completed
+`SCScreenshotManager.captureImage` before the app's 30-second RPC deadline.
+The window picker sent the generated window's ID and closed. Its daemon returned
+`CAPTURE_FAILED` from the window-list image path. An independent instance of the
+same daemon could save the generated window and area to pre-created temporary
+PNG paths. The area, timer and window screenshot reruns remain open despite the
+earlier successful live captures. The diagnostic used generated windows and an
+isolated profile with onboarding completed. The temporary daemon disabled audio
+and input tracking and preflighted screen access before screenshots.
+
+A physical drag in the normal `--intent capture-area` selector reproduced the
+area stall with a 420×260-point selection. macOS reported the selector gone
+while the daemon was still awaiting `SCScreenshotManager.captureImage`. A
+temporary build that forced the existing window-list capture path returned
+`CAPTURE_FAILED` for both area and timer. The failing capture paths remain
+open. Foreground control was released immediately after the drag. The existing
+editor stayed open throughout.
 
 ## Review gate
 
