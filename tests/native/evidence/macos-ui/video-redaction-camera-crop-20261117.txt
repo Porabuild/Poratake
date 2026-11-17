@@ -1,8 +1,8 @@
 macOS generated video composition probe, 2026-11-17
 Base: bb19e02a
 
-Apply video-redaction-camera-crop-diagnostic-20261117.patch to a clean checkout,
-then run:
+In a clean checkout at bb19e02a, apply
+video-redaction-camera-crop-diagnostic-20261117.patch, then run:
 
 cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui generated_redaction_matrix_matches_full_composition_at_effect_boundaries -- --nocapture
 
