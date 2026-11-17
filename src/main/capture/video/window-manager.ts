@@ -18,6 +18,8 @@ export interface VideoEditorWindowData {
   window: BrowserWindow;
   filePath: string;
   isClosingConfirmed: boolean;
+  closeHandlerReady?: boolean;
+  closeSavePending?: boolean;
   isExporting: boolean;
   videoProbe?: Promise<VideoProbeResult | null>;
 }
@@ -129,6 +131,16 @@ export function createVideoEditorWindow(
     });
   });
 
+  newWindow.webContents.on('render-process-gone', () => {
+    const data = videoEditorWindows.get(webContentsId);
+    if (!data) return;
+    data.closeHandlerReady = false;
+    if (!data.closeSavePending || newWindow.isDestroyed()) return;
+    data.closeSavePending = false;
+    data.isClosingConfirmed = true;
+    newWindow.close();
+  });
+
   newWindow.once('ready-to-show', async () => {
     await registerDockWindow(newWindow, 'video-editor');
     app.focus({ steal: true });
@@ -136,13 +148,15 @@ export function createVideoEditorWindow(
     newWindow.focus();
   });
 
-  newWindow.on('close', async () => {
+  newWindow.on('close', event => {
     const windowData = videoEditorWindows.get(webContentsId);
     if (!windowData) return;
 
-    if (!windowData.isClosingConfirmed && !newWindow.isDestroyed()) {
-      windowData.isClosingConfirmed = true;
-    }
+    if (windowData.isClosingConfirmed || !windowData.closeHandlerReady) return;
+    event.preventDefault();
+    if (windowData.closeSavePending) return;
+    windowData.closeSavePending = true;
+    newWindow.webContents.send('video-editor:prepare-close');
   });
 
   newWindow.on('closed', () => {

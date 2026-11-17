@@ -3,9 +3,28 @@ import { getWindowData } from '../window-manager';
 import { confirmVideoDelete, deleteVideo } from '../delete-video';
 
 export function registerDialogHandlers(): void {
+  ipcMain.on('video-editor:close-handler-ready', event => {
+    const data = getWindowData(event.sender.id);
+    if (data) data.closeHandlerReady = true;
+  });
+
+  ipcMain.on('video-editor:close-save-failed', event => {
+    const data = getWindowData(event.sender.id);
+    if (!data || !data.closeSavePending || data.window.isDestroyed()) return;
+    data.closeSavePending = false;
+    void dialog
+      .showMessageBox(data.window, {
+        type: 'error',
+        message: 'Could not save your video edits.',
+        detail: 'The editor remains open so you can try saving again.',
+        buttons: ['OK'],
+      })
+      .catch(error => console.error('Failed to show save error:', error));
+  });
+
   ipcMain.on('video-editor:close-confirmed', event => {
     const data = getWindowData(event.sender.id);
-    if (data && !data.window.isDestroyed()) {
+    if (data?.closeSavePending && !data.window.isDestroyed()) {
       data.isClosingConfirmed = true;
       data.window.close();
     }

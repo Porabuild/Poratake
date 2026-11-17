@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import type {
   VideoEditorState,
   ExportSettings,
@@ -62,7 +68,11 @@ export function useEditorStatePersistence({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasAppliedStateRef = useRef(false);
   const isMountedRef = useRef(true);
-  const isSavingRef = useRef(false);
+  const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const latestRef = useRef({ isReady, isStateLoaded, loadedState, values });
+  useLayoutEffect(() => {
+    latestRef.current = { isReady, isStateLoaded, loadedState, values };
+  }, [isReady, isStateLoaded, loadedState, values]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -99,46 +109,79 @@ export function useEditorStatePersistence({
     }
   }, [isReady, values.segments.length]);
 
-  const saveState = useCallback(() => {
-    if (!isMountedRef.current || isSavingRef.current) return;
-
-    isSavingRef.current = true;
-
-    const state: VideoEditorState = {
-      version: EDITOR_STATE_VERSION,
-      savedAt: new Date().toISOString(),
-      recordingType: loadedState?.recordingType,
-      segments: values.segments,
-      cursorStyle: values.cursorStyle,
-      cameraStyle: values.cameraStyle,
-      keyboardStyle: values.keyboardStyle,
-      subtitleStyle: values.subtitleStyle,
-      audioStyle: values.audioStyle,
-      zoomSegments: values.zoomSegments,
-      zoomSettings: values.zoomSettings,
-      cameraSegments: values.cameraSegments,
-      drawingSegments: values.drawingSegments,
-      wallpaper: values.wallpaper,
-      firstFrame: values.firstFrame,
-      musicTracks: values.musicTracks,
-      exportSettings: values.exportSettings,
-      timelineZoom: values.timelineZoom,
-      ui: {
-        sidebarOpen: values.sidebarOpen,
-        sidebarTab: values.sidebarTab,
-        scrubAudioEnabled: values.scrubAudioEnabled,
-      },
-    };
-
-    window.ipcRenderer
-      .invoke('video-editor:saveState', state)
-      .catch((err: Error) => {
-        console.error('Failed to save editor state:', err);
-      })
-      .finally(() => {
-        isSavingRef.current = false;
+  const saveState = useCallback((): Promise<boolean> => {
+    const save = saveQueueRef.current
+      .catch(() => false)
+      .then(async () => {
+        const snapshot = latestRef.current;
+        const currentValues = snapshot.values;
+        if (
+          !isMountedRef.current ||
+          !snapshot.isStateLoaded ||
+          !snapshot.isReady ||
+          !hasAppliedStateRef.current ||
+          currentValues.segments.length === 0
+        ) {
+          return true;
+        }
+        const state: VideoEditorState = {
+          version: EDITOR_STATE_VERSION,
+          savedAt: new Date().toISOString(),
+          recordingType: snapshot.loadedState?.recordingType,
+          segments: currentValues.segments,
+          cursorStyle: currentValues.cursorStyle,
+          cameraStyle: currentValues.cameraStyle,
+          keyboardStyle: currentValues.keyboardStyle,
+          subtitleStyle: currentValues.subtitleStyle,
+          audioStyle: currentValues.audioStyle,
+          zoomSegments: currentValues.zoomSegments,
+          zoomSettings: currentValues.zoomSettings,
+          cameraSegments: currentValues.cameraSegments,
+          drawingSegments: currentValues.drawingSegments,
+          wallpaper: currentValues.wallpaper,
+          firstFrame: currentValues.firstFrame,
+          musicTracks: currentValues.musicTracks,
+          exportSettings: currentValues.exportSettings,
+          timelineZoom: currentValues.timelineZoom,
+          ui: {
+            sidebarOpen: currentValues.sidebarOpen,
+            sidebarTab: currentValues.sidebarTab,
+            scrubAudioEnabled: currentValues.scrubAudioEnabled,
+          },
+        };
+        try {
+          const saved = await window.ipcRenderer.invoke(
+            'video-editor:saveState',
+            state
+          );
+          if (!saved) console.error('Failed to save editor state');
+          return saved === true;
+        } catch (err) {
+          console.error('Failed to save editor state:', err);
+          return false;
+        }
       });
-  }, [loadedState?.recordingType, values]);
+    saveQueueRef.current = save;
+    return save;
+  }, []);
+
+  useEffect(() => {
+    const remove = window.ipcRenderer.on('video-editor:prepare-close', () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      void saveState().then(saved => {
+        window.ipcRenderer.send(
+          saved
+            ? 'video-editor:close-confirmed'
+            : 'video-editor:close-save-failed'
+        );
+      });
+    });
+    window.ipcRenderer.send('video-editor:close-handler-ready');
+    return remove;
+  }, [saveState]);
 
   useEffect(() => {
     if (
@@ -156,7 +199,7 @@ export function useEditorStatePersistence({
 
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null;
-      saveState();
+      void saveState();
     }, SAVE_DEBOUNCE_MS);
 
     return () => {
@@ -174,6 +217,7 @@ export function useEditorStatePersistence({
     }
 
     try {
+      await saveQueueRef.current;
       return await window.ipcRenderer.invoke('video-editor:resetState');
     } catch (err) {
       console.error('Failed to reset editor state:', err);

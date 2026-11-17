@@ -131,12 +131,33 @@ describe('dialog handlers', () => {
     mockGetWindowData.mockReturnValue({
       window: { isDestroyed: () => false, close },
       isClosingConfirmed: false,
+      closeSavePending: true,
     });
     const { registerDialogHandlers } =
       await import('@/main/capture/video/ipc/dialog-handlers');
     registerDialogHandlers();
     ipcOnHandlers['video-editor:close-confirmed']({ sender: { id: 1 } });
     expect(close).toHaveBeenCalled();
+  });
+
+  it('marks the close handler ready and keeps the window open after a failed save', async () => {
+    const close = vi.fn();
+    const data = {
+      window: { isDestroyed: () => false, close },
+      closeHandlerReady: false,
+      closeSavePending: true,
+    };
+    mockGetWindowData.mockReturnValue(data);
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    ipcOnHandlers['video-editor:close-handler-ready']({ sender: { id: 1 } });
+    expect(data.closeHandlerReady).toBe(true);
+    ipcOnHandlers['video-editor:close-save-failed']({ sender: { id: 1 } });
+    expect(data.closeSavePending).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(mockShowMessageBox).toHaveBeenCalledOnce();
   });
 
   it('confirmDelete delegates to confirmVideoDelete', async () => {
