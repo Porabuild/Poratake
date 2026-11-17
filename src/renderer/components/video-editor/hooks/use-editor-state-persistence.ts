@@ -235,6 +235,7 @@ export function useEditorStatePersistence({
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     }
+    const valuesAtReset = JSON.stringify(latestRef.current.values);
 
     const reset = saveQueueRef.current
       .catch(() => false)
@@ -250,10 +251,16 @@ export function useEditorStatePersistence({
         }
       })
       .then(success => {
+        const unchanged =
+          valuesAtReset === JSON.stringify(latestRef.current.values);
+        const completed = success && unchanged;
+        if (success && !unchanged && isMountedRef.current) {
+          window.ipcRenderer.send('video-editor:reset-conflict');
+        }
         resetPromiseRef.current = null;
-        resetCompletedRef.current = success;
-        if (!success && isMountedRef.current) void enqueueSave();
-        return success;
+        resetCompletedRef.current = completed;
+        if (!completed && isMountedRef.current) void enqueueSave();
+        return completed;
       });
     resetPromiseRef.current = reset;
     return reset;

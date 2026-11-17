@@ -167,7 +167,7 @@ describe('video editor close persistence', () => {
     error.mockRestore();
   });
 
-  it('waits for reset and does not save stale edits after it succeeds', async () => {
+  it('waits for reset before confirming close', async () => {
     vi.useFakeTimers();
     let finishReset: ((value: boolean) => void) | undefined;
     invoke.mockImplementation(channel => {
@@ -183,9 +183,6 @@ describe('video editor close persistence', () => {
       pending = resetState();
     });
     expect(finishReset).toBeDefined();
-    await act(() =>
-      root.render(createElement(Harness, { tracks: ['stale.wav'] }))
-    );
     await act(async () => vi.advanceTimersByTimeAsync(500));
     await act(async () => events.get('video-editor:prepare-close')?.());
     expect(invoke).not.toHaveBeenCalledWith(
@@ -200,6 +197,32 @@ describe('video editor close persistence', () => {
       expect.anything()
     );
     expect(send).toHaveBeenCalledWith('video-editor:close-confirmed');
+  });
+
+  it('preserves an edit made while reset is in progress', async () => {
+    let finishReset: ((value: boolean) => void) | undefined;
+    invoke.mockImplementation(channel => {
+      if (channel === 'video-editor:resetState') {
+        return new Promise<boolean>(resolve => {
+          finishReset = resolve;
+        });
+      }
+      return Promise.resolve(true);
+    });
+    let pending: Promise<boolean> | undefined;
+    await act(async () => {
+      pending = resetState();
+    });
+    await act(() =>
+      root.render(createElement(Harness, { tracks: ['new-edit.wav'] }))
+    );
+    await act(async () => finishReset?.(true));
+    expect(await pending).toBe(false);
+    expect(invoke).toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.objectContaining({ musicTracks: [{ fileName: 'new-edit.wav' }] })
+    );
+    expect(send).toHaveBeenCalledWith('video-editor:reset-conflict');
   });
 
   it('saves the latest edit when reset fails', async () => {

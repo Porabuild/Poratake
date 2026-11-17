@@ -3,6 +3,19 @@ import { getWindowData } from '../window-manager';
 import { confirmVideoDelete, deleteVideo } from '../delete-video';
 
 export function registerDialogHandlers(): void {
+  ipcMain.on('video-editor:reset-conflict', event => {
+    const data = getWindowData(event.sender.id);
+    if (!data || data.closeSavePending || data.window.isDestroyed()) return;
+    void dialog
+      .showMessageBox(data.window, {
+        type: 'info',
+        message: 'Reset was interrupted by a new edit.',
+        detail: 'Your edits remain in the editor. Try resetting again.',
+        buttons: ['OK'],
+      })
+      .catch(error => console.error('Failed to show reset message:', error));
+  });
+
   ipcMain.on('video-editor:close-handler-ready', event => {
     const data = getWindowData(event.sender.id);
     if (data) data.closeHandlerReady = true;

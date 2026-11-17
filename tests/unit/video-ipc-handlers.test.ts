@@ -160,6 +160,22 @@ describe('dialog handlers', () => {
     expect(mockShowMessageBox).toHaveBeenCalledOnce();
   });
 
+  it('notifies the editor when reset is interrupted by a new edit', async () => {
+    const window = { isDestroyed: () => false };
+    mockGetWindowData.mockReturnValue({ window });
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    ipcOnHandlers['video-editor:reset-conflict']({ sender: { id: 1 } });
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({
+        message: 'Reset was interrupted by a new edit.',
+      })
+    );
+  });
+
   it('confirmDelete delegates to confirmVideoDelete', async () => {
     mockConfirmVideoDelete.mockResolvedValue(true);
     const { registerDialogHandlers } =
