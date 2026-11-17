@@ -4350,7 +4350,7 @@ appearance.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | A Windows probe verified tooltip text, placement, dismissal, re-entry and WGC capture exclusion. On macOS, [physical drags](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) reached recording and preview controls; tooltip windows had a four-point gap, and preview exit cleared status. Unpressed hover, live ScreenCaptureKit exclusion, other capture targets and mixed-DPI placement remain unverified.                                                                                                                                                                                               |
+| P1       | Native compact-window tooltips                           | A Windows probe verified tooltip placement, dismissal and WGC exclusion. On macOS, [physical drags](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) reached recording and preview controls; tooltip windows had a four-point gap. A [live daemon area recording](tests/native/evidence/macos-ui/native-tooltip-exclusion-area-20261117.txt) excluded the protected tooltip while capturing an ordinary window at the same location. Unpressed hover, GPUI recording handoff, screenshots, other targets and mixed-DPI remain unverified.                                                                    |
 | P2       | Linux recording tooltips                                 | [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43362521397/job/131679275651) passed hover and keyboard-focus tooltip geometry tests, including unbroken and Unicode titles at simulated 100% and 200%. Very long titles remain shortened. Verify real Linux, macOS focus and native screen-reader behavior. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                                                                                             |
 | P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                                                                                       |
 | P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.                                                                                |
@@ -5076,8 +5076,7 @@ The [same-pointer image](tests/native/evidence/macos-ui/native-recording-tooltip
 also confirms the corrected gap at the Start recording control.
 The [native fixture](tests/native/evidence/macos-ui/native-recording-tooltip-placement-20261117.txt)
 checks no overlap below the toolbar and above a bottom-edge control. Normal
-unpressed pointer transitions and tooltip pixels in a live ScreenCaptureKit
-recording remain unverified.
+unpressed pointer transitions remain unverified.
 
 The [physical pointer follow-up](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt)
 used the normal floating window level and the already authorized computer-use
@@ -5087,6 +5086,14 @@ window with a four-point gap below the recording bar or above the preview.
 After the pointer left the preview, the GPUI tooltip status cleared. The drags
 held a mouse button while moving, so ordinary unpressed hover transitions remain
 unverified.
+
+A [screen-only daemon recording](tests/native/evidence/macos-ui/native-tooltip-exclusion-area-20261117.txt)
+then tested the protected panel after an area stream started. Seven decoded
+frames taken with a visible timing marker matched the baseline around the
+tooltip exactly; an ordinary window at the same bounds appeared in subsequent
+frames. The temporary daemon disabled audio and input tracking and preflighted
+Screen Recording access. This does not verify the full GPUI handoff, screenshot
+exclusion, other recording targets or multi-display behavior.
 
 ## Review gate
 
