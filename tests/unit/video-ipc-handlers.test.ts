@@ -222,6 +222,29 @@ describe('dialog handlers', () => {
     expect(mockDeleteVideo).toHaveBeenCalledWith('/p/video.mov');
   });
 
+  it('does not delete project assets while an export is reading them', async () => {
+    const window = { isDestroyed: () => false, close: vi.fn() };
+    mockGetWindowData.mockReturnValue({
+      window,
+      filePath: '/p/video.mov',
+      isExporting: true,
+    });
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    await ipcOnHandlers['video-editor:delete']({ sender: { id: 1 } });
+    expect(window.close).not.toHaveBeenCalled();
+    expect(mockDeleteVideo).not.toHaveBeenCalled();
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({
+        message:
+          'Wait for the video export to finish before deleting the recording.',
+      })
+    );
+  });
+
   it('delete is a no-op when window data missing', async () => {
     mockGetWindowData.mockReturnValue(undefined);
     const { registerDialogHandlers } =

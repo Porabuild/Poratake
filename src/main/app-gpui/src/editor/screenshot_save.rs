@@ -112,7 +112,7 @@ fn write_existing_with(
     write_content: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
     restore_content: impl FnOnce(&mut File, &Path, u64) -> io::Result<()>,
 ) -> io::Result<Option<String>> {
-    let expected_id = file_identity(path)?;
+    let expected_id = crate::util::file_identity::from_path(path)?;
     let mut target = OpenOptions::new()
         .read(true)
         .write(true)
@@ -122,7 +122,7 @@ fn write_existing_with(
     unsafe {
         GetFileInformationByHandle(HANDLE(target.as_raw_handle()), &mut target_info)?;
     }
-    if file_information_identity(target_info) != expected_id {
+    if crate::util::file_identity::from_windows_information(&target_info) != expected_id {
         return Err(io::Error::other(
             "screenshot destination changed before it could be locked",
         ));
@@ -520,24 +520,6 @@ fn create_backup_directory() -> io::Result<PathBuf> {
     }
 }
 
-fn file_identity(path: &Path) -> io::Result<(u32, u64)> {
-    let file = OpenOptions::new().read(true).open(path)?;
-    file_identity_from_handle(&file)
-}
-
-fn file_identity_from_handle(file: &File) -> io::Result<(u32, u64)> {
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)? };
-    Ok(file_information_identity(info))
-}
-
-fn file_information_identity(info: BY_HANDLE_FILE_INFORMATION) -> (u32, u64) {
-    (
-        info.dwVolumeSerialNumber,
-        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-    )
-}
-
 fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
@@ -677,13 +659,16 @@ mod tests {
         let path = directory.path().join("capture.png");
         fs::write(&path, b"original capture").unwrap();
         set_low_integrity_label(&path);
-        let original_id = file_identity(&path).unwrap();
+        let original_id = crate::util::file_identity::from_path(&path).unwrap();
         let original_security = file_security(&path);
 
         assert_eq!(write(&path, b"replacement capture").unwrap(), None);
 
         assert_eq!(fs::read(&path).unwrap(), b"replacement capture");
-        assert_eq!(file_identity(&path).unwrap(), original_id);
+        assert_eq!(
+            crate::util::file_identity::from_path(&path).unwrap(),
+            original_id
+        );
         assert_eq!(file_security(&path), original_security);
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -706,7 +691,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("capture.png");
         fs::write(&path, b"original capture").unwrap();
-        let original_id = file_identity(&path).unwrap();
+        let original_id = crate::util::file_identity::from_path(&path).unwrap();
         let original_security = file_security(&path);
 
         let result = write_existing_with(
@@ -723,7 +708,10 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"original capture");
-        assert_eq!(file_identity(&path).unwrap(), original_id);
+        assert_eq!(
+            crate::util::file_identity::from_path(&path).unwrap(),
+            original_id
+        );
         assert_eq!(file_security(&path), original_security);
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }

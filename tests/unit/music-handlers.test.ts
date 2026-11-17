@@ -122,6 +122,25 @@ describe('music handlers', () => {
       expect(result.error).toBe('Cancelled');
     });
 
+    it('holds a project lease while the music picker is open', async () => {
+      const close = vi.fn();
+      const lease = vi.fn(() => ({ close }));
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+        musicSession: { lease },
+      });
+      mockShowOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as { success: boolean };
+      expect(result.success).toBe(false);
+      expect(lease).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    });
+
     it('returns error when music folder cannot be resolved', async () => {
       mockGetWindowData.mockReturnValue({ filePath: '/p/legacy.mov' });
       mockShowOpenDialog.mockResolvedValue({
@@ -173,6 +192,43 @@ describe('music handlers', () => {
         '/p/Rec.poratake/recording.mov',
         'song.mp3'
       );
+    });
+
+    it('removes an imported copy when its retention record cannot be saved', async () => {
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+      });
+      mockShowOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ['/path/song.mp3'],
+      });
+      mockExistsSync.mockReturnValue(false);
+      mockMkdir.mockResolvedValue(undefined);
+      mockCopyFile.mockResolvedValue(undefined);
+      mockExecFileAsync.mockImplementation(() => {
+        const error = new Error('ffmpeg always errors on info');
+        (error as { stderr?: string }).stderr =
+          'Duration: 00:00:10.00, start: 0';
+        throw error;
+      });
+      mockRecordMusicCandidate.mockImplementationOnce(() => {
+        throw new Error('retention directory is unavailable');
+      });
+      mockUnlink.mockResolvedValue(undefined);
+
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as { success: boolean; error?: string };
+
+      expect(result).toEqual({
+        success: false,
+        error:
+          'Could not retain imported music: retention directory is unavailable',
+      });
+      expect(mockUnlink).toHaveBeenCalledWith('/p/Rec.poratake/music/song.mp3');
     });
 
     it('does not overwrite a file created during a concurrent import', async () => {

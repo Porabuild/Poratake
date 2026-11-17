@@ -71,6 +71,16 @@ export function registerDialogHandlers(): void {
     const data = getWindowData(event.sender.id);
     if (!data) return;
 
+    if (data.isExporting) {
+      await dialog.showMessageBox(data.window, {
+        type: 'info',
+        message:
+          'Wait for the video export to finish before deleting the recording.',
+        buttons: ['OK'],
+      });
+      return;
+    }
+
     const videoPath = data.filePath;
 
     if (!data.window.isDestroyed()) {

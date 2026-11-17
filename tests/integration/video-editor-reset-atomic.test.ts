@@ -40,6 +40,18 @@ const originalState = JSON.stringify({
   version: 2,
   sourceDuration: 12.5,
   recordingType: 'ios-device',
+  savedAt: new Date().toISOString(),
+  segments: [],
+  cursorStyle: {},
+  cameraStyle: {},
+  keyboardStyle: {},
+  zoomSegments: [],
+  zoomSettings: {
+    transitionInDuration: 0.2,
+    transitionOutDuration: 0.2,
+    easing: 'easeOut',
+  },
+  ui: { sidebarOpen: true, sidebarTab: 'cursor' },
   musicTracks: [{ source: 'music', fileName: 'song.wav' }],
 });
 
@@ -60,6 +72,18 @@ afterEach(() => {
   vi.restoreAllMocks();
   fs.rmSync(directory, { recursive: true, force: true });
 });
+
+function failRetentionDirectorySync(): void {
+  const originalFsync = fs.fsyncSync.bind(fs);
+  const fsync = vi.spyOn(fs, 'fsyncSync');
+  let calls = 0;
+  fsync.mockImplementation(descriptor => {
+    calls += 1;
+    if (calls === 3)
+      throw new Error('injected retention directory sync failure');
+    originalFsync(descriptor);
+  });
+}
 
 describe('video editor reset persistence', () => {
   it('does not overwrite a state created during initial generation', async () => {
@@ -111,9 +135,47 @@ describe('video editor reset persistence', () => {
       fs.readFileSync(path.join(projectPath, 'music', 'song.wav'), 'utf8')
     ).toBe('audio');
     expect(fs.readdirSync(projectPath).toSorted()).toEqual([
+      '.poratake-music-retention',
       'music',
       'state.json',
     ]);
+  });
+
+  it('does not save removed music references when its marker cannot be synced', async () => {
+    failRetentionDirectorySync();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const state = JSON.parse(originalState);
+    state.musicTracks = [];
+
+    const result = await handlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      state
+    );
+
+    expect(result).toBe(false);
+    expect(fs.readFileSync(path.join(projectPath, 'state.json'), 'utf8')).toBe(
+      originalState
+    );
+    expect(
+      fs.readFileSync(path.join(projectPath, 'music', 'song.wav'), 'utf8')
+    ).toBe('audio');
+  });
+
+  it('does not reset music references when their marker cannot be synced', async () => {
+    failRetentionDirectorySync();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await handlers['video-editor:resetState']({
+      sender: { id: 1 },
+    });
+
+    expect(result).toBe(false);
+    expect(fs.readFileSync(path.join(projectPath, 'state.json'), 'utf8')).toBe(
+      originalState
+    );
+    expect(
+      fs.readFileSync(path.join(projectPath, 'music', 'song.wav'), 'utf8')
+    ).toBe('audio');
   });
 
   it('replaces the state while keeping the recording metadata and music', async () => {
@@ -132,5 +194,10 @@ describe('video editor reset persistence', () => {
     expect(
       fs.readFileSync(path.join(projectPath, 'music', 'song.wav'), 'utf8')
     ).toBe('audio');
+    expect(
+      fs.readdirSync(path.join(projectPath, '.poratake-music-retention'))
+    ).toEqual([
+      '6b97efacd85df5133302ea750889c5cc445c35388b52050e5202e48468929fec.json',
+    ]);
   });
 });

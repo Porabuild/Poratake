@@ -105,6 +105,7 @@ describe('video editor state handlers', () => {
     vi.clearAllMocks();
     Object.keys(ipcHandlers).forEach(key => delete ipcHandlers[key]);
     mockGenerateInitialEditorState.mockResolvedValue(true);
+    mockRecordRemovedMusic.mockReturnValue(true);
     mockLocalizeWallpaperImage.mockImplementation(
       (imageUrl: string) => imageUrl
     );
@@ -199,7 +200,7 @@ describe('video editor state handlers', () => {
     expect(mockWriteFileAtomicSync).toHaveBeenCalled();
   });
 
-  it('reports a failed atomic save', async () => {
+  it('reports a failed atomic save after recording retention data', async () => {
     mockWriteFileAtomicSync.mockImplementationOnce(() => {
       throw new Error('replacement failed');
     });
@@ -212,12 +213,19 @@ describe('video editor state handlers', () => {
       createState()
     );
     expect(result).toBe(false);
-    expect(mockRecordRemovedMusic).not.toHaveBeenCalled();
+    expect(mockRecordRemovedMusic).toHaveBeenCalledWith(
+      '/project/video.cap',
+      [],
+      []
+    );
+    expect(mockRecordRemovedMusic.mock.invocationCallOrder[0]).toBeLessThan(
+      mockWriteFileAtomicSync.mock.invocationCallOrder[0]
+    );
     expect(error).toHaveBeenCalled();
     error.mockRestore();
   });
 
-  it('records removed music only after the new state is saved', async () => {
+  it('records removed music before the new state is saved', async () => {
     mockFs.readFileSync.mockReturnValueOnce(
       JSON.stringify({
         musicTracks: [{ source: 'music', fileName: 'old.wav' }],
@@ -236,9 +244,39 @@ describe('video editor state handlers', () => {
       [{ source: 'music', fileName: 'old.wav' }],
       []
     );
-    expect(mockWriteFileAtomicSync.mock.invocationCallOrder[0]).toBeLessThan(
-      mockRecordRemovedMusic.mock.invocationCallOrder[0]
+    expect(mockRecordRemovedMusic.mock.invocationCallOrder[0]).toBeLessThan(
+      mockWriteFileAtomicSync.mock.invocationCallOrder[0]
     );
+  });
+
+  it('does not save a state that cannot record removed music', async () => {
+    mockFs.readFileSync.mockReturnValueOnce(
+      JSON.stringify({
+        musicTracks: [{ source: 'music', fileName: 'old.wav' }],
+      })
+    );
+    mockRecordRemovedMusic.mockReturnValueOnce(false);
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+    const result = await ipcHandlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      createState({ musicTracks: [] })
+    );
+    expect(result).toBe(false);
+    expect(mockWriteFileAtomicSync).not.toHaveBeenCalled();
+  });
+
+  it('does not reset a project that cannot record removed music', async () => {
+    mockRecordRemovedMusic.mockReturnValueOnce(false);
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+    const result = await ipcHandlers['video-editor:resetState']({
+      sender: { id: 1 },
+    });
+    expect(result).toBe(false);
+    expect(mockGenerateInitialEditorState).not.toHaveBeenCalled();
   });
 
   it('stores managed wallpaper images inside the recording project', async () => {

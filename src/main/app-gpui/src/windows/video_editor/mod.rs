@@ -221,11 +221,28 @@ pub struct VideoEditorWindow {
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
     /// The state a drag started from, pushed onto the undo stack when it ends.
     gesture_snapshot: Option<VideoEditorState>,
+    music_session: Option<crate::video::music_retention::MusicRetentionSession>,
 }
 
 impl VideoEditorWindow {
     pub fn open(cx: &mut App, path: Option<String>) {
         registry::open_or_activate(RegistryKind::VideoEditor, cx, move |cx| {
+            let music_session = match path.as_deref() {
+                Some(path) => match crate::video::music_retention::MusicRetentionSession::open(
+                    PathBuf::from(path).as_path(),
+                ) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Could not open recording",
+                            format!("The recording's music files are in use: {error}"),
+                        );
+                        return None;
+                    }
+                },
+                None => None,
+            };
             let display = cx
                 .primary_display()
                 .or_else(|| cx.displays().into_iter().next());
@@ -253,7 +270,7 @@ impl VideoEditorWindow {
             options.display_id = display.map(|display| display.id());
             cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| {
-                    let mut editor = Self::new(path.map(PathBuf::from), cx);
+                    let mut editor = Self::new(path.map(PathBuf::from), music_session, cx);
                     editor.load_preview(cx);
                     editor.load_desktop_wallpaper(cx);
                     editor.request_audio_sync(cx);
@@ -262,8 +279,8 @@ impl VideoEditorWindow {
                 Self::guard_close(window, cx, view.downgrade(), || {
                     rfd::MessageDialog::new()
                         .set_level(rfd::MessageLevel::Error)
-                        .set_title("Could not save video edits")
-                        .set_description("The video editor will stay open. Check that the recording folder is writable and try closing again.")
+                        .set_title("Could not close video editor")
+                        .set_description("Finish the open file dialog and check that the recording folder is writable, then try closing again.")
                         .show();
                 });
                 view.update(cx, |editor, cx| {
@@ -294,7 +311,11 @@ impl VideoEditorWindow {
         });
     }
 
-    fn new(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        path: Option<PathBuf>,
+        music_session: Option<crate::video::music_retention::MusicRetentionSession>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let has_saved_state = path
             .as_deref()
             .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
@@ -421,6 +442,7 @@ impl VideoEditorWindow {
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
+            music_session,
         }
     }
 
@@ -546,6 +568,20 @@ impl VideoEditorWindow {
         if self.is_exporting {
             return;
         }
+        let music_lease = match &self.music_session {
+            Some(session) => match session.lease() {
+                Ok(lease) => Some(lease),
+                Err(error) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Could not export video",
+                        format!("The recording's music files are in use: {error}"),
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
         self.is_exporting = true;
         self.export_error = None;
         self.export_completed_at = None;
@@ -565,6 +601,7 @@ impl VideoEditorWindow {
 
         self.poll_export_progress(cx);
         cx.spawn(async move |entity, cx| {
+            let _music_lease = music_lease;
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -1109,10 +1146,16 @@ impl VideoEditorWindow {
         on_failure: impl Fn() + 'static,
     ) {
         window.on_window_should_close(cx, move |_, cx| {
-            let saved = editor
-                .update(cx, |editor, _| editor.flush_pending_state())
-                .unwrap_or(true);
-            if !saved {
+            let (saved, should_report_failure) = editor
+                .update(cx, |editor, _| {
+                    if editor.is_file_dialog_open {
+                        return (false, false);
+                    }
+                    let saved = editor.flush_pending_state();
+                    (saved, !saved)
+                })
+                .unwrap_or((true, false));
+            if should_report_failure {
                 on_failure();
             }
             saved
@@ -1233,7 +1276,12 @@ impl VideoEditorWindow {
     /// Builds the window without opening one, for the headless render tests.
     #[cfg(any(test, feature = "parity"))]
     pub fn new_for_test(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
-        Self::new(path, cx)
+        let session = path.as_deref().and_then(|path| {
+            crate::video::music_retention::MusicRetentionSession::open(path)
+                .ok()
+                .flatten()
+        });
+        Self::new(path, session, cx)
     }
 
     /// Opens `tab` unconditionally. `select_tab` toggles, which would close the
@@ -2666,6 +2714,14 @@ impl VideoEditorWindow {
     }
 
     pub fn rename_project(&mut self, value: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Cannot rename recording",
+                "Wait for the video export to finish before renaming the recording.",
+            );
+            return;
+        }
         let Some(old_path) = self.path.clone() else {
             return;
         };
@@ -2697,6 +2753,11 @@ impl VideoEditorWindow {
         crate::thumbnails::rekey(&old_path, &new_path);
         let history_update = crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
+        if let Some(session) = &mut self.music_session {
+            if let Some(path) = self.path.as_deref() {
+                session.update_project(path);
+            }
+        }
         self.rename_error = None;
         self.persist(cx);
         self.load_preview(cx);
@@ -3080,6 +3141,14 @@ impl VideoEditorWindow {
     }
 
     pub fn delete_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Cannot delete recording",
+                "Wait for the video export to finish before deleting the recording.",
+            );
+            return;
+        }
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -3483,7 +3552,14 @@ impl VideoEditorWindow {
 
 impl Drop for VideoEditorWindow {
     fn drop(&mut self) {
-        self.flush_pending_state();
+        let saved = self.flush_pending_state();
+        if let Some(session) = self.music_session.take() {
+            if saved {
+                let _ = session.close();
+            } else {
+                drop(session);
+            }
+        }
     }
 }
 
@@ -5506,6 +5582,41 @@ mod keyboard_demo_tests {
                 assert_eq!(editor.save_generation, editor.saved_generation);
             })
             .unwrap();
+        assert!(!model::load_state(&project).ui.sidebar_open);
+    }
+
+    #[herogpui::test]
+    fn file_dialog_blocks_close_without_reporting_a_save_failure(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let reported_failure = Arc::new(AtomicBool::new(false));
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        let failure = reported_failure.clone();
+        window
+            .update(cx, |editor, window, cx| {
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), move || {
+                    failure.store(true, Ordering::SeqCst);
+                });
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+                editor.is_file_dialog_open = true;
+            })
+            .unwrap();
+
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        assert!(!visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.state.ui.sidebar_open);
+                assert_ne!(editor.save_generation, editor.saved_generation);
+                editor.is_file_dialog_open = false;
+            })
+            .unwrap();
+        assert!(!reported_failure.load(Ordering::SeqCst));
+        assert!(visual.simulate_close());
+        assert!(!reported_failure.load(Ordering::SeqCst));
         assert!(!model::load_state(&project).ui.sidebar_open);
     }
 

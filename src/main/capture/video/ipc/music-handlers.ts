@@ -13,6 +13,7 @@ import {
 } from './export-session';
 import { buildAtempoFilter } from './audio-handlers';
 import { isMusicNameReserved, recordMusicCandidate } from '../music-retention';
+import type { MusicRetentionSession } from '../music-retention';
 
 function sanitizeFileName(fileName: string): string {
   return path.basename(fileName);
@@ -85,68 +86,94 @@ export function registerMusicHandlers(): void {
         return { success: false, error: 'No video data found' };
       }
 
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { success: false, error: 'Window not found' };
-      }
-
-      const result = await dialog.showOpenDialog(window, {
-        title: 'Add Music',
-        filters: [
-          {
-            name: 'Audio Files',
-            extensions: SUPPORTED_MUSIC_EXTENSIONS,
-          },
-        ],
-        properties: ['openFile'],
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, error: 'Cancelled' };
-      }
-
-      const sourcePath = result.filePaths[0];
-      const musicFolder = getMusicFolderPath(data.filePath);
-      if (!musicFolder) {
-        return { success: false, error: 'Could not resolve music folder' };
-      }
-
-      if (!existsSync(musicFolder)) {
-        await fs.mkdir(musicFolder, { recursive: true });
-      }
-
-      const originalName = path.basename(sourcePath);
-      let fileName: string;
-      let destPath: string;
+      let importSession: MusicRetentionSession | null = null;
       try {
-        ({ fileName, destPath } = await copyMusicToUniquePath(
-          sourcePath,
-          musicFolder,
-          originalName
-        ));
+        importSession = data.musicSession?.lease() ?? null;
       } catch (error) {
         return {
           success: false,
-          error: error instanceof Error ? error.message : 'Failed to copy file',
+          error:
+            error instanceof Error ? error.message : 'Music files are in use',
         };
       }
 
-      const duration = await probeAudioDuration(destPath);
-      if (duration <= 0) {
-        await fs.unlink(destPath).catch(() => {});
-        return { success: false, error: 'Could not determine audio duration' };
-      }
-
-      const ext = path.extname(fileName);
-      const name = path.basename(fileName, ext);
-
       try {
-        recordMusicCandidate(data.filePath, fileName);
-      } catch (error) {
-        console.error('Could not record imported music:', error);
-      }
+        const window = BrowserWindow.fromWebContents(event.sender);
+        if (!window) {
+          return { success: false, error: 'Window not found' };
+        }
 
-      return { success: true, fileName, name, originalDuration: duration };
+        const result = await dialog.showOpenDialog(window, {
+          title: 'Add Music',
+          filters: [
+            {
+              name: 'Audio Files',
+              extensions: SUPPORTED_MUSIC_EXTENSIONS,
+            },
+          ],
+          properties: ['openFile'],
+        });
+
+        if (result.canceled || result.filePaths.length === 0) {
+          return { success: false, error: 'Cancelled' };
+        }
+
+        const sourcePath = result.filePaths[0];
+        const musicFolder = getMusicFolderPath(data.filePath);
+        if (!musicFolder) {
+          return { success: false, error: 'Could not resolve music folder' };
+        }
+
+        if (!existsSync(musicFolder)) {
+          await fs.mkdir(musicFolder, { recursive: true });
+        }
+
+        const originalName = path.basename(sourcePath);
+        let fileName: string;
+        let destPath: string;
+        try {
+          ({ fileName, destPath } = await copyMusicToUniquePath(
+            sourcePath,
+            musicFolder,
+            originalName
+          ));
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error ? error.message : 'Failed to copy file',
+          };
+        }
+
+        const duration = await probeAudioDuration(destPath);
+        if (duration <= 0) {
+          await fs.unlink(destPath).catch(() => {});
+          return {
+            success: false,
+            error: 'Could not determine audio duration',
+          };
+        }
+
+        const ext = path.extname(fileName);
+        const name = path.basename(fileName, ext);
+
+        try {
+          recordMusicCandidate(data.filePath, fileName);
+        } catch (error) {
+          await fs.unlink(destPath).catch(() => {});
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? `Could not retain imported music: ${error.message}`
+                : 'Could not retain imported music',
+          };
+        }
+
+        return { success: true, fileName, name, originalDuration: duration };
+      } finally {
+        importSession?.close();
+      }
     }
   );
 

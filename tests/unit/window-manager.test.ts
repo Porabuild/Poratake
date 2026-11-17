@@ -59,6 +59,14 @@ vi.mock('electron', () => ({
   },
   dialog: {
     showOpenDialog: (...a: unknown[]) => mockShowOpenDialog(...a),
+    showErrorBox: vi.fn(),
+    showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+  },
+}));
+
+vi.mock('@/main/capture/video/music-retention', () => ({
+  MusicRetentionSession: {
+    open: vi.fn(() => null),
   },
 }));
 
@@ -112,6 +120,19 @@ describe('window-manager', () => {
         'http://localhost:5173/?window=video-editor'
       );
       expect(mockProbeVideo).toHaveBeenCalledWith('/path/video.mov');
+    });
+
+    it('keeps the editor open while an export is reading project assets', async () => {
+      mockExistsSync.mockReturnValue(true);
+      const m = await import('@/main/capture/video/window-manager');
+      const win = m.createVideoEditorWindow('/path/video.mov')!;
+      const preventDefault = vi.fn();
+      m.setWindowExporting(win.webContents.id, true);
+      win.windowHandlers.close[0]({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(win.webContents.send).not.toHaveBeenCalledWith(
+        'video-editor:prepare-close'
+      );
     });
 
     it('uses project recording path when path is a project folder', async () => {
