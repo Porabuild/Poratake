@@ -11,10 +11,17 @@ let events: Map<string, (...args: unknown[]) => void>;
 const invoke = vi.fn();
 const send = vi.fn();
 
-function Harness({ tracks }: { tracks: string[] }) {
+function Harness({
+  tracks,
+  duration = 20.12,
+}: {
+  tracks: string[];
+  duration?: number;
+}) {
   useEditorStatePersistence({
     isReady: true,
     values: {
+      sourceDuration: duration,
       segments: [{ id: 'video' }],
       musicTracks: tracks.map(fileName => ({ fileName })),
       zoomSegments: [],
@@ -59,6 +66,49 @@ afterEach(async () => {
 });
 
 describe('video editor close persistence', () => {
+  it('saves the source duration discovered from the recording', async () => {
+    await act(async () => events.get('video-editor:prepare-close')?.());
+    expect(invoke).toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.objectContaining({ sourceDuration: 20.12 })
+    );
+  });
+
+  it('does not persist an invalid discovered duration', async () => {
+    await act(() =>
+      root.render(
+        createElement(Harness, { tracks: ['original.wav'], duration: Infinity })
+      )
+    );
+    await act(async () => events.get('video-editor:prepare-close')?.());
+    expect(invoke).toHaveBeenCalledWith(
+      'video-editor:saveState',
+      expect.objectContaining({ sourceDuration: undefined })
+    );
+  });
+
+  it('preserves an existing source duration more precise than media metadata', async () => {
+    await act(() => root.unmount());
+    invoke.mockImplementation(async channel =>
+      channel === 'video-editor:getState'
+        ? { sourceDuration: 20.12345, recordingType: 'ios-device' }
+        : true
+    );
+    const { createRoot } = await import('react-dom/client');
+    root = createRoot(document.createElement('div'));
+    await act(async () =>
+      root.render(createElement(Harness, { tracks: ['original.wav'] }))
+    );
+    await act(async () => events.get('video-editor:prepare-close')?.());
+    expect(invoke).toHaveBeenLastCalledWith(
+      'video-editor:saveState',
+      expect.objectContaining({
+        sourceDuration: 20.12345,
+        recordingType: 'ios-device',
+      })
+    );
+  });
+
   it('saves the latest music before confirming close', async () => {
     await act(() =>
       root.render(createElement(Harness, { tracks: ['restored.wav'] }))

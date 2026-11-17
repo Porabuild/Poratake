@@ -27,6 +27,7 @@ import type { SidebarTab } from '../editor-sidebar';
 const SAVE_DEBOUNCE_MS = 500;
 
 interface EditorStateValues {
+  sourceDuration: number;
   segments: Segment[];
   cursorStyle: CursorStyle;
   cameraStyle: CameraStyle;
@@ -128,6 +129,12 @@ export function useEditorStatePersistence({
           version: EDITOR_STATE_VERSION,
           savedAt: new Date().toISOString(),
           recordingType: snapshot.loadedState?.recordingType,
+          sourceDuration:
+            snapshot.loadedState?.sourceDuration ??
+            (Number.isFinite(currentValues.sourceDuration) &&
+            currentValues.sourceDuration > 0
+              ? currentValues.sourceDuration
+              : undefined),
           segments: currentValues.segments,
           cursorStyle: currentValues.cursorStyle,
           cameraStyle: currentValues.cameraStyle,
