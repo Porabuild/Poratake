@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export function writeFileAtomicSync(filePath: string, contents: string): void {
+function writeFileAtomic(
+  filePath: string,
+  contents: string,
+  createOnly: boolean
+): void {
   const parent = path.dirname(filePath);
   const temporary = path.join(
     parent,
@@ -17,7 +21,12 @@ export function writeFileAtomicSync(filePath: string, contents: string): void {
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = undefined;
-    fs.renameSync(temporary, filePath);
+    if (createOnly) {
+      fs.linkSync(temporary, filePath);
+      fs.unlinkSync(temporary);
+    } else {
+      fs.renameSync(temporary, filePath);
+    }
     ownsTemporary = false;
     if (process.platform !== 'win32') {
       const directory = fs.openSync(parent, 'r');
@@ -38,5 +47,22 @@ export function writeFileAtomicSync(filePath: string, contents: string): void {
         fs.unlinkSync(temporary);
       } catch {}
     }
+  }
+}
+
+export function writeFileAtomicSync(filePath: string, contents: string): void {
+  writeFileAtomic(filePath, contents, false);
+}
+
+export function writeFileAtomicIfAbsentSync(
+  filePath: string,
+  contents: string
+): boolean {
+  try {
+    writeFileAtomic(filePath, contents, true);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
   }
 }

@@ -14,7 +14,10 @@ import { DEFAULT_SUBTITLE_STYLE } from '@/types/subtitle';
 import { DEFAULT_AUDIO_STYLE } from '@/types/audio';
 import { DEFAULT_ZOOM_SETTINGS } from '@/types/zoom';
 import { getConfig } from '@/main/settings';
-import { writeFileAtomicSync } from '@/main/utils/atomic-file';
+import {
+  writeFileAtomicIfAbsentSync,
+  writeFileAtomicSync,
+} from '@/main/utils/atomic-file';
 
 interface GenerateEditorStateOptions {
   projectPath: string;
@@ -96,7 +99,17 @@ export async function generateInitialEditorState({
     if (replaceExisting) {
       writeFileAtomicSync(statePath, contents);
     } else {
-      await fs.writeFile(statePath, contents, { flag: 'wx' });
+      try {
+        if (!writeFileAtomicIfAbsentSync(statePath, contents)) return false;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (
+          !['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EPERM'].includes(code ?? '')
+        ) {
+          throw error;
+        }
+        await fs.writeFile(statePath, contents, { flag: 'wx' });
+      }
     }
     console.log('Initial editor state saved');
     return true;

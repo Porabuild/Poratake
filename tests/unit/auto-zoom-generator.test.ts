@@ -1,17 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockWriteFile = vi.fn();
+const mockCreateAtomic = vi.fn();
 const mockExistsSync = vi.fn();
 const mockLoadCursorData = vi.fn();
 const mockGenerateAutoZoomSegments = vi.fn();
 const mockGetEditorStatePath = vi.fn();
 const mockGetConfig = vi.fn();
-
-vi.mock('fs/promises', () => ({
-  default: {
-    writeFile: mockWriteFile,
-  },
-}));
 
 vi.mock('fs', () => ({
   existsSync: mockExistsSync,
@@ -35,12 +29,14 @@ vi.mock('@/main/settings', () => ({
 
 vi.mock('@/main/utils/atomic-file', () => ({
   writeFileAtomicSync: vi.fn(),
+  writeFileAtomicIfAbsentSync: mockCreateAtomic,
 }));
 
 describe('auto zoom generator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockCreateAtomic.mockReset().mockReturnValue(true);
     mockGetEditorStatePath.mockReturnValue('/project/editor-state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue({ events: [] });
@@ -72,9 +68,9 @@ describe('auto zoom generator', () => {
 
     expect(result).toBe(true);
     expect(mockGenerateAutoZoomSegments).not.toHaveBeenCalled();
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(mockCreateAtomic).toHaveBeenCalledTimes(1);
 
-    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const [, writtenContent] = mockCreateAtomic.mock.calls[0];
     const parsed = JSON.parse(writtenContent as string) as {
       zoomSegments: unknown[];
       ui: { sidebarOpen: boolean };
@@ -99,9 +95,9 @@ describe('auto zoom generator', () => {
 
     expect(result).toBe(true);
     expect(mockGenerateAutoZoomSegments).toHaveBeenCalledTimes(1);
-    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    expect(mockCreateAtomic).toHaveBeenCalledTimes(1);
 
-    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const [, writtenContent] = mockCreateAtomic.mock.calls[0];
     const parsed = JSON.parse(writtenContent as string) as {
       zoomSegments: Array<{ id: string }>;
       ui: { sidebarOpen: boolean };
@@ -132,7 +128,7 @@ describe('auto zoom generator', () => {
 
     await generateInitialEditorState({ projectPath: '/project' });
 
-    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const [, writtenContent] = mockCreateAtomic.mock.calls[0];
     const parsed = JSON.parse(writtenContent as string) as {
       cameraStyle: { mirrored: boolean };
     };
@@ -152,7 +148,7 @@ describe('auto zoom generator', () => {
       duration: 21.77,
     });
 
-    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const [, writtenContent] = mockCreateAtomic.mock.calls[0];
     const parsed = JSON.parse(writtenContent as string) as {
       sourceDuration?: number;
       segments: Array<{
@@ -182,7 +178,7 @@ describe('auto zoom generator', () => {
 
     await generateInitialEditorState({ projectPath: '/project' });
 
-    const [, writtenContent] = mockWriteFile.mock.calls[0];
+    const [, writtenContent] = mockCreateAtomic.mock.calls[0];
     const parsed = JSON.parse(writtenContent as string) as {
       sourceDuration?: number;
       segments: unknown[];

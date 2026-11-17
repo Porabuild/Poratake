@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockExistsSync = vi.fn();
 const mockWriteFile = vi.fn();
+const mockCreateAtomic = vi.fn();
 const mockLoadCursorData = vi.fn();
 const mockGetEditorStatePath = vi.fn();
 const mockGenerateAutoZoomSegments = vi.fn();
@@ -36,12 +37,15 @@ vi.mock('@/main/settings', () => ({
 
 vi.mock('@/main/utils/atomic-file', () => ({
   writeFileAtomicSync: vi.fn(),
+  writeFileAtomicIfAbsentSync: mockCreateAtomic,
 }));
 
 describe('auto-zoom-generator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockCreateAtomic.mockReset().mockReturnValue(true);
+    mockWriteFile.mockReset().mockResolvedValue(undefined);
     mockGetConfig.mockReturnValue({ recording: { autoZoom: false } });
     mockGenerateAutoZoomSegments.mockReturnValue([]);
   });
@@ -78,7 +82,7 @@ describe('auto-zoom-generator', () => {
       projectPath: '/p/Rec.poratake',
     });
     expect(result).toBe(true);
-    expect(mockWriteFile).toHaveBeenCalled();
+    expect(mockCreateAtomic).toHaveBeenCalled();
   });
 
   it('generates auto-zoom segments when enabled and cursor data exists', async () => {
@@ -98,7 +102,7 @@ describe('auto-zoom-generator', () => {
     expect(result).toBe(true);
     expect(mockGenerateAutoZoomSegments).toHaveBeenCalled();
     // The state should have sidebarOpen: true since zoomSegments.length > 0
-    const writeArg = mockWriteFile.mock.calls[0][1] as string;
+    const writeArg = mockCreateAtomic.mock.calls[0][1] as string;
     const parsed = JSON.parse(writeArg);
     expect(parsed.ui.sidebarOpen).toBe(true);
   });
@@ -107,7 +111,9 @@ describe('auto-zoom-generator', () => {
     mockGetEditorStatePath.mockReturnValue('/p/Rec.poratake/state.json');
     mockExistsSync.mockReturnValue(false);
     mockLoadCursorData.mockResolvedValue(null);
-    mockWriteFile.mockRejectedValue(new Error('disk full'));
+    mockCreateAtomic.mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
     const { generateInitialEditorState } =
       await import('@/main/capture/video/auto-zoom-generator');
     const result = await generateInitialEditorState({
@@ -127,7 +133,7 @@ describe('auto-zoom-generator', () => {
       projectPath: '/p/Rec.poratake',
       recordingType: 'ios-device',
     });
-    const writeArg = mockWriteFile.mock.calls[0][1] as string;
+    const writeArg = mockCreateAtomic.mock.calls[0][1] as string;
     const parsed = JSON.parse(writeArg);
     expect(parsed.recordingType).toBe('ios-device');
   });

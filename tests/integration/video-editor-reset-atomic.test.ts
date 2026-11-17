@@ -79,6 +79,22 @@ describe('video editor reset persistence', () => {
     );
   });
 
+  it('falls back to exclusive creation when hard links are unsupported', async () => {
+    const statePath = path.join(projectPath, 'state.json');
+    fs.unlinkSync(statePath);
+    vi.spyOn(fs, 'linkSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('unsupported'), { code: 'ENOTSUP' });
+    });
+    const { generateInitialEditorState } =
+      await import('@/main/capture/video/auto-zoom-generator');
+    expect(await generateInitialEditorState({ projectPath })).toBe(true);
+    expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).version).toBe(2);
+    expect(fs.readdirSync(projectPath).toSorted()).toEqual([
+      'music',
+      'state.json',
+    ]);
+  });
+
   it('preserves the old state and music if replacement fails', async () => {
     vi.spyOn(fs, 'renameSync').mockImplementation(() => {
       throw new Error('injected replacement failure');
