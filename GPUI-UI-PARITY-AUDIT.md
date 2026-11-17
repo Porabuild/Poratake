@@ -4908,11 +4908,13 @@ also cover a symlinked music folder and concurrent same-name imports. Directory
 checks remain path-based and have not been shown safe against concurrent
 replacement of a directory.
 
-The same investigation confirmed a separate open issue: removing a music track
-deletes its source file even though Undo can restore a reference to it. An
-isolated GPUI editor test restored the track metadata and found the file
-missing. Music files need a lifetime and cleanup policy that accounts for undo,
-redo, successful persistence and interrupted sessions.
+Removing a music track previously deleted its source file even though Undo
+could restore a reference to it. GPUI and Electron now retain the file while
+removing track references, and GPUI removes a split group in one undo step.
+[Generated tests](tests/native/evidence/macos-ui/music-undo-retention-20261117.txt)
+cover removal, undo, redo and reimport. Safe collection remains open: retained
+files can accumulate until cleanup accounts for history, persisted state,
+concurrent editors and interrupted sessions.
 
 ## Review gate
 
