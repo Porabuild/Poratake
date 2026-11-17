@@ -1,0 +1,43 @@
+macOS GPUI oversized screenshot texture sampling, 2026-11-17, source 0e88eb06
+
+The first oversized-image tiling fix was checked with a high-detail generated
+image and an untiled crop of the same pixels. In dark appearance at simulated
+1x and 25% zoom, the opaque 17,000x128 tiled image differed from its 512x128
+reference in 1,176 of 3,472 interior display pixels by more than two RGB levels;
+the maximum was 95. The sampled region crossed the first tile seam. Both images
+were rendered by the GPUI Metal fixture after simulated panning.
+
+The macOS plain-image tile renderer now uses the complete image's snapped
+destination bounds to place and sample every tile. Its overlap covers a rounded
+tile boundary at the supported minimum zoom. Tiles outside the current content
+mask are skipped. The original image remains available for export and effects.
+The non-macOS plain-image tile path retains its preceding behavior.
+
+For the follow-up, the source was 17,024x128 or 128x17,024. This size makes
+the full image and reference crop land on the same integer device-pixel extent
+at the tested zooms and simulated scales. Without that condition, independently
+rounding a large image and a small crop changes their effective scales and the
+comparison does not isolate tile sampling. The 512-pixel reference crosses the
+first tile seam. It contains detailed opaque or varying-alpha generated pixels.
+
+Both orientations, both alpha variants, 25% and 50% zoom, simulated display
+scales 1, 1.25 and 2, and light and dark appearances passed. Across each
+interior comparison, no pixel differed by more than two RGB levels and the
+largest observed channel difference was one. This is a generated Metal preview
+comparison, not a decoded export or physical-display test.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-sampling-check PORATAKE_PARITY_LARGE_TEXTURE_SAMPLING_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.5 PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
+
+PORATAKE_PARITY_LARGE_DPI was 1, 1.25 and 2; zoom was 0.25 and 0.5; theme was
+dark and light. The earlier solid-band fixture also passed in both appearances
+and all three scales at 25% and at its artificial 2.5% diagnostic zoom.
+
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui editor:: -- --nocapture
+346 passed, 4 ignored.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the existing unrelated editor/window.rs lint suppressed.
+
+The tests do not verify composed-backdrop tiles, physical capture, real display
+scale transitions, other zooms, other platforms or large-image performance.

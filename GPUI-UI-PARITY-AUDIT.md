@@ -2570,6 +2570,15 @@ Bugs fixed in this pass:
   at simulated display scales. CPU tests cover tile bytes, alpha, crop and undo.
   This does not verify an actual scroll capture, physical display scaling or
   interactive performance on large two-dimensional images.
+  A subsequent detailed comparison found that independently scaled tiles could
+  distort textured pixels: 1,176 of 3,472 compared pixels differed from an
+  untiled source crop by more than two levels, maximum 95. On macOS the plain
+  image tiles now use the full image's snapped sampling grid and sufficient
+  overlap for the minimum zoom. The [follow-up evidence](tests/native/evidence/macos-ui/oversized-screenshot-sampling-20261117.txt)
+  checks opaque and translucent texture around a seam at 25% and 50% zoom in
+  both appearances and three simulated scales; the maximum difference was one
+  level. Composed-backdrop tiles, other platforms and physical capture remain
+  to be checked with the same detailed content.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
