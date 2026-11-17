@@ -2612,16 +2612,15 @@ Bugs fixed in this pass:
   macOS now tiles that backdrop separately from the rounded-edge masks. The
   [unframed evidence](tests/native/evidence/macos-ui/oversized-unframed-backdrop-20261117.txt)
   checks both appearances, 25% and 50% zoom, panning, and opaque and
-  translucent sources. At simulated 100% and 200%, 64 visible-region
-  comparisons matched reopened PNGs within two levels. At simulated 125%,
-  however, the independently scaled image and backdrop still differ from the
-  flattened PNG: the first horizontal opaque case had 17,218 pixels more than
-  two levels apart at 25% zoom and 45,978 at 50%. This remains open; the
-  check stops at the first mismatch and does not establish the other 125%
-  cases. The generated-content [125% preview](tests/native/evidence/macos-ui/oversized-rounded-125-preview-20261117.png)
-  and [reopened PNG](tests/native/evidence/macos-ui/oversized-rounded-125-reopened-20261117.png)
-  are retained. This does not verify physical displays, capture, annotations,
-  or interactive performance.
+  translucent sources. The earlier 125% run found 17,218 pixels more than two
+  levels apart at 25% zoom and 45,978 at 50%. The macOS preview now composes
+  the image and wallpaper together before scaling; annotation patches retain
+  the export's source-boundary and rounded clipping. The [follow-up evidence](tests/native/evidence/macos-ui/oversized-rounded-shared-composition-20261117.txt)
+  compares generated previews with reopened PNGs across appearances, simulated
+  scales, zooms, alpha and redactions. The earlier [125% preview](tests/native/evidence/macos-ui/oversized-rounded-125-preview-20261117.png)
+  and the [corrected preview](tests/native/evidence/macos-ui/oversized-rounded-125-after-20261117.png)
+  are retained. This does not verify physical displays, live capture or
+  interactive performance.
   A further 60 runs covered five unframed corner, shadow and inset combinations
   in both appearances at all three simulated scales and both zooms. All 480
   visible-region comparisons matched reopened PNGs within one level, and
@@ -2630,11 +2629,9 @@ Bugs fixed in this pass:
   An [annotation seam check](tests/native/evidence/macos-ui/oversized-rounded-annotation-20261117.txt)
   exercises blackout, blur and pixelation across a tile boundary. At simulated
   100% and 200%, 192 visible-region comparisons matched reopened PNGs within
-  two levels. At 125%, the full preview still differs after panning. A small
-  sample in the first opaque horizontal redaction matched, which does not
-  establish full redaction parity at that scale. A separate export test guards
-  annotation and blackout clipping at rounded corners; moving annotations
-  above the wallpaper composition without equivalent clipping changes output.
+  two levels. Its earlier 125% full-preview failure is addressed by the
+  shared-composition follow-up above. Separate export and bounded-patch tests
+  guard annotation and redaction clipping at rounded corners and their order.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
@@ -4338,7 +4335,7 @@ appearance.
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. On the current single-display Mac, the GPUI preference ID, Electron ID and Core Graphics ID match; Electron and GPUI also agree on bounds and work area. See the [native comparison](tests/native/evidence/macos-ui/display-identity-20261116.txt). Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions, mirroring and restarts, and cross-shell IDs on Linux.                   |
 | P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Balanced macOS frames with and without inset match in the matrix above. Verify more styles and zooms, transparent reopen, additional inset settings, attached layers and physical DPI transitions. |
-| P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Oversized unframed rounded captures without shadow or inset still mismatch reopened PNGs at simulated 125%: see the unframed evidence above. Verify that case, frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                               |
+| P1       | Complex rounded screenshot preview versus export         | Single unframed captures with and without inset or shadow match the PNG in the tested light/dark cases at simulated 125% and 200%, including transparency and annotations. Oversized unframed rounded captures without shadow or inset now match reopened PNGs in the generated follow-up above. Verify additional effects, frames, balance, attachments, more zoom levels and physical DPI.                                                                                                                                                                                                                                             |
 | P1       | Zero-padding wallpaper effects                           | Frame-only, corner/shadow-only and single unbalanced framed or unframed inset effects activate at zero padding. Unframed attached insets are checked on all edges by CPU and on the right edge by GPU. Balanced unframed single and attached images with corners, shadows and insets now match preview/export in generated light/dark GPU fixtures. Attachment checks cover all four edges, padding, seam blackouts, blur and pixelation. Verify physical DPI, real input, other content and zooms, framed attachments and more inset combinations.                                                                                      |
 | P1       | Wallpaper shadows and complex image compositions         | Single unframed captures with or without inset match saved output in the tested shadow cases. After a pixel-conversion optimization, a local 4K shadow composite took a median 109–113 ms versus 142–148 ms with the preceding conversion; GPU upload, interactive behavior and slower hardware remain unmeasured. At 17,000px, CPU checks cover rounded inset tiles and shadows; generated macOS Metal checks cover framed previews and selected unframed corner, inset and shadow combinations against reopened PNGs. Verify other shadow settings, physical displays and other combinations.                                          |
 | P1       | Complex screenshot pixelation                            | Fixed-size averaging matches Electron canvas samples. The tested plain redaction and boundary match saved pixels at 50%, 73%, 137% and 150% effective zoom in both themes at simulated 100%, 125% and 200% DPI, including transparency, clipping and later overlapping annotations. Verify frames, inset, balance, attached layers, physical DPI, large patches and interactive performance.                                                                                                                                                                                                                                             |
