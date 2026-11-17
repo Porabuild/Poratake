@@ -740,7 +740,7 @@ fn paint_background_source(
 ) {
     if let Some(source) = wallpaper.background_image.as_deref() {
         if let Some(image) = gradient::load_image(source) {
-            gradient::fill_image(canvas, image.as_ref(), width, height);
+            gradient::fill_image_high_quality(canvas, image.as_ref(), width, height);
             return;
         }
     }
@@ -1306,6 +1306,47 @@ mod tests {
             assert!(
                 actual.abs_diff(expected) <= 8,
                 "{x},{y}: {actual} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_wallpaper_scaling_matches_high_quality_canvas_samples() {
+        use base64::Engine;
+
+        let source = RgbaImage::from_fn(64, 48, |x, y| {
+            image::Rgba([
+                ((x * 37 + y * 3) % 256) as u8,
+                ((y * 53 + x * 5) % 256) as u8,
+                ((x * 11 + y * 7) % 256) as u8,
+                ((x * 19 + y * 17) % 256) as u8,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let settings = WallpaperSettings {
+            background_image: Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            )),
+            ..Default::default()
+        };
+        let mut canvas = Canvas::new(320, 180).unwrap();
+        canvas.translate(-40., -40.);
+        paint_background_source(&mut canvas, &settings, 400., 260.);
+        let output = to_rgba(canvas.pixmap());
+        for (x, y, expected) in [
+            (40, 0, [240, 34, 202, 135]),
+            (100, 30, [89, 84, 84, 143]),
+            (160, 90, [222, 131, 98, 244]),
+            (120, 120, [200, 94, 219, 193]),
+        ] {
+            let actual = output.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 4),
+                "{x},{y}: {actual:?} vs {expected:?}"
             );
         }
     }

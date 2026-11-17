@@ -337,6 +337,18 @@ impl Canvas {
     /// `width` x `height` — the `drawImage(image, x, y, w, h)` overload after
     /// the caller has translated to `x, y`.
     pub fn draw_pixmap(&mut self, source: PixmapRef<'_>, x: f32, y: f32, width: f32, height: f32) {
+        self.draw_pixmap_with_quality(source, x, y, width, height, FilterQuality::Bilinear);
+    }
+
+    pub fn draw_pixmap_with_quality(
+        &mut self,
+        source: PixmapRef<'_>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        quality: FilterQuality,
+    ) {
         if source.width() == 0 || source.height() == 0 || width <= 0.0 || height <= 0.0 {
             return;
         }
@@ -344,12 +356,21 @@ impl Canvas {
             width / source.width() as f32,
             height / source.height() as f32,
         );
-        self.draw_pixmap_transformed(source, placement);
+        self.draw_pixmap_transformed_with_quality(source, placement, quality);
     }
 
     /// Draws `source` under `placement`, which maps source pixels into the
     /// current user space.
     pub fn draw_pixmap_transformed(&mut self, source: PixmapRef<'_>, placement: Transform) {
+        self.draw_pixmap_transformed_with_quality(source, placement, FilterQuality::Bilinear);
+    }
+
+    fn draw_pixmap_transformed_with_quality(
+        &mut self,
+        source: PixmapRef<'_>,
+        placement: Transform,
+        quality: FilterQuality,
+    ) {
         let combined = self.state.transform.pre_concat(placement);
         if let Some(shadow) = self.state.shadow {
             let bounds = rect_device_bounds(
@@ -357,20 +378,26 @@ impl Canvas {
                 combined,
             );
             self.draw_shadow_of(bounds, shadow, |canvas| {
-                canvas.draw_pixmap_raw(source, placement, 1.0);
+                canvas.draw_pixmap_raw(source, placement, 1.0, quality);
             });
         }
-        self.draw_pixmap_raw(source, placement, self.state.alpha);
+        self.draw_pixmap_raw(source, placement, self.state.alpha, quality);
     }
 
-    fn draw_pixmap_raw(&mut self, source: PixmapRef<'_>, placement: Transform, alpha: f32) {
+    fn draw_pixmap_raw(
+        &mut self,
+        source: PixmapRef<'_>,
+        placement: Transform,
+        alpha: f32,
+        quality: FilterQuality,
+    ) {
         if alpha <= 0.0 {
             return;
         }
         let paint = PixmapPaint {
             opacity: alpha,
             blend_mode: BlendMode::SourceOver,
-            quality: FilterQuality::Bilinear,
+            quality,
         };
         self.pixmap.draw_pixmap(
             0,
