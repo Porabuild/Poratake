@@ -892,37 +892,8 @@ pub fn render_backdrop(
         };
         return Some((render_image(&composite), tiles, true));
     }
-    let mut canvas = Canvas::new(width.max(1), height.max(1))?;
-    if !wallpaper.has_background() && !composites_primary_backdrop(wallpaper, layers) {
-        canvas.fill_all(Color::from_rgba8(
-            stage_background[0],
-            stage_background[1],
-            stage_background[2],
-            255,
-        ));
-    }
-    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
     let edge_preview = wallpaper.supports_edge_preview(!layers.is_empty());
-    if edge_preview && wallpaper.has_background() {
-        let mut builder = tiny_skia::PathBuilder::new();
-        builder.push_rect(tiny_skia::Rect::from_xywh(
-            0.0,
-            0.0,
-            width as f32,
-            height as f32,
-        )?);
-        canvas.fill_path_blended(
-            &builder.finish()?,
-            Color::from_rgba8(
-                stage_background[0],
-                stage_background[1],
-                stage_background[2],
-                255,
-            ),
-            FillRule::Winding,
-            tiny_skia::BlendMode::DestinationOver,
-        );
-    }
+    let mut canvas = wallpaper_backdrop(wallpaper, width, height, edge_preview, stage_background)?;
 
     if edge_preview && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none() {
         if let Some(shadow) = image_shadow(wallpaper.shadow) {
@@ -1102,6 +1073,57 @@ pub fn render_backdrop(
             .collect(),
         false,
     ))
+}
+
+fn wallpaper_backdrop(
+    wallpaper: &WallpaperSettings,
+    width: u32,
+    height: u32,
+    edge_preview: bool,
+    stage_background: [u8; 3],
+) -> Option<Canvas> {
+    let mut canvas = Canvas::new(width.max(1), height.max(1))?;
+    if !wallpaper.has_background() {
+        canvas.fill_all(Color::from_rgba8(
+            stage_background[0],
+            stage_background[1],
+            stage_background[2],
+            255,
+        ));
+    }
+    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
+    if edge_preview && wallpaper.has_background() {
+        let mut builder = tiny_skia::PathBuilder::new();
+        builder.push_rect(tiny_skia::Rect::from_xywh(
+            0.0,
+            0.0,
+            width as f32,
+            height as f32,
+        )?);
+        canvas.fill_path_blended(
+            &builder.finish()?,
+            Color::from_rgba8(
+                stage_background[0],
+                stage_background[1],
+                stage_background[2],
+                255,
+            ),
+            FillRule::Winding,
+            tiny_skia::BlendMode::DestinationOver,
+        );
+    }
+    Some(canvas)
+}
+
+#[cfg(target_os = "macos")]
+pub fn render_rounded_preview(
+    base: &image::DynamicImage,
+    wallpaper: &WallpaperSettings,
+    frame_scale: f64,
+) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let primary = from_dynamic_image(base)?;
+    let composed = compose_wallpaper(&primary, wallpaper, frame_scale, None, false);
+    Some(render_image(&composed))
 }
 
 pub fn from_dynamic_image(source: &image::DynamicImage) -> Option<Pixmap> {

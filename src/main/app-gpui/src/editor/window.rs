@@ -436,6 +436,7 @@ pub struct EditorWindow {
     /// so it is only re-rendered when the wallpaper actually changes.
     backdrop: Option<Arc<gpui::RenderImage>>,
     backdrop_composite: bool,
+    rounded_matte: Option<Arc<gpui::RenderImage>>,
     backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
@@ -526,6 +527,7 @@ impl EditorWindow {
             annotation_clipboard: Vec::new(),
             backdrop: None,
             backdrop_composite: false,
+            rounded_matte: None,
             backdrop_tiles: Vec::new(),
             preview_edges: Vec::new(),
             image_tiles,
@@ -607,6 +609,7 @@ impl EditorWindow {
                 frame_scale: 1.0,
                 backdrop: None,
                 backdrop_composite: false,
+                rounded_matte: None,
                 backdrop_tiles: Vec::new(),
                 preview_edges: Vec::new(),
                 selected: Vec::new(),
@@ -778,6 +781,9 @@ impl EditorWindow {
         if let Some(backdrop) = self.backdrop.take() {
             self.retired_preview_edges.push(backdrop);
         }
+        if let Some(matte) = self.rounded_matte.take() {
+            self.retired_preview_edges.push(matte);
+        }
         self.backdrop_composite = false;
         self.retired_preview_edges
             .extend(self.backdrop_tiles.drain(..).map(|tile| tile.image));
@@ -837,6 +843,16 @@ impl EditorWindow {
             width.round().max(1.0) as u32,
             height.round().max(1.0) as u32,
         );
+        #[cfg(target_os = "macos")]
+        let rounded_preview = (size.0 > 16384 || size.1 > 16384)
+            && self.layers.is_empty()
+            && !wallpaper.balance
+            && wallpaper.corners > 0.0
+            && wallpaper.shadow <= 0.0
+            && wallpaper.inset <= 0.0
+            && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none();
+        #[cfg(not(target_os = "macos"))]
+        let rounded_preview = false;
         let background = gpui::Rgba::from(active_theme(cx).background);
         let stage_background = [background.r, background.g, background.b]
             .map(|channel| (channel * 255.0).round() as u8);
@@ -855,7 +871,8 @@ impl EditorWindow {
                         &self.layers,
                     )))
             .then_some(stage_background),
-            (wallpaper.inset > 0.0
+            (rounded_preview
+                || wallpaper.inset > 0.0
                 || crate::editor::export::composites_primary_backdrop(&wallpaper, &self.layers)
                 || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
                 || (!self.layers.is_empty()
@@ -926,6 +943,28 @@ impl EditorWindow {
                 stage_background,
             );
             #[cfg(target_os = "macos")]
+            let (rendered, rounded_matte) = {
+                let mut rendered = rendered;
+                let matte = if rounded_preview {
+                    match (rendered.as_mut(), base_image.as_ref()) {
+                        (Some((backdrop, edges, false)), Some(base)) if !edges.is_empty() => {
+                            crate::editor::export::render_rounded_preview(
+                                base,
+                                &wallpaper,
+                                frame_scale,
+                            )
+                            .map(|composed| std::mem::replace(backdrop, composed))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                (rendered, matte)
+            };
+            #[cfg(not(target_os = "macos"))]
+            let rounded_matte = None;
+            #[cfg(target_os = "macos")]
             let backdrop_tiles = rendered
                 .as_ref()
                 .filter(|(_, _, composite)| !composite)
@@ -933,10 +972,10 @@ impl EditorWindow {
                 .unwrap_or_default();
             #[cfg(not(target_os = "macos"))]
             let backdrop_tiles = Vec::new();
-            (rendered, inset_color, backdrop_tiles)
+            (rendered, inset_color, backdrop_tiles, rounded_matte)
         });
         self.backdrop_task = Some(cx.spawn(async move |entity, cx| {
-            let (rendered, inset_color, backdrop_tiles) = task.await;
+            let (rendered, inset_color, backdrop_tiles, rounded_matte) = task.await;
             let _ = entity.update(cx, |editor, cx| {
                 if editor.backdrop_generation != generation {
                     return;
@@ -947,6 +986,7 @@ impl EditorWindow {
                 editor.retire_backdrop();
                 editor.backdrop = backdrop;
                 editor.backdrop_composite = composite;
+                editor.rounded_matte = rounded_matte;
                 editor.backdrop_tiles = backdrop_tiles;
                 editor.preview_edges = preview_edges;
                 editor.inset_color = inset_color;
@@ -966,6 +1006,7 @@ impl EditorWindow {
             snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
             snap.backdrop_composite = self.backdrop_composite;
+            snap.rounded_matte = self.rounded_matte.clone();
             snap.backdrop_tiles = self.backdrop_tiles.clone();
             snap.preview_edges = self.preview_edges.clone();
             snap.selected = self.selected_annotations.clone();
@@ -4406,8 +4447,18 @@ mod tests {
                     .map(|tile| tile.image.id)
                     .collect();
                 assert_eq!(backdrop_ids.len(), 3);
+                let matte = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                    image::Frame::new(image::RgbaImage::new(1, 1))
+                ]));
+                let matte_id = matte.id;
+                editor.rounded_matte = Some(matte);
                 editor.retire_backdrop();
                 assert!(editor.backdrop_tiles.is_empty());
+                assert!(editor.rounded_matte.is_none());
+                assert!(editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == matte_id));
                 assert!(backdrop_ids.iter().all(|id| editor
                     .retired_preview_edges
                     .iter()
@@ -4466,6 +4517,62 @@ mod tests {
         cx.update(|_, cx| {
             let editor = editor.read(cx);
             assert!(editor.backdrop_composite);
+            assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn oversized_rounded_backdrop_refreshes_when_source_changes(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(17_000, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 20.;
+                editor.wallpaper.corners = 4.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        let original = cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.rounded_matte.is_some());
+            editor.backdrop.as_ref().unwrap().id
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    17_000,
+                    8,
+                    image::Rgba([64, 80, 240, 255]),
+                ));
+                editor.replace_image(render_image_from_base(&base));
+                editor.base_image = Some(Arc::new(base));
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.rounded_matte.is_some());
             assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
         });
     }

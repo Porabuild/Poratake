@@ -21,6 +21,15 @@ const MAX_PATCH_DIMENSION: f64 = 16_384.0;
 const CACHE_TTL_FRAMES: u64 = 4;
 
 #[derive(Clone, Copy)]
+pub struct RoundedClip<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub offset_x: i64,
+    pub offset_y: i64,
+    pub edges: &'a [crate::editor::export::PreviewEdgeImage],
+}
+
+#[derive(Clone, Copy)]
 pub struct Surface<'a> {
     pub image_id: Option<gpui::ImageId>,
     pub width: u32,
@@ -29,6 +38,7 @@ pub struct Surface<'a> {
     pub offset_y: f64,
     pub source_is_composed: bool,
     pub native_scale: f64,
+    pub rounded_clip: Option<RoundedClip<'a>>,
     pub pixels: Option<&'a [u8]>,
     pub matte: Option<[u8; 3]>,
     pub matte_image: Option<(&'a RenderImage, f64, f64)>,
@@ -36,8 +46,17 @@ pub struct Surface<'a> {
 }
 
 impl Surface<'_> {
+    fn content_bounds(&self) -> (f64, f64, f64, f64) {
+        self.rounded_clip
+            .map(|clip| (0.0, 0.0, f64::from(clip.width), f64::from(clip.height)))
+            .unwrap_or_else(|| self.bounds())
+    }
+
     fn bounds(&self) -> (f64, f64, f64, f64) {
-        if let Some((image, x, y)) = self.matte_image.filter(|_| self.composite_backdrop) {
+        if let Some((image, x, y)) = self
+            .matte_image
+            .filter(|_| self.composite_backdrop || self.rounded_clip.is_some())
+        {
             let size = image.size(0);
             return (
                 -x,
@@ -126,6 +145,7 @@ fn replay_bounds<'a>(
 ) -> (f64, f64, f64, f64) {
     let mut sample = target;
     let limits = surface.bounds();
+    let content = surface.content_bounds();
     for paint in paints.rev() {
         let ScreenshotPaint::Annotation(
             annotation @ Annotation::Redact {
@@ -155,6 +175,15 @@ fn replay_bounds<'a>(
             _ => continue,
         };
         let dependency = padded(overlap, padding);
+        let dependency = (
+            dependency.0.max(content.0),
+            dependency.1.max(content.1),
+            dependency.2.min(content.2),
+            dependency.3.min(content.3),
+        );
+        if dependency.2 <= dependency.0 || dependency.3 <= dependency.1 {
+            continue;
+        }
         sample = (
             sample.0.min(dependency.0).max(limits.0),
             sample.1.min(dependency.1).max(limits.1),
@@ -238,7 +267,7 @@ fn raster_bounds(
                 + 2.0 / scale;
             let target = annotation.bounds();
             let mut bounds = padded(target, padding);
-            let (left_limit, top_limit, right_limit, bottom_limit) = surface.bounds();
+            let (left_limit, top_limit, right_limit, bottom_limit) = surface.content_bounds();
             let left = target.0.floor().max(left_limit);
             let top = target.1.floor().max(top_limit);
             let right = target.2.ceil().min(right_limit);
@@ -449,7 +478,7 @@ fn render_patch(
     let scale = patch_scale(&bounds, scale);
     let (left, top, right, bottom) = bounds.sample;
     let target = bounds.target;
-    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.content_bounds();
     let composition_origin = surface
         .matte_image
         .filter(|_| surface.composite_backdrop)
@@ -459,15 +488,28 @@ fn render_patch(
     let device_y = (top * scale).floor();
     let width = ((right * scale).ceil() - device_x).max(1.0) as u32;
     let height = ((bottom * scale).ceil() - device_y).max(1.0) as u32;
+    let (render_x, render_y, render_width, render_height) = if let Some(clip) = surface.rounded_clip
+    {
+        let x = device_x.max(0.);
+        let y = device_y.max(0.);
+        let right = (device_x + f64::from(width)).min((f64::from(clip.width) * scale).ceil());
+        let bottom = (device_y + f64::from(height)).min((f64::from(clip.height) * scale).ceil());
+        if right <= x || bottom <= y {
+            return None;
+        }
+        (x, y, (right - x) as u32, (bottom - y) as u32)
+    } else {
+        (device_x, device_y, width, height)
+    };
 
-    let mut canvas = Canvas::new(width, height)?;
-    canvas.translate(-device_x as f32, -device_y as f32);
+    let mut canvas = Canvas::new(render_width, render_height)?;
+    canvas.translate(-render_x as f32, -render_y as f32);
     canvas.scale(scale as f32, scale as f32);
     canvas.set_screenshot_surface((
-        ((surface_left * scale).floor() - device_x) as i32,
-        ((surface_top * scale).floor() - device_y) as i32,
-        ((surface_right * scale).ceil() - device_x) as i32,
-        ((surface_bottom * scale).ceil() - device_y) as i32,
+        ((surface_left * scale).floor() - render_x) as i32,
+        ((surface_top * scale).floor() - render_y) as i32,
+        ((surface_right * scale).ceil() - render_x) as i32,
+        ((surface_bottom * scale).ceil() - render_y) as i32,
     ));
     canvas.set_pixel_grid_origin(composition_origin);
     canvas.set_patch_path_anchor(
@@ -475,7 +517,7 @@ fn render_patch(
             (composition_origin.0 * scale) as f32,
             (composition_origin.1 * scale) as f32,
         ),
-        (device_x as f32, device_y as f32),
+        (render_x as f32, render_y as f32),
     );
 
     let draw_matte = |canvas: &mut Canvas| {
@@ -493,6 +535,7 @@ fn render_patch(
             offset_y,
             source_is_composed: true,
             native_scale: surface.native_scale,
+            rounded_clip: None,
             pixels: Some(pixels),
             matte: None,
             matte_image: None,
@@ -524,6 +567,67 @@ fn render_patch(
         }
     }
     renderer::draw_screenshot_paint(&mut canvas, paint, surface.native_scale);
+    if let Some(clip) = surface.rounded_clip {
+        let rendered = canvas.into_pixmap();
+        canvas = Canvas::new(width, height)?;
+        canvas.translate(-device_x as f32, -device_y as f32);
+        canvas.scale(scale as f32, scale as f32);
+        let (offset_x, offset_y) = (
+            (render_x - device_x) as usize,
+            (render_y - device_y) as usize,
+        );
+        let row_width = render_width as usize * 4;
+        for row in 0..render_height as usize {
+            let source = row * row_width;
+            let target = ((row + offset_y) * width as usize + offset_x) * 4;
+            canvas.pixmap_mut().data_mut()[target..target + row_width]
+                .copy_from_slice(&rendered.data()[source..source + row_width]);
+        }
+        let mut mask = tiny_skia::Mask::new(canvas.width(), canvas.height())?;
+        let edges = clip
+            .edges
+            .iter()
+            .map(|edge| Some((edge, edge.image.as_bytes(0)?)))
+            .collect::<Option<Vec<_>>>()?;
+        let stride = canvas.width() as usize;
+        let columns: Vec<_> = (0..stride)
+            .map(|x| ((x as f64 + 0.5 + device_x) / scale).floor() as i64)
+            .collect();
+        for (row_index, row) in mask.data_mut().chunks_exact_mut(stride).enumerate() {
+            let y = ((row_index as f64 + 0.5 + device_y) / scale).floor() as i64;
+            if y < 0 || y >= i64::from(clip.height) {
+                continue;
+            }
+            let y = y + clip.offset_y;
+            for (&x, alpha) in columns.iter().zip(row) {
+                if x < 0 || x >= i64::from(clip.width) {
+                    continue;
+                }
+                *alpha = 255;
+                let x = x + clip.offset_x;
+                for (edge, pixels) in &edges {
+                    let (left, top) = (i64::from(edge.x), i64::from(edge.y));
+                    if x < left
+                        || y < top
+                        || x >= left + i64::from(edge.width)
+                        || y >= top + i64::from(edge.height)
+                    {
+                        continue;
+                    }
+                    let size = edge.image.size(0);
+                    let offset = (((y - top) as usize + edge.inset_y as usize)
+                        * u32::from(size.width) as usize
+                        + (x - left) as usize
+                        + edge.inset_x as usize)
+                        * 4
+                        + 3;
+                    *alpha = 255 - *pixels.get(offset)?;
+                    break;
+                }
+            }
+        }
+        canvas.pixmap_mut().apply_mask(&mask);
+    }
     if !surface.composite_backdrop {
         draw_matte(&mut canvas);
     }
@@ -1171,6 +1275,18 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u64(surface.offset_y.to_bits());
     hasher.write_u8(u8::from(surface.source_is_composed));
     hasher.write_u64(surface.native_scale.to_bits());
+    if let Some(clip) = surface.rounded_clip {
+        hasher.write_u8(1);
+        hasher.write_u32(clip.width);
+        hasher.write_u32(clip.height);
+        hasher.write_i64(clip.offset_x);
+        hasher.write_i64(clip.offset_y);
+        for edge in clip.edges {
+            edge.image.id.hash(&mut hasher);
+        }
+    } else {
+        hasher.write_u8(0);
+    }
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.matte.hash(&mut hasher);
     surface.composite_backdrop.hash(&mut hasher);
@@ -1192,6 +1308,9 @@ fn render_image(pixmap: &Pixmap) -> Arc<RenderImage> {
         buffer
     )]))
 }
+
+#[cfg(test)]
+mod rounded_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1292,6 +1411,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: image.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -1381,6 +1501,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: source.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -1417,6 +1538,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -1488,6 +1610,7 @@ mod tests {
                 offset_y,
                 source_is_composed: true,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: Some(&bgra),
                 matte: None,
                 matte_image: None,
@@ -1609,6 +1732,7 @@ mod tests {
             offset_y: 0.0,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -1739,6 +1863,7 @@ mod tests {
             offset_y: 0.0,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: first.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -1853,6 +1978,7 @@ mod tests {
             offset_y: primary_origin.1,
             source_is_composed: true,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
             matte_image: None,
@@ -1976,6 +2102,7 @@ mod tests {
             offset_y: primary_origin.1,
             source_is_composed: true,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
             matte_image: None,
@@ -2139,6 +2266,7 @@ mod tests {
             offset_y: 0.25,
             source_is_composed: true,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,
@@ -2180,6 +2308,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: first.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
@@ -2375,6 +2504,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&[]),
             matte: None,
             matte_image: None,
@@ -2444,6 +2574,7 @@ mod tests {
             offset_y: 20.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -2515,6 +2646,7 @@ mod tests {
                 offset_y,
                 source_is_composed: true,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: Some(&bgra),
                 matte: None,
                 matte_image: None,
@@ -2576,6 +2708,7 @@ mod tests {
                     offset_y: 0.,
                     source_is_composed: true,
                     native_scale: 1.,
+                    rounded_clip: None,
                     pixels: Some(&bgra),
                     matte: None,
                     matte_image: None,
@@ -2651,6 +2784,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: source.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -2749,6 +2883,7 @@ mod tests {
             offset_y: -20.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -2817,6 +2952,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: source.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
@@ -2900,6 +3036,7 @@ mod tests {
                     offset_y: 0.,
                     source_is_composed: true,
                     native_scale: 1.,
+                    rounded_clip: None,
                     pixels: source.as_bytes(0),
                     matte: Some(matte),
                     matte_image: Some((&backdrop, 12., 12.)),
@@ -3019,6 +3156,7 @@ mod tests {
                 offset_y: 0.,
                 source_is_composed: true,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: source.as_bytes(0),
                 matte: None,
                 matte_image: Some((&backdrop, offset, snapped_y)),
@@ -3060,6 +3198,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 2.,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,
@@ -3110,6 +3249,7 @@ mod tests {
                 offset_y,
                 source_is_composed: true,
                 native_scale: 1.25,
+                rounded_clip: None,
                 pixels: Some(&bgra),
                 matte: None,
                 matte_image: None,
@@ -3292,6 +3432,7 @@ mod tests {
                 offset_y: 0.,
                 source_is_composed: true,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: None,
                 matte: None,
                 matte_image: None,
@@ -3319,6 +3460,7 @@ mod tests {
             offset_y: 0.,
             source_is_composed: true,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,

@@ -60,6 +60,7 @@ pub struct CanvasSnapshot {
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
     pub backdrop_composite: bool,
+    pub rounded_matte: Option<std::sync::Arc<gpui::RenderImage>>,
     pub backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     pub preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     /// The annotation the select tool has picked, outlined on the canvas.
@@ -186,9 +187,11 @@ impl RenderOnce for EditorCanvas {
         let frame_scale = snap.frame_scale;
         let has_preview_edges = !snap.preview_edges.is_empty();
         let layered_composite = snap.backdrop_composite;
+        let rounded_composite = snap.rounded_matte.is_some();
         let composited_primary =
             crate::editor::export::composites_primary_backdrop(&wallpaper, &snap.layers);
-        let stage_annotations = layered_composite || (snap.image.is_some() && composited_primary);
+        let stage_annotations =
+            layered_composite || rounded_composite || (snap.image.is_some() && composited_primary);
         let overlay_above = has_preview_edges || stage_annotations;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
@@ -241,7 +244,7 @@ impl RenderOnce for EditorCanvas {
             })
             .when(!transparent_backdrop, |el| el.bg(frame_surface));
 
-        if !layered_composite && !snap.image_tiles.is_empty() {
+        if !layered_composite && !rounded_composite && !snap.image_tiles.is_empty() {
             #[cfg(target_os = "macos")]
             {
                 let tiles = snap.image_tiles.clone();
@@ -261,7 +264,7 @@ impl RenderOnce for EditorCanvas {
             for tile in &snap.image_tiles {
                 frame = frame.child(preview_tile(tile, snap.zoom));
             }
-        } else if !layered_composite {
+        } else if !layered_composite && !rounded_composite {
             if let Some(image) = snap.image.clone() {
                 frame = frame.child(
                     canvas(
@@ -388,6 +391,7 @@ impl RenderOnce for EditorCanvas {
         );
         let framed = wallpaper.is_active_with_layers(!layers.is_empty());
         let snapped_composition = composited_primary
+            || rounded_composite
             || layered_composite
             || (window_frame && layers.is_empty() && !wallpaper.balance);
 
@@ -591,7 +595,7 @@ impl RenderOnce for EditorCanvas {
                                                 transparent_backdrop,
                                             );
                                         }
-                                        if !layered_composite {
+                                        if !layered_composite && !rounded_composite {
                                             for edge in &handle_snapshot.borrow().preview_edges {
                                                 let edge_bounds = gpui::Bounds {
                                                     origin: gpui::point(
@@ -761,6 +765,7 @@ fn paint_annotations(
         offset_y,
         source_is_composed: snapshot.backdrop_composite,
         native_scale: snapshot.frame_scale,
+        rounded_clip: None,
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
         matte: snapshot.backdrop_composite.then_some(stage_background),
         matte_image: None,
@@ -802,26 +807,31 @@ fn paint_annotations(
             !snapshot.layers.is_empty(),
         );
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
-        let (x, y) =
-            if crate::editor::export::composites_primary_backdrop(
+        let (x, y) = if snapshot.rounded_matte.is_some()
+            || crate::editor::export::composites_primary_backdrop(
                 &snapshot.wallpaper,
                 &snapshot.layers,
-            ) || (crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style)
+            )
+            || (crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style)
                 .is_some()
                 && snapshot.layers.is_empty()
                 && !snapshot.wallpaper.balance)
-            {
-                (x.round(), y.round())
-            } else {
-                (x, y)
-            };
-        snapshot.backdrop.as_deref().map(|image| {
-            (
-                image,
-                x + group.primary.x + layer_inset - f64::from(crop_left),
-                y + group.primary.y + layer_inset + title_bar - f64::from(crop_top),
-            )
-        })
+        {
+            (x.round(), y.round())
+        } else {
+            (x, y)
+        };
+        snapshot
+            .rounded_matte
+            .as_deref()
+            .or(snapshot.backdrop.as_deref())
+            .map(|image| {
+                (
+                    image,
+                    x + group.primary.x + layer_inset - f64::from(crop_left),
+                    y + group.primary.y + layer_inset + title_bar - f64::from(crop_top),
+                )
+            })
     } else {
         None
     };
@@ -832,6 +842,15 @@ fn paint_annotations(
             stage_surface
         }),
         matte_image,
+        rounded_clip: snapshot.rounded_matte.as_ref().and_then(|_| {
+            matte_image.map(|(_, x, y)| preview_raster::RoundedClip {
+                width: snapshot.image_width as u32,
+                height: snapshot.image_height as u32,
+                offset_x: x as i64,
+                offset_y: y as i64,
+                edges: &snapshot.preview_edges,
+            })
+        }),
         composite_backdrop: matte_image.is_some()
             && crate::editor::export::composites_primary_backdrop(
                 &snapshot.wallpaper,
@@ -896,22 +915,27 @@ fn paint_annotations(
         let bounded_output = bounded
             || preview_raster::needs_bounded_output(&surface, scale)
             || preview_raster::needs_bounded_output(&redaction_surface, scale);
-        let aligned = (!at_native_scale
-            || (bounded
+        let aligned = snapshot.rounded_matte.is_some()
+            || ((!at_native_scale
+                || (bounded
+                    && (committed_blur
+                        || committed_pixelation
+                        || preview_raster::overlaps_redaction(
+                            annotation,
+                            &visible[..index],
+                            &surface,
+                        ))))
+                && !draft_redaction
+                && !selected_inset
                 && (committed_blur
                     || committed_pixelation
+                    || committed_blackout
+                    || preview_raster::is_rasterized(annotation)
                     || preview_raster::overlaps_redaction(
                         annotation,
                         &visible[..index],
                         &surface,
-                    ))))
-            && !draft_redaction
-            && !selected_inset
-            && (committed_blur
-                || committed_pixelation
-                || committed_blackout
-                || preview_raster::is_rasterized(annotation)
-                || preview_raster::overlaps_redaction(annotation, &visible[..index], &surface));
+                    )));
         if !snapshot.backdrop_composite
             && !redaction_surface.composite_backdrop
             && !committed_pixelation

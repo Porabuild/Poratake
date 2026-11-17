@@ -30,9 +30,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.);
+    let padding = std::env::var("PORATAKE_PARITY_LARGE_PADDING")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(20.);
     let annotation = std::env::var("PORATAKE_PARITY_LARGE_ANNOTATION").ok();
+    let transparent_background =
+        std::env::var_os("PORATAKE_PARITY_LARGE_TRANSPARENT_BACKGROUND").is_some();
     let pan_first = std::env::var_os("PORATAKE_PARITY_LARGE_PAN_FIRST").is_some();
-    assert!(zoom == 0.25 || zoom == 0.5);
+    let save_images = std::env::var_os("PORATAKE_PARITY_LARGE_SAVE_IMAGES").is_some();
+    assert!(zoom == 0.25 || zoom == 0.5 || zoom == 1.0);
     for horizontal in [true, false] {
         for transparent in [false, true] {
             let (width, height) = if horizontal {
@@ -65,31 +72,66 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 .unwrap();
             editor
                 .update(cx, |editor, _, cx| {
-                    editor.wallpaper.gradient = Some(GradientOption {
-                        id: "framed".into(),
-                        colors: vec!["#203060".into()],
-                        angle: 0.,
-                    });
-                    editor.wallpaper.padding = 20.;
+                    if !transparent_background {
+                        editor.wallpaper.gradient = Some(GradientOption {
+                            id: "framed".into(),
+                            colors: vec!["#203060".into()],
+                            angle: 0.,
+                        });
+                    }
+                    editor.wallpaper.padding = padding;
                     editor.wallpaper.inset = inset;
                     editor.wallpaper.corners = corners;
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.window_frame.style = style.clone();
                     if let Some(style) = &annotation {
-                        let (x, y, width, height) = if horizontal {
-                            (8162., 42., 60., 44.)
+                        if style.starts_with("corner") {
+                            let mut annotations = Vec::new();
+                            if style != "corner-blackout" {
+                                annotations.push(Annotation::Rectangle {
+                                    id: "corner-shape".into(),
+                                    x: 0.,
+                                    y: 0.,
+                                    width: 48.,
+                                    height: 48.,
+                                    stroke: "#00ff00".into(),
+                                    stroke_width: 2.,
+                                    fill: Some("#00ff00".into()),
+                                });
+                            }
+                            if style != "corner-shape" {
+                                let redaction = match style.as_str() {
+                                    "corner-blur" => "blur",
+                                    "corner-pixelate" => "pixelate",
+                                    _ => "blackout",
+                                };
+                                annotations.push(Annotation::Redact {
+                                    id: "corner-blackout".into(),
+                                    x: 0.,
+                                    y: 0.,
+                                    width: 30.,
+                                    height: 30.,
+                                    style: redaction.into(),
+                                    intensity: 5.,
+                                });
+                            }
+                            editor.history.push(annotations);
                         } else {
-                            (42., 8162., 44., 60.)
-                        };
-                        editor.history.push(vec![Annotation::Redact {
-                            id: "redact".into(),
-                            x,
-                            y,
-                            width,
-                            height,
-                            style: style.clone(),
-                            intensity: 5.,
-                        }]);
+                            let (x, y, width, height) = if horizontal {
+                                (8162., 42., 60., 44.)
+                            } else {
+                                (42., 8162., 44., 60.)
+                            };
+                            editor.history.push(vec![Annotation::Redact {
+                                id: "redact".into(),
+                                x,
+                                y,
+                                width,
+                                height,
+                                style: style.clone(),
+                                intensity: 5.,
+                            }]);
+                        }
                     }
                     cx.notify();
                 })
@@ -130,6 +172,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 (editor.export_png().unwrap(), snapshot.frame_scale)
             });
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
+            if transparent_background {
+                assert_eq!(output.get_pixel(0, 0).0[3], 0);
+            }
             if let Some(style) = &annotation {
                 let control_png = editor
                     .update(cx, |editor, _, _| {
@@ -205,6 +250,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 };
                 assert_eq!(output.get_pixel(x, y).0, [0, 0, 0, 255]);
             }
+            if annotation.as_deref() == Some("corner") {
+                assert_eq!(output.get_pixel(ox + 20, oy + 20).0, [0, 0, 0, 255]);
+                assert_eq!(output.get_pixel(ox + 40, oy + 40).0, [0, 255, 0, 255]);
+                assert_ne!(output.get_pixel(ox, oy).0, [0, 0, 0, 255]);
+            }
             let (a, b) = if horizontal {
                 ((ox + 8000, oy + 45), (ox + 8005, oy + 45))
             } else {
@@ -231,7 +281,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 })
                 .unwrap();
             settle(cx, reopened.into());
-            for panned in if pan_first {
+            for panned in if annotation
+                .as_ref()
+                .is_some_and(|style| style.starts_with("corner"))
+            {
+                &[false][..]
+            } else if pan_first {
                 &[true][..]
             } else {
                 &[false, true]
@@ -256,6 +311,23 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 let right = (f32::from(stage.right()).min(1080.) * scale).floor() as u32;
                 let bottom = (f32::from(stage.bottom()).min(650.) * scale).floor() as u32;
                 assert!(right > left && bottom > top);
+                if !panned
+                    && annotation
+                        .as_ref()
+                        .is_some_and(|style| style.starts_with("corner"))
+                {
+                    let corner_x =
+                        ((f32::from(stage.left()) + ox as f32 * zoom) * scale).round() as u32;
+                    let corner_y =
+                        ((f32::from(stage.top()) + oy as f32 * zoom) * scale).round() as u32;
+                    assert!(
+                        corner_x >= left
+                            && corner_y >= top
+                            && corner_x + 20 < right
+                            && corner_y + 20 < bottom,
+                        "the rounded corner must be visible"
+                    );
+                }
                 if panned {
                     let source_x = ox + if horizontal { 8192 } else { 64 };
                     let source_y = oy + if horizontal { 64 } else { 8192 };
@@ -267,7 +339,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                         (left..right).contains(&seam_x) && (top..bottom).contains(&seam_y),
                         "the tiled seam must be in the compared region"
                     );
-                    if let Some(style) = &annotation {
+                    if let Some(style) = annotation
+                        .as_ref()
+                        .filter(|style| !style.starts_with("corner"))
+                    {
                         assert!(
                             seam_x >= left + 2
                                 && seam_x + 2 < right
@@ -313,7 +388,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     }
                 }
                 println!("large framed style={style} shadow={shadow} inset={inset} corners={corners} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} panned={panned} differences={changed} max={worst}");
-                if changed > 0 {
+                if changed > 0 || save_images {
                     actual
                         .save(scratch.join(format!(
                             "framed-preview-{horizontal}-{transparent}-{panned}.png"
