@@ -421,13 +421,11 @@ export function registerStateHandlers(): void {
       getRecordingMetadataFromStateFile(statePath);
 
     try {
-      if (fs.existsSync(statePath)) {
-        fs.unlinkSync(statePath);
-      }
       return await generateInitialEditorState({
         projectPath: data.filePath,
         recordingType,
         duration: sourceDuration,
+        replaceExisting: true,
       });
     } catch (error) {
       console.error('Failed to reset editor state:', error);

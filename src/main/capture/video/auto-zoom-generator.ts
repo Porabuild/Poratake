@@ -14,17 +14,20 @@ import { DEFAULT_SUBTITLE_STYLE } from '@/types/subtitle';
 import { DEFAULT_AUDIO_STYLE } from '@/types/audio';
 import { DEFAULT_ZOOM_SETTINGS } from '@/types/zoom';
 import { getConfig } from '@/main/settings';
+import { writeFileAtomicSync } from '@/main/utils/atomic-file';
 
 interface GenerateEditorStateOptions {
   projectPath: string;
   recordingType?: RecordingType;
   duration?: number;
+  replaceExisting?: boolean;
 }
 
 export async function generateInitialEditorState({
   projectPath,
   recordingType,
   duration,
+  replaceExisting = false,
 }: GenerateEditorStateOptions): Promise<boolean> {
   const statePath = getEditorStatePath(projectPath);
   if (!statePath) {
@@ -32,7 +35,7 @@ export async function generateInitialEditorState({
     return false;
   }
 
-  if (existsSync(statePath)) {
+  if (!replaceExisting && existsSync(statePath)) {
     console.log(
       'Editor state already exists, skipping editor state generation'
     );
@@ -89,7 +92,12 @@ export async function generateInitialEditorState({
   };
 
   try {
-    await fs.writeFile(statePath, JSON.stringify(initialState, null, 2));
+    const contents = JSON.stringify(initialState, null, 2);
+    if (replaceExisting) {
+      writeFileAtomicSync(statePath, contents);
+    } else {
+      await fs.writeFile(statePath, contents);
+    }
     console.log('Initial editor state saved');
     return true;
   } catch (error) {

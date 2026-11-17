@@ -132,13 +132,12 @@ describe('video editor state handlers', () => {
     const result = await resetHandler({ sender: { id: 1 } });
 
     expect(result).toBe(true);
-    expect(mockFs.unlinkSync).toHaveBeenCalledWith(
-      '/project/video.cap/editor-state.json'
-    );
+    expect(mockFs.unlinkSync).not.toHaveBeenCalled();
     expect(mockGenerateInitialEditorState).toHaveBeenCalledWith({
       projectPath: '/project/video.cap',
       recordingType: 'ios-device',
       duration: 12.5,
+      replaceExisting: true,
     });
   });
 
@@ -162,6 +161,7 @@ describe('video editor state handlers', () => {
       projectPath: '/project/video.cap',
       recordingType: undefined,
       duration: undefined,
+      replaceExisting: true,
     });
   });
 

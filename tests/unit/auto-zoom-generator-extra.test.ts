@@ -34,6 +34,10 @@ vi.mock('@/main/settings', () => ({
   getConfig: () => mockGetConfig(),
 }));
 
+vi.mock('@/main/utils/atomic-file', () => ({
+  writeFileAtomicSync: vi.fn(),
+}));
+
 describe('auto-zoom-generator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
