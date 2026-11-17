@@ -4757,9 +4757,18 @@ the capture-preview unit suite passed 38 tests; a generated decoded-frame test
 checks both thumbnail variants against the same pixels loaded as a screenshot.
 Blur work runs on the existing background decoder worker and is skipped while
 controls are inactive. A newly hovered frame can remain sharp until the next
-thumbnail decode completes. This check does not exercise a physical hover or a
-live recording, and does not establish a pixel comparison with Electron's CSS
-blur.
+thumbnail decode completes. An isolated macOS GPUI renderer exercised the real
+decoder and simulated hover and exit in dark at 100% and 200%, and light at
+125% and 200%.
+The [evidence](tests/native/evidence/macos-ui/video-thumbnail-hover-20261117.txt)
+includes [GPUI idle](tests/native/evidence/macos-ui/video-thumbnail-idle-gpui-20261117.png)
+and [hover](tests/native/evidence/macos-ui/video-thumbnail-hover-gpui-20261117.png)
+images. In a control-free region the GPUI hover differed by about four RGB
+levels on average from [Electron](tests/native/evidence/macos-ui/video-thumbnail-hover-electron-ready-20261117.png),
+after a synthetic media-ready event removed an Electron fixture placeholder.
+Without that event the [placeholder covers the hovered video](tests/native/evidence/macos-ui/video-thumbnail-hover-electron-no-ready-20261117.png)
+in the fixture; the normal Electron app has not been checked for that behavior.
+Neither probe verifies a physical hover, live recording or desktop compositing.
 
 ## Review gate
 
