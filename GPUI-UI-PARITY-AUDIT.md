@@ -1779,10 +1779,16 @@ An additional picker scan checks every pixel across the lower viewport. The
 recording handoff test checks every physical pixel of its painted scrim and clip
 at 100%, 125%, 150%, 175% and 200%, with centered and edge selections. It requires one
 dim layer outside the selection and none inside.
-The microphone icon must provide enough pixels with at least 3:1 contrast
-against the toolbar. Its actual canvas bounds are measured independently of the
-dropdown chevron and checked against the containing button. The former
-light-theme white content failed with zero contrasting pixels. Media permission
+The camera, microphone, system-audio and iPhone/iPad icons must each provide
+enough pixels with at least 3:1 contrast against the toolbar. Their actual
+canvas bounds are measured independently of the dropdown chevrons and checked
+against their containing buttons. On macOS, the isolated recording-control
+fixture passed in light and dark themes at simulated 100%, 125% and 200% scale.
+The 125% renderer captures show the [dark](tests/native/evidence/macos-ui/recording-control-glyphs-dark-125-20261117.png)
+and [light](tests/native/evidence/macos-ui/recording-control-glyphs-light-125-20261117.png)
+bars. The former light-theme white microphone failed with zero contrasting
+pixels. These offscreen images do not verify the floating window's macOS
+compositor border or real capture. Media permission
 checks return granted only in a parity build running the daemon fixture, before
 reading host consent or opening a permission dialog.
 Held-button capture advances the mock clock before reading pixels and must

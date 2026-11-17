@@ -111,8 +111,15 @@ impl RenderOnce for Icon {
             move |bounds, _, _| {
                 let _ = bounds;
                 #[cfg(feature = "parity")]
-                if Some(path_data) == icon_data("mic") || Some(path_data) == icon_data("mic-off") {
-                    crate::ui::parity::record("microphone-icon", vec![bounds]);
+                for (name, icons) in [
+                    ("camera-icon", ["video", "video-off"]),
+                    ("microphone-icon", ["mic", "mic-off"]),
+                    ("system-audio-icon", ["volume-2", "volume-x"]),
+                    ("ios-device-icon", ["smartphone", "smartphone"]),
+                ] {
+                    if icons.iter().any(|icon| Some(path_data) == icon_data(icon)) {
+                        crate::ui::parity::record(name, vec![bounds]);
+                    }
                 }
             },
             move |bounds, _: (), window, _cx| {

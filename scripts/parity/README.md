@@ -549,9 +549,11 @@ These checks verify UI state and requests, not hardware media capture. A
 parity-only guard assumes granted permission while the daemon fixture is
 active, before reading host consent or opening permission dialogs. Normal app
 permission checks retain their platform behavior.
-The microphone icon's actual canvas bounds have a contrast assertion, so a
-white icon on a light toolbar cannot become an accepted baseline. Its dropdown
-chevron is excluded from the measured region.
+The camera, microphone, system-audio and iPhone/iPad icons' actual canvas bounds
+have contrast and clipping assertions. Dropdown chevrons are excluded from the
+measured regions. Run the isolated macOS recording-control fixture with
+`PORATAKE_PARITY_RECORDING_CONTROLS_ONLY=1` in the GPUI parity command above;
+the theme and scale variables select the appearance and simulated scale.
 
 Loaded-video baselines cover all ten panels using a real encoded project with a
 drawing. `src/main/app-gpui/src/ui/parity/fixtures/capture.mov` fixes the input

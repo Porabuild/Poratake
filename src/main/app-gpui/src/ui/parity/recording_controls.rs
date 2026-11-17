@@ -78,12 +78,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         capture(cx, window, output, &format!("{prefix}-default"));
         if area {
             let image = cx.capture_screenshot(window).unwrap();
-            let button = measured("recording-controls", 3);
             let bounds = measured("microphone-icon", 0);
-            assert_eq!(bounds.size.width, px(crate::ui::chrome::TOOL_BUTTON_ICON));
-            assert_eq!(bounds.size.height, px(crate::ui::chrome::TOOL_BUTTON_ICON));
-            assert!(bounds.left() >= button.left() && bounds.right() <= button.right());
-            assert!(bounds.top() >= button.top() && bounds.bottom() <= button.bottom());
             let x = (f32::from(bounds.left()) * scale).round() as u32;
             let y = (f32::from(bounds.top()) * scale).round() as u32;
             let luminance = |pixel: &image::Rgba<u8>| {
@@ -97,25 +92,40 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 };
                 0.2126 * linear(pixel[0]) + 0.7152 * linear(pixel[1]) + 0.0722 * linear(pixel[2])
             };
-            let background = luminance(image.get_pixel(
-                (f32::from(button.left()) * scale).round() as u32 + 2,
-                (f32::from(button.top()) * scale).round() as u32 + 2,
-            ));
-            let mut visible = 0;
-            for row in y..y + (f32::from(bounds.size.height) * scale).round() as u32 {
-                for column in x..x + (f32::from(bounds.size.width) * scale).round() as u32 {
-                    let foreground = luminance(image.get_pixel(column, row));
-                    let contrast =
-                        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
-                    if contrast >= 3. {
-                        visible += 1;
+            for (name, index) in [
+                ("camera-icon", 2),
+                ("microphone-icon", 3),
+                ("system-audio-icon", 4),
+                ("ios-device-icon", 5),
+            ] {
+                let button = measured("recording-controls", index);
+                let icon = measured(name, 0);
+                assert_eq!(icon.size.width, px(crate::ui::chrome::TOOL_BUTTON_ICON));
+                assert_eq!(icon.size.height, px(crate::ui::chrome::TOOL_BUTTON_ICON));
+                assert!(icon.left() >= button.left() && icon.right() <= button.right());
+                assert!(icon.top() >= button.top() && icon.bottom() <= button.bottom());
+                let background = luminance(image.get_pixel(
+                    (f32::from(button.left()) * scale).round() as u32 + 2,
+                    (f32::from(button.top()) * scale).round() as u32 + 2,
+                ));
+                let mut visible = 0;
+                let left = (f32::from(icon.left()) * scale).round() as u32;
+                let top = (f32::from(icon.top()) * scale).round() as u32;
+                for row in top..top + (f32::from(icon.size.height) * scale).round() as u32 {
+                    for column in left..left + (f32::from(icon.size.width) * scale).round() as u32 {
+                        let foreground = luminance(image.get_pixel(column, row));
+                        let contrast = (foreground.max(background) + 0.05)
+                            / (foreground.min(background) + 0.05);
+                        if contrast >= 3. {
+                            visible += 1;
+                        }
                     }
                 }
+                assert!(
+                    visible as f32 >= 8. * scale * scale,
+                    "{name} must contrast with the toolbar: {visible} visible pixels"
+                );
             }
-            assert!(
-                visible as f32 >= 8. * scale * scale,
-                "the microphone glyph must contrast with the toolbar: {visible} visible pixels"
-            );
             let mic = measured("recording-controls", 3).center();
             hover(cx, window, f32::from(mic.x), f32::from(mic.y));
             #[cfg(any(windows, target_os = "macos"))]
