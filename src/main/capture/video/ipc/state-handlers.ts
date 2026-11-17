@@ -8,6 +8,7 @@ import {
   localizeWallpaperImage,
   resolveLocalizedWallpaperImage,
 } from '@/main/settings/wallpaper-assets.ts';
+import { writeFileAtomicSync } from '@/main/utils/atomic-file';
 import type { VideoEditorState } from '@/types/video-editor-state';
 import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
 
@@ -373,7 +374,7 @@ export function registerStateHandlers(): void {
 
       try {
         const stateToSave = localizeStateWallpaper(state, statePath);
-        fs.writeFileSync(statePath, JSON.stringify(stateToSave, null, 2));
+        writeFileAtomicSync(statePath, JSON.stringify(stateToSave, null, 2));
         return true;
       } catch (error) {
         console.error('Failed to save editor state:', error);

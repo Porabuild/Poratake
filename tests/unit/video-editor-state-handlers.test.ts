@@ -24,6 +24,7 @@ const mockGetEditorStatePath = vi.fn(
   () => '/project/video.cap/editor-state.json'
 );
 const mockGenerateInitialEditorState = vi.fn();
+const mockWriteFileAtomicSync = vi.fn();
 const mockLocalizeWallpaperImage = vi.fn((imageUrl: string) => imageUrl);
 const mockResolveLocalizedWallpaperImage = vi.fn(
   (imageUrl: string) => imageUrl
@@ -81,6 +82,10 @@ vi.mock('../../src/main/capture/video/recording-project', () => ({
 
 vi.mock('../../src/main/capture/video/auto-zoom-generator', () => ({
   generateInitialEditorState: mockGenerateInitialEditorState,
+}));
+
+vi.mock('@/main/utils/atomic-file', () => ({
+  writeFileAtomicSync: (...args: unknown[]) => mockWriteFileAtomicSync(...args),
 }));
 
 vi.mock('../../src/main/settings/wallpaper-assets', () => ({
@@ -186,7 +191,24 @@ describe('video editor state handlers', () => {
     const result = await saveHandler({ sender: { id: 1 } }, state);
 
     expect(result).toBe(true);
-    expect(mockFs.writeFileSync).toHaveBeenCalled();
+    expect(mockWriteFileAtomicSync).toHaveBeenCalled();
+  });
+
+  it('reports a failed atomic save', async () => {
+    mockWriteFileAtomicSync.mockImplementationOnce(() => {
+      throw new Error('replacement failed');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+    const result = await ipcHandlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      createState()
+    );
+    expect(result).toBe(false);
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
   });
 
   it('stores managed wallpaper images inside the recording project', async () => {
@@ -217,7 +239,7 @@ describe('video editor state handlers', () => {
       'file:///config/wallpapers/image.jpg',
       expect.any(String)
     );
-    const serialized = mockFs.writeFileSync.mock.calls.at(-1)?.[1] as string;
+    const serialized = mockWriteFileAtomicSync.mock.calls.at(-1)?.[1] as string;
     expect(JSON.parse(serialized).wallpaper.backgroundImage).toBe(
       '.wallpaper-asset-image.jpg'
     );
@@ -255,7 +277,7 @@ describe('video editor state handlers', () => {
     );
 
     expect(result).toBe(true);
-    const serialized = mockFs.writeFileSync.mock.calls.at(-1)?.[1] as string;
+    const serialized = mockWriteFileAtomicSync.mock.calls.at(-1)?.[1] as string;
     expect(JSON.parse(serialized).wallpaper.backgroundImage).toBe(
       '.wallpaper-asset-image.jpg'
     );
@@ -327,7 +349,7 @@ describe('video editor state handlers', () => {
     const result = await saveHandler({ sender: { id: 1 } }, state);
 
     expect(result).toBe(false);
-    expect(mockFs.writeFileSync).not.toHaveBeenCalled();
+    expect(mockWriteFileAtomicSync).not.toHaveBeenCalled();
   });
 
   it('migrates v1 cursor size from sprite pixels to a percentage', async () => {
