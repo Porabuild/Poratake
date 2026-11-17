@@ -1,0 +1,22 @@
+diff --git a/src/main/app-gpui/src/video/composition/redaction.rs b/src/main/app-gpui/src/video/composition/redaction.rs
+index 8ceb48f1..76def4f2 100644
+--- a/src/main/app-gpui/src/video/composition/redaction.rs
++++ b/src/main/app-gpui/src/video/composition/redaction.rs
+@@ -121,13 +121,13 @@ fn batches(
+                     .min(output_height),
+             };
+             let mut source = Bounds {
+-                left: ((target.left as f64 / scale_x).floor() as u32).saturating_sub(1),
+-                top: ((target.top as f64 / scale_y).floor() as u32).saturating_sub(1),
++                left: ((target.left as f64 / scale_x).floor() as u32).saturating_sub(5),
++                top: ((target.top as f64 / scale_y).floor() as u32).saturating_sub(5),
+                 right: ((target.right as f64 / scale_x).ceil() as u32)
+-                    .saturating_add(1)
++                    .saturating_add(5)
+                     .min(width),
+                 bottom: ((target.bottom as f64 / scale_y).ceil() as u32)
+-                    .saturating_add(1)
++                    .saturating_add(5)
+                     .min(height),
+             }
+             .union(region);

@@ -4678,6 +4678,16 @@ The [diagnostic and controls](tests/native/evidence/macos-ui/video-redaction-rec
 identify a separate open crop-edge issue, not a general explanation for every
 residual pixel.
 
+Three local trials did not resolve the rectangle crop issue. Reusing the
+screenshot path anchor left all 12 greater-than-one-level channel differences;
+expanding each crop's margin left five, and including intersecting rectangles'
+full bounds left seven. The full-bounds trial also increased a small-redaction
+4K synthetic preview from a 5.69 ms upper median without the trial to 40.82 ms
+with it when the redaction intersected a full-frame rectangle. The short runs
+were sequential and omit decoding and GPU upload. All three trials were removed;
+the [measurements and diagnostic patches](tests/native/evidence/macos-ui/video-redaction-rectangle-trials-20261117.txt)
+retain their scope and limitations. A bounded fix remains open.
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA
