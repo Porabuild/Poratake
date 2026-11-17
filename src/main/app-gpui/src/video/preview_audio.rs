@@ -314,6 +314,11 @@ impl PreviewAudio {
         &self.cache
     }
 
+    pub fn invalidate(&mut self, path: &Path) {
+        self.cache.remove(path);
+        self.built_once = false;
+    }
+
     pub fn needs_rebuild(&self, state: &VideoEditorState) -> bool {
         !self.built_once || self.signature != StemSignature::capture(state)
     }

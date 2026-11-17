@@ -1941,8 +1941,7 @@ impl VideoEditorWindow {
         self.choose_file(dialog, cx, move |this, source, cx| {
             match crate::video::music::add(&project, &source, timeline_start) {
                 Ok(track) => {
-                    this.selected_clip = Some(SharedString::from(track.id.clone()));
-                    this.commit(cx, move |state| state.music_tracks.push(track));
+                    this.accept_music_track(&project, track, cx);
                 }
                 Err(error) => {
                     crate::windows::toast::Toast::show(cx, "Could not add music", &error);
@@ -1950,6 +1949,20 @@ impl VideoEditorWindow {
             }
             cx.notify();
         });
+    }
+
+    fn accept_music_track(
+        &mut self,
+        project: &std::path::Path,
+        track: model::MusicTrack,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(folder) = crate::video::project::music_folder(project) {
+            self.preview_audio
+                .invalidate(&folder.join(&track.file_name));
+        }
+        self.selected_clip = Some(SharedString::from(track.id.clone()));
+        self.commit(cx, move |state| state.music_tracks.push(track));
     }
 
     /// Removes a music track, deleting its file once nothing else uses it.
@@ -5439,6 +5452,68 @@ mod keyboard_demo_tests {
             .update(cx, |editor, _, _| {
                 assert_eq!(editor.state.segments[0].original_end, 3.0);
                 assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+            })
+            .unwrap();
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[herogpui::test]
+    fn replacing_music_with_the_same_name_refreshes_preview_audio(cx: &mut gpui::TestAppContext) {
+        use crate::video::{audio, music, preview_audio, transcription};
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let first_folder = directory.path().join("first");
+        let second_folder = directory.path().join("second");
+        std::fs::create_dir(&first_folder).unwrap();
+        std::fs::create_dir(&second_folder).unwrap();
+        let first_path = first_folder.join("sound.wav");
+        let second_path = second_folder.join("sound.wav");
+        std::fs::write(
+            &first_path,
+            transcription::wav_bytes(&vec![5000; 4800], 48000),
+        )
+        .unwrap();
+        std::fs::write(
+            &second_path,
+            transcription::wav_bytes(&vec![-15000; 4800], 48000),
+        )
+        .unwrap();
+        let first = music::add(&project, &first_path, 0.0).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(0.1);
+                editor.state.segments = vec![model::Segment::spanning(0.1)];
+                editor.state.music_tracks = vec![first.clone()];
+                let mut built = preview_audio::build_stems(preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                ));
+                let original = built.stems[0].samples[1000];
+                built.stems.clear();
+                editor.preview_audio.install(built, &editor.state, 0.0);
+                editor.remove_music_track(first.id.clone().into(), cx);
+                let replacement = music::add(&project, &second_path, 0.0).unwrap();
+                assert_eq!(replacement.file_name, first.file_name);
+                editor.accept_music_track(&project, replacement.clone(), cx);
+                assert!(editor.preview_audio.needs_rebuild(&editor.state));
+                let refreshed = preview_audio::build_stems(preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                ));
+                let decoded =
+                    audio::decode(&project.join("music").join(&replacement.file_name)).unwrap();
+                let expected = audio::place(&decoded, &audio::Placement::of(&replacement));
+                assert_ne!(original, expected[1000]);
+                assert_eq!(refreshed.stems[0].samples[1000], expected[1000]);
+                assert!(refreshed.stems[0].samples.as_ref() == &expected);
             })
             .unwrap();
     }
