@@ -2583,6 +2583,14 @@ Bugs fixed in this pass:
   compares textured and translucent previews with cropped references and
   reopened large PNGs. Frames, shadows, padding, other platforms and physical
   capture remain to be checked with the same detailed content.
+  An additional [seam annotation matrix](tests/native/evidence/macos-ui/oversized-annotation-seams-20261117.txt)
+  places a red stripe before blackout, blur or pixelation and a green shape
+  afterward. At 25% and 50% zoom, both themes and three simulated scales, the
+  generated preview matched the reopened large PNG within one level; the
+  exported crop matched a smaller reference exactly. An unredacted control
+  confirms each effect changed pixels, and blackout covers the earlier stripe.
+  This uses a solid wallpaper without padding or frames; real capture and
+  physical input remain unverified.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
