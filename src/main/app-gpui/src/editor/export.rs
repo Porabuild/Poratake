@@ -686,13 +686,42 @@ fn image_shadow_at_scale(shadow: f64, scale: f64) -> Option<Shadow> {
 }
 
 fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
-    paint_background_source(canvas, wallpaper, width, height);
-
-    // `backgroundBlur` is a percentage of a 50px radius, as in
-    // `renderWallpaperComposite`.
     if wallpaper.has_background() && wallpaper.background_blur > 0.0 {
         let sigma = ((wallpaper.background_blur / 100.0) * 50.0) as f32;
-        crate::render::blur::blur(canvas.pixmap_mut(), sigma);
+        let expansion = sigma * 2.;
+        let blur_padding = u32::try_from(crate::render::blur::box_radius(sigma))
+            .unwrap_or(u32::MAX)
+            .saturating_mul(3);
+        let padding = (expansion.ceil() as u32).max(blur_padding);
+        let expanded = padding.checked_mul(2).and_then(|extra| {
+            Canvas::new(
+                canvas.width().checked_add(extra)?,
+                canvas.height().checked_add(extra)?,
+            )
+        });
+        if let Some(mut expanded) = expanded {
+            let shift = padding as f32 - expansion;
+            expanded.translate(shift, shift);
+            paint_background_source(
+                &mut expanded,
+                wallpaper,
+                width + expansion * 2.,
+                height + expansion * 2.,
+            );
+            crate::render::blur::blur_transparent(expanded.pixmap_mut(), sigma);
+            canvas.draw_pixmap(
+                expanded.pixmap().as_ref(),
+                -(padding as f32),
+                -(padding as f32),
+                expanded.width() as f32,
+                expanded.height() as f32,
+            );
+        } else {
+            paint_background_source(canvas, wallpaper, width, height);
+            crate::render::blur::blur(canvas.pixmap_mut(), sigma);
+        }
+    } else {
+        paint_background_source(canvas, wallpaper, width, height);
     }
 
     if wallpaper.has_background() {
@@ -1238,7 +1267,8 @@ mod tests {
                 .pixmap()
                 .pixels()
                 .iter()
-                .all(|pixel| pixel.alpha() == alpha));
+                .all(|pixel| pixel.alpha() <= alpha));
+            assert_eq!(canvas.pixmap().pixel(32, 32).unwrap().alpha(), alpha);
             if alpha == 128 {
                 let mut sharp = Canvas::new(64, 64).unwrap();
                 let mut unblurred_settings = settings.clone();
@@ -1246,6 +1276,37 @@ mod tests {
                 paint_backdrop(&mut sharp, &unblurred_settings, 64., 64.);
                 assert_ne!(canvas.pixmap().data(), sharp.pixmap().data());
             }
+        }
+    }
+
+    #[test]
+    fn blurred_image_background_uses_expanded_cover_geometry() {
+        use base64::Engine;
+
+        let source = RgbaImage::from_fn(64, 48, |x, y| {
+            let shade = if (x / 16 + y / 16) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let settings = WallpaperSettings {
+            background_image: Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            )),
+            background_blur: 40.,
+            ..Default::default()
+        };
+        let mut canvas = Canvas::new(320, 180).unwrap();
+        paint_backdrop(&mut canvas, &settings, 320., 180.);
+        for (x, y, expected) in [(40, 0, 47), (80, 0, 210), (40, 90, 210), (80, 90, 42)] {
+            let actual = canvas.pixmap().pixel(x, y).unwrap().red();
+            assert!(
+                actual.abs_diff(expected) <= 8,
+                "{x},{y}: {actual} vs {expected}"
+            );
         }
     }
 
