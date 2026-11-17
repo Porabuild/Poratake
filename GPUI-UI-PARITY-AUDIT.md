@@ -4918,6 +4918,10 @@ concurrent editors and interrupted sessions.
 GPUI now replaces its editor state atomically and flushes a pending edit on
 orderly close. The [persistence checks](tests/native/evidence/macos-ui/video-editor-atomic-save-20261117.txt)
 cover concurrent readers, a failed replacement and closing just after undo.
+Its native close callback now refuses to close when the last save fails and
+saves an unfinished gesture as well. A [simulated window-close test](tests/native/evidence/macos-ui/video-editor-close-guard-20261117.txt)
+checks failed save, retry and an unfinished gesture; the native dialog and an
+actual macOS window close were not exercised.
 Electron now also replaces its video state atomically and waits for queued
 edits to save before closing. A failed save leaves its editor open. Music-file
 collection remains open.
