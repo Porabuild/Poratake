@@ -692,9 +692,7 @@ fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32
     // `renderWallpaperComposite`.
     if wallpaper.has_background() && wallpaper.background_blur > 0.0 {
         let sigma = ((wallpaper.background_blur / 100.0) * 50.0) as f32;
-        let mut blurred = canvas.pixmap().clone();
-        crate::render::blur::blur(&mut blurred, sigma);
-        canvas.draw_pixmap(blurred.as_ref(), 0.0, 0.0, width, height);
+        crate::render::blur::blur(canvas.pixmap_mut(), sigma);
     }
 
     if wallpaper.has_background() {
@@ -1221,6 +1219,35 @@ pub fn redact_region(
 mod tests {
     use super::*;
     use crate::editor::wallpaper::preset;
+
+    #[test]
+    fn blurred_translucent_background_keeps_its_alpha() {
+        for alpha in [0, 64, 128, 255] {
+            let settings = WallpaperSettings {
+                gradient: Some(crate::editor::wallpaper::GradientOption {
+                    id: "test".into(),
+                    colors: vec![format!("#204060{alpha:02x}"), format!("#e0c080{alpha:02x}")],
+                    angle: 0.,
+                }),
+                background_blur: 40.,
+                ..Default::default()
+            };
+            let mut canvas = Canvas::new(64, 64).unwrap();
+            paint_backdrop(&mut canvas, &settings, 64., 64.);
+            assert!(canvas
+                .pixmap()
+                .pixels()
+                .iter()
+                .all(|pixel| pixel.alpha() == alpha));
+            if alpha == 128 {
+                let mut sharp = Canvas::new(64, 64).unwrap();
+                let mut unblurred_settings = settings.clone();
+                unblurred_settings.background_blur = 0.;
+                paint_backdrop(&mut sharp, &unblurred_settings, 64., 64.);
+                assert_ne!(canvas.pixmap().data(), sharp.pixmap().data());
+            }
+        }
+    }
 
     #[test]
     fn converts_dynamic_rgba_and_rgb_sources_identically() {
