@@ -791,6 +791,24 @@ The [measurements](tests/native/evidence/macos-ui/distinct-recording-preview-exp
 list the retained generated inputs, editor screenshots, decoded frames and MP4s.
 These use a fixture daemon, not real capture or devices, and do not prove
 physical target movement, closure or capture-control exclusion.
+
+A follow-up [stage comparison](tests/native/evidence/macos-ui/video-render-export-stages-20261117.txt)
+separates editor rendering from export on those three generated recordings.
+At simulated 100% display scale, every displayed video-preview pixel matches the unencoded
+composition. At 125% and 200%, the display-size previews match a separately
+scaled composition within one channel level. Resizing the displayed images
+back down adds differences around high-contrast edges, so that normalized
+comparison is not a direct measurement of the original composition.
+
+At 100% scale, independent RGB→YUV420→RGB conversions reproduce nearly all of
+the decoded exports' errors above 32 levels: 1,563 of 1,570 for area, 1,997 of
+1,998 for window, and 801 of 802 for screen. The decoded frame's mean RGB
+difference from the conversion-only result is at most 0.136. The retained
+[conversion results](tests/native/evidence/macos-ui/video-chroma-yuv-20261117.json)
+and an isolated [Electron WebCodecs probe](tests/native/evidence/macos-ui/video-chroma-electron-20261117.json)
+use generated high-contrast content. The Electron probe encodes a single frame
+and does not exercise its complete editor or exporter. These measurements do
+not establish equivalence for other content, live capture or physical displays.
 The generated-audio editor test also passed on macOS: it compared preview and
 decoded export across a cut, two playback speeds, volume changes and synthetic
 keyboard clicks. The Mac sample's mean click contribution was below the
