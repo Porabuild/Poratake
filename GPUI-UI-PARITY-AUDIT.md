@@ -3371,10 +3371,31 @@ offsets and forced small tile budgets. The [measurements](tests/native/evidence/
 and [reopened PNG](tests/native/evidence/macos-ui/large-redaction-fixed-025-pixelate-expected-20261117.png),
 and 100% blur [preview](tests/native/evidence/macos-ui/large-redaction-fixed-1-blur-preview-20261117.png)
 and [reopened PNG](tests/native/evidence/macos-ui/large-redaction-fixed-1-blur-expected-20261117.png)
-are retained. A dependency footprint or visible output that cannot fit the
-existing patch budget still falls back to the older preview path; unusually
-deep overlapping effects and very large visible viewports remain unverified.
-These generated checks do not verify live capture or physical display scaling.
+are retained. A dependency footprint that cannot fit the existing patch budget
+still falls back to the older preview path; unusually deep overlapping effects
+remain unverified. These generated checks do not verify live capture or
+physical display scaling.
+
+A generated large-window check then exposed a second budget boundary: with a
+4600×2600-point editor, the 4096×2160 pixelation preview differed from its
+reopened PNG at 8,277,799 of 8,575,200 compared pixels. The displayed output
+is now split into bounded, individually cached textures on physical-pixel
+boundaries. Both opaque effects match exactly across the same region in light
+and dark appearance. A separate varying-alpha source exposed an older preview
+conversion mismatch even in a normal-size editor: pixelation differed at
+29,904 of 318,500 pixels, by up to 11 channel levels. Preview conversion now
+uses export's rounding for original images while preserving the rounding used
+to reconstruct composed backdrops. With the transparent source, both effects
+match the reopened PNG within one level across the large comparison region in
+both appearances. See the [measurements](tests/native/evidence/macos-ui/large-output-transparent-redaction-20261117.txt),
+opaque pixelation [before](tests/native/evidence/macos-ui/large-output-pixelate-before-20261117.png)
+and [after](tests/native/evidence/macos-ui/large-output-pixelate-after-20261117.png),
+and transparent pixelation [preview](tests/native/evidence/macos-ui/large-output-transparent-pixelate-preview-20261117.png)
+and [reopened PNG](tests/native/evidence/macos-ui/large-output-transparent-pixelate-expected-20261117.png).
+Transparent effects also match within one level at 25% zoom and simulated
+100%, 125% and 200% display scale. The blackout, effect-order, attachment and
+pixelation Metal regressions pass in both appearances after the change. These
+scratch-editor checks do not verify a physical large display or live capture.
 
 After the bounded-composition change, the generated macOS Metal regressions for
 scaled blackout, redaction ordering, framed attachments, clipped and transparent
