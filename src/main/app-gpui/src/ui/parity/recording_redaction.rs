@@ -178,6 +178,10 @@ pub(super) fn capture_scaled(
 }
 
 impl Captured {
+    pub(super) fn region(&self) -> (f32, f32, f32, f32) {
+        self.region
+    }
+
     pub(super) fn compare_export(&self, frame: &DecodedFrame, target: &str) {
         let comparison = super::recording_preview_comparison::compare(
             &self.screenshot,

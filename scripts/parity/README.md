@@ -270,6 +270,21 @@ cargo run --offline --locked --manifest-path src/main/Cargo.toml \
 Set `PORATAKE_FFMPEG_PATH` if development FFmpeg is not on the default search
 path. `PORATAKE_PARITY_THEME` and `PORATAKE_PARITY_VIDEO_DPI` select the editor
 appearance and simulated scale. This is a fake-daemon workflow, not live capture.
+The redaction run also saves the area fixture's full unencoded and decoded
+frames and its normalized region. Compare them with a conversion-only 4:2:0
+control using:
+
+```sh
+python3 scripts/parity/video-chroma-comparison.py \
+  /tmp/poratake-redaction-parity/recording-area-redaction-composed.png \
+  /tmp/poratake-redaction-parity/recording-area-redaction-decoded.png \
+  --region-json /tmp/poratake-redaction-parity/recording-area-redaction-region.json
+```
+
+The Electron WebCodecs fixture `tests/native/electron-video-chroma.cjs` accepts
+`--area-only --region <json>` for the same dimensions and normalized region.
+It expects `area.png` and a conversion-only `area-yuv.png` in its input
+directory and encodes one frame; it does not run the full Electron exporter.
 Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflows
 at the same width and scale, including selector exclusion IDs and cleanup.
 Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout

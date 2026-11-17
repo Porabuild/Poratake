@@ -535,6 +535,26 @@ fn recorded_editor_and_export(
         if time == 1.0 {
             if let Some(scaled) = &scaled_preview {
                 scaled.compare_export(&decoded, target);
+                if target == "area" {
+                    let unencoded = crate::video::decoder::DecodedFrame {
+                        width: decoded.width,
+                        height: decoded.height,
+                        bgra: std::sync::Arc::from(expected),
+                    };
+                    super::recording_preview_comparison::save_frame(
+                        &unencoded,
+                        &output.join("recording-area-redaction-composed.png"),
+                    );
+                    super::recording_preview_comparison::save_frame(
+                        &decoded,
+                        &output.join("recording-area-redaction-decoded.png"),
+                    );
+                    std::fs::write(
+                        output.join("recording-area-redaction-region.json"),
+                        serde_json::to_vec(&scaled.region()).unwrap(),
+                    )
+                    .unwrap();
+                }
             }
             let rendered = super::recording_preview_comparison::compare(
                 &screenshot,

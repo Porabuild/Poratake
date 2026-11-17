@@ -6,6 +6,22 @@ const path = require('node:path');
 
 const input = process.argv[2];
 assert.ok(input, 'provide a directory containing area, window and screen PNGs');
+const targets = process.argv.includes('--area-only')
+  ? ['area']
+  : ['area', 'window', 'screen'];
+const regionIndex = process.argv.indexOf('--region');
+const region =
+  regionIndex < 0
+    ? null
+    : JSON.parse(fs.readFileSync(process.argv[regionIndex + 1], 'utf8'));
+if (region) {
+  assert.ok(
+    Array.isArray(region) &&
+      region.length === 4 &&
+      region.every(Number.isFinite),
+    'region must be a four-number array'
+  );
+}
 const profile = fs.mkdtempSync(
   path.join(os.tmpdir(), 'poratake-chroma-probe-')
 );
@@ -22,7 +38,7 @@ app
     fs.writeFileSync(html, '<html><body></body></html>');
     await window.loadFile(html);
     const results = {};
-    for (const target of ['area', 'window', 'screen']) {
+    for (const target of targets) {
       const url = file =>
         `data:image/png;base64,${fs.readFileSync(file).toString('base64')}`;
       const source = url(path.join(input, `${target}.png`));
@@ -32,14 +48,16 @@ app
       const load = async url => { const img = new Image(); img.src = url; await img.decode(); return img; };
       const source = await load(${JSON.stringify(source)});
       const converted = await load(${JSON.stringify(converted)});
-      const canvas = new OffscreenCanvas(320, 180);
+      const width = source.naturalWidth, height = source.naturalHeight;
+      if (converted.naturalWidth !== width || converted.naturalHeight !== height) throw new Error('control dimensions differ');
+      const canvas = new OffscreenCanvas(width, height);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(source, 0, 0);
-      const original = ctx.getImageData(0, 0, 320, 180).data;
+      const original = ctx.getImageData(0, 0, width, height).data;
       ctx.drawImage(converted, 0, 0);
-      const yuv = ctx.getImageData(0, 0, 320, 180).data;
+      const yuv = ctx.getImageData(0, 0, width, height).data;
       ctx.drawImage(source, 0, 0);
-      const config = { codec: 'avc1.42001e', width: 320, height: 180, bitrate: 12000000, framerate: 30, avc: { format: 'avc' } };
+      const config = { codec: width > 720 || height > 576 ? 'avc1.640028' : 'avc1.42001e', width, height, bitrate: 12000000, framerate: 30, avc: { format: 'avc' } };
       const support = await VideoEncoder.isConfigSupported(config);
       if (!support.supported) throw new Error('H.264 VideoEncoder is unavailable');
       const chunks = [];
@@ -61,13 +79,24 @@ app
       await decoder.flush();
       if (codecError) throw new Error(codecError);
       if (!decoded) throw new Error('H.264 decoder returned no frame');
-      ctx.clearRect(0, 0, 320, 180);
+      ctx.clearRect(0, 0, width, height);
       ctx.drawImage(decoded, 0, 0);
       decoded.close();
       decoder.close();
-      const output = ctx.getImageData(0, 0, 320, 180).data;
+      const output = ctx.getImageData(0, 0, width, height).data;
       let total = 0, convertedTotal = 0, above = 0, convertedAbove = 0, shared = 0, residual = 0, maximum = 0;
-      for (let pixel = 0; pixel < 320 * 180; pixel++) {
+      let regionTotal = 0, regionConverted = 0, regionResidual = 0, regionAbove = 0, regionClose = 0, regionMax = 0, regionCount = 0;
+      const region = ${JSON.stringify(region)};
+      const bounds = region && [
+        Math.max(0, Math.floor(Math.fround(Math.fround(region[0]) * width))),
+        Math.max(0, Math.floor(Math.fround(Math.fround(region[1]) * height))),
+        Math.min(width, Math.ceil(Math.fround(Math.fround(Math.fround(region[0]) + Math.fround(region[2])) * width))),
+        Math.min(height, Math.ceil(Math.fround(Math.fround(Math.fround(region[1]) + Math.fround(region[3])) * height))),
+      ];
+      if (bounds && (bounds[2] <= bounds[0] || bounds[3] <= bounds[1])) throw new Error('region must intersect the image');
+      for (let pixel = 0; pixel < width * height; pixel++) {
+        const x = pixel % width, y = Math.floor(pixel / width);
+        const inRegion = bounds && x >= bounds[0] && x < bounds[2] && y >= bounds[1] && y < bounds[3];
         for (let channel = 0; channel < 3; channel++) {
           const index = pixel * 4 + channel;
           const difference = Math.abs(original[index] - output[index]);
@@ -79,9 +108,19 @@ app
           above += Number(difference > 32);
           convertedAbove += Number(conversion > 32);
           shared += Number(difference > 32 && conversion > 32);
+          if (inRegion) {
+            regionCount++;
+            regionTotal += difference;
+            regionConverted += conversion;
+            const distance = Math.abs(output[index] - yuv[index]);
+            regionResidual += distance;
+            regionMax = Math.max(regionMax, difference);
+            regionAbove += Number(difference > 32);
+            regionClose += Number(difference > 32 && distance <= 8);
+          }
         }
       }
-      return { mean: total / (320 * 180 * 3), above32: above, maximum, yuvMean: convertedTotal / (320 * 180 * 3), yuvAbove32: convertedAbove, sharedAbove32: shared, decodedVsYuvMean: residual / (320 * 180 * 3) };
+      return { mean: total / (width * height * 3), above32: above, maximum, yuvMean: convertedTotal / (width * height * 3), yuvAbove32: convertedAbove, sharedAbove32: shared, decodedVsYuvMean: residual / (width * height * 3), ...(bounds ? { region: { bounds, mean: regionTotal / regionCount, maximum: regionMax, yuvMean: regionConverted / regionCount, decodedVsYuvMean: regionResidual / regionCount, above32: regionAbove, above32Within8OfYuv: regionClose } } : {}) };
     })()`);
     }
     process.stdout.write(JSON.stringify(results, null, 2) + '\n');

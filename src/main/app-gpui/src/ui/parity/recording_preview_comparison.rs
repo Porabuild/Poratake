@@ -8,6 +8,10 @@ pub(super) struct Comparison {
     pub maximum: u8,
 }
 
+pub(super) fn save_frame(frame: &DecodedFrame, path: &std::path::Path) {
+    decoded_rgba(frame).save(path).unwrap();
+}
+
 pub(super) fn assert_distinct_exports(output: &std::path::Path) {
     let frames: Vec<_> = ["area", "window", "screen"]
         .into_iter()
