@@ -19,6 +19,10 @@ Electron: bun run test tests/unit/music-retention.test.ts
   format and path rejection use temporary files.
 Electron: bun run typecheck and targeted oxlint and oxfmt checks passed.
 
+This was the record-format checkpoint before automatic collection. The later
+cleanup implementation and verification are in
+music-retention-cleanup-20261117.txt.
+
 The files under test were generated in temporary directories. No live capture,
 editor session, export, concurrent application process or crash was exercised.
 Retained music is not automatically deleted. Collection remains open until it

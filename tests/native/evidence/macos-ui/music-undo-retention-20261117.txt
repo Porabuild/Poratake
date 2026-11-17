@@ -24,3 +24,7 @@ device or the user's open editor.
 Safe collection of no-longer-reachable files is not implemented yet. Retained
 files can accumulate; cleanup must account for persisted state, undo/redo,
 concurrent editors and interrupted writes before any deletion is enabled.
+
+This was the undo-retention checkpoint before collection was implemented. The
+later cleanup implementation and verification are in
+music-retention-cleanup-20261117.txt.

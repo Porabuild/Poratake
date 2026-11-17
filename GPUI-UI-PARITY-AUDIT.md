@@ -4912,9 +4912,9 @@ Removing a music track previously deleted its source file even though Undo
 could restore a reference to it. GPUI and Electron now retain the file while
 removing track references, and GPUI removes a split group in one undo step.
 [Generated tests](tests/native/evidence/macos-ui/music-undo-retention-20261117.txt)
-cover removal, undo, redo and reimport. Safe collection remains open: retained
-files can accumulate until cleanup accounts for history, persisted state,
-concurrent editors and interrupted sessions.
+cover removal, undo, redo and reimport. The later retention section records
+how no-longer-referenced files are collected after editors and exports release
+their project leases.
 GPUI now replaces its editor state atomically and flushes a pending edit on
 orderly close. The [persistence checks](tests/native/evidence/macos-ui/video-editor-atomic-save-20261117.txt)
 cover concurrent readers, a failed replacement and closing just after undo.
@@ -4923,8 +4923,7 @@ saves an unfinished gesture as well. A [simulated window-close test](tests/nativ
 checks failed save, retry and an unfinished gesture; the native dialog and an
 actual macOS window close were not exercised.
 Electron now also replaces its video state atomically and waits for queued
-edits to save before closing. A failed save leaves its editor open. Music-file
-collection remains open.
+edits to save before closing. A failed save leaves its editor open.
 
 Electron autosave previously dropped `sourceDuration`, which both editors and
 reset use as recording metadata. It now preserves the saved duration or stores
@@ -4951,11 +4950,23 @@ incomplete file. An interruption can also leave an unpublished temporary file.
 Both editors now write compatible project-local retention records for imported
 and removed music, and reserve recorded names when importing again. Electron
 also creates imported files exclusively to prevent concurrent imports from
-overwriting each other. The [retention checks](tests/native/evidence/macos-ui/music-retention-records-20261117.txt)
+overwriting each other. Collection now waits for editor, import and export
+leases, recovers PID-qualified session and collector markers after a crash,
+and deletes a candidate only when the last valid saved state no longer
+references its file. Candidate records are atomically published before
+Electron saves or resets the state. The [earlier retention checks](tests/native/evidence/macos-ui/music-retention-records-20261117.txt)
 cover the shared record format, filename collisions, undo and redo, and path
-rejection. They do not exercise two live editors or crash recovery. Automatic
-collection is still disabled: safe deletion must account for open editor
-histories, exports, interrupted sessions and the last valid saved state.
+rejection; the [cleanup evidence](tests/native/evidence/macos-ui/music-retention-cleanup-20261117.txt)
+covers saved references, overlapping editor/export sessions, stale markers,
+atomic record repair, and save/reset behavior when directory syncing fails.
+These are generated temporary-project tests, not a live editor, export or
+cross-process crash. A malformed legacy `.collecting` lock without a usable
+PID remains fail-closed and can prevent that project from opening. Electron's
+Windows directory-sync path is a no-op, so Windows crash durability and runtime
+identity behavior remain unverified; a missing retention marker leaves an
+orphaned file rather than authorizing deletion. If GPUI cannot record a
+candidate, it logs the error and preserves the audio file, which may then remain
+uncollected.
 
 ## Review gate
 
@@ -4964,7 +4975,7 @@ histories, exports, interrupted sessions and the last valid saved state.
 | Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                         |
 | Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                      |
 | Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                |
-| Deferred major or dangerous refactors | Music asset lifetime across undo, redo and persistence needs a safe cleanup design.                                                                                                                                                                                                                                      |
+| Deferred major or dangerous refactors | None. The music asset lifecycle refactor is implemented; live Mac editor workflows and Windows runtime behavior remain unverified.                                                                                                                                                                                       |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                             |
 | Blocked or unverified                 | The last full-matrix CI pass was at [`b8dd8672`](https://github.com/Porabuild/Poratake/actions/runs/43688781846); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
 
