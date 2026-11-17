@@ -5,6 +5,10 @@ use herogpui::gpui;
 
 const MAX_IMAGE_SIDE: u32 = 16_384;
 const TILE_SIDE: u32 = 8_192;
+#[cfg(target_os = "macos")]
+const TILE_OVERLAP: u32 = (0.5 / crate::editor::options::MIN_ZOOM) as u32 + 1;
+#[cfg(not(target_os = "macos"))]
+const TILE_OVERLAP: u32 = 1;
 
 pub fn create(image: &gpui::RenderImage) -> Vec<PreviewEdgeImage> {
     let size = image.size(0);
@@ -20,10 +24,10 @@ pub fn create(image: &gpui::RenderImage) -> Vec<PreviewEdgeImage> {
         for x in (0..width).step_by(TILE_SIDE as usize) {
             let right = x.saturating_add(TILE_SIDE).min(width);
             let bottom = y.saturating_add(TILE_SIDE).min(height);
-            let left = x.saturating_sub(1);
-            let top = y.saturating_sub(1);
-            let source_right = right.saturating_add(1).min(width);
-            let source_bottom = bottom.saturating_add(1).min(height);
+            let left = x.saturating_sub(TILE_OVERLAP);
+            let top = y.saturating_sub(TILE_OVERLAP);
+            let source_right = right.saturating_add(TILE_OVERLAP).min(width);
+            let source_bottom = bottom.saturating_add(TILE_OVERLAP).min(height);
             let tile_width = source_right - left;
             let tile_height = source_bottom - top;
             let mut pixels = image::RgbaImage::new(tile_width, tile_height);

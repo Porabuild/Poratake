@@ -106,6 +106,58 @@ fn preview_tile(tile: &crate::editor::export::PreviewEdgeImage, zoom: f32) -> im
         )
 }
 
+#[cfg(target_os = "macos")]
+fn paint_image_tiles(
+    window: &mut gpui::Window,
+    bounds: gpui::Bounds<Pixels>,
+    source_width: f32,
+    source_height: f32,
+    tiles: &[crate::editor::export::PreviewEdgeImage],
+) {
+    let scale = window.scale_factor();
+    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value);
+    let left = snap(f32::from(bounds.left()) * scale);
+    let top = snap(f32::from(bounds.top()) * scale);
+    let right = snap(f32::from(bounds.right()) * scale).max(left);
+    let bottom = snap(f32::from(bounds.bottom()) * scale).max(top);
+    let (sx, sy) = (
+        (right - left) / source_width,
+        (bottom - top) / source_height,
+    );
+    for tile in tiles {
+        let tile_size = tile.image.size(0);
+        let x1 = snap(left + tile.x as f32 * sx);
+        let y1 = snap(top + tile.y as f32 * sy);
+        let x2 = snap(left + (tile.x + tile.width) as f32 * sx);
+        let y2 = snap(top + (tile.y + tile.height) as f32 * sy);
+        let visible = gpui::Bounds::from_corners(
+            gpui::point(px(x1 / scale), px(y1 / scale)),
+            gpui::point(px(x2 / scale), px(y2 / scale)),
+        );
+        let on_screen = visible.intersect(&window.content_mask().bounds);
+        if on_screen.size.width <= Pixels::ZERO || on_screen.size.height <= Pixels::ZERO {
+            continue;
+        }
+        let origin_x = left + (tile.x - tile.inset_x) as f32 * sx;
+        let origin_y = top + (tile.y - tile.inset_y) as f32 * sy;
+        let image_bounds = gpui::Bounds {
+            origin: gpui::point(px(origin_x / scale), px(origin_y / scale)),
+            size: gpui::size(
+                px(u32::from(tile_size.width) as f32 * sx / scale),
+                px(u32::from(tile_size.height) as f32 * sy / scale),
+            ),
+        };
+        let _ = window.paint_image(
+            visible,
+            image_bounds,
+            gpui::Corners::default(),
+            tile.image.clone(),
+            0,
+            false,
+        );
+    }
+}
+
 impl EditorCanvas {
     pub fn new(
         snapshot: SnapshotCell,
@@ -188,6 +240,22 @@ impl RenderOnce for EditorCanvas {
             .when(!transparent_backdrop, |el| el.bg(frame_surface));
 
         if !layered_composite && !snap.image_tiles.is_empty() {
+            #[cfg(target_os = "macos")]
+            {
+                let tiles = snap.image_tiles.clone();
+                let (width, height) = (snap.image_width, snap.image_height);
+                frame = frame.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, _| {
+                            paint_image_tiles(window, bounds, width, height, &tiles);
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
             for tile in &snap.image_tiles {
                 frame = frame.child(preview_tile(tile, snap.zoom));
             }
