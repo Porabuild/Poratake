@@ -2577,8 +2577,12 @@ Bugs fixed in this pass:
   overlap for the minimum zoom. The [follow-up evidence](tests/native/evidence/macos-ui/oversized-screenshot-sampling-20261117.txt)
   checks opaque and translucent texture around a seam at 25% and 50% zoom in
   both appearances and three simulated scales; the maximum difference was one
-  level. Composed-backdrop tiles, other platforms and physical capture remain
-  to be checked with the same detailed content.
+  level. The same distortion occurred in a tiled composed backdrop; macOS now
+  applies the same sampling grid and overlap there. With a solid wallpaper and
+  no padding, the [composed evidence](tests/native/evidence/macos-ui/oversized-composed-sampling-20261117.txt)
+  compares textured and translucent previews with cropped references and
+  reopened large PNGs. Frames, shadows, padding, other platforms and physical
+  capture remain to be checked with the same detailed content.
 - Unframed attachments without inset or balance were rounded and shadowed as one
   group, unlike Electron's per-image rendering. Their images now receive their
   own corners and shadows in both preview and PNG. Light/dark GPU fixtures at
