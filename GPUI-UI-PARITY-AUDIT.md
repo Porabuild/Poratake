@@ -2621,6 +2621,12 @@ Bugs fixed in this pass:
   and the [corrected preview](tests/native/evidence/macos-ui/oversized-rounded-125-after-20261117.png)
   are retained. This does not verify physical displays, live capture or
   interactive performance.
+  A further [translucent and drag check](tests/native/evidence/macos-ui/oversized-rounded-translucent-interactive-20261117.txt)
+  covers a 50%-alpha wallpaper and synthetic rectangle gestures. Across both
+  appearances and three simulated scales, 576 visible-region comparisons
+  matched reopened PNGs within two levels; 96 drags showed a draft and
+  committed a rectangle. The fixture's move, settle and capture timing does
+  not measure physical input latency or sustained interactive performance.
   A further 60 runs covered five unframed corner, shadow and inset combinations
   in both appearances at all three simulated scales and both zooms. All 480
   visible-region comparisons matched reopened PNGs within one level, and
