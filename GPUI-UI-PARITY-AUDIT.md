@@ -4779,6 +4779,20 @@ failed before the fix and checks nonzero generated samples after scrub and
 replay; it does not use a physical audio device. Live playback, hardware input
 and audio-device changes remain unverified.
 
+Replacing a removed music track with a different file of the same name could
+leave GPUI previewing the old decoded samples while export read the new file.
+Import now invalidates that path and requests an audio rebuild, even when the
+replacement has the same track settings. The generated WAV comparison in the
+[macOS evidence](tests/native/evidence/macos-ui/music-cache-and-undo-20261117.txt)
+reproduced the mismatch before the fix and passed afterward. External changes
+to a project file outside the editor remain unverified.
+
+The same investigation confirmed a separate open issue: removing a music track
+deletes its source file even though Undo can restore a reference to it. An
+isolated GPUI editor test restored the track metadata and found the file
+missing. Music files need a lifetime and cleanup policy that accounts for undo,
+redo, successful persistence and interrupted sessions.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                   |
@@ -4786,7 +4800,7 @@ and audio-device changes remain unverified.
 | Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                         |
 | Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                      |
 | Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                |
-| Deferred major or dangerous refactors | None.                                                                                                                                                                                                                                                                                                                    |
+| Deferred major or dangerous refactors | Music asset lifetime across undo, redo and persistence needs a safe cleanup design.                                                                                                                                                                                                                                      |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                             |
 | Blocked or unverified                 | The last full-matrix CI pass was at [`b8dd8672`](https://github.com/Porabuild/Poratake/actions/runs/43688781846); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
 
