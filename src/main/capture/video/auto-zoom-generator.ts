@@ -96,11 +96,17 @@ export async function generateInitialEditorState({
     if (replaceExisting) {
       writeFileAtomicSync(statePath, contents);
     } else {
-      await fs.writeFile(statePath, contents);
+      await fs.writeFile(statePath, contents, { flag: 'wx' });
     }
     console.log('Initial editor state saved');
     return true;
   } catch (error) {
+    if (
+      !replaceExisting &&
+      (error as NodeJS.ErrnoException).code === 'EEXIST'
+    ) {
+      return false;
+    }
     console.error('Failed to save initial editor state:', error);
     return false;
   }

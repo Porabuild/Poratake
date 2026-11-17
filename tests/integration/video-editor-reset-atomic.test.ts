@@ -6,6 +6,7 @@ import path from 'node:path';
 const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 let projectPath: string;
 let directory: string;
+let cursorGate: Promise<void> | null = null;
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -20,7 +21,10 @@ vi.mock('@/main/capture/video/window-manager', () => ({
 }));
 
 vi.mock('@/main/capture/video/cursor-data', () => ({
-  loadCursorData: async () => null,
+  loadCursorData: async () => {
+    if (cursorGate) await cursorGate;
+    return null;
+  },
 }));
 
 vi.mock('@/main/settings', () => ({
@@ -40,6 +44,7 @@ const originalState = JSON.stringify({
 });
 
 beforeEach(async () => {
+  cursorGate = null;
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'poratake-reset-'));
   projectPath = path.join(directory, 'take.poratake');
   fs.mkdirSync(path.join(projectPath, 'music'), { recursive: true });
@@ -57,6 +62,23 @@ afterEach(() => {
 });
 
 describe('video editor reset persistence', () => {
+  it('does not overwrite a state created during initial generation', async () => {
+    fs.unlinkSync(path.join(projectPath, 'state.json'));
+    let release: (() => void) | undefined;
+    cursorGate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const { generateInitialEditorState } =
+      await import('@/main/capture/video/auto-zoom-generator');
+    const pending = generateInitialEditorState({ projectPath, duration: 12.5 });
+    fs.writeFileSync(path.join(projectPath, 'state.json'), originalState);
+    release?.();
+    expect(await pending).toBe(false);
+    expect(fs.readFileSync(path.join(projectPath, 'state.json'), 'utf8')).toBe(
+      originalState
+    );
+  });
+
   it('preserves the old state and music if replacement fails', async () => {
     vi.spyOn(fs, 'renameSync').mockImplementation(() => {
       throw new Error('injected replacement failure');
