@@ -1497,6 +1497,11 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     let Some(region) = clamp_region(canvas, x, y, width, height) else {
         return;
     };
+    let origin = (region.device_x, region.device_y);
+    pixelate_screenshot_region(canvas, region, block, origin);
+}
+
+fn pixelate_screenshot_region(canvas: &mut Canvas, region: Region, block: f64, origin: (i32, i32)) {
     let Some(mut source) = canvas.read_region(
         region.device_x,
         region.device_y,
@@ -1509,11 +1514,29 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     let height = region.device_height as usize;
     let block_width = ((block as f32 * region.scale_x).round() as usize).max(1);
     let block_height = ((block as f32 * region.scale_y).round() as usize).max(1);
+    let phase_x =
+        (i64::from(region.device_x) - i64::from(origin.0)).rem_euclid(block_width as i64) as usize;
+    let phase_y =
+        (i64::from(region.device_y) - i64::from(origin.1)).rem_euclid(block_height as i64) as usize;
     let pixels = source.data_mut();
-    for top in (0..height).step_by(block_height) {
-        for left in (0..width).step_by(block_width) {
-            let bottom = (top + block_height).min(height);
-            let right = (left + block_width).min(width);
+    let mut top = 0;
+    while top < height {
+        let bottom = (top
+            + if top == 0 {
+                block_height - phase_y
+            } else {
+                block_height
+            })
+        .min(height);
+        let mut left = 0;
+        while left < width {
+            let right = (left
+                + if left == 0 {
+                    block_width - phase_x
+                } else {
+                    block_width
+                })
+            .min(width);
             let count = ((bottom - top) * (right - left)) as u64;
             let mut sums = [0_u64; 4];
             for y in top..bottom {
@@ -1550,7 +1573,9 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
                     pixels[offset..offset + 4].copy_from_slice(&color);
                 }
             }
+            left = right;
         }
+        top = bottom;
     }
     let target_width = canvas.width() as usize;
     let target = canvas.pixmap_mut().data_mut();
@@ -2894,6 +2919,68 @@ mod tests {
             downsample(&source, 2, 2).unwrap().data(),
             &[25, 25, 20, 255, 125, 25, 60, 255, 25, 125, 60, 255, 125, 125, 100, 255]
         );
+    }
+
+    #[test]
+    fn screenshot_pixelation_keeps_its_block_grid_across_cropped_surfaces() {
+        let mut source = Pixmap::new(53, 41).unwrap();
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 53;
+            let y = index / 53;
+            let alpha = ((x * 11 + y * 7) % 256) as u8;
+            *pixel = [alpha / 2, (x as u8).min(alpha), (y as u8).min(alpha), alpha];
+        }
+
+        for (x, y, width, height) in [(3.25, 7.5, 42., 27.), (-7.25, -3.5, 43., 37.)] {
+            let mut full = Canvas::from_pixmap(source.clone());
+            let full_region = clamp_region(&full, x, y, width, height).unwrap();
+            let (left, top) = (full_region.device_x, full_region.device_y);
+            let right = left + full_region.device_width as i32;
+            let bottom = top + full_region.device_height as i32;
+            pixelate_screenshot(&mut full, x, y, width, height, 8.);
+
+            for (tile_x, tile_y, tile_width, tile_height) in
+                [(0, 0, 29, 25), (15, 11, 28, 27), (27, 21, 26, 20)]
+            {
+                let rect =
+                    tiny_skia::IntRect::from_xywh(tile_x, tile_y, tile_width, tile_height).unwrap();
+                let mut tile = Canvas::from_pixmap(source.clone_rect(rect).unwrap());
+                tile.translate(-(tile_x as f32), -(tile_y as f32));
+                let Some(region) = clamp_region(&tile, x, y, width, height) else {
+                    continue;
+                };
+                pixelate_screenshot_region(&mut tile, region, 8., (left - tile_x, top - tile_y));
+
+                let mut checked = 0;
+                for py in top.max(tile_y)..bottom.min(tile_y + tile_height as i32) {
+                    for px in left.max(tile_x)..right.min(tile_x + tile_width as i32) {
+                        let block_left = left + ((px - left) / 8) * 8;
+                        let block_top = top + ((py - top) / 8) * 8;
+                        if block_left < tile_x
+                            || block_top < tile_y
+                            || (block_left + 8).min(right) > tile_x + tile_width as i32
+                            || (block_top + 8).min(bottom) > tile_y + tile_height as i32
+                        {
+                            continue;
+                        }
+                        assert_eq!(
+                            tile.pixmap()
+                                .pixel((px - tile_x) as u32, (py - tile_y) as u32),
+                            full.pixmap().pixel(px as u32, py as u32),
+                            "tile ({tile_x}, {tile_y}), pixel ({px}, {py}), region ({x}, {y})"
+                        );
+                        checked += 1;
+                    }
+                }
+                assert!(checked > 0);
+            }
+        }
     }
 
     #[test]
