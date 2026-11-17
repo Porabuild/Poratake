@@ -1,6 +1,7 @@
 use gpui::AppContext;
 use herogpui::gpui;
 
+use crate::editor::annotations::Annotation;
 use crate::editor::window::EditorWindow;
 
 use super::{
@@ -18,6 +19,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(0.25);
     let composed = std::env::var_os("PORATAKE_PARITY_LARGE_COMPOSED").is_some();
+    let annotation = std::env::var("PORATAKE_PARITY_LARGE_ANNOTATION").ok();
     assert!(zoom == 0.25 || zoom == 0.5);
     for horizontal in [true, false] {
         for transparent in [false, true] {
@@ -68,6 +70,49 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                                     colors: vec!["#203060".into()],
                                     angle: 0.,
                                 });
+                        }
+                        if let Some(style) = &annotation {
+                            let seam = if path == &large_path { 8192. } else { 256. };
+                            let rect = |long, short, long_size, short_size| {
+                                if horizontal {
+                                    (long, short, long_size, short_size)
+                                } else {
+                                    (short, long, short_size, long_size)
+                                }
+                            };
+                            let (x, y, width, height) = rect(seam - 40., 60., 80., 6.);
+                            let before = Annotation::Rectangle {
+                                id: "before".into(),
+                                x,
+                                y,
+                                width,
+                                height,
+                                stroke: "#ff0000".into(),
+                                stroke_width: 2.,
+                                fill: Some("#ff0000".into()),
+                            };
+                            let (x, y, width, height) = rect(seam - 30., 42., 60., 44.);
+                            let redact = Annotation::Redact {
+                                id: "redact".into(),
+                                x,
+                                y,
+                                width,
+                                height,
+                                style: style.clone(),
+                                intensity: 5.,
+                            };
+                            let (x, y, width, height) = rect(seam - 10., 52., 20., 20.);
+                            let after = Annotation::Rectangle {
+                                id: "after".into(),
+                                x,
+                                y,
+                                width,
+                                height,
+                                stroke: "#00ff00".into(),
+                                stroke_width: 2.,
+                                fill: Some("#00ff00".into()),
+                            };
+                            editor.history.push(vec![before, redact, after]);
                         }
                         cx.notify();
                     })
@@ -141,6 +186,47 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     cx.update(|cx| small_editor.read(cx).unwrap().export_png().unwrap());
                 let large_output = image::load_from_memory(&large_png).unwrap().to_rgba8();
                 let small_output = image::load_from_memory(&small_png).unwrap().to_rgba8();
+                if annotation.is_some() {
+                    let unredacted_png = small_editor
+                        .update(cx, |editor, _, _| {
+                            let without = editor
+                                .history
+                                .current()
+                                .iter()
+                                .filter(|item| !matches!(item, Annotation::Redact { .. }))
+                                .cloned()
+                                .collect();
+                            editor.history.push(without);
+                            let png = editor.export_png().unwrap();
+                            assert!(editor.history.undo());
+                            png
+                        })
+                        .unwrap();
+                    let unredacted = image::load_from_memory(&unredacted_png).unwrap().to_rgba8();
+                    let modified = small_output
+                        .pixels()
+                        .zip(unredacted.pixels())
+                        .filter(|(a, b)| a != b)
+                        .count();
+                    println!(
+                        "oversized effect style={} modified_pixels={modified}",
+                        annotation.as_deref().unwrap()
+                    );
+                    assert!(modified > 100, "the effect must change the exported pixels");
+                }
+                if let Some(style) = annotation.as_deref() {
+                    if style == "blackout" {
+                        let point = if horizontal { (8172, 62) } else { (62, 8172) };
+                        assert_eq!(large_output.get_pixel(point.0, point.1).0, [0, 0, 0, 255]);
+                    } else {
+                        let point = if horizontal { (8172, 46) } else { (46, 8172) };
+                        assert!(large_output.get_pixel(point.0, point.1).0[..3]
+                            .iter()
+                            .any(|channel| *channel > 30));
+                    }
+                    let point = if horizontal { (8192, 62) } else { (62, 8192) };
+                    assert_eq!(large_output.get_pixel(point.0, point.1).0, [0, 255, 0, 255]);
+                }
                 assert_eq!(small_output.dimensions(), (w, h));
                 for row in 0..h {
                     for col in 0..w {
