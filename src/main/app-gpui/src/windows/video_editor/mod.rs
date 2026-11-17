@@ -148,6 +148,7 @@ pub struct VideoEditorWindow {
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
     save_generation: u64,
+    saved_generation: u64,
     ruler_scroll: ScrollHandle,
     tracks_scroll: ScrollHandle,
     pane_scroll: ScrollHandle,
@@ -349,6 +350,7 @@ impl VideoEditorWindow {
             selected_clip: None,
             menu: MenuHandle::new(),
             save_generation: 0,
+            saved_generation: 0,
             ruler_scroll: ScrollHandle::new(),
             tracks_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
@@ -1069,12 +1071,14 @@ impl VideoEditorWindow {
                 };
                 let mut written = this.state.clone();
                 written.saved_at = chrono::Utc::now().to_rfc3339();
-                model::save_state_with_camera_segments_presence(
+                if model::save_state_with_camera_segments_presence(
                     &path,
                     &written,
                     this.camera_segments_initialized,
-                );
-                this.state.saved_at = written.saved_at;
+                ) {
+                    this.state.saved_at = written.saved_at;
+                    this.saved_generation = generation;
+                }
             });
         })
         .detach();
@@ -3413,6 +3417,24 @@ impl VideoEditorWindow {
     }
 }
 
+impl Drop for VideoEditorWindow {
+    fn drop(&mut self) {
+        if self.save_generation == self.saved_generation {
+            return;
+        }
+        let Some(path) = self.path.as_deref() else {
+            return;
+        };
+        let mut written = self.state.clone();
+        written.saved_at = chrono::Utc::now().to_rfc3339();
+        model::save_state_with_camera_segments_presence(
+            path,
+            &written,
+            self.camera_segments_initialized,
+        );
+    }
+}
+
 impl Render for VideoEditorWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = active_theme(cx);
@@ -5339,6 +5361,60 @@ mod keyboard_demo_tests {
                 assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
             })
             .unwrap();
+    }
+
+    #[herogpui::test]
+    fn failed_state_save_does_not_mark_the_edit_as_saved(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir_all(project.join("state.json")).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.saved_at = "previous".into();
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.state.saved_at, "previous");
+            })
+            .unwrap();
+        assert!(project.join("state.json").is_dir());
+    }
+
+    #[herogpui::test]
+    fn closing_before_the_debounce_saves_the_restored_music(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let track = model::MusicTrack {
+            id: "music-sound".into(),
+            group_id: "music-sound".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, window, cx| {
+                editor.state.music_tracks = vec![track.clone()];
+                editor.remove_music_track(track.id.clone().into(), cx);
+                editor.undo(cx);
+                window.remove_window();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(model::load_state(&project).music_tracks, vec![track]);
+        assert_eq!(std::fs::read(file).unwrap(), b"original audio");
     }
 
     #[cfg(any(windows, target_os = "macos"))]

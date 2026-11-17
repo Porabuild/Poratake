@@ -388,34 +388,38 @@ pub fn save_state_with_camera_segments_presence(
     project_or_video: &Path,
     state: &VideoEditorState,
     camera_segments_present: bool,
-) {
+) -> bool {
     let path = project::editor_state_path(project_or_video);
     let Some(parent) = path.parent() else {
-        return;
+        return false;
     };
     if !parent.is_dir() {
-        return;
+        return false;
     }
-    match serde_json::to_value(state) {
-        Ok(mut value) => {
-            if !camera_segments_present {
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("cameraSegments");
-                }
-            }
-            match serde_json::to_string_pretty(&value) {
-                Ok(contents) => {
-                    if let Err(error) = std::fs::write(&path, contents) {
-                        eprintln!("[video-editor] failed to save {}: {error}", path.display());
-                    }
-                }
-                Err(error) => eprintln!("[video-editor] failed to serialize state: {error}"),
-            }
-        }
+    let mut value = match serde_json::to_value(state) {
+        Ok(value) => value,
         Err(error) => {
             eprintln!("[video-editor] failed to serialize state: {error}");
+            return false;
+        }
+    };
+    if !camera_segments_present {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("cameraSegments");
         }
     }
+    let contents = match serde_json::to_vec_pretty(&value) {
+        Ok(contents) => contents,
+        Err(error) => {
+            eprintln!("[video-editor] failed to serialize state: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = crate::util::atomic_file::write(&path, &contents) {
+        eprintln!("[video-editor] failed to save {}: {error}", path.display());
+        return false;
+    }
+    true
 }
 
 /// `getFileNameFromPath` in `video-editor/utils.ts`: a recording inside a

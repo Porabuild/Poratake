@@ -198,34 +198,12 @@ fn write_sync(config: &SettingsConfig, path: &Path) -> bool {
     let temp = path.with_extension("json.tmp");
     let payload = serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".to_string());
     let saved = fs::write(&temp, payload)
-        .and_then(|_| replace_file(&temp, path))
+        .and_then(|_| crate::util::atomic_file::replace(&temp, path))
         .is_ok();
     if !saved {
         eprintln!("[settings] failed to save config");
     }
     saved
-}
-
-#[cfg(windows)]
-fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    use windows::core::HSTRING;
-    use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    unsafe {
-        MoveFileExW(
-            &HSTRING::from(temp.as_os_str()),
-            &HSTRING::from(path.as_os_str()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }
-    .map_err(std::io::Error::other)
-}
-
-#[cfg(not(windows))]
-fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    fs::rename(temp, path)
 }
 
 fn preserve_corrupt_config(path: &Path, content: &str) {
