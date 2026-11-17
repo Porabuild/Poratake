@@ -60,6 +60,7 @@ pub struct CanvasSnapshot {
     /// blur and grain could not, and preview and export have to agree.
     pub backdrop: Option<std::sync::Arc<gpui::RenderImage>>,
     pub backdrop_composite: bool,
+    pub backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     pub preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
@@ -461,6 +462,23 @@ impl RenderOnce for EditorCanvas {
             let rendered = self.snapshot.borrow().backdrop.clone();
             backdrop = match rendered {
                 Some(_) if layered_composite && has_preview_edges => backdrop,
+                #[cfg(target_os = "macos")]
+                Some(image) if !self.snapshot.borrow().backdrop_tiles.is_empty() => {
+                    let tiles = self.snapshot.borrow().backdrop_tiles.clone();
+                    let size = image.size(0);
+                    let (width, height) =
+                        (u32::from(size.width) as f32, u32::from(size.height) as f32);
+                    backdrop.child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, (), window, _| {
+                                paint_image_tiles(window, bounds, width, height, &tiles);
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                }
                 Some(image) => backdrop.child(
                     img(image)
                         .absolute()

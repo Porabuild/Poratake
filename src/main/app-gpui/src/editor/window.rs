@@ -436,6 +436,7 @@ pub struct EditorWindow {
     /// so it is only re-rendered when the wallpaper actually changes.
     backdrop: Option<Arc<gpui::RenderImage>>,
     backdrop_composite: bool,
+    backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     retired_preview_edges: Vec<Arc<gpui::RenderImage>>,
@@ -525,6 +526,7 @@ impl EditorWindow {
             annotation_clipboard: Vec::new(),
             backdrop: None,
             backdrop_composite: false,
+            backdrop_tiles: Vec::new(),
             preview_edges: Vec::new(),
             image_tiles,
             retired_preview_edges: Vec::new(),
@@ -605,6 +607,7 @@ impl EditorWindow {
                 frame_scale: 1.0,
                 backdrop: None,
                 backdrop_composite: false,
+                backdrop_tiles: Vec::new(),
                 preview_edges: Vec::new(),
                 selected: Vec::new(),
                 editing_text: None,
@@ -776,6 +779,8 @@ impl EditorWindow {
             self.retired_preview_edges.push(backdrop);
         }
         self.backdrop_composite = false;
+        self.retired_preview_edges
+            .extend(self.backdrop_tiles.drain(..).map(|tile| tile.image));
         self.retire_preview_edges();
     }
 
@@ -920,10 +925,18 @@ impl EditorWindow {
                 frame_scale,
                 stage_background,
             );
-            (rendered, inset_color)
+            #[cfg(target_os = "macos")]
+            let backdrop_tiles = rendered
+                .as_ref()
+                .filter(|(_, _, composite)| !composite)
+                .map(|(backdrop, _, _)| crate::editor::image_tiles::create(backdrop))
+                .unwrap_or_default();
+            #[cfg(not(target_os = "macos"))]
+            let backdrop_tiles = Vec::new();
+            (rendered, inset_color, backdrop_tiles)
         });
         self.backdrop_task = Some(cx.spawn(async move |entity, cx| {
-            let (rendered, inset_color) = task.await;
+            let (rendered, inset_color, backdrop_tiles) = task.await;
             let _ = entity.update(cx, |editor, cx| {
                 if editor.backdrop_generation != generation {
                     return;
@@ -934,6 +947,7 @@ impl EditorWindow {
                 editor.retire_backdrop();
                 editor.backdrop = backdrop;
                 editor.backdrop_composite = composite;
+                editor.backdrop_tiles = backdrop_tiles;
                 editor.preview_edges = preview_edges;
                 editor.inset_color = inset_color;
                 editor.backdrop_task = None;
@@ -952,6 +966,7 @@ impl EditorWindow {
             snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
             snap.backdrop_composite = self.backdrop_composite;
+            snap.backdrop_tiles = self.backdrop_tiles.clone();
             snap.preview_edges = self.preview_edges.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
@@ -4333,7 +4348,7 @@ mod tests {
     }
 
     #[herogpui::test]
-    fn oversized_image_tiles_follow_crop_and_undo(cx: &mut gpui::TestAppContext) {
+    fn oversized_tiles_follow_edits_and_backdrop_retirement(cx: &mut gpui::TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("long.png");
         image::RgbaImage::from_pixel(17_000, 4, image::Rgba([220, 40, 60, 128]))
@@ -4383,6 +4398,20 @@ mod tests {
                         .0,
                     [220, 40, 60, 128]
                 );
+                editor.backdrop_tiles =
+                    crate::editor::image_tiles::create(editor.image.as_ref().unwrap());
+                let backdrop_ids: Vec<_> = editor
+                    .backdrop_tiles
+                    .iter()
+                    .map(|tile| tile.image.id)
+                    .collect();
+                assert_eq!(backdrop_ids.len(), 3);
+                editor.retire_backdrop();
+                assert!(editor.backdrop_tiles.is_empty());
+                assert!(backdrop_ids.iter().all(|id| editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == *id)));
             });
         });
     }

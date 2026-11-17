@@ -25,6 +25,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.);
+    let corners = std::env::var("PORATAKE_PARITY_LARGE_CORNERS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
     assert!(zoom == 0.25 || zoom == 0.5);
     for horizontal in [true, false] {
         for transparent in [false, true] {
@@ -65,6 +69,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     });
                     editor.wallpaper.padding = 20.;
                     editor.wallpaper.inset = inset;
+                    editor.wallpaper.corners = corners;
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.window_frame.style = style.clone();
                     cx.notify();
@@ -81,13 +86,64 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
             let (png, frame_scale) = cx.update(|cx| {
                 let editor = editor.read(cx).unwrap();
                 let snapshot = editor.snapshot.borrow();
-                assert!(
-                    snapshot.backdrop_composite && !snapshot.preview_edges.is_empty(),
-                    "oversized framed backdrop was not tiled"
+                assert!(snapshot.backdrop.is_some(), "backdrop was not ready");
+                if snapshot.backdrop_composite {
+                    assert!(
+                        !snapshot.preview_edges.is_empty(),
+                        "composed backdrop was not tiled"
+                    );
+                } else {
+                    assert!(
+                        !snapshot.image_tiles.is_empty(),
+                        "oversized source was not tiled"
+                    );
+                    #[cfg(target_os = "macos")]
+                    assert!(
+                        !snapshot.backdrop_tiles.is_empty(),
+                        "oversized backdrop was not tiled"
+                    );
+                }
+                println!(
+                    "large backdrop composed={} edge_tiles={}",
+                    snapshot.backdrop_composite,
+                    snapshot.preview_edges.len()
                 );
                 (editor.export_png().unwrap(), snapshot.frame_scale)
             });
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
+            let mut controls = Vec::new();
+            if shadow > 0. {
+                controls.push(("shadow", 0., corners));
+            }
+            if corners > 0. {
+                controls.push(("corners", shadow, 0.));
+            }
+            for (name, control_shadow, control_corners) in controls {
+                let control_png = editor
+                    .update(cx, |editor, _, _| {
+                        let old_shadow = editor.wallpaper.shadow;
+                        let old_corners = editor.wallpaper.corners;
+                        editor.wallpaper.shadow = control_shadow;
+                        editor.wallpaper.corners = control_corners;
+                        let png = editor.export_png().unwrap();
+                        editor.wallpaper.shadow = old_shadow;
+                        editor.wallpaper.corners = old_corners;
+                        png
+                    })
+                    .unwrap();
+                let control = image::load_from_memory(&control_png).unwrap().to_rgba8();
+                assert_eq!(output.dimensions(), control.dimensions());
+                let modified = output
+                    .pixels()
+                    .zip(control.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                println!("large framed control={name} horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(
+                    modified > 0,
+                    "the {name} setting must change the exported pixels"
+                );
+            }
             let settings =
                 cx.update(|cx| editor.read(cx).unwrap().wallpaper.for_scale(frame_scale));
             let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
@@ -171,7 +227,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                         worst = worst.max(delta);
                     }
                 }
-                println!("large framed style={style} shadow={shadow} inset={inset} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} panned={panned} differences={changed} max={worst}");
+                println!("large framed style={style} shadow={shadow} inset={inset} corners={corners} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} panned={panned} differences={changed} max={worst}");
                 if changed > 0 {
                     actual
                         .save(scratch.join(format!(
