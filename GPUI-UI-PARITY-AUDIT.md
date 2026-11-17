@@ -4704,6 +4704,19 @@ sequential synthetic runs omit decode and GPU upload. The [measurements](tests/n
 retain the commands and the open residual cases; live capture and physical
 display verification remain open.
 
+An isolated GPUI fixture now draws pixelation across a rectangle corner, reopens
+the project and captures its 640×360 scrubbing preview before export. In the
+affected area, the displayed preview matched its unencoded composition within
+one channel level in dark and light fixtures; decoded H.264 averaged 1.17–1.28
+RGB levels away, with individual differences up to 42–62 levels. The unredacted
+control confirms the effect is visible. Area, window and screen fixture
+handoffs used the same generated source. The [dark preview](tests/native/evidence/macos-ui/video-rectangle-pixelation-gpui-dark-20261117.png),
+[light preview](tests/native/evidence/macos-ui/video-rectangle-pixelation-gpui-light-20261117.png),
+[decoded frame](tests/native/evidence/macos-ui/video-rectangle-pixelation-decoded-20261117.png)
+and [measurements](tests/native/evidence/macos-ui/video-rectangle-pixelation-gpui-20261117.txt)
+are retained. This does not verify a live recording, hardware access, target
+movement or closure, physical display placement, or capture exclusion.
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA
