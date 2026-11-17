@@ -5231,6 +5231,27 @@ the same green at (1100, 620).
 The headless Metal parity runs also completed with the tagged native file in the
 default dark editor and a 950×700 light editor.
 
+### 2026-11-18 macOS scroll capture with a fixed header
+
+The previous duplicate detector could discard changed body content when its
+sampled strip stayed fixed. A generated regression with an unchanged header
+and green-only changes below it failed against the old detector. macOS scroll
+capture now samples RGB across the frame and compares full rendered pixels
+when those samples hash to the same value. The native fixture covers real
+duplicates and a fingerprint collision from an alpha-only change.
+
+The live GPUI test selected a 460×380-point region with a stationary 72-point
+header, then scrolled a generated page to its expected offset of 772 points.
+Done saved four frames as a 920×2304 PNG and opened the bottom-right preview
+with one new history entry. The header appears once in rows 0–143 of the output.
+Of 2,119,680 pixels, 2,100,262 were within two RGB levels of the full-page
+reference. The mean absolute channel difference was 0.434, with a maximum of 18. Foreground control was released, and the existing editor stayed open.
+The [generated page fixture](tests/native/evidence/macos-ui/native-gpui-scroll-fixed-header-pattern-20261118.swift)
+can render its reference directly to a PNG given an output path.
+
+Alignment rules are still the same. Cases where distinct scroll histories
+produce the same visible frames remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
