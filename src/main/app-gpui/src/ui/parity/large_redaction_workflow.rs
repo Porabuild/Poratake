@@ -1,0 +1,160 @@
+use gpui::AppContext;
+use herogpui::gpui;
+
+use crate::editor::annotations::Annotation;
+use crate::editor::window::EditorWindow;
+use crate::history_store::{HistoryItem, HistoryItemType};
+
+use super::{px, settle, size, HeadlessAppContext, Path};
+
+pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
+    for style in ["none", "pixelate", "blur"] {
+        run_case(cx, scratch, 4096, style);
+    }
+}
+
+pub(super) fn run_boundary(cx: &mut HeadlessAppContext, scratch: &Path) {
+    run_case(cx, scratch, 3840, "pixelate");
+}
+
+fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, style: &str) {
+    let source = scratch.join(format!("large-{style}.png"));
+    image::RgbaImage::from_fn(source_width, 2160, |x, y| {
+        let red = if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 };
+        image::Rgba([red, (y % 32 * 6) as u8, 80, 255])
+    })
+    .save(&source)
+    .unwrap();
+    let annotation = Annotation::Redact {
+        id: "large-redaction".into(),
+        x: 0.,
+        y: 0.,
+        width: f64::from(source_width),
+        height: 2160.,
+        style: style.into(),
+        intensity: 5.,
+    };
+    let annotations = if style == "none" {
+        Vec::new()
+    } else {
+        vec![annotation]
+    };
+    crate::history_store::add_item(
+        HistoryItem {
+            id: format!("large-{style}"),
+            timestamp: 0,
+            original_path: source.to_string_lossy().into_owned(),
+            r#type: HistoryItemType::Screenshot,
+            editor_state: Some(serde_json::json!({"annotations": annotations})),
+            duration: None,
+        },
+        100,
+        true,
+    );
+    let editor = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.25;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+    let original = image::open(&source).unwrap().to_rgba8();
+    let exported = image::load_from_memory(&png).unwrap().to_rgba8();
+    let modified = (0..32)
+        .flat_map(|y| (0..32).map(move |x| (x * 31, y * 31)))
+        .filter(|&(x, y)| original.get_pixel(x, y) != exported.get_pixel(x, y))
+        .count();
+    if style == "none" {
+        assert_eq!(modified, 0);
+    } else {
+        assert!(modified > 0, "the redaction must alter source pixels");
+    }
+    drop(original);
+    drop(exported);
+    let flattened_path = scratch.join(format!("large-{style}-flattened.png"));
+    std::fs::write(&flattened_path, &png).unwrap();
+    let flattened = cx
+        .open_window(size(px(1280.), px(738.)), |window, cx| {
+            window.set_scale_factor(1.);
+            cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    settle(cx, flattened.into());
+    flattened
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.25;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, flattened.into());
+    let (bounds, flat_bounds) = cx.update(|cx| {
+        (
+            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+            flattened.read(cx).unwrap().bounds.borrow().unwrap(),
+        )
+    });
+    let preview = cx.capture_screenshot(editor.into()).unwrap();
+    let expected = cx.capture_screenshot(flattened.into()).unwrap();
+    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+    let left = snap(f32::from(bounds.left()));
+    let top = snap(f32::from(bounds.top()));
+    let flat_left = snap(f32::from(flat_bounds.left()));
+    let flat_top = snap(f32::from(flat_bounds.top()));
+    let width = snap(f32::from(bounds.right())) - left;
+    let height = snap(f32::from(bounds.bottom())) - top;
+    assert_eq!((width, height), (source_width / 4, 540));
+    assert_eq!(
+        (width, height),
+        (
+            snap(f32::from(flat_bounds.right())) - flat_left,
+            snap(f32::from(flat_bounds.bottom())) - flat_top
+        )
+    );
+    let mut changed = 0u64;
+    let mut total = 0u64;
+    let mut maximum = 0u8;
+    for y in 0..height {
+        for x in 0..width {
+            let actual = preview.get_pixel(left + x, top + y).0;
+            let expected = expected.get_pixel(flat_left + x, flat_top + y).0;
+            let difference = actual
+                .iter()
+                .zip(expected)
+                .map(|(a, b)| a.abs_diff(b))
+                .max()
+                .unwrap();
+            maximum = maximum.max(difference);
+            total += u64::from(difference);
+            changed += u64::from(difference > 2);
+        }
+    }
+    if style == "none" {
+        assert_eq!(changed, 0, "the unredacted comparison must match");
+    }
+    image::imageops::crop_imm(&preview, left, top, width, height)
+        .to_image()
+        .save(scratch.join(format!("large-{style}-preview.png")))
+        .unwrap();
+    image::imageops::crop_imm(&expected, flat_left, flat_top, width, height)
+        .to_image()
+        .save(scratch.join(format!("large-{style}-expected.png")))
+        .unwrap();
+    println!(
+        "large {source_width}x2160 {style}: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
+        width * height,
+        total as f64 / f64::from(width * height)
+    );
+    for window in [editor, flattened] {
+        cx.update_window(window.into(), |_, window, _| window.remove_window())
+            .unwrap();
+    }
+    cx.run_until_parked();
+}

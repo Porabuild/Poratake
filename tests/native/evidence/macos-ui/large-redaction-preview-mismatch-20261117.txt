@@ -1,0 +1,44 @@
+macOS GPUI large screenshot redaction diagnostic, 2026-11-17
+
+PORATAKE_PARITY_OUTPUT=<temporary directory> PORATAKE_PARITY_THEME=<dark|light> PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_REDACTIONS_ONLY=1 cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --parity
+
+The diagnostic creates a 4096x2160 generated checker-pattern image and compares
+the full 1024x540 Metal preview at 25% zoom with the same exported PNG reopened
+in a second isolated editor. An unredacted control and full-image pixelation and
+blur cases use the same source pattern. It checks 1,024 source samples as a
+positive control for each effect. A color difference is the largest absolute
+channel difference at a displayed pixel.
+
+Dark appearance:
+  Unredacted: 0/1024 source samples changed; 0/552,960 display pixels >2; max 0.
+  Pixelation: 1,024/1,024 source samples changed; 533,724/552,960 >2; max 125;
+              mean maximum-channel difference 23.2865.
+  Blur:       1,024/1,024 source samples changed; 15,034/552,960 >2; max 62;
+              mean maximum-channel difference 0.3518.
+Light appearance:
+  Unredacted: 0/1024 source samples changed; 0/552,960 display pixels >2; max 0.
+  Pixelation: 1,024/1,024 source samples changed; 533,724/552,960 >2; max 105;
+              mean maximum-channel difference 23.2190.
+  Blur:       1,024/1,024 source samples changed; 15,034/552,960 >2; max 62;
+              mean maximum-channel difference 0.3518.
+
+PORATAKE_PARITY_OUTPUT=<temporary directory> PORATAKE_PARITY_THEME=<dark|light> PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_REDACTIONS_BOUNDARY_ONLY=1 cargo run --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --parity
+
+For an otherwise identical 3840x2160 pixelation case, both appearances changed
+1,024/1,024 source samples and had 0/518,400 displayed pixels more than two
+levels apart; the maximum difference was zero. This source has 8,294,400 pixels,
+just below the 8,388,608-pixel preview patch budget. The larger source has
+8,847,360 pixels. When the native patch is reduced to fit the budget, the
+aligned path falls back to rendering the effect at reduced scale; the export
+applies it at source resolution. The diagnostic reports differences and exits
+successfully so the measurements can be collected; it is not a passing parity
+assertion for the redaction cases.
+
+The retained images show the dark preview and reopened output for pixelation and
+blur. They are generated data; no desktop pixels, user editor, device permissions
+or privacy settings were accessed. This does not verify real capture, other
+content, zooms or physical display scaling. The mismatch remains unfixed; simply
+raising the budget would not cover larger captures or bound memory use.
+
+cargo clippy --offline --locked --manifest-path src/main/app-gpui/Cargo.toml --features parity -- -D warnings
+Result: passed; the vendored rfd dependency emits existing warnings.

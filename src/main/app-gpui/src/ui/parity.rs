@@ -22,6 +22,8 @@ pub(crate) mod daemon_fixture;
 #[cfg(target_os = "macos")]
 mod fractional_frame_workflow;
 mod image_sampling;
+#[cfg(target_os = "macos")]
+mod large_redaction_workflow;
 mod overlays;
 mod pin_workflows;
 mod preview_workflows;
@@ -1048,6 +1050,18 @@ pub fn capture_editor_interaction_states() {
             }
         }
         cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_LARGE_REDACTIONS_BOUNDARY_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        large_redaction_workflow::run_boundary(&mut cx, &scratch);
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_LARGE_REDACTIONS_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        large_redaction_workflow::run(&mut cx, &scratch);
         return;
     }
     #[cfg(target_os = "macos")]

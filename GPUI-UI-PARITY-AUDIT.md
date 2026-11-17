@@ -3339,6 +3339,24 @@ also matches within one level at four zooms and three simulated scales in dark
 appearance. These generated tests do not verify physical input, captured content,
 larger patches or all wallpaper and attachment combinations.
 
+A generated large-image probe confirms a remaining preview/export mismatch for
+both pixelation and blur. At 25% zoom, a 4096×2160 image with a full-image
+redaction exceeded the preview patch budget. Pixelation differed from the saved
+and reopened PNG at 533,724 of 552,960 displayed pixels by more than two channel
+levels; blur differed at 15,034 pixels. An unredacted control matched exactly,
+and both effects changed every one of 1,024 sampled source pixels. An otherwise
+identical 3840×2160 pixelation case, below the budget, matched the reopened PNG
+exactly. Both appearances were checked using generated content. The
+[measurements](tests/native/evidence/macos-ui/large-redaction-preview-mismatch-20261117.txt),
+pixelation [preview](tests/native/evidence/macos-ui/large-redaction-pixelate-preview-20261117.png)
+and [reopened output](tests/native/evidence/macos-ui/large-redaction-pixelate-reopened-20261117.png),
+and blur [preview](tests/native/evidence/macos-ui/large-redaction-blur-preview-20261117.png)
+and [reopened output](tests/native/evidence/macos-ui/large-redaction-blur-reopened-20261117.png)
+are retained. The oversized path reduces the raster scale before applying the
+effect; the export applies it at source resolution. This remains open and needs
+a bounded source-resolution approach, including annotation order and effect
+boundaries. The probe does not verify live capture, other zooms or physical DPI.
+
 The framed-attachment Metal workflow now also places a narrow red annotation
 before and after blur and pixelation crossing the primary/right-attachment seam.
 For macOS light and dark frame styles, translucent source content, both app
