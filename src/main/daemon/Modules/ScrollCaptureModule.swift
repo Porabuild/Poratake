@@ -1074,7 +1074,8 @@ class ScrollCaptureModule: NSObject, Module {
     private func appendCapturedFrame(_ cgImage: CGImage) -> Int? {
         let frameHash = computeFrameHash(cgImage)
 
-        if let lastFrameHash = lastFrameHash, frameHash == lastFrameHash {
+        if frameHash == lastFrameHash, let previous = capturedFrames.last?.image,
+           framesHaveSamePixels(previous, cgImage) {
             duplicateFrameCount += 1
             if duplicateFrameCount >= maxDuplicateFrames {
                 return nil
@@ -1096,6 +1097,14 @@ class ScrollCaptureModule: NSObject, Module {
         return frame.index
     }
 
+    private func framesHaveSamePixels(_ previous: CGImage, _ current: CGImage) -> Bool {
+        if previous === current { return true }
+        guard previous.width == current.width, previous.height == current.height,
+              let previousPixels = extractPixelData(from: previous),
+              let currentPixels = extractPixelData(from: current) else { return false }
+        return previousPixels == currentPixels
+    }
+
     private func computeFrameHash(_ image: CGImage) -> Int {
         let sampleWidth = 100
         let sampleHeight = 50
@@ -1112,18 +1121,7 @@ class ScrollCaptureModule: NSObject, Module {
             return 0
         }
 
-        let bottomRect = CGRect(
-            x: 0,
-            y: 0,
-            width: image.width,
-            height: min(image.height / 4, 100)
-        )
-
-        guard let croppedImage = image.cropping(to: bottomRect) else {
-            return 0
-        }
-
-        context.draw(croppedImage, in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight))
 
         guard let data = context.data else { return 0 }
         let buffer = data.bindMemory(to: UInt8.self, capacity: sampleWidth * sampleHeight * 4)
@@ -1131,7 +1129,8 @@ class ScrollCaptureModule: NSObject, Module {
         var hash = 0
         let strideAmount = 16
         for i in Swift.stride(from: 0, to: sampleWidth * sampleHeight * 4, by: strideAmount) {
-            hash = hash &* 31 &+ Int(buffer[i])
+            let rgb = (Int(buffer[i]) << 16) | (Int(buffer[i + 1]) << 8) | Int(buffer[i + 2])
+            hash = hash &* 31 &+ rgb
         }
 
         return hash
@@ -2177,14 +2176,15 @@ class ScrollCaptureModule: NSObject, Module {
         continueAfterCapture(consumeCapturedImage(image))
     }
 
-    func testRepeatedFrame(_ image: CGImage) -> (Int, [Int?], Int, Int?, Bool) {
+    func testFrameSequence(_ frames: [CGImage]) -> (Int, [Int?], Int, Int?, Bool) {
+        let image = frames[0]
         let params = [
             "x": AnyCodable(0), "y": AnyCodable(0),
             "width": AnyCodable(image.width), "height": AnyCodable(image.height)
         ]
         handleStart(params: params, requestId: "zero-hash-test")
         let hash = computeFrameHash(image)
-        let results = (0..<4).map { _ in appendCapturedFrame(image) }
+        let results = frames.map { appendCapturedFrame($0) }
         let count = capturedFrames.count
         cleanup()
         handleStart(params: params, requestId: "zero-hash-restart-test")

@@ -1543,12 +1543,41 @@ struct ScrollCapturePreviewTest {
         )!
         black.setFillColor(NSColor.black.cgColor)
         black.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let (hash, results, count, restarted, cleared) = ScrollCaptureModule().testRepeatedFrame(black.makeImage()!)
+        let blackFrame = black.makeImage()!
+        let (hash, results, count, restarted, cleared) = ScrollCaptureModule()
+            .testFrameSequence(Array(repeating: blackFrame, count: 4))
         precondition(hash == 0)
         precondition(results.count == 4 && results[0] == 0 && results[1] == 0 && results[2] == 0 && results[3] == nil)
         precondition(count == 1, "The first frame must be captured even when its hash is zero")
         precondition(restarted == 0, "A new session must not reuse the previous frame hash")
         precondition(cleared, "Cleanup must clear the previous frame hash")
+
+        func frameBelowFixedHeader(green: CGFloat) -> CGImage {
+            let context = CGContext(
+                data: nil,
+                width: 80,
+                height: 240,
+                bitsPerComponent: 8,
+                bytesPerRow: 80 * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            context.setFillColor(red: 0.25, green: 0.5, blue: 0.5, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 240))
+            context.setFillColor(red: 0.25, green: green, blue: 0.5, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 140))
+            return context.makeImage()!
+        }
+        let (_, headerResults, headerCount, _, _) = ScrollCaptureModule().testFrameSequence(
+            [0.2, 0.3, 0.4, 0.6, 0.6, 0.6, 0.6].map { frameBelowFixedHeader(green: $0) }
+        )
+        precondition(headerResults == [0, 1, 2, 3, 3, 3, nil] && headerCount == 4,
+                     "Changed body pixels below a fixed header must survive duplicate detection")
+        black.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        let (_, alphaResults, alphaCount, _, _) = ScrollCaptureModule()
+            .testFrameSequence([blackFrame, black.makeImage()!])
+        precondition(alphaResults == [0, 1] && alphaCount == 2,
+                     "An RGB fingerprint collision must not discard changed alpha")
 
         let cancelWins = ScrollCaptureModule().testFinishRace(cancelBeforeCompletion: true)
         precondition(cancelWins.0 && cancelWins.1 && cancelWins.2 && cancelWins.3)
