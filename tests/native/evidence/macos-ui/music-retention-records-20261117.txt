@@ -1,0 +1,25 @@
+macOS music retention records, 2026-11-17
+
+GPUI: cargo test --offline --locked --manifest-path src/main/Cargo.toml
+  -p poratake-gpui music_
+  21 passed, 2 ignored.
+GPUI: PORATAKE_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg cargo test --offline
+  --locked --manifest-path src/main/Cargo.toml -p poratake-gpui
+  readding_music_with_the_same_name_refreshes_preview_audio -- --ignored
+  1 passed using generated audio.
+GPUI: cargo clippy --offline --locked --manifest-path src/main/Cargo.toml
+  -p poratake-gpui --all-targets --features parity -- -D warnings
+  -A clippy::chunks_exact_to_as_chunks
+  passed; the vendored rfd crate emitted existing compiler warnings.
+Electron: bun run test tests/unit/music-retention.test.ts
+  tests/unit/music-handlers.test.ts tests/unit/video-editor-state-handlers.test.ts
+  tests/renderer/video-editor/music-undo.test.ts
+  tests/renderer/video-editor/state-close.test.ts
+  36 passed. Filename collision and close behavior use mocks; the retention
+  format and path rejection use temporary files.
+Electron: bun run typecheck and targeted oxlint and oxfmt checks passed.
+
+The files under test were generated in temporary directories. No live capture,
+editor session, export, concurrent application process or crash was exercised.
+Retained music is not automatically deleted. Collection remains open until it
+can account for persisted state, live histories, exports and crashed sessions.

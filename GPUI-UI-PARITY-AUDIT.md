@@ -4922,6 +4922,15 @@ Electron now also replaces its video state atomically and waits for queued
 edits to save before closing. A failed save leaves its editor open. Music-file
 collection remains open.
 
+Both editors now write compatible project-local retention records for imported
+and removed music, and reserve recorded names when importing again. Electron
+also creates imported files exclusively to prevent concurrent imports from
+overwriting each other. The [retention checks](tests/native/evidence/macos-ui/music-retention-records-20261117.txt)
+cover the shared record format, filename collisions, undo and redo, and path
+rejection. They do not exercise two live editors or crash recovery. Automatic
+collection is still disabled: safe deletion must account for open editor
+histories, exports, interrupted sessions and the last valid saved state.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                   |
