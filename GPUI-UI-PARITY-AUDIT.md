@@ -3481,6 +3481,9 @@ and [reopened PNG](tests/native/evidence/macos-ui/scaled-blackout-after-reopened
 are retained. The selected source pixels are black in the PNG, and the underlying
 shape is hidden. This generated fixture does not establish live capture or
 physical display behavior.
+The [current-branch recheck](tests/native/evidence/macos-ui/scaled-blackout-current-20261117.txt)
+also passed all 24 light and dark cases after the later editor changes, with a
+maximum difference of one level.
 
 The GPUI Metal fixture exposed a separate image sampling mismatch at 73% zoom,
 even without annotations, for opaque and translucent generated sources. The

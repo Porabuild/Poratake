@@ -1,0 +1,40 @@
+macOS GPUI scaled blackout recheck, 2026-11-17, source 82a1b56d
+
+Generated image, scratch profile and headless Metal renderer. No physical
+capture or real display-scale transition was exercised.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-blackout-current-THEME-20261117 PORATAKE_PARITY_SCALED_BLACKOUT_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_THEME=THEME src/main/target/debug/poratake-gpui --parity
+
+THEME was dark, then light. Each run simulated scales 1, 1.25 and 2 at zooms
+0.5, 0.73, 1 and 1.37. Both completed successfully. Results follow.
+
+[dark]
+blackout scale 1, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1.37: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.5: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+scaled blackout and underlying annotation match reopened PNG at four zooms and three scales
+
+[light]
+blackout scale 1, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1, zoom 1.37: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.5: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 1.25, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.5: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 0.73: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1: 0 pixels above two, maximum 0, black preview lighter reopen 0, chromatic preview 0
+blackout scale 2, zoom 1.37: 0 pixels above two, maximum 1, black preview lighter reopen 0, chromatic preview 0
+scaled blackout and underlying annotation match reopened PNG at four zooms and three scales
