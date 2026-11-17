@@ -4943,8 +4943,10 @@ Initial Electron state creation now uses exclusive file creation, so an editor
 that writes state while initial generation is awaiting cursor data is not
 overwritten. The same [evidence](tests/native/evidence/macos-ui/video-editor-reset-persistence-20261117.txt)
 includes a temporary-project regression for that race. Initial creation still
-writes directly to the new file; interruption during that first write can leave
-an incomplete file and remains open.
+uses a complete temporary file before publishing it when hard links are
+available. For recognized unsupported or denied hard-link errors, it falls back
+to direct, exclusive creation; interruption during that fallback can leave an
+incomplete file. An interruption can also leave an unpublished temporary file.
 
 Both editors now write compatible project-local retention records for imported
 and removed music, and reserve recorded names when importing again. Electron

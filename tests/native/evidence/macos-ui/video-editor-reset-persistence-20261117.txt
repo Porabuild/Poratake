@@ -42,8 +42,18 @@ passed afterward. bun run test
   tests/unit/auto-zoom-generator.test.ts
   tests/unit/auto-zoom-generator-extra.test.ts
   tests/unit/video-editor-state-handlers.test.ts
-  passed 27 tests. Initial creation still writes directly to the new file and
-can leave an incomplete file if interrupted. No process crash was simulated.
+  passed 27 tests.
+
+Initial generation now stages the complete state before creating the final
+path using a hard link. bun run test tests/unit/atomic-file.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 33 tests, including competing creation, publication failure, and a
+  simulated unsupported-hard-link fallback. The fallback uses exclusive direct
+  creation and can leave an incomplete file if interrupted; a crash can also
+  leave an unpublished temporary file. No process crash was simulated.
 
 bun run typecheck and targeted oxlint and oxfmt checks passed for the changes.
 Tests used generated temporary files and mocked IPC; no existing project, live
