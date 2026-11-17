@@ -24,6 +24,17 @@ latest edit. After the fix, bun run test
   tests/unit/video-editor-state-handlers.test.ts
   passed 23 tests, including a close request during reset and a failed reset.
 
+An additional renderer regression failed when an edit arrived while reset was
+running: reset completed and would have reloaded over the edit. After detecting
+the change and preserving the editor state, bun run test
+  tests/renderer/video-editor/state-close.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/unit/video-ipc-handlers.test.ts
+  passed 57 tests. The renderer and main-process dialog use mocked IPC.
+There is still a crash window between replacing reset state and saving an edit
+made during reset; this test does not simulate process or machine failure.
+
 bun run typecheck and targeted oxlint and oxfmt checks passed for the changes.
 Tests used generated temporary files and mocked IPC; no existing project, live
 capture, native window, or export was exercised.

@@ -4933,7 +4933,11 @@ replacement atomically and waits for outstanding saves; saves requested by that
 renderer during a successful reset cannot restore stale edits. The [regression evidence](tests/native/evidence/macos-ui/video-editor-reset-persistence-20261117.txt)
 covers failed replacement, metadata preservation and concurrent close/reset
 using temporary projects and a simulated renderer. It does not verify a live
-editor or decoded video export.
+editor or decoded video export. If new edits arrive while reset is running, the
+renderer retains and saves those edits instead of reloading the reset state, and
+informs the user. A crash between the reset replacement and that follow-up save
+can still leave the reset state on disk; there is no crash-recovery journal for
+those in-flight edits.
 
 Both editors now write compatible project-local retention records for imported
 and removed music, and reserve recorded names when importing again. Electron
