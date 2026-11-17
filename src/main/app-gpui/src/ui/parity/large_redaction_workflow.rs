@@ -5,7 +5,10 @@ use crate::editor::annotations::Annotation;
 use crate::editor::window::EditorWindow;
 use crate::history_store::{HistoryItem, HistoryItemType};
 
-use super::{px, settle, size, HeadlessAppContext, Path};
+use super::{
+    event, point, px, settle, size, HeadlessAppContext, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Path, PlatformInput,
+};
 
 pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
     for style in ["none", "pixelate", "blur"] {
@@ -22,6 +25,10 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(0.25);
+    let dpi = std::env::var("PORATAKE_PARITY_LARGE_DPI")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(1.);
     let source = scratch.join(format!("large-{style}.png"));
     image::RgbaImage::from_fn(source_width, 2160, |x, y| {
         let red = if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 };
@@ -57,7 +64,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     );
     let editor = cx
         .open_window(size(px(1280.), px(738.)), |window, cx| {
-            window.set_scale_factor(1.);
+            window.set_scale_factor(dpi);
             cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
         })
         .unwrap();
@@ -87,7 +94,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     std::fs::write(&flattened_path, &png).unwrap();
     let flattened = cx
         .open_window(size(px(1280.), px(738.)), |window, cx| {
-            window.set_scale_factor(1.);
+            window.set_scale_factor(dpi);
             cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
         })
         .unwrap();
@@ -99,6 +106,43 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         })
         .unwrap();
     settle(cx, flattened.into());
+    if std::env::var_os("PORATAKE_PARITY_LARGE_PAN").is_some() {
+        let original = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+        for window in [editor, flattened] {
+            let modifiers = Modifiers {
+                platform: true,
+                control: true,
+                ..Modifiers::none()
+            };
+            let start = point(px(600.), px(400.));
+            let end = point(px(400.), px(260.));
+            for input in [
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position: start,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers,
+                    first_mouse: false,
+                }),
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: end,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                }),
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position: end,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    modifiers,
+                }),
+            ] {
+                event(cx, window.into(), input);
+            }
+            settle(cx, window.into());
+        }
+        let moved = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+        assert_ne!(original.origin, moved.origin, "the drag must pan the image");
+    }
     let (bounds, flat_bounds) = cx.update(|cx| {
         (
             editor.read(cx).unwrap().bounds.borrow().unwrap(),
@@ -107,7 +151,10 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     });
     let preview = cx.capture_screenshot(editor.into()).unwrap();
     let expected = cx.capture_screenshot(flattened.into()).unwrap();
-    let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
+    let snap = |value: f32| {
+        let value = value * dpi;
+        (value.abs() - 0.5).ceil().copysign(value) as u32
+    };
     let (left, top, flat_left, flat_top, width, height) = if zoom == 0.25 {
         let left = snap(f32::from(bounds.left()));
         let top = snap(f32::from(bounds.top()));
@@ -115,7 +162,13 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         let flat_top = snap(f32::from(flat_bounds.top()));
         let width = snap(f32::from(bounds.right())) - left;
         let height = snap(f32::from(bounds.bottom())) - top;
-        assert_eq!((width, height), (source_width / 4, 540));
+        assert_eq!(
+            (width, height),
+            (
+                (source_width as f32 * zoom * dpi) as u32,
+                (2160. * zoom * dpi) as u32
+            )
+        );
         assert_eq!(
             (width, height),
             (
@@ -164,7 +217,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         .save(scratch.join(format!("large-{style}-expected.png")))
         .unwrap();
     println!(
-        "large {source_width}x2160 {style} at {zoom}x: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
+        "large {source_width}x2160 {style} at {zoom}x, display {dpi}x: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
         width * height,
         total as f64 / f64::from(width * height)
     );

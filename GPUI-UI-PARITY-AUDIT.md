@@ -3384,6 +3384,15 @@ covers 180 cases per appearance across simulated 100%, 125% and 200% display
 scales. This verifies the generated editor and saved-image comparisons only;
 it does not establish the result of a live capture or physical DPI change.
 
+The large-image workflow now also dispatches a simulated Command-drag to both
+the annotated editor and reopened PNG, asserts that the image moved, and
+compares their visible regions after panning. In both appearances at simulated
+100%, 125% and 200% display scale, pixelation and blur match within one channel
+level at 100% zoom. At 25% zoom, the complete displayed image also matches
+within one level at simulated 125% and 200%. The [measurements](tests/native/evidence/macos-ui/large-redaction-pan-dpi-20261117.txt)
+cover generated content and a 1280×738-point scratch editor; physical input,
+real display transitions and actual captures remain open.
+
 The framed-attachment Metal workflow now also places a narrow red annotation
 before and after blur and pixelation crossing the primary/right-attachment seam.
 For macOS light and dark frame styles, translucent source content, both app
