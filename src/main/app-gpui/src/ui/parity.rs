@@ -1032,6 +1032,13 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_SCALED_WALLPAPER_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        workflows::scaled_wallpaper_preview(&mut cx, &scratch);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_LARGE_TEXTURE_SAMPLING_ONLY").is_some() {
         large_texture_sampling::run(&mut cx, &scratch);
         cx.update(|cx| crate::state::state(cx).daemon.stop());

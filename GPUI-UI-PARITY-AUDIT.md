@@ -2643,8 +2643,13 @@ Bugs fixed in this pass:
   found that GPUI omitted Electron's expansion of the wallpaper before blur.
   The renderer now uses expanded cover geometry, reducing the maximum error in
   one high-contrast margin from 43 to 13 channel levels. A patterned wallpaper
-  still differs visibly: the tested margins have mean maximum-channel errors
-  around seven levels and maxima up to 18. The remaining cause is unconfirmed.
+  still differs visibly. A [sampling follow-up](tests/native/evidence/macos-ui/wallpaper-image-sampling-20261117.txt)
+  uses bicubic sampling for screenshot image wallpapers, matching Electron's
+  high-quality setting on a normal-sized generated fixture. The same follow-up
+  measures oversized patterned margins with mean maximum-channel errors of
+  4.496 to 10.306 levels and maxima up to 24. Electron changes its sampling
+  behavior for the oversized canvas on this Mac; the full cross-device cause
+  remains unconfirmed.
   An [annotation seam check](tests/native/evidence/macos-ui/oversized-rounded-annotation-20261117.txt)
   exercises blackout, blur and pixelation across a tile boundary. At simulated
   100% and 200%, 192 visible-region comparisons matched reopened PNGs within

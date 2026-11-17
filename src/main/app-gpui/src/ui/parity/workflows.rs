@@ -8131,6 +8131,17 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 96, 160, 128]))
         .save(&alpha_background)
         .unwrap();
+    let pattern_background = scratch.join("scaled-wallpaper-pattern-background.png");
+    image::RgbaImage::from_fn(64, 48, |x, y| {
+        image::Rgba([
+            ((x * 37 + y * 3) % 256) as u8,
+            ((y * 53 + x * 5) % 256) as u8,
+            ((x * 11 + y * 7) % 256) as u8,
+            ((x * 19 + y * 17) % 256) as u8,
+        ])
+    })
+    .save(&pattern_background)
+    .unwrap();
     for (scale, padding, background, blurred) in [
         (1.25_f32, 25_u32, "slate", false),
         (2., 40, "slate", false),
@@ -8140,6 +8151,10 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         (2., 40, "alpha-gradient", false),
         (1.25, 25, "alpha-image", false),
         (2., 40, "alpha-image", false),
+        (1.25, 25, "pattern-image", false),
+        (2., 40, "pattern-image", false),
+        (1.25, 25, "pattern-image", true),
+        (2., 40, "pattern-image", true),
         (1.25, 25, "slate", true),
         (2., 40, "slate", true),
     ] {
@@ -8159,6 +8174,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     )),
                     "alpha-image" => editor.wallpaper.set_background_image(Some(
                         alpha_background.to_string_lossy().into_owned(),
+                    )),
+                    "pattern-image" => editor.wallpaper.set_background_image(Some(
+                        pattern_background.to_string_lossy().into_owned(),
                     )),
                     _ => unreachable!(),
                 }
@@ -8192,12 +8210,19 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             )
         });
         assert_eq!(saved.dimensions(), (640 + 2 * padding, 360 + 2 * padding));
-        let mut expected = saved.clone();
-        if background != "slate" {
+        if background == "pattern-image" {
+            saved
+                .save(scratch.join(format!("scaled-wallpaper-pattern-{scale}-{blurred}.png")))
+                .unwrap();
+        }
+        if background != "slate" && background != "pattern-image" {
             assert_eq!(
                 saved.get_pixel(0, 0).0[3],
                 if background == "none" { 0 } else { 128 }
             );
+        }
+        let mut expected = saved.clone();
+        if saved.pixels().any(|pixel| pixel.0[3] != 255) {
             expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }

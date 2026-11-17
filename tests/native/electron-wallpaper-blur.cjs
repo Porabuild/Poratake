@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const [imagePath, outputPath, widthValue, heightValue, blurValue] =
+const [imagePath, outputPath, widthValue, heightValue, blurValue, ...options] =
   process.argv.slice(2);
 const [width, height, blur] = [widthValue, heightValue, blurValue].map(Number);
 assert.ok(imagePath && outputPath && width > 0 && height > 0 && blur >= 0);
@@ -35,9 +35,14 @@ app
     const body = source.slice(start, end);
     const signatureEnd = body.indexOf(') => {');
     assert.ok(signatureEnd >= 0);
-    const render =
+    let render =
       'const renderBackgroundImageToCanvas = (ctx, bgImage, width, height, blurRadius = 0) => {' +
       body.slice(signatureEnd + 6).replaceAll(': number;', ';');
+    if (options.includes('--unfiltered')) {
+      assert.ok(render.includes('if (blurRadius > 0)'));
+      render = render.replace('if (blurRadius > 0)', 'if (false)');
+    }
+    const quality = options.includes('--low') ? 'low' : 'high';
     const image = fs.readFileSync(imagePath).toString('base64');
     const png = await window.webContents.executeJavaScript(`(async () => {
     ${render}
@@ -49,7 +54,7 @@ app
     canvas.height = ${height};
     const context = canvas.getContext('2d');
     context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = 'high';
+    context.imageSmoothingQuality = '${quality}';
     renderBackgroundImageToCanvas(context, image, ${width}, ${height}, ${blur});
     return canvas.toDataURL('image/png').split(',')[1];
   })()`);
