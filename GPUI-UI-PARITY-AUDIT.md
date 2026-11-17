@@ -4665,6 +4665,19 @@ benchmark; decode, GPU upload, real playback and slower hardware remain open.
 The [commands and results](tests/native/evidence/macos-ui/video-redaction-camera-crop-fix-20261117.txt)
 include the residual diagnostic and timing probe.
 
+A separate generated recording combines a patterned camera, rounded corners,
+shadow, zoom and overlapping pixelation. At three times its 160×90 composition
+preview matched the resized full composition exactly in the 20×20 effect area;
+decoded H.264 averaged 0.34–0.36 RGB levels away. Controls confirm the camera
+is visible and pixelation changes its pixels. The [test and measurements](tests/native/evidence/macos-ui/rounded-camera-redaction-export-20261117.txt)
+use temporary generated media and do not render the editor window or exercise
+physical capture. In the largest remaining 512-case mismatch, a separate source
+crop comparison differed by 28 levels at one channel on the crop boundary.
+Removing rectangles eliminated this difference; removing redactions did not.
+The [diagnostic and controls](tests/native/evidence/macos-ui/video-redaction-rectangle-crop-20261117.txt)
+identify a separate open crop-edge issue, not a general explanation for every
+residual pixel.
+
 Fitted video previews previously used the unrounded fit scale after rounding
 their output dimensions, whereas export scales to the dimensions actually
 allocated. A generated 31×19 frame fitted to 12×7 differed in 156 of 336 RGBA

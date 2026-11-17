@@ -1,0 +1,122 @@
+diff --git a/src/main/app-gpui/src/video/composition/redaction_matrix_tests.rs b/src/main/app-gpui/src/video/composition/redaction_matrix_tests.rs
+index 3a9588d6..9b3d9d49 100644
+--- a/src/main/app-gpui/src/video/composition/redaction_matrix_tests.rs
++++ b/src/main/app-gpui/src/video/composition/redaction_matrix_tests.rs
+@@ -39,7 +39,10 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
+     let mut reversed = 0;
+     let mut overlapping = 0;
+     let mut intensities = [false; 10];
+-    for case in 0_u32..48 {
++    let mut mismatches = 0;
++    let mut max_difference = 0;
++    let mut worst = String::new();
++    for case in 0_u32..512 {
+         let mut config = Config::new(96.0, 64.0, state());
+         let (author_width, author_height) = match case % 3 {
+             0 => (96.0, 64.0),
+@@ -141,6 +144,79 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
+         let mut unredacted = Engine::new(unredacted_config);
+         let mut engine = Engine::new(config);
+         let full = engine.render_frame(1.0, frames).unwrap();
++        if case == 121 {
++            for variant in 0..4 {
++                let mut state = engine.config().state.clone();
++                if variant == 1 {
++                    state.drawing_segments[0].annotations.retain(|a| !matches!(a, Annotation::Redact { .. }));
++                }
++                if variant == 2 {
++                    state.drawing_segments[0].annotations.retain(|a| !matches!(a, Annotation::Rectangle { .. }));
++                }
++                if variant == 3 {
++                    state.drawing_segments.clear();
++                }
++                let mut engine = Engine::new(Config::new(96.0, 64.0, state));
++                let full = engine.render_frame(1.0, frames).unwrap();
++                let mut crop = Canvas::new(13, 30).unwrap();
++                crop.translate(-81.0, -26.0);
++                engine.render_into(&mut crop, 1.0, frames);
++                let mut count = 0;
++                let mut maximum = 0;
++                let mut worst = String::new();
++                for y in 26..56 {
++                    for x in 81..94 {
++                        for c in 0..4 {
++                            let a = full.data()[((y * 96 + x) * 4 + c) as usize];
++                            let b = crop.pixmap().data()[(((y - 26) * 13 + x - 81) * 4 + c) as usize];
++                            let diff = a.abs_diff(b);
++                            count += usize::from(diff > 0);
++                            if diff > maximum { maximum = diff; worst = format!("{x},{y} channel {c}: {a} vs {b}"); }
++                        }
++                    }
++                }
++                eprintln!("case 121 variant {variant}: {count} differing channels, max {maximum} at {worst}");
++            }
++        }
++        if case == 315 {
++            for variant in 0..9 {
++                let mut state = engine.config().state.clone();
++                if variant == 1 { state.camera_segments.clear(); }
++                if variant == 2 { state.zoom_segments.clear(); }
++                if variant == 3 { state.drawing_segments.clear(); }
++                if variant == 4 { state.camera_style.shadow = 0.0; }
++                if variant == 5 { state.camera_style.border_radius = 0.0; }
++                let (left, top, right, bottom) = match variant {
++                    6 => (58, 48, 81, 64),
++                    7 => (55, 45, 84, 64),
++                    8 => (43, 33, 96, 64),
++                    _ => (59, 49, 80, 64),
++                };
++                let mut variant_engine = Engine::new(Config::new(96.0, 64.0, state));
++                let full = variant_engine.render_frame(1.0, frames).unwrap();
++                let mut crop = Canvas::new(right - left, bottom - top).unwrap();
++                crop.translate(-(left as f32), -(top as f32));
++                variant_engine.render_into(&mut crop, 1.0, frames);
++                let mut differences = 0;
++                let mut maximum = 0;
++                let mut worst = String::new();
++                for y in 49..64 {
++                    for x in 59..80 {
++                        for c in 0..4 {
++                            let a = full.data()[((y * 96 + x) * 4 + c) as usize];
++                            let b = crop.pixmap().data()[(((y - top) * (right - left) + x - left) * 4 + c) as usize];
++                            let diff = a.abs_diff(b);
++                            if diff > 0 {
++                                differences += 1;
++                                if diff > maximum { worst = format!("{x},{y} channel {c}: {a} vs {b}"); }
++                                maximum = maximum.max(diff);
++                            }
++                        }
++                    }
++                }
++                eprintln!("variant {variant} source differences: {differences}, max {maximum} at {worst}");
++            }
++        }
+         for (width, height) in [(48, 32), (73, 49), (29, 19), (145, 97)] {
+             let scale_x = width as f32 / 96.0;
+             let scale_y = height as f32 / 64.0;
+@@ -184,8 +260,17 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
+                     for channel in 0..4 {
+                         let actual = preview.data()[offset + channel];
+                         let expected = expected[offset + channel];
+-                        assert!(actual.abs_diff(expected) <= u8::from(inside),
+-                            "case {case} output {width}x{height} at {x},{y}, channel {channel}, inside={inside}: {actual} vs {expected}, regions={regions:?}");
++                        let difference = actual.abs_diff(expected);
++                        if difference > u8::from(inside) {
++                            mismatches += 1;
++                            if difference > max_difference {
++                                worst = format!("case {case} output {width}x{height} at {x},{y}, channel {channel}: {actual} vs {expected}, annotations={:?}", engine.config().state.drawing_segments[0].annotations);
++                            }
++                            max_difference = max_difference.max(difference);
++                            if mismatches <= 12 {
++                                eprintln!("case {case} output {width}x{height} at {x},{y}, channel {channel}, inside={inside}: {actual} vs {expected}, regions={regions:?}");
++                            }
++                        }
+                         if outside {
+                             let untouched = without_effects.pixmap().data()[offset + channel];
+                             assert_eq!(actual, untouched, "redaction changed neighboring pixel: case {case}, output {width}x{height}, {x},{y}, channel {channel}");
+@@ -202,4 +287,5 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
+     assert!(intensities.into_iter().all(|seen| seen));
+     println!("Checked {checked_inside} effect pixels and {checked_outside} outside pixels");
+     println!("Effects: {blurred} blur, {pixelated} pixelation, {clipped} clipped, {reversed} reverse-dragged, {overlapping} overlapping");
++    assert_eq!(mismatches, 0, "{mismatches} mismatches, max difference {max_difference}: {worst}");
+ }
