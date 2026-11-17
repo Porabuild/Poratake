@@ -4926,6 +4926,15 @@ Electron now also replaces its video state atomically and waits for queued
 edits to save before closing. A failed save leaves its editor open. Music-file
 collection remains open.
 
+Electron autosave previously dropped `sourceDuration`, which both editors and
+reset use as recording metadata. It now preserves the saved duration or stores
+the discovered duration for a project without one. Reset also writes its
+replacement atomically and waits for outstanding saves; saves requested by that
+renderer during a successful reset cannot restore stale edits. The [regression evidence](tests/native/evidence/macos-ui/video-editor-reset-persistence-20261117.txt)
+covers failed replacement, metadata preservation and concurrent close/reset
+using temporary projects and a simulated renderer. It does not verify a live
+editor or decoded video export.
+
 Both editors now write compatible project-local retention records for imported
 and removed music, and reserve recorded names when importing again. Electron
 also creates imported files exclusively to prevent concurrent imports from

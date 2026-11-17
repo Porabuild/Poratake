@@ -1,0 +1,29 @@
+macOS Electron video editor persistence, 2026-11-17
+
+bun run test tests/renderer/video-editor/state-close.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  24 passed after the source-duration fix. The renderer tests cover a saved
+  duration, a discovered duration and invalid discovered metadata. The main
+  process tests cover reset's use of the duration and generated segment.
+
+bun run test tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/renderer/video-editor/state-close.test.ts
+  32 passed after atomic reset. Temporary-project tests inject a rename
+  failure and verify the original state and music survive; a successful reset
+  preserves the original duration and recording type.
+
+Before serializing reset and autosaves, two renderer regression cases failed:
+an autosave ran during reset, and a failed reset did not promptly save the
+latest edit. After the fix, bun run test
+  tests/renderer/video-editor/state-close.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 23 tests, including a close request during reset and a failed reset.
+
+bun run typecheck and targeted oxlint and oxfmt checks passed for the changes.
+Tests used generated temporary files and mocked IPC; no existing project, live
+capture, native window, or export was exercised.
