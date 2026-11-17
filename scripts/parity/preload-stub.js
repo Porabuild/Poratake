@@ -4,6 +4,23 @@
 // Loaded by `vite.renderer.mts` before the renderer entrypoint.
 //
 const query = new URLSearchParams(location.search);
+if (query.has('traceMedia')) {
+  window.parityMediaEvents = [];
+  for (const type of ['loadeddata', 'error']) {
+    document.addEventListener(
+      type,
+      event => {
+        if (event.target instanceof HTMLVideoElement) {
+          window.parityMediaEvents.push({
+            type,
+            readyState: event.target.readyState,
+          });
+        }
+      },
+      true
+    );
+  }
+}
 window.appPlatform = query.get('platform') || 'win32';
 
 const APPEARANCE = {
@@ -115,7 +132,8 @@ const windowParams = async () => {
     case 'capture-preview':
       return {
         filePath: FILE,
-        contentType: 'screenshot',
+        contentType:
+          query.get('contentType') === 'video' ? 'video' : 'screenshot',
         imageUrl: IMAGE,
       };
     case 'recording-control':

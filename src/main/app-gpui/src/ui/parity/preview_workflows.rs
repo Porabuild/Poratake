@@ -53,6 +53,96 @@ impl Render for MultiDisplayPreview {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn video_thumbnail_edge_energy(image: &image::RgbaImage, scale: f32) -> f64 {
+    let mut difference = 0u64;
+    let mut count = 0u64;
+    for y in 42..105 {
+        for x in 12..70 {
+            let pixel = image.get_pixel(
+                (x as f32 * scale).round() as u32,
+                (y as f32 * scale).round() as u32,
+            );
+            let next = image.get_pixel(
+                ((x + 1) as f32 * scale).round() as u32,
+                (y as f32 * scale).round() as u32,
+            );
+            for channel in 0..3 {
+                difference += u64::from(pixel[channel].abs_diff(next[channel]));
+                count += 1;
+            }
+        }
+    }
+    difference as f64 / count as f64
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn video_blur(cx: &mut HeadlessAppContext, output: &Path, video: &Path, scale: f32) {
+    assert!(video.is_file());
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+        });
+        CapturePreviewWindow::open_video(cx, video.to_owned());
+    });
+    let preview = cx
+        .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+        .unwrap();
+    cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, preview);
+    cx.run_until_parked();
+    let view = cx
+        .update_window(preview, |view, _, _| {
+            view.downcast::<CapturePreviewWindow>().unwrap()
+        })
+        .unwrap();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((false, true, false)),
+        "idle video should decode without blur"
+    );
+    capture(cx, preview, output, "video-thumbnail-idle");
+    let idle = video_thumbnail_edge_energy(&cx.capture_screenshot(preview).unwrap(), scale);
+    let hovered = cx
+        .open_window(size(px(208.), px(148.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|_| HoveredPreview {
+                preview: view.clone(),
+            })
+        })
+        .unwrap()
+        .into();
+    settle(cx, hovered);
+    hover(cx, hovered, 45., 70.);
+    settle(cx, hovered);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((true, true, true)),
+        "hovered video should decode a blurred frame"
+    );
+    capture(cx, hovered, output, "video-thumbnail-hover");
+    let blurred = video_thumbnail_edge_energy(&cx.capture_screenshot(hovered).unwrap(), scale);
+    assert!(blurred < idle / 4., "hover {blurred}, idle {idle}");
+    hover(cx, hovered, 207., 147.);
+    settle(cx, hovered);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((false, true, false)),
+        "video blur should stop when controls close"
+    );
+    capture(cx, hovered, output, "video-thumbnail-exit");
+    let exited = video_thumbnail_edge_energy(&cx.capture_screenshot(hovered).unwrap(), scale);
+    assert!(exited > idle / 2., "exit {exited}, idle {idle}");
+    println!("video thumbnail edge energy: idle={idle:.3}, hover={blurred:.3}, exit={exited:.3}");
+    cx.update_window(hovered, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|cx| registry::close(WindowKind::CapturePreview, cx));
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     let native_tooltips = cfg!(any(windows, target_os = "macos"));
     let single_window_size = size(

@@ -326,6 +326,20 @@ impl CapturePreviewWindow {
         })
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn video_thumbnail_status_for_parity(&self) -> Option<(bool, bool, bool)> {
+        self.previews
+            .iter()
+            .find(|preview| preview.kind == PreviewKind::Video)
+            .map(|preview| {
+                (
+                    preview.hovered,
+                    preview.image.is_some(),
+                    preview.blurred.is_some(),
+                )
+            })
+    }
+
     fn active_preview_count(&self) -> usize {
         self.previews
             .iter()

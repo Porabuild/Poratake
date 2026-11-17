@@ -937,6 +937,12 @@ pub fn capture_editor_interaction_states() {
         crate::ui::font::register(cx);
     });
     #[cfg(target_os = "macos")]
+    if let Some(video) = std::env::var_os("PORATAKE_PARITY_PREVIEW_VIDEO") {
+        preview_workflows::video_blur(&mut cx, &output, Path::new(&video), scale);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_SCROLL_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         std::fs::OpenOptions::new()

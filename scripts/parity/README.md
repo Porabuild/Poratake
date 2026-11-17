@@ -118,6 +118,41 @@ animations. `PORATAKE_PARITY_THEME`, `PORATAKE_PARITY_WIDTH` and
 `PORATAKE_PARITY_EDITOR_HEIGHT` to exercise a shorter screenshot editor; this
 also saves a full-window image for inspection. `PORATAKE_PARITY_VIDEO_HEIGHT`
 sets the height of the loaded video-editor workflow on macOS and Windows.
+
+On macOS, the recording thumbnail probe runs the video decoder and simulated
+hover/exit through the offscreen GPUI renderer. It expects a high-contrast
+checkerboard and verifies that edge detail disappears on hover and returns on
+exit. Generate the video and run the probe without accessing a screen:
+
+```sh
+probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/poratake-preview-video.XXXXXX")"
+ffmpeg -hide_banner -loglevel error -f lavfi \
+  -i "nullsrc=s=1280x720:r=5,geq=r='if(eq(mod(floor(X/80)+floor(Y/80),2),0),64,224)':g='if(eq(mod(floor(X/80)+floor(Y/80),2),0),112,232)':b='if(eq(mod(floor(X/80)+floor(Y/80),2),0),192,240)'" \
+  -t 2 -c:v h264_videotoolbox -pix_fmt yuv420p "$probe_dir/checker.mov"
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT="$probe_dir/gpui" \
+PORATAKE_PARITY_PREVIEW_VIDEO="$probe_dir/checker.mov" \
+PORATAKE_PARITY_SCALE=2 PORATAKE_PARITY_THEME=dark \
+  src/main/target/debug/poratake-gpui --parity
+```
+
+For an Electron reference, start the Vite fixture on port 5601 and then run:
+
+```sh
+./node_modules/.bin/vite --config scripts/parity/vite.renderer.mts --host 127.0.0.1 --port 5601
+```
+
+```sh
+fixture_url="http://127.0.0.1:5601/index.html?window=capture-preview&platform=darwin&contentType=video&traceMedia=1&theme=dark&image=/@fs${probe_dir}/checker.mov"
+env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron \
+  tests/native/electron-video-preview.cjs "$fixture_url" "$probe_dir/electron"
+```
+
+The Electron probe reports media events and whether its loading placeholder
+remains. Set `PORATAKE_PREVIEW_SYNTHETIC_READY=1` only to compare the decoded
+video after explicitly dispatching a `loadeddata` event; retain the unmodified
+result separately. These are hidden renderer captures, not screen captures.
+
 On macOS, the hidden native popup probe checks its frame, content geometry,
 click-through state and AppKit tooltip text replacement and clearing. It then
 checks the three hidden scroll windows against a full-display selection and
