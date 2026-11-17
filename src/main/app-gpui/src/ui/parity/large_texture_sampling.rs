@@ -9,6 +9,49 @@ use super::{
     MouseMoveEvent, MouseUpEvent, Path, PlatformInput,
 };
 
+pub(super) fn ordered_annotations(style: &str, horizontal: bool, seam: f64) -> Vec<Annotation> {
+    let rect = |long, short, long_size, short_size| {
+        if horizontal {
+            (long, short, long_size, short_size)
+        } else {
+            (short, long, short_size, long_size)
+        }
+    };
+    let (x, y, width, height) = rect(seam - 40., 60., 80., 6.);
+    let before = Annotation::Rectangle {
+        id: "before".into(),
+        x,
+        y,
+        width,
+        height,
+        stroke: "#ff0000".into(),
+        stroke_width: 2.,
+        fill: Some("#ff0000".into()),
+    };
+    let (x, y, width, height) = rect(seam - 30., 42., 60., 44.);
+    let redact = Annotation::Redact {
+        id: "redact".into(),
+        x,
+        y,
+        width,
+        height,
+        style: style.into(),
+        intensity: 5.,
+    };
+    let (x, y, width, height) = rect(seam - 10., 52., 20., 20.);
+    let after = Annotation::Rectangle {
+        id: "after".into(),
+        x,
+        y,
+        width,
+        height,
+        stroke: "#00ff00".into(),
+        stroke_width: 2.,
+        fill: Some("#00ff00".into()),
+    };
+    vec![before, redact, after]
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
     let scale = std::env::var("PORATAKE_PARITY_LARGE_DPI")
         .ok()
@@ -73,46 +116,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                         }
                         if let Some(style) = &annotation {
                             let seam = if path == &large_path { 8192. } else { 256. };
-                            let rect = |long, short, long_size, short_size| {
-                                if horizontal {
-                                    (long, short, long_size, short_size)
-                                } else {
-                                    (short, long, short_size, long_size)
-                                }
-                            };
-                            let (x, y, width, height) = rect(seam - 40., 60., 80., 6.);
-                            let before = Annotation::Rectangle {
-                                id: "before".into(),
-                                x,
-                                y,
-                                width,
-                                height,
-                                stroke: "#ff0000".into(),
-                                stroke_width: 2.,
-                                fill: Some("#ff0000".into()),
-                            };
-                            let (x, y, width, height) = rect(seam - 30., 42., 60., 44.);
-                            let redact = Annotation::Redact {
-                                id: "redact".into(),
-                                x,
-                                y,
-                                width,
-                                height,
-                                style: style.clone(),
-                                intensity: 5.,
-                            };
-                            let (x, y, width, height) = rect(seam - 10., 52., 20., 20.);
-                            let after = Annotation::Rectangle {
-                                id: "after".into(),
-                                x,
-                                y,
-                                width,
-                                height,
-                                stroke: "#00ff00".into(),
-                                stroke_width: 2.,
-                                fill: Some("#00ff00".into()),
-                            };
-                            editor.history.push(vec![before, redact, after]);
+                            editor
+                                .history
+                                .push(ordered_annotations(style, horizontal, seam));
                         }
                         cx.notify();
                     })

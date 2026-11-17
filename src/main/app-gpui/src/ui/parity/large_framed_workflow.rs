@@ -5,7 +5,10 @@ use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::GradientOption;
 use crate::editor::window::EditorWindow;
 
-use super::{large_texture_sampling::pan, measured, px, settle, size, HeadlessAppContext, Path};
+use super::{
+    large_texture_sampling::{ordered_annotations, pan},
+    measured, px, settle, size, HeadlessAppContext, Path,
+};
 
 pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
     let scale = std::env::var("PORATAKE_PARITY_LARGE_DPI")
@@ -39,6 +42,21 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         std::env::var_os("PORATAKE_PARITY_LARGE_TRANSPARENT_BACKGROUND").is_some();
     let background = std::env::var("PORATAKE_PARITY_LARGE_BACKGROUND_COLOR")
         .unwrap_or_else(|_| "#203060".into());
+    let image_background = std::env::var("PORATAKE_PARITY_LARGE_IMAGE_ALPHA")
+        .ok()
+        .map(|value| value.parse::<u8>().unwrap());
+    let background_blur = std::env::var("PORATAKE_PARITY_LARGE_BACKGROUND_BLUR")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
+    let wallpaper_path = scratch.join("large-wallpaper.png");
+    if let Some(alpha) = image_background {
+        image::RgbaImage::from_fn(64, 48, |x, y| {
+            image::Rgba([(x * 3) as u8, (y * 5) as u8, (x * 2 + y) as u8, alpha])
+        })
+        .save(&wallpaper_path)
+        .unwrap();
+    }
     let pan_first = std::env::var_os("PORATAKE_PARITY_LARGE_PAN_FIRST").is_some();
     let save_images = std::env::var_os("PORATAKE_PARITY_LARGE_SAVE_IMAGES").is_some();
     assert!(zoom == 0.25 || zoom == 0.5 || zoom == 1.0);
@@ -74,7 +92,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 .unwrap();
             editor
                 .update(cx, |editor, _, cx| {
-                    if !transparent_background {
+                    if image_background.is_some() {
+                        editor.wallpaper.set_background_image(Some(
+                            wallpaper_path.to_string_lossy().into_owned(),
+                        ));
+                    } else if !transparent_background {
                         editor.wallpaper.gradient = Some(GradientOption {
                             id: "framed".into(),
                             colors: vec![background.clone()],
@@ -82,13 +104,18 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                         });
                     }
                     editor.wallpaper.padding = padding;
+                    editor.wallpaper.background_blur = background_blur;
                     editor.wallpaper.inset = inset;
                     editor.wallpaper.corners = corners;
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.window_frame.style = style.clone();
                     if let Some(style) = annotation.as_ref().filter(|style| *style != "interactive")
                     {
-                        if style.starts_with("corner") {
+                        if let Some(redaction) = style.strip_prefix("ordered-") {
+                            editor
+                                .history
+                                .push(ordered_annotations(redaction, horizontal, 8192.));
+                        } else if style.starts_with("corner") {
                             let mut annotations = Vec::new();
                             if style != "corner-blackout" {
                                 annotations.push(Annotation::Rectangle {
@@ -186,7 +213,13 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 (editor.export_png().unwrap(), snapshot.frame_scale)
             });
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
-            if transparent_background {
+            if let Some(alpha) = image_background {
+                assert_eq!(output.get_pixel(0, 0).0[3], alpha);
+                assert_ne!(
+                    output.get_pixel(0, 0),
+                    output.get_pixel(output.width() - 1, output.height() - 1)
+                );
+            } else if transparent_background {
                 assert_eq!(output.get_pixel(0, 0).0[3], 0);
             } else if background == "#20306080" {
                 assert_eq!(output.get_pixel(0, 0).0[3], 128);
@@ -258,6 +291,45 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     &settings.window_frame.style,
                     frame_scale,
                 )) as u32;
+            if annotation
+                .as_ref()
+                .is_some_and(|style| style.starts_with("ordered-"))
+            {
+                let unredacted_png = editor
+                    .update(cx, |editor, _, _| {
+                        let original = editor.history.current().to_vec();
+                        let without = original
+                            .iter()
+                            .filter(|item| !matches!(item, Annotation::Redact { .. }))
+                            .cloned()
+                            .collect();
+                        editor.history.replace_current(without);
+                        let png = editor.export_png().unwrap();
+                        editor.history.replace_current(original);
+                        png
+                    })
+                    .unwrap();
+                let unredacted = image::load_from_memory(&unredacted_png).unwrap().to_rgba8();
+                let point = |long, short| {
+                    if horizontal {
+                        (ox + long, oy + short)
+                    } else {
+                        (ox + short, oy + long)
+                    }
+                };
+                let modified = (8162..8222)
+                    .flat_map(|long| (42..86).map(move |short| point(long, short)))
+                    .filter(|(x, y)| output.get_pixel(*x, *y) != unredacted.get_pixel(*x, *y))
+                    .count();
+                println!("ordered redaction effect horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(modified > 100, "redaction must change the underlying image");
+                let (x, y) = point(8192, 62);
+                assert_eq!(output.get_pixel(x, y).0, [0, 255, 0, 255]);
+                if annotation.as_deref() == Some("ordered-blackout") {
+                    let (x, y) = point(8172, 62);
+                    assert_eq!(output.get_pixel(x, y).0, [0, 0, 0, 255]);
+                }
+            }
             if annotation.as_deref() == Some("blackout") {
                 let (x, y) = if horizontal {
                     (ox + 8192, oy + 64)

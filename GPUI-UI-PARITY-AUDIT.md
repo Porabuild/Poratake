@@ -2632,6 +2632,14 @@ Bugs fixed in this pass:
   visible-region comparisons matched reopened PNGs within one level, and
   controls confirmed that the enabled corner and shadow settings changed the
   exported pixels.
+  An [ordered annotation and image-wallpaper check](tests/native/evidence/macos-ui/oversized-ordered-image-wallpaper-20261117.txt)
+  covers a preceding shape, blackout/blur/pixelation and a following shape at
+  a tile seam. Its 120 generated preview comparisons matched reopened PNGs
+  within two channel levels. It also exposed a separate transparency bug:
+  background blur drew a second copy over the original, raising a 50%-alpha
+  wallpaper to 75% alpha. The shared renderer now blurs in place. The check
+  includes image wallpapers with and without blur; exact equivalence to
+  Electron's blur kernel and image cover remains unverified.
   An [annotation seam check](tests/native/evidence/macos-ui/oversized-rounded-annotation-20261117.txt)
   exercises blackout, blur and pixelation across a tile boundary. At simulated
   100% and 200%, 192 visible-region comparisons matched reopened PNGs within

@@ -1,0 +1,39 @@
+macOS GPUI oversized rounded screenshot and translucent blur, 2026-11-17
+
+An isolated Metal fixture used generated 17,024x128 and 128x17,024 screenshots
+with either opaque or varying-alpha source pixels. It used an unframed image,
+20px padding, 24px rounded corners, no shadow or inset, and a generated 64x48
+image wallpaper with alpha 128 or 255. The red stripe, redaction, and green
+rectangle overlap at the 8,192px tile seam, in that order. Export assertions
+check the final green rectangle, a blacked-out part of the preceding stripe, and
+a control export with the redaction removed. All 60 controls changed 2,168
+pixels in the redaction bounds.
+
+Twelve runs covered blackout, blur and pixelation; simulated scales 1.25 and 2;
+and wallpaper alpha 128 and 255. The alpha-128 runs used light appearance and
+25% zoom; the alpha-255 runs used dark appearance and 50% zoom. Three further
+runs covered the same redactions with a blurred alpha-128 image wallpaper at
+simulated 1.25 scale (light/25% for blackout and pixelation; dark/50% for blur).
+For both source orientations and alpha patterns, the fixture compared visible
+preview pixels with the reopened PNG before and after panning to the seam. All
+120 comparisons had zero pixels more than two levels apart; the maximum channel
+difference was two. Outer wallpaper alpha was checked in every saved PNG.
+
+Before the fix, the blurred alpha-128 wallpaper exported alpha 192: GPUI drew
+the blurred pixels over the original. A gradient regression also failed before
+the fix. The shared background painter now blurs in place, and that regression
+passes for alpha 0, 64, 128 and 255 while checking that blur changes pixels.
+Electron's wallpaper renderer applies blur to a single background draw; these
+fixtures do not establish exact visual equivalence to Electron's blur kernel or
+image cover calculation. The blur fix is e9d24294.
+
+An existing composed, unrounded oversized seam fixture was rerun after sharing
+the ordered annotation setup. It passed at simulated 1.25 scale and 50% zoom
+with a blackout, both source orientations and both source alpha patterns.
+
+Example (also vary style, DPI, wallpaper alpha, zoom, theme and blur as above):
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-ordered-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.25 PORATAKE_PARITY_LARGE_FRAME=none PORATAKE_PARITY_LARGE_CORNERS=24 PORATAKE_PARITY_LARGE_IMAGE_ALPHA=128 PORATAKE_PARITY_LARGE_BACKGROUND_BLUR=12 PORATAKE_PARITY_LARGE_ANNOTATION=ordered-blackout PORATAKE_PARITY_THEME=light src/main/target/debug/poratake-gpui --parity
+
+The source images and interactions are synthetic. This does not establish live
+capture, physical display behavior, full Electron equivalence, or peak memory
+and interactive performance for large images.
