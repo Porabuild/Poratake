@@ -1,0 +1,50 @@
+macOS GPUI area recording with a protected tooltip, 2026-11-17
+
+The un-packaged GPUI development app started an area recording against a
+generated blue window. The temporary daemon first preflighted Screen Recording
+access and refused denied access or any enabled microphone, camera, system
+audio or iOS device. It forced keyboard tracking off, disabled ScreenCaptureKit
+audio and cursor event monitors, and made freeze prewarming a no-op. The GPUI
+recording handoff, protected tooltip, capture-window registry and recording
+filter update remained unchanged. No privacy setting or media permission was
+changed, and no permission prompt was triggered.
+
+The selected area was (508,46), 684x264 points at 2x. During the recording,
+the GPUI bar was at (726,57), 276x44 points. A foreground physical drag onto a
+recording control opened the daemon's protected tooltip at (753,105), 105x22
+points, layer 1001. While the macOS window list still showed the tooltip, the
+fixture displayed an 80x40-point green timing marker at (520,258). A physical
+drag away removed the tooltip. The fixture then displayed an ordinary magenta
+window at exactly the tooltip's former bounds and layer, before hiding it.
+
+The [video-only movie](native-gpui-tooltip-exclusion-area-20261117.mov) has
+166 H.264 frames, 1368x528 pixels and a 90.408-second duration. At the first
+frame with the green marker, the 250x84-pixel region around the former tooltip
+was byte-identical to the uniform-blue baseline. That region stayed identical
+for frames 74 through 135 (43.208–74.457 seconds), including time after the
+tooltip was dismissed. The [protected-frame image](native-gpui-tooltip-exclusion-protected-20261117.png)
+shows the green marker without a tooltip or recording bar. The positive control
+appeared in frames 136 through 153 (74.557–83.932 seconds); a stable frame
+contained 9,240 magenta pixels, exactly 210x44. The [positive-control image](native-gpui-tooltip-exclusion-positive-20261117.png)
+shows the same screen location was captured for an ordinary window.
+
+The baseline is one RGB color (24,80,157). Across all frames outside the two
+synthetic panels and four-pixel margins, the maximum change from baseline was
+eight RGB levels; the GPUI recording control and selection borders were absent.
+The movie SHA-256 is
+`135f412c3c5b731dcf86a9d597cb445df07c4be107f2d252a6d41496e8bef327`.
+
+The smoke command reported `start true`, then `stop false` because the macOS
+stop is asynchronous; a later `status false`, the finalized movie and state,
+and the absence of recording control and dim windows confirmed completion.
+The generated windows and temporary GPUI app exited, and the existing editor
+remained open. This verifies one GPUI area-recording handoff with audio and
+input tracking disabled. Screenshot exclusion, screen and window recording
+targets, other displays and ordinary unpressed physical hover remain unverified.
+
+Inspect the movie's timestamps and tooltip region with:
+
+```sh
+ffprobe -v error -select_streams v:0 -show_entries frame=best_effort_timestamp_time -of csv=p=0 tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.mov
+ffmpeg -v quiet -i tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.mov -vf 'crop=250:84:470:98' -fps_mode passthrough -pix_fmt rgb24 -f rawvideo /tmp/poratake-gpui-tooltip-region.rgb
+```
