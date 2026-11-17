@@ -1,0 +1,34 @@
+macOS floating control pointer and tooltip probe, 2026-11-17
+
+The current GPUI development executable ran --native-ui-probe with a temporary
+profile, the development daemon, and the normal floating window level (101).
+The probe generated its own preview image and disabled microphone, camera and
+system audio. The computer-use helper reported its existing Accessibility and
+Screen Recording grants. No Poratake capture or recording was started.
+
+The helper delivered foreground drags while the isolated controls were above
+the Poracode window. It reported delivery as unverified, so the probe's own
+status and the macOS window list were used to check the resulting state:
+
+- A drag from the recording bar's empty separator onto Start recording was
+  followed by `record-tooltip-status: Start recording`. The pointer was at
+  (747,92), the bar was (726,57) 276x44 points, and a daemon tooltip window was
+  (768,105) 100x22 points. Its top was four points below the bar.
+- Moving to the empty separator gave `record-tooltip-status: none`. A second
+  drag onto Start recording restored the Start recording status. Dragging from
+  the separator across the bar to Close gave `record-tooltip-status: Close`;
+  macOS listed the tooltip at (982,105) 50x22 points.
+- A drag inside the generated bottom-right preview to Close gave
+  `tooltip-status: Close preview`. The preview was (1500,949) 208x148 points,
+  and the daemon tooltip was (1537,923) 94x22 points. Its bottom was four
+  points above the preview. A further drag to Delete gave
+  `tooltip-status: Delete screenshot`.
+- The pointer subsequently moved away from the preview. The probe then reported
+  `card=false, pointer=false, window=false` and `tooltip-status: none`.
+
+The pointer drags held a button while moving; they do not establish ordinary
+unpressed hover transitions. The final status establishes that GPUI cleared its
+request, but no window-list observation was retained at the tooltip's former
+location after exit. Tooltip pixels in a live ScreenCaptureKit recording,
+mixed-DPI placement and other displays remain unverified. The helper was disabled
+and the isolated probe exited normally; the existing editor process remained open.
