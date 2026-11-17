@@ -5112,6 +5112,36 @@ reference within two RGB levels for 97.86% of pixels, with a maximum difference
 of 15. No capture controls or boundary appeared in the output. This case has no
 fixed header or footer; the ambiguous fixed-header stitch remains open.
 
+### 2026-11-17 tooltip centering and native export follow-up
+
+At `c0c4a02b`, the native tooltip sizes its AppKit text field to the fitted label
+and uses equal vertical insets. The
+[composited Retina images](tests/native/evidence/macos-ui/native-tooltip-centered-appearances-20261117.png)
+show single-line, wrapped and four-line truncated labels in Aqua and Dark Aqua.
+The measured top and bottom ink margins were 13/10 pixels for Start recording,
+13/13 for the wrapped label, and 14/13 in light and 13/13 in dark for the truncated
+label. All six panels stayed four points clear of the owner frame. The optimized
+Swift fixture passed the rendered-pixel assertions for the short and wrapped labels
+and the existing four-line and placement checks. The old rendering failed the new
+centering assertion with 9/14-pixel margins.
+
+The same AppKit probe tested screenshots through the production ScreenCaptureKit
+exclusion helper over a generated solid background. All six filtered captures were
+byte-identical to the reference with the tooltip hidden. A magenta panel at the
+same level and position appeared in its positive-control capture. This verifies
+native tooltip exclusion in that helper. The earlier GPUI recording test covers
+one area-recording handoff. Ordinary unpressed physical hover remains open.
+
+An isolated offscreen Electron renderer showed the corresponding Start recording
+control in both appearances, with a 32×32-point target and the same accessible
+name. The fixture captured the toolbar but did not paint a tooltip bubble. The
+native AppKit images above provide the tooltip placement and alignment evidence.
+
+The native Save sheet was also used to export a generated color-bar clip from an
+isolated GPUI editor. The resulting H.264 MP4 decoded at 3840×2160, with 60 frames
+over two seconds, and the decoded first frame showed the expected color bars. The
+earlier real screen, area and window takes supply the preview/export comparisons.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -5119,7 +5149,7 @@ fixed header or footer; the ambiguous fixed-header stitch remains open.
 | Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry and placement, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                                                                             |
 | Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment, full-window QR detection and recording-tooltip overlap; workflow checks verify capture-before-release and exact output.                                                                                                             |
 | Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                                                                                  |
-| Deferred major or dangerous refactors | None. The music asset lifecycle refactor is implemented; Mac native Save-sheet interaction, microphone/camera authorization, fixed-header scrolling, and multi-display behavior remain unverified; Windows runtime behavior also remains open.                                                                                                                                             |
+| Deferred major or dangerous refactors | None. The music asset lifecycle refactor is implemented. Microphone/camera authorization, fixed-header scrolling and multi-display behavior remain open on macOS. Windows runtime behavior also remains open.                                                                                                                                                                              |
 | Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                                                                               |
 | Blocked or unverified                 | The last full-matrix CI pass was at [`b8dd8672`](https://github.com/Porabuild/Poratake/actions/runs/43688781846); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; Mac tooltip hover and capture exclusion, physical mixed-DPI, scroll, devices and multi-display, Windows runtime, and other platform gaps remain in the backlog. |
 
