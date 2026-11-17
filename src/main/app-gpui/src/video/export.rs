@@ -663,6 +663,9 @@ fn build_audio(
 mod tests {
     use super::*;
 
+    #[cfg(any(windows, target_os = "macos"))]
+    include!("camera_redaction_export_tests.rs");
+
     #[cfg(target_os = "macos")]
     include!("gif_parity_diagnostic.rs");
 
