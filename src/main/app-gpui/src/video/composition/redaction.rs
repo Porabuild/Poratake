@@ -1,11 +1,12 @@
 use tiny_skia::{BlendMode, Pixmap};
 
 use crate::editor::annotations::{normalize_rect, redact_intensity, Annotation};
+use crate::render::annotations::RECTANGLE_CORNER_RADIUS;
 use crate::render::canvas::Canvas;
 
 use super::{camera, wallpaper, zoom, Engine, Frames};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Bounds {
     left: u32,
     top: u32,
@@ -44,6 +45,86 @@ struct Batch {
     targets: Vec<Bounds>,
 }
 
+fn rectangle_corners(engine: &Engine, time: f64) -> Vec<Bounds> {
+    let (width, height) = engine.dimensions();
+    let mut corners = Vec::new();
+    for segment in &engine.config().state.drawing_segments {
+        if time < segment.start_time
+            || time > segment.end_time
+            || !segment.canvas_width.is_finite()
+            || !segment.canvas_height.is_finite()
+            || segment.canvas_width <= 0.0
+            || segment.canvas_height <= 0.0
+        {
+            continue;
+        }
+        let scale_x = width as f64 / segment.canvas_width;
+        let scale_y = height as f64 / segment.canvas_height;
+        for annotation in &segment.annotations {
+            let Annotation::Rectangle {
+                x,
+                y,
+                width: rect_width,
+                height: rect_height,
+                stroke_width,
+                ..
+            } = annotation
+            else {
+                continue;
+            };
+            let (left, top, rect_width, rect_height) = normalize_rect(
+                x * scale_x,
+                y * scale_y,
+                rect_width * scale_x,
+                rect_height * scale_y,
+            );
+            if ![left, top, rect_width, rect_height, *stroke_width]
+                .into_iter()
+                .all(f64::is_finite)
+                || rect_width <= 0.0
+                || rect_height <= 0.0
+            {
+                continue;
+            }
+            let (left, top, rect_width, rect_height, stroke_width) = (
+                left as f32,
+                top as f32,
+                rect_width as f32,
+                rect_height as f32,
+                *stroke_width as f32,
+            );
+            if ![left, top, rect_width, rect_height, stroke_width]
+                .into_iter()
+                .all(f32::is_finite)
+            {
+                continue;
+            }
+            let radius = RECTANGLE_CORNER_RADIUS
+                .min(rect_width / 2.0)
+                .min(rect_height / 2.0);
+            let extent = f64::from(radius) + f64::from(stroke_width.max(0.0)) / 2.0 + 1.0;
+            for (x, y) in [
+                (left, top),
+                (left + rect_width, top),
+                (left, top + rect_height),
+                (left + rect_width, top + rect_height),
+            ] {
+                let (x, y) = (f64::from(x), f64::from(y));
+                let bounds = Bounds {
+                    left: ((x - extent).floor() as u32).min(width),
+                    top: ((y - extent).floor() as u32).min(height),
+                    right: ((x + extent).ceil() as u32).min(width),
+                    bottom: ((y + extent).ceil() as u32).min(height),
+                };
+                if bounds.left < bounds.right && bounds.top < bounds.bottom {
+                    corners.push(bounds);
+                }
+            }
+        }
+    }
+    corners
+}
+
 fn batches(
     engine: &Engine,
     time: f64,
@@ -55,6 +136,7 @@ fn batches(
     let scale_x = output_width as f64 / width as f64;
     let scale_y = output_height as f64 / height as f64;
     let mut batches: Vec<Batch> = Vec::new();
+    let mut corners = None;
     for segment in &engine.config().state.drawing_segments {
         if time < segment.start_time
             || time > segment.end_time
@@ -152,14 +234,24 @@ fn batches(
                 source,
                 targets: vec![target],
             };
+            let corners = corners.get_or_insert_with(|| rectangle_corners(engine, time));
             loop {
+                let previous = batch.source;
                 if let Some(camera) = camera.filter(|camera| batch.source.intersects(*camera)) {
                     batch.source = batch.source.union(camera);
+                }
+                for corner in corners.iter() {
+                    if corner.intersects(batch.source) {
+                        batch.source = batch.source.union(*corner);
+                    }
                 }
                 let Some(index) = batches
                     .iter()
                     .position(|other| batch.source.intersects(other.source))
                 else {
+                    if previous != batch.source {
+                        continue;
+                    }
                     break;
                 };
                 let other = batches.swap_remove(index);
@@ -343,6 +435,48 @@ mod tests {
             .find(|group| group.targets.len() == 1)
             .unwrap();
         assert!(!separate.source.intersects(camera));
+    }
+
+    #[test]
+    fn intersecting_rectangle_corner_expands_only_its_local_crop() {
+        let engine = engine(vec![
+            pixelate("redact", 60.0, 15.0),
+            Annotation::Rectangle {
+                id: "rectangle".into(),
+                x: 80.0,
+                y: 30.0,
+                width: 100.0,
+                height: 80.0,
+                stroke: "#ffffff".into(),
+                stroke_width: 4.0,
+                fill: None,
+            },
+        ]);
+        let groups = batches(&engine, 1.0, 128, 72, None);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].source.right >= 84);
+        assert!(groups[0].source.right < 180);
+    }
+
+    #[test]
+    fn distant_rectangle_corners_do_not_expand_a_crop() {
+        let engine = engine(vec![
+            pixelate("redact", 60.0, 15.0),
+            Annotation::Rectangle {
+                id: "rectangle".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 256.0,
+                height: 144.0,
+                stroke: "#ffffff".into(),
+                stroke_width: 4.0,
+                fill: None,
+            },
+        ]);
+        let groups = batches(&engine, 1.0, 128, 72, None);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].source.width() < 40);
+        assert!(groups[0].source.height() < 40);
     }
 
     #[test]

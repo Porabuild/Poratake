@@ -20,6 +20,7 @@ const HIT_TEST_OUTLINE_VERTEX_BUDGET: usize = 65_536;
 const HIT_TEST_CURVE_STEP_BUDGET: usize = 262_144;
 const HIT_TEST_CURVE_FLATNESS_SCREEN_PX: f64 = 0.25;
 const HIT_TEST_CURVE_MAX_DEPTH: u8 = 16;
+pub const RECTANGLE_CORNER_RADIUS: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ScreenshotPaint<'a> {
@@ -1081,8 +1082,13 @@ fn draw_rectangle(
 ) {
     let (left, top, width, height) = normalize_rect(x, y, width, height);
     // The renderer draws rectangles with a 1px corner radius.
-    let Some(path) = rounded_rect_path(left as f32, top as f32, width as f32, height as f32, 1.0)
-    else {
+    let Some(path) = rounded_rect_path(
+        left as f32,
+        top as f32,
+        width as f32,
+        height as f32,
+        RECTANGLE_CORNER_RADIUS,
+    ) else {
         return;
     };
     canvas.save();

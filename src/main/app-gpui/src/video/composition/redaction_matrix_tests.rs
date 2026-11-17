@@ -39,8 +39,8 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
     let mut reversed = 0;
     let mut overlapping = 0;
     let mut intensities = [false; 10];
-    for case in 0_u32..316 {
-        let selected = case < 48 || case == 315;
+    for case in 0_u32..537 {
+        let selected = case < 48 || [121, 315, 536].contains(&case);
         let mut config = Config::new(96.0, 64.0, state());
         let (author_width, author_height) = match case % 3 {
             0 => (96.0, 64.0),
