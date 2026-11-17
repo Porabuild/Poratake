@@ -3376,6 +3376,14 @@ existing patch budget still falls back to the older preview path; unusually
 deep overlapping effects and very large visible viewports remain unverified.
 These generated checks do not verify live capture or physical display scaling.
 
+After the bounded-composition change, the generated macOS Metal regressions for
+scaled blackout, redaction ordering, framed attachments, clipped and transparent
+pixelation, and balanced attachment seams also pass in both appearances. The
+[rerun record](tests/native/evidence/macos-ui/redaction-regression-after-bounded-composition-20261117.txt)
+covers 180 cases per appearance across simulated 100%, 125% and 200% display
+scales. This verifies the generated editor and saved-image comparisons only;
+it does not establish the result of a live capture or physical DPI change.
+
 The framed-attachment Metal workflow now also places a narrow red annotation
 before and after blur and pixelation crossing the primary/right-attachment seam.
 For macOS light and dark frame styles, translucent source content, both app
