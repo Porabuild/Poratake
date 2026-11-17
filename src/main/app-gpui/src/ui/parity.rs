@@ -30,6 +30,8 @@ mod preview_workflows;
 mod recording_controls;
 #[cfg(target_os = "macos")]
 mod recording_preview_comparison;
+#[cfg(target_os = "macos")]
+mod recording_redaction;
 mod scroll_workflows;
 #[cfg(windows)]
 mod windows_renderer;

@@ -63,6 +63,42 @@ pub(super) fn compare_at_display_size(
     compare_rgb(&crop, &resized)
 }
 
+pub(super) fn compare_region_at_display_size(
+    screenshot: &image::RgbaImage,
+    bounds: Rect,
+    scale: f32,
+    frame: &DecodedFrame,
+    region: (f32, f32, f32, f32),
+) -> Comparison {
+    let crop = preview_crop(screenshot, bounds, scale);
+    let source = decoded_rgba(frame);
+    let resized = image::imageops::resize(
+        &source,
+        crop.width(),
+        crop.height(),
+        image::imageops::FilterType::Triangle,
+    );
+    let (x, y, width, height) = region;
+    let left = (x * crop.width() as f32)
+        .floor()
+        .clamp(0., crop.width() as f32) as u32;
+    let top = (y * crop.height() as f32)
+        .floor()
+        .clamp(0., crop.height() as f32) as u32;
+    let right = ((x + width) * crop.width() as f32)
+        .ceil()
+        .clamp(0., crop.width() as f32) as u32;
+    let bottom = ((y + height) * crop.height() as f32)
+        .ceil()
+        .clamp(0., crop.height() as f32) as u32;
+    assert!(right > left && bottom > top);
+    let preview =
+        image::imageops::crop_imm(&crop, left, top, right - left, bottom - top).to_image();
+    let reference =
+        image::imageops::crop_imm(&resized, left, top, right - left, bottom - top).to_image();
+    compare_rgb(&preview, &reference)
+}
+
 fn decoded_rgba(frame: &DecodedFrame) -> image::RgbaImage {
     assert!(frame.width > 0 && frame.height > 0);
     let pixels = u64::from(frame.width) * u64::from(frame.height);

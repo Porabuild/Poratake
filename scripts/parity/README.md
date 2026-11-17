@@ -245,6 +245,31 @@ preview, reopens the project, and compares decoded export frames with its previe
 The drawing tool is selected through the fixture API; the gestures are simulated.
 Set `PORATAKE_PARITY_RECORDING_ONLY=1` to run
 just those handoffs at 1280 points and 1× simulated scale.
+Set `PORATAKE_PARITY_VIDEO_REDACTION=1` as well to draw pixelation across the
+rectangle corner, reopen the project, and compare the reduced 640×360 scrubbing
+preview and the decoded export in the affected region. Supply a generated
+1280×720 source longer than 1.5 seconds through all three recording variables;
+the fixture requires the same canvas size for its comparison. For example:
+
+```sh
+mkdir -p /tmp/poratake-redaction-parity
+ffmpeg -hide_banner -loglevel error -y \
+  -i src/main/app-gpui/src/ui/parity/fixtures/capture.mov \
+  -vf scale=1280:720:flags=neighbor -c:v h264_videotoolbox -b:v 10M -an \
+  /tmp/poratake-redaction-parity/source.mov
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-redaction-parity \
+PORATAKE_PARITY_RECORDING_ONLY=1 PORATAKE_PARITY_VIDEO_REDACTION=1 \
+PORATAKE_PARITY_SCALE=1 \
+PORATAKE_PARITY_AREA_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+PORATAKE_PARITY_WINDOW_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+PORATAKE_PARITY_SCREEN_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+cargo run --offline --locked --manifest-path src/main/Cargo.toml \
+  -p poratake-gpui --features parity -- --parity
+```
+
+Set `PORATAKE_FFMPEG_PATH` if development FFmpeg is not on the default search
+path. `PORATAKE_PARITY_THEME` and `PORATAKE_PARITY_VIDEO_DPI` select the editor
+appearance and simulated scale. This is a fake-daemon workflow, not live capture.
 Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflows
 at the same width and scale, including selector exclusion IDs and cleanup.
 Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout

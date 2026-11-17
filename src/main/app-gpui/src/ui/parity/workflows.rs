@@ -316,6 +316,29 @@ fn recorded_editor_and_export(
         (content.width * 0.4, content.height * 0.4),
     );
     settle(cx, window);
+    let redaction = std::env::var_os("PORATAKE_PARITY_VIDEO_REDACTION").is_some();
+    if redaction {
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.update_drawing_tools(cx, |tools| {
+                        tools.active_tool = "redact".into();
+                        tools.redact_style = "pixelate".into();
+                        tools.redact_intensity = 8.0;
+                    });
+                })
+                .unwrap();
+        });
+        settle(cx, window);
+        drag_rectangle(
+            cx,
+            window,
+            point(px(content.x), px(content.y)),
+            (content.width * 0.35, content.height * 0.35),
+            (content.width * 0.50, content.height * 0.50),
+        );
+        settle(cx, window);
+    }
     cx.advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
     if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
@@ -347,11 +370,20 @@ fn recorded_editor_and_export(
     }
     let state = model::load_state(project);
     assert_eq!(state.zoom_segments.len(), 1);
-    assert!(matches!(
-        state.drawing_segments.as_slice(),
-        [model::DrawingSegment { annotations, .. }]
-            if matches!(annotations.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
-    ));
+    if redaction {
+        assert!(matches!(
+            state.drawing_segments.as_slice(),
+            [model::DrawingSegment { annotations: first, .. }, model::DrawingSegment { annotations: second, .. }]
+                if matches!(first.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
+                && matches!(second.as_slice(), [crate::editor::annotations::Annotation::Redact { style, .. }] if style == "pixelate")
+        ));
+    } else {
+        assert!(matches!(
+            state.drawing_segments.as_slice(),
+            [model::DrawingSegment { annotations, .. }]
+                if matches!(annotations.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
+        ));
+    }
     assert!((state.zoom_segments[0].start_time - 0.25).abs() < 0.02);
     assert!((state.zoom_segments[0].end_time - 1.5).abs() < 0.02);
     if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
@@ -468,6 +500,9 @@ fn recorded_editor_and_export(
     let display_scale = cx
         .update_window(window, |_, window, _| window.scale_factor())
         .unwrap();
+    let scaled_preview = redaction.then(|| {
+        super::recording_redaction::capture_scaled(cx, video, project, &state, output, target)
+    });
     let exported = output.join(format!("recording-{target}-edited.mp4"));
     crate::video::export::run(
         crate::video::export::Request {
@@ -498,6 +533,9 @@ fn recorded_editor_and_export(
             "{target} preview and decoded export differ at {time}s: {mean}"
         );
         if time == 1.0 {
+            if let Some(scaled) = &scaled_preview {
+                scaled.compare_export(&decoded, target);
+            }
             let rendered = super::recording_preview_comparison::compare(
                 &screenshot,
                 content,
