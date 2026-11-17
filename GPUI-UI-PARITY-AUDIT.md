@@ -3339,7 +3339,7 @@ also matches within one level at four zooms and three simulated scales in dark
 appearance. These generated tests do not verify physical input, captured content,
 larger patches or all wallpaper and attachment combinations.
 
-A generated large-image probe confirms a remaining preview/export mismatch for
+A generated large-image probe exposed a preview/export mismatch for
 both pixelation and blur. At 25% zoom, a 4096×2160 image with a full-image
 redaction exceeded the preview patch budget. Pixelation differed from the saved
 and reopened PNG at 533,724 of 552,960 displayed pixels by more than two channel
@@ -3353,9 +3353,28 @@ and [reopened output](tests/native/evidence/macos-ui/large-redaction-pixelate-re
 and blur [preview](tests/native/evidence/macos-ui/large-redaction-blur-preview-20261117.png)
 and [reopened output](tests/native/evidence/macos-ui/large-redaction-blur-reopened-20261117.png)
 are retained. The oversized path reduces the raster scale before applying the
-effect; the export applies it at source resolution. This remains open and needs
-a bounded source-resolution approach, including annotation order and effect
-boundaries. The probe does not verify live capture, other zooms or physical DPI.
+effect; the export applies it at source resolution. The probe does not verify
+live capture, other zooms or physical DPI.
+
+The large-image preview now replays screenshot paints at source resolution in
+bounded tiles, keeping the pixelation grid and blur dependencies aligned with
+the full composition. It clips large previews to the visible editor region at
+native scale and invalidates cached patches when that region moves. In the
+generated 4096×2160 Metal workflow, both appearances now match the saved and
+reopened PNG exactly for pixelation at 25% and 100% zoom; blur differs by at
+most one channel level at 25% and matches exactly at 100%. The 25% comparison
+covers 552,960 displayed pixels and the 100% comparison covers a 318,500-pixel
+visible region. Unit tests also compare tiled and full-resolution rendering
+with ordered effects, transparent pixels, a preceding shape, fractional
+offsets and forced small tile budgets. The [measurements](tests/native/evidence/macos-ui/large-redaction-bounded-composition-20261117.txt),
+25% pixelation [preview](tests/native/evidence/macos-ui/large-redaction-fixed-025-pixelate-preview-20261117.png)
+and [reopened PNG](tests/native/evidence/macos-ui/large-redaction-fixed-025-pixelate-expected-20261117.png),
+and 100% blur [preview](tests/native/evidence/macos-ui/large-redaction-fixed-1-blur-preview-20261117.png)
+and [reopened PNG](tests/native/evidence/macos-ui/large-redaction-fixed-1-blur-expected-20261117.png)
+are retained. A dependency footprint or visible output that cannot fit the
+existing patch budget still falls back to the older preview path; unusually
+deep overlapping effects and very large visible viewports remain unverified.
+These generated checks do not verify live capture or physical display scaling.
 
 The framed-attachment Metal workflow now also places a narrow red annotation
 before and after blur and pixelation crossing the primary/right-attachment seam.
