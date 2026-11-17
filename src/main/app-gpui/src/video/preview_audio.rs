@@ -240,13 +240,23 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
 
 struct Stem {
     player: Player,
+    samples: Arc<Vec<i16>>,
 }
 
 impl Stem {
+    fn seek(&self, offset: f64) {
+        let position = Duration::from_secs_f64(offset.max(0.0));
+        if !self.player.empty() {
+            let _ = self.player.try_seek(position);
+        }
+        if self.player.empty() {
+            self.player
+                .append(PcmSource::at(self.samples.clone(), position));
+        }
+    }
+
     fn play_from(&self, offset: f64) {
-        let _ = self
-            .player
-            .try_seek(Duration::from_secs_f64(offset.max(0.0)));
+        self.seek(offset);
         self.player.play();
     }
 }
@@ -445,10 +455,7 @@ impl PreviewAudio {
         };
         output.anchor = Some((Instant::now(), offset.max(0.0)));
         for stem in &output.stems {
-            let _ = stem
-                .stem
-                .player
-                .try_seek(Duration::from_secs_f64(offset.max(0.0)));
+            stem.stem.seek(offset);
         }
     }
 
@@ -497,9 +504,9 @@ impl PreviewAudio {
 
 fn connect(device: &OutputDevice, samples: Arc<Vec<i16>>) -> Stem {
     let player = Player::connect_new(device.mixer());
-    player.append(PcmSource::at(samples, Duration::ZERO));
+    player.append(PcmSource::at(samples.clone(), Duration::ZERO));
     player.pause();
-    Stem { player }
+    Stem { player, samples }
 }
 
 #[cfg(test)]
@@ -600,6 +607,110 @@ mod tests {
         assert_eq!(source.next(), Some(-1.0));
         assert_eq!(source.next(), Some(0.5));
         assert_eq!(source.next(), None);
+    }
+
+    #[test]
+    fn an_ended_stem_can_play_again_from_a_seek() {
+        let (mixer, mut output) = rodio::mixer::mixer(channels(), sample_rate());
+        let device = OutputDevice::Software(mixer);
+        let stem = connect(&device, Arc::new(vec![16384; 4800]));
+        stem.player.play();
+        let mut heard_initial = false;
+        for _ in 0..100_000 {
+            heard_initial |= output.next().is_some_and(|sample| sample > 0.1);
+            if stem.player.empty() {
+                break;
+            }
+        }
+        assert!(heard_initial && stem.player.empty());
+        stem.play_from(0.0);
+        assert!(!stem.player.empty(), "a finished stem must be requeued");
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 0.1)));
+    }
+
+    #[test]
+    fn scrubbing_and_replay_restore_ended_program_and_music_stems() {
+        let (mixer, mut output) = rodio::mixer::mixer(channels(), sample_rate());
+        let device = OutputDevice::Software(mixer);
+        let mut samples = vec![8192; 2400];
+        samples.extend(vec![24576; 2400]);
+        let samples = Arc::new(samples);
+        let program = connect(&device, samples.clone());
+        let music = connect(&device, samples);
+        program.player.play();
+        music.player.play();
+        let mut preview = PreviewAudio {
+            output: Some(Output {
+                stems: vec![
+                    Playing {
+                        volume: VolumeSource::SystemAudio,
+                        program: true,
+                        stem: program,
+                    },
+                    Playing {
+                        volume: VolumeSource::Track("music".into()),
+                        program: false,
+                        stem: music,
+                    },
+                ],
+                anchor: None,
+                playing: false,
+                device,
+            }),
+            ..PreviewAudio::default()
+        };
+        for _ in 0..100_000 {
+            let _ = output.next();
+            if preview
+                .output
+                .as_ref()
+                .unwrap()
+                .stems
+                .iter()
+                .all(|stem| stem.stem.player.empty())
+            {
+                break;
+            }
+        }
+        assert!(preview
+            .output
+            .as_ref()
+            .unwrap()
+            .stems
+            .iter()
+            .all(|stem| stem.stem.player.empty()));
+        for _ in 0..100 {
+            let _ = output.next();
+        }
+        preview.scrub_to(0.025);
+        let stems = &preview.output.as_ref().unwrap().stems;
+        assert!(!stems[0].stem.player.empty());
+        assert!(stems[1].stem.player.empty());
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 0.7)));
+        for _ in 0..100_000 {
+            let _ = output.next();
+            if preview.output.as_ref().unwrap().stems[0]
+                .stem
+                .player
+                .empty()
+            {
+                break;
+            }
+        }
+        assert!(preview.output.as_ref().unwrap().stems[0]
+            .stem
+            .player
+            .empty());
+        preview.stop_scrub();
+        preview.transport(true, 0.025);
+        assert!(preview
+            .output
+            .as_ref()
+            .unwrap()
+            .stems
+            .iter()
+            .all(|stem| !stem.stem.player.empty()));
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 1.0)));
     }
 
     fn project_with_every_source() -> (tempfile::TempDir, PathBuf, VideoEditorState) {
