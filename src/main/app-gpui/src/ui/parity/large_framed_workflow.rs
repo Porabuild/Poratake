@@ -37,6 +37,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
     let annotation = std::env::var("PORATAKE_PARITY_LARGE_ANNOTATION").ok();
     let transparent_background =
         std::env::var_os("PORATAKE_PARITY_LARGE_TRANSPARENT_BACKGROUND").is_some();
+    let background = std::env::var("PORATAKE_PARITY_LARGE_BACKGROUND_COLOR")
+        .unwrap_or_else(|_| "#203060".into());
     let pan_first = std::env::var_os("PORATAKE_PARITY_LARGE_PAN_FIRST").is_some();
     let save_images = std::env::var_os("PORATAKE_PARITY_LARGE_SAVE_IMAGES").is_some();
     assert!(zoom == 0.25 || zoom == 0.5 || zoom == 1.0);
@@ -75,7 +77,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     if !transparent_background {
                         editor.wallpaper.gradient = Some(GradientOption {
                             id: "framed".into(),
-                            colors: vec!["#203060".into()],
+                            colors: vec![background.clone()],
                             angle: 0.,
                         });
                     }
@@ -84,7 +86,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     editor.wallpaper.corners = corners;
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.window_frame.style = style.clone();
-                    if let Some(style) = &annotation {
+                    if let Some(style) = annotation.as_ref().filter(|style| *style != "interactive")
+                    {
                         if style.starts_with("corner") {
                             let mut annotations = Vec::new();
                             if style != "corner-blackout" {
@@ -144,6 +147,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 })
                 .unwrap();
             settle(cx, editor.into());
+            if annotation.as_deref() == Some("interactive") {
+                super::large_interactive::draw_rectangle(
+                    cx,
+                    editor,
+                    horizontal,
+                    zoom,
+                    scale,
+                    scratch,
+                    transparent,
+                );
+            }
             let (png, frame_scale) = cx.update(|cx| {
                 let editor = editor.read(cx).unwrap();
                 let snapshot = editor.snapshot.borrow();
@@ -174,6 +188,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
             if transparent_background {
                 assert_eq!(output.get_pixel(0, 0).0[3], 0);
+            } else if background == "#20306080" {
+                assert_eq!(output.get_pixel(0, 0).0[3], 128);
             }
             if let Some(style) = &annotation {
                 let control_png = editor
@@ -341,7 +357,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     );
                     if let Some(style) = annotation
                         .as_ref()
-                        .filter(|style| !style.starts_with("corner"))
+                        .filter(|style| !style.starts_with("corner") && *style != "interactive")
                     {
                         assert!(
                             seam_x >= left + 2

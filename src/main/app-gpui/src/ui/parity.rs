@@ -25,6 +25,8 @@ mod image_sampling;
 #[cfg(target_os = "macos")]
 mod large_framed_workflow;
 #[cfg(target_os = "macos")]
+mod large_interactive;
+#[cfg(target_os = "macos")]
 mod large_redaction_workflow;
 #[cfg(target_os = "macos")]
 mod large_texture_sampling;
