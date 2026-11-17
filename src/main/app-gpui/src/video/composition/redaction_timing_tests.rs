@@ -127,3 +127,55 @@ fn video_redaction_region_copy_timing() {
         previous_times[7], current_times[7]
     );
 }
+
+#[test]
+#[ignore]
+fn camera_crop_composition_timing_probe() {
+    use crate::editor::annotations::Annotation;
+    use crate::windows::video_editor::model::{CameraSegment, DrawingSegment};
+    use std::time::Instant;
+
+    let video = source(3840, 2160, Color::from_rgba8(32, 64, 128, 255));
+    let camera = source(640, 480, Color::from_rgba8(180, 80, 40, 255));
+    let frames = Frames {
+        video: Some(video.as_ref()),
+        camera: Some(camera.as_ref()),
+    };
+    for (label, x, y) in [
+        ("separate", 900.0, 800.0),
+        ("camera overlap", 3100.0, 1400.0),
+    ] {
+        let mut state = state();
+        state.camera_segments.push(CameraSegment {
+            id: "camera".into(),
+            start_time: 0.0,
+            end_time: 3.0,
+        });
+        state.drawing_segments.push(DrawingSegment {
+            id: "drawing".into(),
+            start_time: 0.0,
+            end_time: 3.0,
+            canvas_width: 3840.0,
+            canvas_height: 2160.0,
+            annotations: vec![Annotation::Redact {
+                id: "redact".into(),
+                x,
+                y,
+                width: 320.0,
+                height: 240.0,
+                style: "pixelate".into(),
+                intensity: 5.0,
+            }],
+        });
+        let mut engine = Engine::new(Config::new(3840.0, 2160.0, state));
+        let mut times = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            engine.render_frame_scaled(1.0, frames, 960, 540).unwrap();
+            times.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.remove(0);
+        times.sort_by(f64::total_cmp);
+        println!("{label}: upper median {:.2} ms", times[4]);
+    }
+}

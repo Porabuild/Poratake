@@ -3,7 +3,7 @@ use tiny_skia::{BlendMode, Pixmap};
 use crate::editor::annotations::{normalize_rect, redact_intensity, Annotation};
 use crate::render::canvas::Canvas;
 
-use super::{Engine, Frames};
+use super::{camera, wallpaper, zoom, Engine, Frames};
 
 #[derive(Clone, Copy)]
 struct Bounds {
@@ -44,7 +44,13 @@ struct Batch {
     targets: Vec<Bounds>,
 }
 
-fn batches(engine: &Engine, time: f64, output_width: u32, output_height: u32) -> Vec<Batch> {
+fn batches(
+    engine: &Engine,
+    time: f64,
+    output_width: u32,
+    output_height: u32,
+    camera: Option<Bounds>,
+) -> Vec<Batch> {
     let (width, height) = engine.dimensions();
     let scale_x = output_width as f64 / width as f64;
     let scale_y = output_height as f64 / height as f64;
@@ -146,21 +152,64 @@ fn batches(engine: &Engine, time: f64, output_width: u32, output_height: u32) ->
                 source,
                 targets: vec![target],
             };
-            let mut index = 0;
-            while index < batches.len() {
-                if !batch.source.intersects(batches[index].source) {
-                    index += 1;
-                    continue;
+            loop {
+                if let Some(camera) = camera.filter(|camera| batch.source.intersects(*camera)) {
+                    batch.source = batch.source.union(camera);
                 }
+                let Some(index) = batches
+                    .iter()
+                    .position(|other| batch.source.intersects(other.source))
+                else {
+                    break;
+                };
                 let other = batches.swap_remove(index);
                 batch.source = batch.source.union(other.source);
                 batch.targets.extend(other.targets);
-                index = 0;
             }
             batches.push(batch);
         }
     }
     batches
+}
+
+fn camera_bounds(engine: &Engine, time: f64, frames: Frames<'_>) -> Option<Bounds> {
+    if frames.camera.is_none() || time < engine.first_frame_duration() {
+        return None;
+    }
+    let state = &engine.config().state;
+    if !state.camera_style.visible
+        || !crate::video::sidecars::is_camera_visible_at(
+            Some(&state.camera_segments),
+            time - engine.first_frame_duration(),
+        )
+    {
+        return None;
+    }
+    let (width, height) = engine.dimensions();
+    let zoom = zoom::zoom_state(
+        time - engine.first_frame_duration(),
+        &state.zoom_segments,
+        &state.zoom_settings,
+    );
+    let layout = camera::calculate_layout(
+        &state.camera_style,
+        width as f64,
+        height as f64,
+        Some(camera::ZoomInfo {
+            scale: zoom.scale,
+            viewport: None,
+        }),
+    );
+    let spread = wallpaper::shadow_config(state.camera_style.shadow)
+        .map_or(0.0, |shadow| f64::from(shadow.blur).max(0.0));
+    let bounds = Bounds {
+        left: ((layout.left - spread).floor() as u32).saturating_sub(1),
+        top: ((layout.top - spread).floor() as u32).saturating_sub(1),
+        right: (((layout.left + layout.width + spread).ceil() as u32).saturating_add(1)).min(width),
+        bottom: (((layout.top + layout.height + spread).ceil() as u32).saturating_add(1))
+            .min(height),
+    };
+    (bounds.left < bounds.right && bounds.top < bounds.bottom).then_some(bounds)
 }
 
 pub(super) fn apply(
@@ -172,7 +221,13 @@ pub(super) fn apply(
     let (width, height) = engine.dimensions();
     let scale_x = preview.width() as f32 / width as f32;
     let scale_y = preview.height() as f32 / height as f32;
-    let batches = batches(engine, time, preview.width(), preview.height());
+    let batches = batches(
+        engine,
+        time,
+        preview.width(),
+        preview.height(),
+        camera_bounds(engine, time, frames),
+    );
     if batches.is_empty() {
         return Some(preview);
     }
@@ -244,10 +299,10 @@ mod tests {
             pixelate("left", 10.0, 15.0),
             pixelate("right", 210.0, 15.0),
         ]);
-        let groups = batches(&engine, 1.0, 128, 72);
+        let groups = batches(&engine, 1.0, 128, 72, None);
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().all(|group| group.source.width() < 40));
-        assert!(batches(&engine, 4.0, 128, 72).is_empty());
+        assert!(batches(&engine, 4.0, 128, 72, None).is_empty());
     }
 
     #[test]
@@ -257,9 +312,67 @@ mod tests {
             pixelate("right", 210.0, 15.0),
             pixelate("bridge", 24.0, 187.0),
         ]);
-        let groups = batches(&engine, 1.0, 128, 72);
+        let groups = batches(&engine, 1.0, 128, 72, None);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].targets.len(), 3);
+    }
+
+    #[test]
+    fn camera_clip_expands_intersecting_crops_and_merges_connected_effects() {
+        let engine = engine(vec![
+            pixelate("left", 10.0, 15.0),
+            pixelate("middle", 60.0, 15.0),
+            pixelate("right", 210.0, 15.0),
+        ]);
+        let camera = Bounds {
+            left: 25,
+            top: 20,
+            right: 100,
+            bottom: 60,
+        };
+        let groups = batches(&engine, 1.0, 128, 72, Some(camera));
+        assert_eq!(groups.len(), 2);
+        let merged = groups
+            .iter()
+            .find(|group| group.targets.len() == 2)
+            .unwrap();
+        assert!(merged.source.left <= camera.left && merged.source.right >= camera.right);
+        assert!(merged.source.top <= camera.top && merged.source.bottom >= camera.bottom);
+        let separate = groups
+            .iter()
+            .find(|group| group.targets.len() == 1)
+            .unwrap();
+        assert!(!separate.source.intersects(camera));
+    }
+
+    #[test]
+    fn hidden_camera_does_not_expand_redaction_crops() {
+        let mut state = VideoEditorState::default();
+        state
+            .camera_segments
+            .push(crate::windows::video_editor::model::CameraSegment {
+                id: "camera".into(),
+                start_time: 1.0,
+                end_time: 2.0,
+            });
+        let engine = Engine::new(Config::new(256.0, 144.0, state));
+        let camera = Pixmap::new(16, 16).unwrap();
+        let frames = Frames {
+            video: None,
+            camera: Some(camera.as_ref()),
+        };
+        assert!(camera_bounds(&engine, 1.5, frames).is_some());
+        assert!(camera_bounds(&engine, 0.5, frames).is_none());
+        assert!(camera_bounds(&engine, 2.0, frames).is_none());
+        assert!(camera_bounds(
+            &engine,
+            1.5,
+            Frames {
+                video: None,
+                camera: None
+            }
+        )
+        .is_none());
     }
 
     #[test]
@@ -315,7 +428,7 @@ mod tests {
             (2.0, 1),
             (2.01, 0),
         ] {
-            let groups = batches(&engine, time, 128, 72);
+            let groups = batches(&engine, time, 128, 72, None);
             assert_eq!(groups.len(), expected, "{time}s");
             let full = engine.render_frame(time, frames).unwrap();
             let mut reference = Canvas::new(128, 72).unwrap();
@@ -355,6 +468,6 @@ mod tests {
         }
         state.drawing_segments[0] = first;
         engine.set_state(state);
-        assert!(batches(&engine, 0.75, 128, 72).is_empty());
+        assert!(batches(&engine, 0.75, 128, 72, None).is_empty());
     }
 }

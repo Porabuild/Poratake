@@ -39,7 +39,8 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
     let mut reversed = 0;
     let mut overlapping = 0;
     let mut intensities = [false; 10];
-    for case in 0_u32..48 {
+    for case in 0_u32..316 {
+        let selected = case < 48 || case == 315;
         let mut config = Config::new(96.0, 64.0, state());
         let (author_width, author_height) = match case % 3 {
             0 => (96.0, 64.0),
@@ -88,23 +89,25 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
                 "pixelate"
             };
             let intensity = (next(&mut seed) % 10 + 1) as f64;
-            blurred += usize::from(style == "blur");
-            pixelated += usize::from(style == "pixelate");
-            reversed += usize::from(width < 0.0 || height < 0.0);
-            intensities[intensity as usize - 1] = true;
             let region = normalize_rect(x, y, width, height);
-            clipped += usize::from(
-                region.0 < 0.0
-                    || region.1 < 0.0
-                    || region.0 + region.2 > 96.0
-                    || region.1 + region.3 > 64.0,
-            );
-            overlapping += usize::from(regions.iter().any(|&(left, top, w, h)| {
-                left < region.0 + region.2
-                    && region.0 < left + w
-                    && top < region.1 + region.3
-                    && region.1 < top + h
-            }));
+            if selected {
+                blurred += usize::from(style == "blur");
+                pixelated += usize::from(style == "pixelate");
+                reversed += usize::from(width < 0.0 || height < 0.0);
+                intensities[intensity as usize - 1] = true;
+                clipped += usize::from(
+                    region.0 < 0.0
+                        || region.1 < 0.0
+                        || region.0 + region.2 > 96.0
+                        || region.1 + region.3 > 64.0,
+                );
+                overlapping += usize::from(regions.iter().any(|&(left, top, w, h)| {
+                    left < region.0 + region.2
+                        && region.0 < left + w
+                        && top < region.1 + region.3
+                        && region.1 < top + h
+                }));
+            }
             regions.push(region);
             annotations.push(Annotation::Redact {
                 id: format!("effect-{effect}"),
@@ -126,6 +129,9 @@ fn generated_redaction_matrix_matches_full_composition_at_effect_boundaries() {
             stroke_width: 2.0,
             fill: None,
         });
+        if !selected {
+            continue;
+        }
         config.state.drawing_segments.push(DrawingSegment {
             id: "drawing".into(),
             start_time: 0.0,
