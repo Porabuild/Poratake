@@ -241,13 +241,6 @@ export function useMusicTracks({
       );
       if (group.length === 0 || group[0].source !== 'music') return;
 
-      for (const track of group) {
-        window.ipcRenderer
-          .invoke('video-editor:music:remove', {
-            fileName: track.fileName,
-          })
-          .catch(() => {});
-      }
       setMusicTracks(prev => prev.filter(track => track.groupId !== groupId));
       setSelectedMusicTrackId(prev =>
         group.some(track => track.id === prev) ? null : prev

@@ -137,40 +137,6 @@ export function registerMusicHandlers(): void {
   );
 
   ipcMain.handle(
-    'video-editor:music:remove',
-    async (
-      event,
-      { fileName }: { fileName: string }
-    ): Promise<{ success: boolean; error?: string }> => {
-      const data = getWindowData(event.sender.id);
-      if (!data) {
-        return { success: false, error: 'No video data found' };
-      }
-
-      const musicFolder = getMusicFolderPath(data.filePath);
-      if (!musicFolder) {
-        return { success: false, error: 'Could not resolve music folder' };
-      }
-
-      const safeFileName = sanitizeFileName(fileName);
-      const filePath = path.join(musicFolder, safeFileName);
-      try {
-        await fs.unlink(filePath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          return { success: true };
-        }
-        return {
-          success: false,
-          error:
-            error instanceof Error ? error.message : 'Failed to remove file',
-        };
-      }
-      return { success: true };
-    }
-  );
-
-  ipcMain.handle(
     'video-editor:music:get-path',
     async (
       event,

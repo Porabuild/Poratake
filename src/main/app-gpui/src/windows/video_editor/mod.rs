@@ -1979,20 +1979,16 @@ impl VideoEditorWindow {
         self.commit(cx, move |state| state.music_tracks.push(track));
     }
 
-    /// Removes a music track, deleting its file once nothing else uses it.
     pub fn remove_music_track(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let Some(project) = self.path.clone() else {
+        if self.path.is_none()
+            || !self
+                .state
+                .music_tracks
+                .iter()
+                .any(|track| track.id.as_str() == id.as_ref())
+        {
             return;
-        };
-        let Some(file_name) = self
-            .state
-            .music_tracks
-            .iter()
-            .find(|track| track.id.as_str() == id.as_ref())
-            .map(|track| track.file_name.clone())
-        else {
-            return;
-        };
+        }
 
         self.commit(cx, {
             let id = id.clone();
@@ -2002,13 +1998,6 @@ impl VideoEditorWindow {
                     .retain(|track| track.id.as_str() != id.as_ref());
             }
         });
-
-        let still_referenced = self
-            .state
-            .music_tracks
-            .iter()
-            .any(|track| track.file_name == file_name);
-        crate::video::music::remove(&project, &file_name, still_referenced);
     }
 
     pub fn set_music_volume(&mut self, id: SharedString, volume: f64, cx: &mut Context<Self>) {
@@ -2517,17 +2506,15 @@ impl VideoEditorWindow {
     }
 
     pub fn remove_music_group(&mut self, group: SharedString, cx: &mut Context<Self>) {
-        self.selected_clip = None;
-        let ids: Vec<SharedString> = self
-            .state
-            .music_tracks
-            .iter()
-            .filter(|track| model::group_key(track) == group.as_ref())
-            .map(|track| SharedString::from(track.id.clone()))
-            .collect();
-        for id in ids {
-            self.remove_music_track(id, cx);
+        if self.path.is_none() {
+            return;
         }
+        self.selected_clip = None;
+        self.commit(cx, move |state| {
+            state
+                .music_tracks
+                .retain(|track| model::group_key(track) != group.as_ref());
+        });
     }
 
     pub fn step_selected_segment_speed(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -5287,6 +5274,73 @@ mod keyboard_demo_tests {
         assert_eq!(saved.music_tracks[0].source, "system");
     }
 
+    #[herogpui::test]
+    fn removing_music_keeps_its_file_for_undo_and_redo(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let track = model::MusicTrack {
+            id: "music-sound".into(),
+            group_id: "music-sound".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.music_tracks = vec![track.clone()];
+                editor.remove_music_track(track.id.clone().into(), cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![track.clone()]);
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.redo(cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![track]);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn removing_a_split_music_group_is_one_undo_step(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let first = model::MusicTrack {
+            id: "first".into(),
+            group_id: "group".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let second = model::MusicTrack {
+            id: "second".into(),
+            ..first.clone()
+        };
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.music_tracks = vec![first.clone(), second.clone()];
+                editor.remove_music_group("group".into(), cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![first, second]);
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+            })
+            .unwrap();
+    }
+
     #[cfg(any(windows, target_os = "macos"))]
     #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
@@ -5473,7 +5527,7 @@ mod keyboard_demo_tests {
     #[cfg(any(windows, target_os = "macos"))]
     #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
-    fn replacing_music_with_the_same_name_refreshes_preview_audio(cx: &mut gpui::TestAppContext) {
+    fn readding_music_with_the_same_name_refreshes_preview_audio(cx: &mut gpui::TestAppContext) {
         use crate::video::{audio, music, preview_audio, transcription};
 
         let directory = tempfile::tempdir().unwrap();
@@ -5514,7 +5568,8 @@ mod keyboard_demo_tests {
                 editor.preview_audio.install(built, &editor.state, 0.0);
                 editor.remove_music_track(first.id.clone().into(), cx);
                 let replacement = music::add(&project, &second_path, 0.0).unwrap();
-                assert_eq!(replacement.file_name, first.file_name);
+                assert_ne!(replacement.file_name, first.file_name);
+                assert!(project.join("music").join(&first.file_name).is_file());
                 editor.accept_music_track(&project, replacement.clone(), cx);
                 assert!(editor.preview_audio.needs_rebuild(&editor.state));
                 let refreshed = preview_audio::build_stems(preview_audio::RebuildInputs::capture(

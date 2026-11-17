@@ -124,19 +124,6 @@ pub fn add(project_path: &Path, source: &Path, timeline_start: f64) -> Result<Mu
     })
 }
 
-/// Removes a track's file once no other track still references it.
-pub fn remove(project_path: &Path, file_name: &str, still_referenced: bool) {
-    if still_referenced || file_name.is_empty() {
-        return;
-    }
-    let Some(folder) = project::music_folder(project_path) else {
-        return;
-    };
-    if let Some(path) = file_path(&folder, file_name) {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
 /// `probeAudioDuration` — decoding is the only probe this shell has, and it is
 /// exact.
 pub fn probe_duration(path: &Path) -> f64 {
@@ -199,31 +186,15 @@ mod tests {
     }
 
     #[test]
-    fn a_referenced_file_is_kept() {
-        let project = crate::util::test_paths::unique_temp("poratake-music-keep.poratake");
-        let folder = project.join("music");
-        std::fs::create_dir_all(&folder).expect("folder");
-        let file = folder.join("song.mp3");
-        std::fs::write(&file, b"a").expect("write");
-
-        remove(&project, "song.mp3", true);
-        assert!(file.exists());
-
-        remove(&project, "song.mp3", false);
-        assert!(!file.exists());
-        let _ = std::fs::remove_dir_all(&project);
-    }
-
-    #[test]
-    fn removing_music_cannot_delete_a_file_outside_the_project() {
+    fn music_paths_cannot_escape_the_project() {
         let directory = tempfile::tempdir().unwrap();
         let project = directory.path().join("take.poratake");
         std::fs::create_dir_all(project.join("music")).unwrap();
         let outside = directory.path().join("outside.wav");
         std::fs::write(&outside, b"keep").unwrap();
-        remove(&project, "../../outside.wav", false);
+        assert!(file_path(&project.join("music"), "../../outside.wav").is_none());
         assert!(outside.is_file());
-        remove(&project, outside.to_str().unwrap(), false);
+        assert!(file_path(&project.join("music"), outside.to_str().unwrap()).is_none());
         assert!(outside.is_file());
     }
 
@@ -238,7 +209,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, project.join("music")).unwrap();
         let file = outside.join("source.wav");
         std::fs::write(&file, b"keep").unwrap();
-        remove(&project, "source.wav", false);
+        assert!(file_path(&project.join("music"), "source.wav").is_none());
         assert!(file.is_file());
         let source = directory.path().join("new.wav");
         std::fs::write(&source, b"source").unwrap();

@@ -216,68 +216,6 @@ describe('music handlers', () => {
     });
   });
 
-  describe('music:remove', () => {
-    it('returns error without window data', async () => {
-      mockGetWindowData.mockReturnValue(undefined);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = (await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      )) as { success: boolean };
-      expect(result.success).toBe(false);
-    });
-
-    it('unlinks file and returns success', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      mockUnlink.mockResolvedValue(undefined);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      );
-      expect(result).toEqual({ success: true });
-    });
-
-    it('treats ENOENT as success', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      const err = new Error('not found');
-      (err as NodeJS.ErrnoException).code = 'ENOENT';
-      mockUnlink.mockRejectedValue(err);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      );
-      expect(result).toEqual({ success: true });
-    });
-
-    it('returns error on other unlink failures', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      mockUnlink.mockRejectedValue(new Error('locked'));
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = (await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      )) as { success: boolean; error?: string };
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('locked');
-    });
-  });
-
   describe('music:get-path', () => {
     it('returns null without window data', async () => {
       mockGetWindowData.mockReturnValue(undefined);
