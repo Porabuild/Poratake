@@ -4787,6 +4787,19 @@ replacement has the same track settings. The generated WAV comparison in the
 reproduced the mismatch before the fix and passed afterward. External changes
 to a project file outside the editor remain unverified.
 
+Different music filenames could also produce the same sanitized track ID,
+causing edits or removal to affect more than one track. New imports now choose
+an ID unused by existing tracks and groups. The same evidence covers three
+colliding names, independent volume changes, save/reopen and removal.
+
+Malformed music filenames in a project could previously delete a file outside
+the music folder, and an import could follow a dangling destination symlink.
+GPUI now rejects parent and absolute names and direct music symlinks, and
+creates imports exclusively. The [temporary-file tests](tests/native/evidence/macos-ui/music-path-safety-20261117.txt)
+also cover a symlinked music folder and concurrent same-name imports. Directory
+checks remain path-based and have not been shown safe against concurrent
+replacement of a directory.
+
 The same investigation confirmed a separate open issue: removing a music track
 deletes its source file even though Undo can restore a reference to it. An
 isolated GPUI editor test restored the track metadata and found the file
