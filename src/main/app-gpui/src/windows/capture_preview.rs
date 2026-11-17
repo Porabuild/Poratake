@@ -1042,8 +1042,17 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                         entity
                             .update(cx, |view, cx| {
                                 let now = cx.background_executor().now();
+                                let menu_open = view
+                                    .display_menu
+                                    .is_open_for(&format!("preview-display-menu-{id}"), cx);
                                 let preview =
                                     view.previews.iter_mut().find(|preview| preview.id == id)?;
+                                let blur = preview.hovered
+                                    || preview.busy
+                                    || menu_open
+                                    || preview.dismiss_animation.is_some_and(|animation| {
+                                        animation.controls_progress.is_some()
+                                    });
                                 let playback = preview.video.as_mut()?;
                                 if playback.in_flight {
                                     return None;
@@ -1054,12 +1063,12 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                         .as_secs_f64(),
                                     playback.duration,
                                 );
-                                Some((playback.decoder.clone(), time))
+                                Some((playback.decoder.clone(), time, blur))
                             })
                             .ok()
                             .flatten()
                     });
-                    let Some((decoder, time)) = job else {
+                    let Some((decoder, time, blur)) = job else {
                         let alive = entity
                             .update(cx, |view, _| {
                                 view.previews.iter().any(|preview| preview.id == id)
@@ -1077,7 +1086,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                             async move {
                                 decoder
                                     .frame_at(time)
-                                    .and_then(|frame| video_thumbnail(&frame))
+                                    .and_then(|frame| video_thumbnails(&frame, blur))
                             }
                         })
                         .await;
@@ -1091,8 +1100,9 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                             if let Some(playback) = preview.video.as_mut() {
                                 playback.in_flight = false;
                             }
-                            if let Some(image) = frame {
+                            if let Some((image, blurred)) = frame {
                                 preview.image = Some(image);
+                                preview.blurred = blurred;
                             }
                             cx.notify();
                         });
@@ -1116,7 +1126,10 @@ fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
 }
 
 /// A decoded BGRA frame as a cover-fit thumbnail, following `load_thumbnail`.
-fn video_thumbnail(frame: &crate::video::decoder::DecodedFrame) -> Option<Arc<gpui::RenderImage>> {
+fn video_thumbnails(
+    frame: &crate::video::decoder::DecodedFrame,
+    blur: bool,
+) -> Option<(Arc<gpui::RenderImage>, Option<Arc<gpui::RenderImage>>)> {
     if frame.width == 0 || frame.height == 0 {
         return None;
     }
@@ -1125,18 +1138,15 @@ fn video_thumbnail(frame: &crate::video::decoder::DecodedFrame) -> Option<Arc<gp
         pixel.swap(0, 2);
     }
     let decoded = image::RgbaImage::from_raw(frame.width, frame.height, rgba)?;
-    let mut buffer = image::DynamicImage::ImageRgba8(decoded)
+    let buffer = image::DynamicImage::ImageRgba8(decoded)
         .resize_to_fill(
             PREVIEW_WIDTH as u32,
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
         .to_rgba8();
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    let frame = image::Frame::new(buffer);
-    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
+    let blurred = blur.then(|| blur_thumbnail(&buffer)).flatten();
+    Some((render_thumbnail(buffer), blurred))
 }
 
 fn start_video_export(
@@ -1549,11 +1559,15 @@ fn load_preview_thumbnails(
             image::imageops::FilterType::Triangle,
         )
         .to_rgba8();
-    let blurred = crate::editor::export::from_rgba(&scaled).map(|mut pixmap| {
+    let blurred = blur_thumbnail(&scaled);
+    (Some(render_thumbnail(scaled)), blurred)
+}
+
+fn blur_thumbnail(scaled: &image::RgbaImage) -> Option<Arc<gpui::RenderImage>> {
+    crate::editor::export::from_rgba(scaled).map(|mut pixmap| {
         crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
         render_thumbnail(crate::editor::export::to_rgba(&pixmap))
-    });
-    (Some(render_thumbnail(scaled)), blurred)
+    })
 }
 
 fn render_thumbnail(mut image: image::RgbaImage) -> Arc<gpui::RenderImage> {
@@ -4263,13 +4277,40 @@ mod tests {
             height: 2,
             bgra: vec![10u8; 4 * 4 * 2].into(),
         };
-        assert!(super::video_thumbnail(&frame).is_some());
+        assert!(super::video_thumbnails(&frame, false).is_some());
         let empty = crate::video::decoder::DecodedFrame {
             width: 0,
             height: 0,
             bgra: Vec::new().into(),
         };
-        assert!(super::video_thumbnail(&empty).is_none());
+        assert!(super::video_thumbnails(&empty, true).is_none());
+    }
+
+    #[test]
+    fn video_hover_blur_matches_the_screenshot_thumbnail() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("frame.png");
+        let pixels = image::RgbaImage::from_fn(320, 180, |x, y| {
+            let value = if (x / 12 + y / 12) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([value, 80, 255 - value, 255])
+        });
+        pixels.save(&path).unwrap();
+        let mut bgra = pixels.into_raw();
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let frame = crate::video::decoder::DecodedFrame {
+            width: 320,
+            height: 180,
+            bgra: bgra.into(),
+        };
+        let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
+        let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
+        let blurred = blurred.unwrap();
+        assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
+        assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
+        assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
+        assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
     }
 
     #[test]
