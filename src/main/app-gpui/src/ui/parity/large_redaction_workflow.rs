@@ -18,6 +18,10 @@ pub(super) fn run_boundary(cx: &mut HeadlessAppContext, scratch: &Path) {
 }
 
 fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, style: &str) {
+    let zoom = std::env::var("PORATAKE_PARITY_LARGE_ZOOM")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.25);
     let source = scratch.join(format!("large-{style}.png"));
     image::RgbaImage::from_fn(source_width, 2160, |x, y| {
         let red = if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 };
@@ -60,7 +64,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     settle(cx, editor.into());
     editor
         .update(cx, |editor, _, cx| {
-            editor.zoom = 0.25;
+            editor.zoom = zoom;
             cx.notify();
         })
         .unwrap();
@@ -90,7 +94,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     settle(cx, flattened.into());
     flattened
         .update(cx, |editor, _, cx| {
-            editor.zoom = 0.25;
+            editor.zoom = zoom;
             cx.notify();
         })
         .unwrap();
@@ -104,20 +108,31 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
     let preview = cx.capture_screenshot(editor.into()).unwrap();
     let expected = cx.capture_screenshot(flattened.into()).unwrap();
     let snap = |value: f32| (value.abs() - 0.5).ceil().copysign(value) as u32;
-    let left = snap(f32::from(bounds.left()));
-    let top = snap(f32::from(bounds.top()));
-    let flat_left = snap(f32::from(flat_bounds.left()));
-    let flat_top = snap(f32::from(flat_bounds.top()));
-    let width = snap(f32::from(bounds.right())) - left;
-    let height = snap(f32::from(bounds.bottom())) - top;
-    assert_eq!((width, height), (source_width / 4, 540));
-    assert_eq!(
-        (width, height),
-        (
-            snap(f32::from(flat_bounds.right())) - flat_left,
-            snap(f32::from(flat_bounds.bottom())) - flat_top
-        )
-    );
+    let (left, top, flat_left, flat_top, width, height) = if zoom == 0.25 {
+        let left = snap(f32::from(bounds.left()));
+        let top = snap(f32::from(bounds.top()));
+        let flat_left = snap(f32::from(flat_bounds.left()));
+        let flat_top = snap(f32::from(flat_bounds.top()));
+        let width = snap(f32::from(bounds.right())) - left;
+        let height = snap(f32::from(bounds.bottom())) - top;
+        assert_eq!((width, height), (source_width / 4, 540));
+        assert_eq!(
+            (width, height),
+            (
+                snap(f32::from(flat_bounds.right())) - flat_left,
+                snap(f32::from(flat_bounds.bottom())) - flat_top
+            )
+        );
+        (left, top, flat_left, flat_top, width, height)
+    } else {
+        assert_eq!(bounds, flat_bounds);
+        let left = snap(f32::from(bounds.left()).max(300.));
+        let top = snap(f32::from(bounds.top()).max(160.));
+        let right = snap(f32::from(bounds.right()).min(950.));
+        let bottom = snap(f32::from(bounds.bottom()).min(650.));
+        assert!(right > left && bottom > top);
+        (left, top, left, top, right - left, bottom - top)
+    };
     let mut changed = 0u64;
     let mut total = 0u64;
     let mut maximum = 0u8;
@@ -136,9 +151,10 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
             changed += u64::from(difference > 2);
         }
     }
-    if style == "none" {
-        assert_eq!(changed, 0, "the unredacted comparison must match");
-    }
+    assert_eq!(
+        changed, 0,
+        "{style} preview differs from the reopened export"
+    );
     image::imageops::crop_imm(&preview, left, top, width, height)
         .to_image()
         .save(scratch.join(format!("large-{style}-preview.png")))
@@ -148,7 +164,7 @@ fn run_case(cx: &mut HeadlessAppContext, scratch: &Path, source_width: u32, styl
         .save(scratch.join(format!("large-{style}-expected.png")))
         .unwrap();
     println!(
-        "large {source_width}x2160 {style}: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
+        "large {source_width}x2160 {style} at {zoom}x: {modified} of 1024 source samples changed; {changed} of {} displayed pixels above two; max {maximum}; mean max-channel {:.4}",
         width * height,
         total as f64 / f64::from(width * height)
     );

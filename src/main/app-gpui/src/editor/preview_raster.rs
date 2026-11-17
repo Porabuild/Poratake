@@ -75,10 +75,20 @@ pub struct PatchImage {
 pub struct SamplingGrid {
     pub origin: (f32, f32),
     pub stage_bounds: (f32, f32, f32, f32),
+    pub viewport: Option<(f32, f32, f32, f32)>,
     pub stage_size: (f64, f64),
     pub offset: (f64, f64),
     pub zoom: f32,
     pub dpi: f32,
+}
+
+pub fn needs_bounded_composition(surface: &Surface) -> bool {
+    let (left, top, right, bottom) = surface.bounds();
+    let width = right - left;
+    let height = bottom - top;
+    width > MAX_PATCH_DIMENSION - 1.
+        || height > MAX_PATCH_DIMENSION - 1.
+        || width * height > MAX_PATCH_PIXELS
 }
 
 pub fn is_rasterized(annotation: &Annotation) -> bool {
@@ -102,6 +112,52 @@ fn padded(bounds: (f64, f64, f64, f64), padding: f64) -> (f64, f64, f64, f64) {
         bounds.2 + padding,
         bounds.3 + padding,
     )
+}
+
+fn replay_bounds<'a>(
+    target: (f64, f64, f64, f64),
+    paints: impl DoubleEndedIterator<Item = ScreenshotPaint<'a>>,
+    surface: &Surface,
+) -> (f64, f64, f64, f64) {
+    let mut sample = target;
+    let limits = surface.bounds();
+    for paint in paints.rev() {
+        let ScreenshotPaint::Annotation(
+            annotation @ Annotation::Redact {
+                style, intensity, ..
+            },
+        ) = paint
+        else {
+            continue;
+        };
+        let effect = padded(annotation.bounds(), 2.);
+        let overlap = (
+            sample.0.max(effect.0),
+            sample.1.max(effect.1),
+            sample.2.min(effect.2),
+            sample.3.min(effect.3),
+        );
+        if overlap.2 <= overlap.0 || overlap.3 <= overlap.1 {
+            continue;
+        }
+        let (block, radius) = crate::editor::annotations::redact_intensity(*intensity);
+        let padding = match style.as_str() {
+            "pixelate" => (block * surface.native_scale).round().max(1.) + 2.,
+            "blur" => {
+                let sigma = (radius * surface.native_scale).round().max(1.) as f32;
+                (crate::render::blur::box_radius(sigma) * 3 + 2) as f64
+            }
+            _ => continue,
+        };
+        let dependency = padded(overlap, padding);
+        sample = (
+            sample.0.min(dependency.0).max(limits.0),
+            sample.1.min(dependency.1).max(limits.1),
+            sample.2.max(dependency.2).min(limits.2),
+            sample.3.max(dependency.3).min(limits.3),
+        );
+    }
+    sample
 }
 
 fn raster_bounds(
@@ -273,6 +329,22 @@ fn patch_padded(
     scale: f64,
     padding: f64,
 ) -> Option<Patch> {
+    let bounds = patch_bounds(paint, beneath, surface, scale, padding)?;
+    render_patch(paint, beneath, surface, bounds.sample, bounds.target, scale)
+}
+
+struct PatchBounds {
+    sample: (f64, f64, f64, f64),
+    target: (f64, f64, f64, f64),
+}
+
+fn patch_bounds(
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    scale: f64,
+    padding: f64,
+) -> Option<PatchBounds> {
     if scale <= 0.0 {
         return None;
     }
@@ -321,6 +393,12 @@ fn patch_padded(
             break;
         }
     }
+    Some(PatchBounds { sample, target })
+}
+
+fn clipped_patch_bounds(surface: &Surface, bounds: PatchBounds) -> Option<PatchBounds> {
+    let PatchBounds { sample, target } = bounds;
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
     let left = sample.0.max(surface_left);
     let top = sample.1.max(surface_top);
     let right = sample.2.min(surface_right);
@@ -338,9 +416,40 @@ fn patch_padded(
     if target.2 <= target.0 || target.3 <= target.1 {
         return None;
     }
-    let scale = fit_scale(right - left, bottom - top, scale)
-        .min((MAX_PATCH_DIMENSION - 1.0) / (target.2 - target.0))
-        .min((MAX_PATCH_DIMENSION - 1.0) / (target.3 - target.1));
+    Some(PatchBounds {
+        sample: (left, top, right, bottom),
+        target,
+    })
+}
+
+fn patch_scale(bounds: &PatchBounds, scale: f64) -> f64 {
+    fit_scale(
+        bounds.sample.2 - bounds.sample.0,
+        bounds.sample.3 - bounds.sample.1,
+        scale,
+    )
+    .min((MAX_PATCH_DIMENSION - 1.0) / (bounds.target.2 - bounds.target.0))
+    .min((MAX_PATCH_DIMENSION - 1.0) / (bounds.target.3 - bounds.target.1))
+}
+
+fn render_patch(
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    sample: (f64, f64, f64, f64),
+    target: (f64, f64, f64, f64),
+    scale: f64,
+) -> Option<Patch> {
+    let bounds = clipped_patch_bounds(surface, PatchBounds { sample, target })?;
+    let scale = patch_scale(&bounds, scale);
+    let (left, top, right, bottom) = bounds.sample;
+    let target = bounds.target;
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
     let device_x = (left * scale).floor();
     let device_y = (top * scale).floor();
     let width = ((right * scale).ceil() - device_x).max(1.0) as u32;
@@ -349,6 +458,12 @@ fn patch_padded(
     let mut canvas = Canvas::new(width, height)?;
     canvas.translate(-device_x as f32, -device_y as f32);
     canvas.scale(scale as f32, scale as f32);
+    canvas.set_screenshot_surface((
+        ((surface_left * scale).floor() - device_x) as i32,
+        ((surface_top * scale).floor() - device_y) as i32,
+        ((surface_right * scale).ceil() - device_x) as i32,
+        ((surface_bottom * scale).ceil() - device_y) as i32,
+    ));
     canvas.set_pixel_grid_origin(composition_origin);
     canvas.set_patch_path_anchor(
         (
@@ -620,6 +735,14 @@ pub fn aligned_image(
     ] {
         hasher.write_u64(value.to_bits());
     }
+    if let Some((x, y, width, height)) = grid.viewport {
+        hasher.write_u8(1);
+        for value in [x - grid.origin.0, y - grid.origin.1, width, height] {
+            hasher.write_u32(value.to_bits());
+        }
+    } else {
+        hasher.write_u8(0);
+    }
     let key = hasher.finish();
     let frame = FRAME.with(|frame| frame.get());
     let cached = CACHE.with(|cache| {
@@ -659,10 +782,19 @@ pub fn aligned_image(
     if target.2 <= target.0 || target.3 <= target.1 {
         return None;
     }
-    let x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
-    let y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
-    let x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
-    let y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
+    let mut x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
+    let mut y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
+    let mut x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
+    let mut y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
+    if let Some((x, y, width, height)) = grid.viewport {
+        x0 = x0.max(f64::from(x * grid.dpi).floor() - 1.);
+        y0 = y0.max(f64::from(y * grid.dpi).floor() - 1.);
+        x1 = x1.min(f64::from((x + width) * grid.dpi).ceil() + 1.);
+        y1 = y1.min(f64::from((y + height) * grid.dpi).ceil() + 1.);
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
     let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
     if width == 0
         || height == 0
@@ -677,75 +809,33 @@ pub fn aligned_image(
         matte: None,
         ..*surface
     };
-    let patch = patch_padded(paint, beneath, &raw_surface, 1., guard)?;
-    if f64::from(patch.pixmap.width()) != patch.width
-        || f64::from(patch.pixmap.height()) != patch.height
-    {
-        return None;
-    }
-    let source = crate::editor::export::to_rgba(&patch.pixmap);
+    let bounds = clipped_patch_bounds(
+        &raw_surface,
+        patch_bounds(paint, beneath, &raw_surface, 1., guard)?,
+    )?;
     let mut out = image::RgbaImage::new(width, height);
-    let xs = (0..width)
-        .map(|x| {
-            let sx = (x0 + f64::from(x) + 0.5 - left) / scale_x - grid.offset.0 - patch.x - 0.5;
-            let ix = sx.floor();
-            let first = ix.max(0.).min(f64::from(source.width() - 1)) as usize;
-            let second = (ix + 1.).max(0.).min(f64::from(source.width() - 1)) as usize;
-            (first, second, (sx - ix) as f32)
-        })
-        .collect::<Vec<_>>();
-    let stride = source.width() as usize;
-    let source_pixels = source.as_raw().as_chunks::<4>().0;
-    let premultiply = cfg!(target_os = "macos") && source_pixels.iter().any(|pixel| pixel[3] < 255);
-    let output: &mut [u8] = out.as_mut();
-    for (y, row) in output
-        .as_chunks_mut::<4>()
-        .0
-        .chunks_exact_mut(width as usize)
-        .enumerate()
-    {
-        let sy = (y0 + y as f64 + 0.5 - top) / scale_y - grid.offset.1 - patch.y - 0.5;
-        let iy = sy.floor();
-        let fy = (sy - iy) as f32;
-        let first_y = iy.max(0.).min(f64::from(source.height() - 1)) as usize * stride;
-        let second_y = (iy + 1.).max(0.).min(f64::from(source.height() - 1)) as usize * stride;
-        for (pixel, &(first_x, second_x, fx)) in row.iter_mut().zip(&xs) {
-            let pixels = [
-                source_pixels[first_y + first_x],
-                source_pixels[first_y + second_x],
-                source_pixels[second_y + first_x],
-                source_pixels[second_y + second_x],
-            ];
-            let mut sample = [0.0_f32; 4];
-            for c in 0..4 {
-                let channel = |pixel: [u8; 4]| {
-                    let value = f32::from(pixel[c]);
-                    if premultiply && c < 3 {
-                        value * f32::from(pixel[3]) / 255.
-                    } else {
-                        value
-                    }
-                };
-                let a = channel(pixels[0]) * (1. - fx) + channel(pixels[1]) * fx;
-                let b = channel(pixels[2]) * (1. - fx) + channel(pixels[3]) * fx;
-                sample[c] = a * (1. - fy) + b * fy;
-            }
-            if premultiply && sample[3] > 0. {
-                for c in 0..3 {
-                    sample[c] *= 255. / sample[3];
-                }
-            }
-            if let Some(background) = surface.matte {
-                let alpha = sample[3] / 255.;
-                for c in 0..3 {
-                    sample[c] = sample[c] * alpha + f32::from(background[c]) * (1. - alpha);
-                }
-                sample[3] = 255.;
-            }
-            let mut color = sample.map(|value| value.round() as u8);
-            color.swap(0, 2);
-            *pixel = color;
-        }
+    let sampling = AlignedSampling {
+        left,
+        top,
+        x0,
+        y0,
+        scale_x,
+        scale_y,
+        offset: grid.offset,
+        matte: surface.matte,
+    };
+    if patch_scale(&bounds, 1.) >= 1. {
+        let patch = render_patch(
+            paint,
+            beneath,
+            &raw_surface,
+            bounds.sample,
+            bounds.target,
+            1.,
+        )?;
+        sampling.sample(&mut out, &patch, (0, 0, width, height));
+    } else {
+        sampling.compose_tiles(&mut out, paint, beneath, &raw_surface, MAX_PATCH_PIXELS)?;
     }
     let value = PatchImage {
         image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
@@ -774,6 +864,161 @@ impl std::fmt::Write for Fingerprint {
     fn write_str(&mut self, text: &str) -> std::fmt::Result {
         self.0.write(text.as_bytes());
         Ok(())
+    }
+}
+
+struct AlignedSampling {
+    left: f64,
+    top: f64,
+    x0: f64,
+    y0: f64,
+    scale_x: f64,
+    scale_y: f64,
+    offset: (f64, f64),
+    matte: Option<[u8; 3]>,
+}
+
+impl AlignedSampling {
+    fn compose_tiles(
+        &self,
+        out: &mut image::RgbaImage,
+        paint: ScreenshotPaint<'_>,
+        beneath: &[ScreenshotPaint<'_>],
+        surface: &Surface,
+        max_pixels: f64,
+    ) -> Option<()> {
+        let limits = surface.bounds();
+        let mut pending = vec![(0, 0, out.width(), out.height())];
+        while let Some((x0, y0, x1, y1)) = pending.pop() {
+            let source_x = |x: u32| {
+                (self.x0 + f64::from(x) + 0.5 - self.left) / self.scale_x - self.offset.0 - 0.5
+            };
+            let source_y = |y: u32| {
+                (self.y0 + f64::from(y) + 0.5 - self.top) / self.scale_y - self.offset.1 - 0.5
+            };
+            let left = source_x(x0)
+                .floor()
+                .clamp(limits.0.floor(), limits.2.ceil() - 1.);
+            let top = source_y(y0)
+                .floor()
+                .clamp(limits.1.floor(), limits.3.ceil() - 1.);
+            let right = (source_x(x1 - 1).floor() + 2.).clamp(left + 1., limits.2.ceil());
+            let bottom = (source_y(y1 - 1).floor() + 2.).clamp(top + 1., limits.3.ceil());
+            let sample = replay_bounds(
+                (left, top, right, bottom),
+                beneath.iter().copied().chain(std::iter::once(paint)),
+                surface,
+            );
+            let sample_width = sample.2.ceil() - sample.0.floor();
+            let sample_height = sample.3.ceil() - sample.1.floor();
+            if sample_width > MAX_PATCH_DIMENSION - 1.
+                || sample_height > MAX_PATCH_DIMENSION - 1.
+                || sample_width * sample_height > max_pixels
+            {
+                if x1 - x0 >= y1 - y0 && x1 - x0 > 1 {
+                    let middle = x0 + (x1 - x0) / 2;
+                    pending.extend([(x0, y0, middle, y1), (middle, y0, x1, y1)]);
+                    continue;
+                }
+                if y1 - y0 > 1 {
+                    let middle = y0 + (y1 - y0) / 2;
+                    pending.extend([(x0, y0, x1, middle), (x0, middle, x1, y1)]);
+                    continue;
+                }
+                return None;
+            }
+            let patch = render_patch(paint, beneath, surface, sample, sample, 1.)?;
+            if f64::from(patch.pixmap.width()) != patch.width
+                || f64::from(patch.pixmap.height()) != patch.height
+            {
+                return None;
+            }
+            self.sample(out, &patch, (x0, y0, x1, y1));
+        }
+        Some(())
+    }
+
+    fn sample(&self, out: &mut image::RgbaImage, patch: &Patch, bounds: (u32, u32, u32, u32)) {
+        let Self {
+            left,
+            top,
+            x0,
+            y0,
+            scale_x,
+            scale_y,
+            offset,
+            matte,
+        } = *self;
+        let width = out.width();
+        let source = crate::editor::export::to_rgba(&patch.pixmap);
+        let xs = (bounds.0..bounds.2)
+            .map(|x| {
+                let sx = (x0 + f64::from(x) + 0.5 - left) / scale_x - offset.0 - patch.x - 0.5;
+                let ix = sx.floor();
+                let first = ix.max(0.).min(f64::from(source.width() - 1)) as usize;
+                let second = (ix + 1.).max(0.).min(f64::from(source.width() - 1)) as usize;
+                (first, second, (sx - ix) as f32)
+            })
+            .collect::<Vec<_>>();
+        let stride = source.width() as usize;
+        let source_pixels = source.as_raw().as_chunks::<4>().0;
+        let premultiply =
+            cfg!(target_os = "macos") && source_pixels.iter().any(|pixel| pixel[3] < 255);
+        let output: &mut [u8] = out.as_mut();
+        for (y, row) in output
+            .as_chunks_mut::<4>()
+            .0
+            .chunks_exact_mut(width as usize)
+            .enumerate()
+            .skip(bounds.1 as usize)
+            .take((bounds.3 - bounds.1) as usize)
+        {
+            let sy = (y0 + y as f64 + 0.5 - top) / scale_y - offset.1 - patch.y - 0.5;
+            let iy = sy.floor();
+            let fy = (sy - iy) as f32;
+            let first_y = iy.max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+            let second_y = (iy + 1.).max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+            for (pixel, &(first_x, second_x, fx)) in row[bounds.0 as usize..bounds.2 as usize]
+                .iter_mut()
+                .zip(&xs)
+            {
+                let pixels = [
+                    source_pixels[first_y + first_x],
+                    source_pixels[first_y + second_x],
+                    source_pixels[second_y + first_x],
+                    source_pixels[second_y + second_x],
+                ];
+                let mut sample = [0.0_f32; 4];
+                for c in 0..4 {
+                    let channel = |pixel: [u8; 4]| {
+                        let value = f32::from(pixel[c]);
+                        if premultiply && c < 3 {
+                            value * f32::from(pixel[3]) / 255.
+                        } else {
+                            value
+                        }
+                    };
+                    let a = channel(pixels[0]) * (1. - fx) + channel(pixels[1]) * fx;
+                    let b = channel(pixels[2]) * (1. - fx) + channel(pixels[3]) * fx;
+                    sample[c] = a * (1. - fy) + b * fy;
+                }
+                if premultiply && sample[3] > 0. {
+                    for c in 0..3 {
+                        sample[c] *= 255. / sample[3];
+                    }
+                }
+                if let Some(background) = matte {
+                    let alpha = sample[3] / 255.;
+                    for c in 0..3 {
+                        sample[c] = sample[c] * alpha + f32::from(background[c]) * (1. - alpha);
+                    }
+                    sample[3] = 255.;
+                }
+                let mut color = sample.map(|value| value.round() as u8);
+                color.swap(0, 2);
+                *pixel = color;
+            }
+        }
     }
 }
 
@@ -900,6 +1145,159 @@ mod tests {
             ];
         }
         pixmap
+    }
+
+    #[test]
+    fn bounded_redaction_replay_matches_a_full_resolution_patch() {
+        let base = base_pixmap(120, 90);
+        let bgra = to_bgra(&base);
+        let surface = Surface {
+            image_id: None,
+            width: 120,
+            height: 90,
+            offset_x: 0.,
+            offset_y: 0.,
+            native_scale: 1.,
+            pixels: Some(&bgra),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        for styles in [
+            ["pixelate", "blur"],
+            ["blur", "pixelate"],
+            ["pixelate", "pixelate"],
+        ] {
+            let annotations: Vec<_> = styles
+                .iter()
+                .enumerate()
+                .map(|(index, style)| Annotation::Redact {
+                    id: index.to_string(),
+                    x: -1.,
+                    y: -1.,
+                    width: 122.,
+                    height: 92.,
+                    style: (*style).into(),
+                    intensity: 1.,
+                })
+                .collect();
+            let paints = renderer::screenshot_paints(annotations.iter());
+            for scale in [0.4, 0.75, 1.25] {
+                let width = (120. * scale) as u32;
+                let height = (90. * scale) as u32;
+                let sampling = AlignedSampling {
+                    left: 0.,
+                    top: 0.,
+                    x0: 0.,
+                    y0: 0.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    offset: (0., 0.),
+                    matte: None,
+                };
+                let patch = super::patch_padded(
+                    paints[1],
+                    &paints[..1],
+                    &surface,
+                    1.,
+                    (1. / scale).ceil() + 2.,
+                )
+                .unwrap();
+                let mut expected = image::RgbaImage::new(width, height);
+                sampling.sample(&mut expected, &patch, (0, 0, width, height));
+                let mut tiled = image::RgbaImage::new(width, height);
+                sampling
+                    .compose_tiles(&mut tiled, paints[1], &paints[..1], &surface, 2500.)
+                    .unwrap();
+                assert_eq!(tiled.as_raw(), expected.as_raw(), "{styles:?} at {scale}");
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_redaction_replay_preserves_transparency_and_offsets() {
+        let mut bgra = to_bgra(&base_pixmap(120, 90));
+        for (index, pixel) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            pixel[3] = ((index * 17) % 256) as u8;
+        }
+        for (offset_x, offset_y) in [(7., 13.), (2.5, 4.5)] {
+            let surface = Surface {
+                image_id: None,
+                width: 120,
+                height: 90,
+                offset_x,
+                offset_y,
+                native_scale: 1.,
+                pixels: Some(&bgra),
+                matte: None,
+                matte_image: None,
+                composite_backdrop: false,
+            };
+            let annotations = [
+                Annotation::Rectangle {
+                    id: "shape".into(),
+                    x: 17.25,
+                    y: 11.75,
+                    width: 65.,
+                    height: 49.,
+                    stroke: "#ff0000".into(),
+                    stroke_width: 3.,
+                    fill: Some("#00ff00".into()),
+                },
+                Annotation::Redact {
+                    id: "pixelate".into(),
+                    x: -offset_x - 1.,
+                    y: -offset_y - 1.,
+                    width: 122.,
+                    height: 92.,
+                    style: "pixelate".into(),
+                    intensity: 2.,
+                },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x: -offset_x - 1.,
+                    y: -offset_y - 1.,
+                    width: 122.,
+                    height: 92.,
+                    style: "blur".into(),
+                    intensity: 1.,
+                },
+            ];
+            let paints = renderer::screenshot_paints(annotations.iter());
+            for scale in [0.4, 1.25] {
+                let width = (120. * scale) as u32;
+                let height = (90. * scale) as u32;
+                let sampling = AlignedSampling {
+                    left: 0.,
+                    top: 0.,
+                    x0: 0.,
+                    y0: 0.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    offset: (offset_x, offset_y),
+                    matte: Some([28, 32, 36]),
+                };
+                let patch = super::patch_padded(
+                    paints[2],
+                    &paints[..2],
+                    &surface,
+                    1.,
+                    (1. / scale).ceil() + 2.,
+                )
+                .unwrap();
+                let mut expected = image::RgbaImage::new(width, height);
+                sampling.sample(&mut expected, &patch, (0, 0, width, height));
+                let mut tiled = image::RgbaImage::new(width, height);
+                sampling
+                    .compose_tiles(&mut tiled, paints[2], &paints[..2], &surface, 2500.)
+                    .unwrap();
+                assert_eq!(
+                    tiled.as_raw(),
+                    expected.as_raw(),
+                    "offset ({offset_x}, {offset_y}) at {scale}"
+                );
+            }
+        }
     }
 
     fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
@@ -1524,6 +1922,7 @@ mod tests {
         let grid = SamplingGrid {
             origin: (100., 50.),
             stage_bounds: (100., 50., 270., 210.),
+            viewport: None,
             stage_size: (180., 140.),
             offset: (0., 0.),
             zoom: 1.5,
@@ -1533,6 +1932,42 @@ mod tests {
         let first_patch = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
         let repeated = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
         assert!(Arc::ptr_eq(&first_patch.image, &repeated.image));
+        let viewport = SamplingGrid {
+            viewport: Some((150., 90., 36., 32.)),
+            ..grid
+        };
+        let clipped = aligned_image(&keys, 0, &annotation, &[], &surface, viewport).unwrap();
+        assert!(clipped.width < first_patch.width);
+        let full_size = first_patch.image.size(0);
+        let clipped_size = clipped.image.size(0);
+        let full_width = u32::from(full_size.width) as usize;
+        let clipped_width = u32::from(clipped_size.width) as usize;
+        let clipped_height = u32::from(clipped_size.height) as usize;
+        let x = ((clipped.x - first_patch.x) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+        let y = ((clipped.y - first_patch.y) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+        let full_pixels = first_patch.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+        let clipped_pixels = clipped.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+        for row in 0..clipped_height {
+            assert_eq!(
+                &clipped_pixels[row * clipped_width..(row + 1) * clipped_width],
+                &full_pixels
+                    [(row + y) * full_width + x..(row + y) * full_width + x + clipped_width],
+            );
+        }
+        let shifted_viewport = aligned_image(
+            &keys,
+            0,
+            &annotation,
+            &[],
+            &surface,
+            SamplingGrid {
+                viewport: Some((160., 90., 36., 32.)),
+                ..grid
+            },
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&clipped.image, &shifted_viewport.image));
+        assert!(shifted_viewport.x > clipped.x);
         let shifted = aligned_image(
             &keys,
             0,
@@ -1681,6 +2116,7 @@ mod tests {
         let grid = SamplingGrid {
             origin: (0., 0.),
             stage_bounds: (0., 0., 19_200., 160.),
+            viewport: None,
             stage_size: (19_200., 160.),
             offset: (0., 0.),
             zoom: 1.,

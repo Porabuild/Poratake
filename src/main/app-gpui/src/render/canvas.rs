@@ -50,6 +50,7 @@ pub struct Canvas {
     shadow_scale: f32,
     patch_path_anchor: Option<((f32, f32), (f32, f32))>,
     pixel_grid_origin: Option<(f64, f64)>,
+    screenshot_surface: Option<(i32, i32, i32, i32)>,
 }
 
 impl Canvas {
@@ -65,6 +66,7 @@ impl Canvas {
             shadow_scale: 1.0,
             patch_path_anchor: None,
             pixel_grid_origin: None,
+            screenshot_surface: None,
         }
     }
 
@@ -105,6 +107,15 @@ impl Canvas {
 
     pub fn set_pixel_grid_origin(&mut self, origin: (f64, f64)) {
         self.pixel_grid_origin = Some(origin);
+    }
+
+    pub fn screenshot_surface(&self) -> (i32, i32, i32, i32) {
+        self.screenshot_surface
+            .unwrap_or((0, 0, self.width() as i32, self.height() as i32))
+    }
+
+    pub fn set_screenshot_surface(&mut self, bounds: (i32, i32, i32, i32)) {
+        self.screenshot_surface = Some(bounds);
     }
 
     pub fn set_patch_path_anchor(

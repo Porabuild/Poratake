@@ -775,7 +775,17 @@ fn paint_annotations(
                     | Annotation::Circle { .. }
             );
         let at_native_scale = (scale - 1.).abs() <= 0.0001;
-        let aligned = !at_native_scale
+        let bounded = preview_raster::needs_bounded_composition(&surface)
+            || preview_raster::needs_bounded_composition(&redaction_surface);
+        let aligned = (!at_native_scale
+            || (bounded
+                && (committed_blur
+                    || committed_pixelation
+                    || preview_raster::overlaps_redaction(
+                        annotation,
+                        &visible[..index],
+                        &surface,
+                    ))))
             && !draft_redaction
             && !selected_inset
             && (committed_blur
@@ -878,6 +888,15 @@ fn paint_annotations(
                     &aligned_surface,
                     preview_raster::SamplingGrid {
                         origin: (f32::from(origin.x), f32::from(origin.y)),
+                        viewport: bounded.then(|| {
+                            let bounds = window.content_mask().bounds;
+                            (
+                                f32::from(bounds.origin.x),
+                                f32::from(bounds.origin.y),
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.size.height),
+                            )
+                        }),
                         stage_bounds: {
                             let bounds = if matte_image.is_some() || snapshot.backdrop_composite {
                                 stage_bounds.unwrap_or(bounds)

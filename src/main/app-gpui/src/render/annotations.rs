@@ -1347,6 +1347,24 @@ struct Region {
 }
 
 fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Option<Region> {
+    clamp_region_to_bounds(
+        canvas,
+        x,
+        y,
+        width,
+        height,
+        (0, 0, canvas.width() as i32, canvas.height() as i32),
+    )
+}
+
+fn clamp_region_to_bounds(
+    canvas: &Canvas,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    bounds: (i32, i32, i32, i32),
+) -> Option<Region> {
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
@@ -1366,15 +1384,15 @@ fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Opt
 
     let floored_x = origin_x.floor();
     let floored_y = origin_y.floor();
-    let clamped_x = floored_x.max(0.0);
-    let clamped_y = floored_y.max(0.0);
+    let clamped_x = floored_x.max(bounds.0 as f32);
+    let clamped_y = floored_y.max(bounds.1 as f32);
     let clamped_width = (origin_x + width as f32 * scale_x)
         .ceil()
-        .min(canvas.width() as f32)
+        .min(bounds.2 as f32)
         - clamped_x;
     let clamped_height = (origin_y + height as f32 * scale_y)
         .ceil()
-        .min(canvas.height() as f32)
+        .min(bounds.3 as f32)
         - clamped_y;
     if clamped_width <= 0.0 || clamped_height <= 0.0 {
         return None;
@@ -1497,7 +1515,12 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     let Some(region) = clamp_region(canvas, x, y, width, height) else {
         return;
     };
-    let origin = (region.device_x, region.device_y);
+    let Some(full_region) =
+        clamp_region_to_bounds(canvas, x, y, width, height, canvas.screenshot_surface())
+    else {
+        return;
+    };
+    let origin = (full_region.device_x, full_region.device_y);
     pixelate_screenshot_region(canvas, region, block, origin);
 }
 
@@ -1601,12 +1624,27 @@ fn blur_region(
     // Sample beyond the region so the blur has real pixels to pull in at the
     // edges instead of smearing transparency inwards.
     let padding = (radius as f32 * 2.0 * region.scale_x).ceil() as i32;
-    let source_x = (region.device_x - padding).max(0);
-    let source_y = (region.device_y - padding).max(0);
-    let source_width =
-        ((region.device_width as i32 + padding * 2).min(canvas.width() as i32 - source_x)).max(1);
-    let source_height =
-        ((region.device_height as i32 + padding * 2).min(canvas.height() as i32 - source_y)).max(1);
+    let bounds = if screenshot {
+        canvas.screenshot_surface()
+    } else {
+        (0, 0, canvas.width() as i32, canvas.height() as i32)
+    };
+    let Some(full_region) = clamp_region_to_bounds(canvas, x, y, width, height, bounds) else {
+        return;
+    };
+    let full_x = (full_region.device_x - padding).max(bounds.0);
+    let full_y = (full_region.device_y - padding).max(bounds.1);
+    let full_width =
+        ((full_region.device_width as i32 + padding * 2).min(bounds.2 - full_x)).max(1);
+    let full_height =
+        ((full_region.device_height as i32 + padding * 2).min(bounds.3 - full_y)).max(1);
+    let source_x = full_x.max(0);
+    let source_y = full_y.max(0);
+    let source_width = (full_x + full_width).min(canvas.width() as i32) - source_x;
+    let source_height = (full_y + full_height).min(canvas.height() as i32) - source_y;
+    if source_width <= 0 || source_height <= 0 {
+        return;
+    }
 
     let sigma = radius as f32 * region.scale_x;
     let Some(mut source) = canvas.read_region(
@@ -2979,6 +3017,66 @@ mod tests {
                     }
                 }
                 assert!(checked > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_redactions_replay_inside_a_cropped_surface() {
+        let mut source = Pixmap::new(240, 200).unwrap();
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 240;
+            let y = index / 240;
+            let alpha = ((x * 11 + y * 7) % 256) as u8;
+            *pixel = [alpha / 2, (x as u8).min(alpha), (y as u8).min(alpha), alpha];
+        }
+        for (x, y) in [(3.25, 7.5), (-7.25, -3.5)] {
+            let annotations = [
+                Annotation::Redact {
+                    id: "pixelate".into(),
+                    x,
+                    y,
+                    width: 210.,
+                    height: 180.,
+                    style: "pixelate".into(),
+                    intensity: 5.,
+                },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x: x + 3.,
+                    y: y + 2.,
+                    width: 200.,
+                    height: 170.,
+                    style: "blur".into(),
+                    intensity: 1.,
+                },
+            ];
+            for count in 1..=annotations.len() {
+                let mut full = Canvas::from_pixmap(source.clone());
+                draw_all_screenshot(&mut full, &annotations[..count], 1.);
+                let mut tile = Canvas::from_pixmap(
+                    source
+                        .clone_rect(tiny_skia::IntRect::from_xywh(45, 30, 140, 130).unwrap())
+                        .unwrap(),
+                );
+                tile.translate(-45., -30.);
+                tile.set_screenshot_surface((-45, -30, 195, 170));
+                draw_all_screenshot(&mut tile, &annotations[..count], 1.);
+                for py in 60..130 {
+                    for px in 75..155 {
+                        assert_eq!(
+                            tile.pixmap().pixel(px - 45, py - 30),
+                            full.pixmap().pixel(px, py),
+                            "pixel ({px}, {py}), region ({x}, {y}), {count} effects"
+                        );
+                    }
+                }
             }
         }
     }
