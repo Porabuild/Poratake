@@ -25,6 +25,7 @@ const mockGetEditorStatePath = vi.fn(
 );
 const mockGenerateInitialEditorState = vi.fn();
 const mockWriteFileAtomicSync = vi.fn();
+const mockRecordRemovedMusic = vi.fn();
 const mockLocalizeWallpaperImage = vi.fn((imageUrl: string) => imageUrl);
 const mockResolveLocalizedWallpaperImage = vi.fn(
   (imageUrl: string) => imageUrl
@@ -86,6 +87,10 @@ vi.mock('../../src/main/capture/video/auto-zoom-generator', () => ({
 
 vi.mock('@/main/utils/atomic-file', () => ({
   writeFileAtomicSync: (...args: unknown[]) => mockWriteFileAtomicSync(...args),
+}));
+
+vi.mock('@/main/capture/video/music-retention', () => ({
+  recordRemovedMusic: (...args: unknown[]) => mockRecordRemovedMusic(...args),
 }));
 
 vi.mock('../../src/main/settings/wallpaper-assets', () => ({
@@ -207,8 +212,33 @@ describe('video editor state handlers', () => {
       createState()
     );
     expect(result).toBe(false);
+    expect(mockRecordRemovedMusic).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalled();
     error.mockRestore();
+  });
+
+  it('records removed music only after the new state is saved', async () => {
+    mockFs.readFileSync.mockReturnValueOnce(
+      JSON.stringify({
+        musicTracks: [{ source: 'music', fileName: 'old.wav' }],
+      })
+    );
+    const { registerStateHandlers } =
+      await import('../../src/main/capture/video/ipc/state-handlers');
+    registerStateHandlers();
+    const result = await ipcHandlers['video-editor:saveState'](
+      { sender: { id: 1 } },
+      createState({ musicTracks: [] })
+    );
+    expect(result).toBe(true);
+    expect(mockRecordRemovedMusic).toHaveBeenCalledWith(
+      '/project/video.cap',
+      [{ source: 'music', fileName: 'old.wav' }],
+      []
+    );
+    expect(mockWriteFileAtomicSync.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRecordRemovedMusic.mock.invocationCallOrder[0]
+    );
   });
 
   it('stores managed wallpaper images inside the recording project', async () => {

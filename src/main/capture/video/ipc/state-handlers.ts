@@ -11,9 +11,23 @@ import {
 import { writeFileAtomicSync } from '@/main/utils/atomic-file';
 import type { VideoEditorState } from '@/types/video-editor-state';
 import { EDITOR_STATE_VERSION } from '@/types/video-editor-state';
+import type { MusicTrack } from '@/types/music';
+import { recordRemovedMusic } from '../music-retention';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
+}
+
+function musicReferences(
+  value: unknown
+): Pick<MusicTrack, 'source' | 'fileName'>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (track): track is Pick<MusicTrack, 'source' | 'fileName'> =>
+      isRecord(track) &&
+      track.source === 'music' &&
+      typeof track.fileName === 'string'
+  );
 }
 
 function isNumberArray(value: unknown): value is number[] {
@@ -373,8 +387,21 @@ export function registerStateHandlers(): void {
       }
 
       try {
+        let previousMusic: Pick<MusicTrack, 'source' | 'fileName'>[] = [];
+        try {
+          const previous: unknown = JSON.parse(
+            fs.readFileSync(statePath, 'utf8')
+          );
+          if (isRecord(previous))
+            previousMusic = musicReferences(previous.musicTracks);
+        } catch {}
         const stateToSave = localizeStateWallpaper(state, statePath);
         writeFileAtomicSync(statePath, JSON.stringify(stateToSave, null, 2));
+        recordRemovedMusic(
+          data.filePath,
+          previousMusic,
+          musicReferences(stateToSave.musicTracks)
+        );
         return true;
       } catch (error) {
         console.error('Failed to save editor state:', error);

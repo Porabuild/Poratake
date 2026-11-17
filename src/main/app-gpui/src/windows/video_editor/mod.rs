@@ -984,6 +984,16 @@ impl VideoEditorWindow {
         SidebarTab::parse(&self.state.ui.sidebar_tab)
     }
 
+    fn record_removed_music(&self, before: &VideoEditorState) {
+        if let Some(path) = self.path.as_deref() {
+            crate::video::music_retention::record_removed(
+                path,
+                &before.music_tracks,
+                &self.state.music_tracks,
+            );
+        }
+    }
+
     fn commit<F>(&mut self, cx: &mut Context<Self>, mutate: F)
     where
         F: FnOnce(&mut VideoEditorState),
@@ -998,6 +1008,7 @@ impl VideoEditorWindow {
         if self.state == before {
             return;
         }
+        self.record_removed_music(&before);
         if self.gesture_snapshot.is_some() {
             self.sync_preview_state(cx);
             self.request_audio_sync(cx);
@@ -1090,8 +1101,9 @@ impl VideoEditorWindow {
         };
         previous.export_settings = self.state.export_settings.clone();
         self.camera_segments_initialized |= previous.camera_segments != self.state.camera_segments;
-        self.future
-            .push(std::mem::replace(&mut self.state, previous));
+        let before = std::mem::replace(&mut self.state, previous);
+        self.record_removed_music(&before);
+        self.future.push(before);
         self.persist(cx);
         self.sync_preview_state(cx);
         self.request_audio_sync(cx);
@@ -1104,7 +1116,9 @@ impl VideoEditorWindow {
         };
         next.export_settings = self.state.export_settings.clone();
         self.camera_segments_initialized |= next.camera_segments != self.state.camera_segments;
-        self.history.push(std::mem::replace(&mut self.state, next));
+        let before = std::mem::replace(&mut self.state, next);
+        self.record_removed_music(&before);
+        self.history.push(before);
         self.persist(cx);
         self.sync_preview_state(cx);
         self.request_audio_sync(cx);
@@ -1140,7 +1154,8 @@ impl VideoEditorWindow {
                 }
             }
         }
-        self.state = state;
+        let before = std::mem::replace(&mut self.state, state);
+        self.record_removed_music(&before);
         self.camera_segments_initialized = true;
         self.history.clear();
         self.future.clear();
@@ -5318,6 +5333,12 @@ mod keyboard_demo_tests {
                 editor.remove_music_track(track.id.clone().into(), cx);
                 assert!(editor.state.music_tracks.is_empty());
                 assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                assert_eq!(
+                    std::fs::read_dir(folder.parent().unwrap().join(".poratake-music-retention"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
                 editor.undo(cx);
                 assert_eq!(editor.state.music_tracks, vec![track.clone()]);
                 assert_eq!(std::fs::read(&file).unwrap(), b"original audio");

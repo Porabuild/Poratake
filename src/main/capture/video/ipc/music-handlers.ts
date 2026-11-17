@@ -1,5 +1,5 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron';
-import { existsSync } from 'fs';
+import { constants, existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { getWindowData } from '../window-manager';
@@ -12,6 +12,7 @@ import {
   isExportOutputPathAllowed,
 } from './export-session';
 import { buildAtempoFilter } from './audio-handlers';
+import { isMusicNameReserved, recordMusicCandidate } from '../music-retention';
 
 function sanitizeFileName(fileName: string): string {
   return path.basename(fileName);
@@ -46,21 +47,25 @@ async function probeAudioDuration(
   return hours * 3600 + minutes * 60 + seconds + centiseconds / 100;
 }
 
-async function getUniqueFileName(
+async function copyMusicToUniquePath(
+  sourcePath: string,
   musicFolder: string,
   originalName: string
-): Promise<string> {
+): Promise<{ fileName: string; destPath: string }> {
   const ext = path.extname(originalName);
   const base = path.basename(originalName, ext);
-  let candidate = originalName;
-  let counter = 1;
-
-  while (existsSync(path.join(musicFolder, candidate))) {
-    candidate = `${base} (${counter})${ext}`;
-    counter++;
+  for (let counter = 0; ; counter++) {
+    const fileName =
+      counter === 0 ? originalName : `${base} (${counter})${ext}`;
+    const destPath = path.join(musicFolder, fileName);
+    if (isMusicNameReserved(musicFolder, fileName)) continue;
+    try {
+      await fs.copyFile(sourcePath, destPath, constants.COPYFILE_EXCL);
+      return { fileName, destPath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
   }
-
-  return candidate;
 }
 
 export function registerMusicHandlers(): void {
@@ -111,11 +116,14 @@ export function registerMusicHandlers(): void {
       }
 
       const originalName = path.basename(sourcePath);
-      const fileName = await getUniqueFileName(musicFolder, originalName);
-      const destPath = path.join(musicFolder, fileName);
-
+      let fileName: string;
+      let destPath: string;
       try {
-        await fs.copyFile(sourcePath, destPath);
+        ({ fileName, destPath } = await copyMusicToUniquePath(
+          sourcePath,
+          musicFolder,
+          originalName
+        ));
       } catch (error) {
         return {
           success: false,
@@ -131,6 +139,12 @@ export function registerMusicHandlers(): void {
 
       const ext = path.extname(fileName);
       const name = path.basename(fileName, ext);
+
+      try {
+        recordMusicCandidate(data.filePath, fileName);
+      } catch (error) {
+        console.error('Could not record imported music:', error);
+      }
 
       return { success: true, fileName, name, originalDuration: duration };
     }

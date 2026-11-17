@@ -7,6 +7,7 @@ pub mod encoder;
 pub mod export;
 pub mod keyboard_audio;
 pub mod music;
+pub mod music_retention;
 pub mod preview_audio;
 pub mod project;
 pub mod recorder;

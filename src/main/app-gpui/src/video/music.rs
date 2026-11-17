@@ -33,10 +33,7 @@ pub(crate) fn file_path(folder: &Path, file_name: &str) -> Option<std::path::Pat
 
 /// `getUniqueFileName` — an existing name gains a ` (n)` suffix rather than
 /// overwriting the file already in the folder.
-pub fn unique_file_name(folder: &Path, original: &str) -> String {
-    if std::fs::symlink_metadata(folder.join(original)).is_err() {
-        return original.to_string();
-    }
+pub fn unique_file_name(folder: &Path, original: &str) -> std::io::Result<String> {
     let path = Path::new(original);
     let stem = path
         .file_stem()
@@ -48,11 +45,20 @@ pub fn unique_file_name(folder: &Path, original: &str) -> String {
         .map(|value| format!(".{value}"))
         .unwrap_or_default();
 
-    let mut counter = 1;
+    let mut counter = 0;
     loop {
-        let candidate = format!("{stem} ({counter}){extension}");
-        if std::fs::symlink_metadata(folder.join(&candidate)).is_err() {
-            return candidate;
+        let candidate = if counter == 0 {
+            original.to_string()
+        } else {
+            format!("{stem} ({counter}){extension}")
+        };
+        let available = match std::fs::symlink_metadata(folder.join(&candidate)) {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error),
+        };
+        if available && !crate::video::music_retention::reserved(folder, &candidate)? {
+            return Ok(candidate);
         }
         counter += 1;
     }
@@ -76,7 +82,8 @@ pub fn add(project_path: &Path, source: &Path, timeline_start: f64) -> Result<Mu
     let mut input =
         std::fs::File::open(source).map_err(|error| format!("could not open the file: {error}"))?;
     let (file_name, destination, mut output) = loop {
-        let file_name = unique_file_name(&folder, original);
+        let file_name = unique_file_name(&folder, original)
+            .map_err(|error| format!("could not choose a music filename: {error}"))?;
         let destination = folder.join(&file_name);
         match std::fs::OpenOptions::new()
             .write(true)
@@ -106,6 +113,10 @@ pub fn add(project_path: &Path, source: &Path, timeline_start: f64) -> Result<Mu
         .unwrap_or(&file_name)
         .to_string();
     let id = format!("music-{}", sanitize_id(&file_name));
+
+    if let Err(error) = crate::video::music_retention::record(project_path, &file_name) {
+        eprintln!("[video-editor] could not record imported music: {error}");
+    }
 
     Ok(MusicTrack {
         id: id.clone(),
@@ -157,7 +168,7 @@ mod tests {
     fn a_free_name_is_used_as_is() {
         let folder = std::env::temp_dir();
         assert_eq!(
-            unique_file_name(&folder, "poratake-definitely-absent.mp3"),
+            unique_file_name(&folder, "poratake-definitely-absent.mp3").unwrap(),
             "poratake-definitely-absent.mp3"
         );
     }
@@ -167,10 +178,16 @@ mod tests {
         let folder = crate::util::test_paths::unique_temp("poratake-music-test");
         std::fs::create_dir_all(&folder).expect("folder");
         std::fs::write(folder.join("song.mp3"), b"a").expect("write");
-        assert_eq!(unique_file_name(&folder, "song.mp3"), "song (1).mp3");
+        assert_eq!(
+            unique_file_name(&folder, "song.mp3").unwrap(),
+            "song (1).mp3"
+        );
 
         std::fs::write(folder.join("song (1).mp3"), b"a").expect("write");
-        assert_eq!(unique_file_name(&folder, "song.mp3"), "song (2).mp3");
+        assert_eq!(
+            unique_file_name(&folder, "song.mp3").unwrap(),
+            "song (2).mp3"
+        );
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -227,7 +244,10 @@ mod tests {
         let outside = directory.path().join("outside.wav");
         std::os::unix::fs::symlink(&outside, music.join("source.wav")).unwrap();
         assert!(file_path(&music, "source.wav").is_none());
-        assert_eq!(unique_file_name(&music, "source.wav"), "source (1).wav");
+        assert_eq!(
+            unique_file_name(&music, "source.wav").unwrap(),
+            "source (1).wav"
+        );
         let source = directory.path().join("source.wav");
         std::fs::write(&source, b"not an audio file").unwrap();
         let _ = add(&project, &source, 0.0);
