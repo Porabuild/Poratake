@@ -1206,13 +1206,6 @@ pub fn to_rgba(source: &Pixmap) -> RgbaImage {
     target
 }
 
-/// Encodes an RGBA buffer as PNG bytes.
-pub fn encode_png(canvas: &RgbaImage) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = std::io::Cursor::new(Vec::new());
-    canvas.write_to(&mut bytes, image::ImageFormat::Png)?;
-    Ok(bytes.into_inner())
-}
-
 /// Applies a redaction to a standalone RGBA region. The editor uses this to
 /// rasterize the patch it shows under a committed redaction, so the preview
 /// pixels are the ones the export writes.

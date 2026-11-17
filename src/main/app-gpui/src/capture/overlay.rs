@@ -1876,8 +1876,8 @@ impl AreaOverlay {
                                 excluded_window_ids,
                             )
                             .ok()
-                            .and_then(|_| image::open(&path).ok())
-                            .map(|image| std::sync::Arc::new(image.to_rgba8()));
+                            .and_then(|_| crate::render::images::open(&path).ok())
+                            .map(|image| std::sync::Arc::new(image.into_rgba8()));
                         let _ = std::fs::remove_file(&path);
                         frame
                     })

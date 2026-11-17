@@ -175,6 +175,8 @@ Build-time-only tools that do not ship in the binary (proc macros and code gener
 
 The Poratake GPUI shell and Rust daemon crates directly depend on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
 
+The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) and `png` 0.18.1 (MIT OR Apache-2.0), both already bundled through `image`.
+
 | Crate                      |   Version | License                   |
 | -------------------------- | --------: | ------------------------- |
 | `anyhow`                   |   1.0.104 | MIT OR Apache-2.0         |

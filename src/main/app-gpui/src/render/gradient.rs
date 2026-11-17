@@ -165,19 +165,7 @@ pub fn overlay_noise(canvas: &mut Canvas, width: f32, height: f32, noise: f64, s
 /// Decodes a `data:` URL or a file path into a pixmap, which is how both the
 /// wallpaper background and the first-frame image arrive from `state.json`.
 pub fn load_image(source: &str) -> Option<Pixmap> {
-    let bytes = if let Some(encoded) = source.split_once("base64,").map(|(_, tail)| tail) {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded.trim())
-            .ok()?
-    } else {
-        std::fs::read(source).ok()?
-    };
-    decode_image(&bytes)
-}
-
-pub fn decode_image(bytes: &[u8]) -> Option<Pixmap> {
-    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let decoded = super::images::load_source(source)?.into_rgba8();
     let mut pixmap = Pixmap::new(decoded.width(), decoded.height())?;
     let target = pixmap.data_mut();
     for (index, pixel) in decoded.pixels().enumerate() {

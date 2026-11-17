@@ -975,7 +975,7 @@ fn decode_preview(encoded: &str, preview_width: f32, max_height: f32) -> Option<
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())
         .ok()?;
-    let decoded = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let decoded = crate::render::images::decode(&bytes).ok()?.into_rgba8();
     let (width, height) = (decoded.width(), decoded.height());
     if width == 0 || height == 0 {
         return None;

@@ -6,7 +6,7 @@ pub fn open_clipboard(cx: &mut App) {
         eprintln!("[editor] clipboard has no image");
         return;
     };
-    let Ok(buffer) = image::load_from_memory(&image.bytes) else {
+    let Ok(buffer) = crate::render::images::decode(&image.bytes) else {
         eprintln!("[editor] clipboard image could not be decoded");
         return;
     };

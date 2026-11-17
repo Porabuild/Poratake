@@ -1560,10 +1560,7 @@ fn load_preview_thumbnails(
     Option<Arc<gpui::RenderImage>>,
     Option<Arc<gpui::RenderImage>>,
 ) {
-    let Ok(bytes) = std::fs::read(path) else {
-        return (None, None);
-    };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
+    let Ok(decoded) = crate::render::images::open(path) else {
         return (None, None);
     };
     let scaled = decoded
@@ -1616,7 +1613,7 @@ fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
         report_copy_failure(cx, &format!("could not read {}", path.display()));
         return false;
     };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
+    let Ok(decoded) = crate::render::images::decode(&bytes) else {
         report_copy_failure(cx, "could not decode the capture");
         return false;
     };
@@ -1657,7 +1654,7 @@ fn copy_image(path: &Path, cx: &mut App) -> bool {
         report_copy_failure(cx, &format!("could not read {}", path.display()));
         return false;
     };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
+    let Ok(decoded) = crate::render::images::decode(&bytes) else {
         report_copy_failure(cx, "could not decode the capture");
         return false;
     };

@@ -36,8 +36,8 @@ impl PinWindow {
         png_bytes: Vec<u8>,
         restore: Option<(String, crate::editor::window::PersistedEditorState)>,
     ) {
-        let decoded = match image::load_from_memory(&png_bytes) {
-            Ok(img) => img.to_rgba8(),
+        let decoded = match crate::render::images::decode(&png_bytes) {
+            Ok(img) => img.into_rgba8(),
             Err(_) => return,
         };
         let displays = cx.displays();

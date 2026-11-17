@@ -669,6 +669,7 @@ fn capture_history(
     let deleted = std::path::Path::new(&items[2].original_path);
     assert!(!deleted.exists());
     assert!(!crate::thumbnails::thumbnail_path(deleted).exists());
+    assert!(!crate::thumbnails::screenshot_thumbnail_path(deleted).exists());
     assert_eq!(
         crate::history_store::load_history()
             .iter()

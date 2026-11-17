@@ -23,74 +23,80 @@ pub fn thumbnail_path(original: &Path) -> PathBuf {
     thumbnails_dir().join(format!("{hex}.jpg"))
 }
 
+pub(crate) fn screenshot_thumbnail_path(original: &Path) -> PathBuf {
+    thumbnail_path(original).with_extension("srgb.jpg")
+}
+
 pub fn cached(original: &Path) -> Option<PathBuf> {
     let path = thumbnail_path(original);
     path.is_file().then_some(path)
 }
 
 pub fn ensure(original: &Path, kind: HistoryItemType) -> Option<PathBuf> {
-    if let Some(path) = cached(original) {
-        return Some(path);
+    if kind == HistoryItemType::Video {
+        return cached(original);
     }
-    if kind == HistoryItemType::Video || !original.is_file() {
-        return None;
+    let target = screenshot_thumbnail_path(original);
+    if target.is_file() {
+        return Some(target);
     }
-    generate(original)
+    if original.is_file() && generate(original, &target) {
+        return Some(target);
+    }
+    cached(original)
 }
 
-fn generate(original: &Path) -> Option<PathBuf> {
-    let target = thumbnail_path(original);
-    let parent = target.parent()?;
+fn generate(original: &Path, target: &Path) -> bool {
+    let Some(parent) = target.parent() else {
+        return false;
+    };
     if let Err(error) = std::fs::create_dir_all(parent) {
         eprintln!(
             "[thumbnails] failed to create {}: {error}",
             parent.display()
         );
-        return None;
+        return false;
     }
 
-    let decoded = match image::open(original) {
+    let decoded = match crate::render::images::open(original) {
         Ok(decoded) => decoded,
         Err(error) => {
             eprintln!(
                 "[thumbnails] failed to read {}: {error}",
                 original.display()
             );
-            return None;
+            return false;
         }
     };
     let resized = decoded
         .thumbnail(THUMBNAIL_WIDTH, THUMBNAIL_WIDTH)
         .to_rgb8();
 
-    let file = match std::fs::File::create(&target) {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!(
-                "[thumbnails] failed to create {}: {error}",
-                target.display()
-            );
-            return None;
-        }
-    };
-    let mut writer = std::io::BufWriter::new(file);
+    let mut bytes = Vec::new();
     let mut encoder =
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, THUMBNAIL_QUALITY);
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, THUMBNAIL_QUALITY);
     if let Err(error) = encoder.encode_image(&resized) {
         eprintln!(
             "[thumbnails] failed to encode {}: {error}",
             target.display()
         );
-        let _ = std::fs::remove_file(&target);
-        return None;
+        return false;
     }
-    Some(target)
+    if let Err(error) = crate::util::atomic_file::write(target, &bytes) {
+        eprintln!("[thumbnails] failed to save {}: {error}", target.display());
+        return false;
+    }
+    true
 }
 
 pub fn remove(original: &Path) {
-    let path = thumbnail_path(original);
-    if path.is_file() {
-        let _ = std::fs::remove_file(path);
+    for path in [
+        thumbnail_path(original),
+        screenshot_thumbnail_path(original),
+    ] {
+        if path.is_file() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 

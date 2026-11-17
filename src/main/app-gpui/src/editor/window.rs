@@ -3628,7 +3628,7 @@ impl EditorWindow {
                     );
                     draft.draft_type = BackgroundDraftType::Image;
                     draft.image_url = Some(data.image_url.clone());
-                    draft.preview = draft_preview_image(&data.image_url)
+                    draft.preview = crate::render::images::load_source(&data.image_url)
                         .map(|image| render_image_from_base(&image));
                     self.background_editor = Some(draft);
                     return;
@@ -3663,7 +3663,8 @@ impl EditorWindow {
                 let path = path.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        draft_preview_image(&path).map(|image| render_image_from_base(&image))
+                        crate::render::images::load_source(&path)
+                            .map(|image| render_image_from_base(&image))
                     })
                     .await
             } else {
@@ -3974,27 +3975,13 @@ fn load_image(
     f32,
     f32,
 )> {
-    let bytes = std::fs::read(path)?;
-    let decoded = image::load_from_memory(&bytes)?;
+    let decoded = crate::render::images::open(path)?;
     let (width, height) = (decoded.width() as f32, decoded.height() as f32);
 
-    let base = image::DynamicImage::ImageRgba8(decoded.to_rgba8());
+    let base = image::DynamicImage::ImageRgba8(decoded.into_rgba8());
     let render_image = render_image_from_base(&base);
 
     Ok((Some(render_image), Some(base), width, height))
-}
-
-fn draft_preview_image(source: &str) -> Option<image::DynamicImage> {
-    if let Some(encoded) = source.split_once("base64,").map(|(_, tail)| tail) {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded.trim())
-            .ok()?;
-        image::load_from_memory(&bytes).ok()
-    } else {
-        let bytes = std::fs::read(source).ok()?;
-        image::load_from_memory(&bytes).ok()
-    }
 }
 
 fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> {
@@ -4022,7 +4009,7 @@ impl EditorWindow {
             &self.layers,
             self.native_scale,
         );
-        crate::editor::export::encode_png(&canvas)
+        crate::render::images::encode_srgb_png(&canvas)
     }
 
     pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {

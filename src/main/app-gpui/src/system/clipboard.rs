@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use herogpui::gpui;
-use image::{DynamicImage, RgbaImage};
+use image::RgbaImage;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -25,9 +25,7 @@ impl ClipboardService {
     pub fn write_rgba(cx: &gpui::App, width: u32, height: u32, bytes: Vec<u8>) -> Result<()> {
         let rgba = RgbaImage::from_raw(width, height, bytes)
             .ok_or_else(|| anyhow!("clipboard image dimensions were invalid"))?;
-        let mut png = std::io::Cursor::new(Vec::new());
-        DynamicImage::ImageRgba8(rgba).write_to(&mut png, image::ImageFormat::Png)?;
-        Self::write_png(cx, png.into_inner());
+        Self::write_png(cx, crate::render::images::encode_srgb_png(&rgba)?);
         Ok(())
     }
 
