@@ -670,6 +670,15 @@ pub struct RecordingControlClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub struct TooltipOwnerFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 pub struct RecordingOverlayClient<'a> {
     daemon: &'a DaemonHandle,
 }
@@ -965,6 +974,7 @@ impl RecordingControlClient<'_> {
         sequence: u64,
         text: Option<&str>,
         dark: bool,
+        owner_frame: Option<TooltipOwnerFrame>,
     ) -> Result<()> {
         if text.is_none() && !self.daemon.is_running() {
             return Ok(());
@@ -974,7 +984,18 @@ impl RecordingControlClient<'_> {
             .call(
                 RECORDING_CONTROL_MODULE,
                 RecordingControlMethod::SetTooltip.id(),
-                Some(json!({ "ownerId": owner, "sequence": sequence, "text": text, "dark": dark })),
+                Some(json!({
+                    "ownerId": owner,
+                    "sequence": sequence,
+                    "text": text,
+                    "dark": dark,
+                    "ownerFrame": owner_frame.map(|frame| json!({
+                        "x": frame.x,
+                        "y": frame.y,
+                        "width": frame.width,
+                        "height": frame.height,
+                    })),
+                })),
             )
             .map(|_| ())
     }

@@ -43,6 +43,7 @@ class RecordingControlModule: Module {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "Tooltip appearance is required")
             return
         }
+        let ownerFrame = tooltipOwnerFrame(params?["ownerFrame"])
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
@@ -51,13 +52,46 @@ class RecordingControlModule: Module {
                     return
                 }
                 do {
-                    let visible = try await self.tooltip.show(sequence: sequence, owner: owner, text: text, dark: dark, at: NSEvent.mouseLocation)
+                    let visible = try await self.tooltip.show(
+                        sequence: sequence,
+                        owner: owner,
+                        text: text,
+                        dark: dark,
+                        at: NSEvent.mouseLocation,
+                        ownerFrame: ownerFrame
+                    )
                     self.respond(id: requestId, result: ["visible": visible])
                 } catch {
                     self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
                 }
             }
         }
+    }
+
+    private func tooltipOwnerFrame(_ value: AnyCodable?) -> NSRect? {
+        guard let frame = value?.dict(),
+              let x = tooltipCoordinate(frame["x"]),
+              let y = tooltipCoordinate(frame["y"]),
+              let width = tooltipCoordinate(frame["width"]),
+              let height = tooltipCoordinate(frame["height"]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func tooltipCoordinate(_ value: Any?) -> CGFloat? {
+        let coordinate: Double
+        if let number = value as? Double {
+            coordinate = number
+        } else if let number = value as? Int {
+            coordinate = Double(number)
+        } else {
+            return nil
+        }
+        guard coordinate.isFinite else { return nil }
+        return CGFloat(coordinate)
     }
 
     private func handleListIOSDevices(requestId: String) {

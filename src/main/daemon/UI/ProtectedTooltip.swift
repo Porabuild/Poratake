@@ -30,14 +30,27 @@ final class ProtectedTooltip {
         return text != nil
     }
 
-    func show(sequence: UInt64, owner: UInt32, text: String, dark: Bool, at point: NSPoint) async throws -> Bool {
+    func show(
+        sequence: UInt64,
+        owner: UInt32,
+        text: String,
+        dark: Bool,
+        at point: NSPoint,
+        ownerFrame: NSRect? = nil
+    ) async throws -> Bool {
         guard isCurrent(sequence, owner: owner), !text.isEmpty else { return false }
         await registry.waitForCaptureStartIfNeeded()
         guard isCurrent(sequence, owner: owner) else { return false }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main else {
             return false
         }
-        let panel = makePanel(text: text, dark: dark, point: point, screen: screen)
+        let panel = makePanel(
+            text: text,
+            dark: dark,
+            point: point,
+            ownerFrame: ownerFrame,
+            screen: screen
+        )
         self.panel = panel
         panel.orderFrontRegardless()
         guard registry.register(panel) != nil else {
@@ -82,7 +95,13 @@ final class ProtectedTooltip {
         }
     }
 
-    private func makePanel(text: String, dark: Bool, point: NSPoint, screen: NSScreen) -> NSPanel {
+    private func makePanel(
+        text: String,
+        dark: Bool,
+        point: NSPoint,
+        ownerFrame: NSRect?,
+        screen: NSScreen
+    ) -> NSPanel {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         let maxTextWidth = max(1, min(360, screen.visibleFrame.width - 24))
         let label = NSTextField(labelWithString: text)
@@ -95,8 +114,13 @@ final class ProtectedTooltip {
         let size = NSSize(width: min(maxTextWidth, ceil(fitted.width)) + 16, height: ceil(fitted.height) + 8)
         let visible = screen.visibleFrame
         let x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
-        let below = point.y - 18 - size.height
-        let y = below >= visible.minY ? below : min(point.y + 18, visible.maxY - size.height)
+        let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
+        let below = anchorFrame.map { $0.minY - size.height - 4 } ?? point.y - 18 - size.height
+        let above = anchorFrame.map { $0.maxY + 4 } ?? point.y + 18
+        let belowFits = below >= visible.minY
+        let aboveFits = above + size.height <= visible.maxY
+        let preferredY = belowFits ? below : (aboveFits ? above : point.y - 18 - size.height)
+        let y = min(max(preferredY, visible.minY), max(visible.minY, visible.maxY - size.height))
         let panel = NSPanel(
             contentRect: NSRect(origin: NSPoint(x: x, y: max(visible.minY, y)), size: size),
             styleMask: [.borderless, .nonactivatingPanel],

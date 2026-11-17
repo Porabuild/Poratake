@@ -808,6 +808,60 @@ struct ScrollCapturePreviewTest {
                     tooltipRegistry.currentWindowIDs().isEmpty
                 }
             }
+            let recordingFrame = NSRect(
+                x: visibleFrame.midX - 130,
+                y: visibleFrame.minY + 100,
+                width: 260,
+                height: 44
+            )
+            let recordingPoint = NSPoint(x: recordingFrame.minX + 22, y: recordingFrame.midY)
+            precondition(tooltip.accept(sequence: 27, owner: 106, text: "Start recording"))
+            let recordingTooltipVisible = try await tooltip.show(
+                sequence: 27,
+                owner: 106,
+                text: "Start recording",
+                dark: true,
+                at: recordingPoint,
+                ownerFrame: recordingFrame
+            )
+            precondition(recordingTooltipVisible)
+            guard let recordingTooltipPanel = tooltip.testPanel else {
+                preconditionFailure("The recording tooltip panel was not created")
+            }
+            precondition(!recordingTooltipPanel.frame.intersects(recordingFrame))
+            precondition(recordingTooltipPanel.frame.maxY <= recordingFrame.minY - 4)
+            precondition(!tooltip.accept(sequence: 28, owner: 106, text: nil))
+            await waitUntil("The recording tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+
+            let bottomFrame = NSRect(
+                x: visibleFrame.midX - 130,
+                y: visibleFrame.minY + 2,
+                width: 260,
+                height: 44
+            )
+            let bottomPoint = NSPoint(x: bottomFrame.minX + 22, y: bottomFrame.midY)
+            precondition(tooltip.accept(sequence: 29, owner: 107, text: "Close preview"))
+            let bottomTooltipVisible = try await tooltip.show(
+                sequence: 29,
+                owner: 107,
+                text: "Close preview",
+                dark: false,
+                at: bottomPoint,
+                ownerFrame: bottomFrame
+            )
+            precondition(bottomTooltipVisible)
+            guard let bottomTooltipPanel = tooltip.testPanel else {
+                preconditionFailure("The bottom-edge tooltip panel was not created")
+            }
+            precondition(!bottomTooltipPanel.frame.intersects(bottomFrame))
+            precondition(bottomTooltipPanel.frame.minY >= bottomFrame.maxY + 4)
+            precondition(!tooltip.accept(sequence: 30, owner: 107, text: nil))
+            await waitUntil("The bottom-edge tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+
             let failureRegistry = RecordingCaptureWindowRegistry()
             failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
             let failedTooltip = ProtectedTooltip(registry: failureRegistry)
