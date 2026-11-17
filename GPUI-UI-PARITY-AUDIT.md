@@ -25,20 +25,20 @@ The full Windows visual matrix is opt-in through the Checks workflow's manual
 `run_windows_visual_regressions` input. Run it against the intended revision for
 release verification; routine PR checks do not run the matrix.
 
-| Gate                                 | Status | Completion evidence                                                                                                                                                                                                               |
-| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                                                                                 |
-| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                                                                        |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                                                           |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                                                       |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                                                     |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                                                     |
-| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                                                                      |
-| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                       |
-| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                               |
-| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                        |
-| macOS critical capture and recording | Open   | Isolated native area and timer probes now exclude selector pixels; screen, area and moved/closed-window recordings passed screen-only probes. Verify scroll, physical input, additional displays and the remaining native matrix. |
-| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                            |
+| Gate                                 | Status | Completion evidence                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI dependency                  | Done   | #43 released as 0.15.1; Poratake pins that release and its matching GPUI version.                                                                                                                                                                                                                                                                                                           |
+| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                                                                                                                                                                                                                                  |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                                                                                                                                                                                                                     |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                                                                                                                                                                                                                 |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                                                                                                                                                                                                               |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                                                                                                                                                                                                               |
+| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                                                                                                                                                                                                                                |
+| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
+| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
+| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
+| macOS critical capture and recording | Open   | Native area, window, timer, and screen capture and screen, area, and window recording now have live evidence. Real recordings were edited, saved, reopened, exported, and compared with decoded export frames. A generated system-audio tone survived recording and export. Scroll stitching, physical tooltip paint, microphone/camera authorization, and additional displays remain open. |
+| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
 
@@ -4387,7 +4387,7 @@ appearance.
 | P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                                                                                          |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, timer edge geometry and generated screenshot-editor save/reopen. Actual capture/recording and multi-display workflows remain unverified; Windows evidence does not certify those platform paths.                                                                                                                                                                                                                                                                                                                                                      |
+| P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, timer geometry, live capture, and recorded video edit/export. Scroll stitching, physical tooltip paint, microphone/camera authorization, and multi-display workflows remain unverified; Windows evidence does not certify those platform paths.                                                                                                                                                                                                                                                                                                       |
 | P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History, onboarding and broader native interaction remain outstanding; see [the Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt).                                                                                                                                                                                                                                            |
 
 GPUI now attempts to restore history after returned write errors and reports when a
@@ -4970,7 +4970,7 @@ uncollected.
 
 ## 2026-11-17 native macOS smoke
 
-The [live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt)
+The [initial live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt)
 uses the GPUI development binary with temporary profiles and generated images. It
 captures the settings, recording control and screenshot preview in light and dark,
 checks the preview's measured bottom-right placement, and verifies screenshot
@@ -4986,26 +4986,92 @@ settings images, [recording controls](tests/native/evidence/macos-ui/native-reco
 and [saved editor output](tests/native/evidence/macos-ui/macos-screenshot-editor-arrow-save-reopen-20261117.png)
 are retained.
 
-This Mac reports one built-in Liquid Retina XDR display. The probe checked timer
-edge geometry on that display; it did not run a countdown or screen capture. The
-GPUI development executable's Screen Recording grant is unconfirmed, so no area,
-window, screen, timer or scroll capture, recording, target movement or closure,
-or device access was attempted. No permission dialogs or privacy settings were
-touched. Physical tooltip painting, multi-display behavior and the requested
-decoded recording-export comparison remain open. The live Electron workspace
-was left untouched; visual comparison used the Electron control image supplied
-in this thread.
+The initial pass checked timer edge geometry but did not run a countdown or real
+capture. At that point the GPUI development daemon's Screen Recording grant had
+not been verified, so recording, target movement or closure, and device access
+were deferred. No permission dialogs or privacy settings were touched. The
+follow-up below supersedes that initial capture and recording status. The live
+Electron workspace was left untouched; visual comparison used the Electron
+control image supplied in this thread.
+
+### 2026-11-17 native capture and recording follow-up
+
+The GPUI onboarding status image
+[native-permission-status-onboarding-20261117.png](tests/native/evidence/macos-ui/native-permission-status-onboarding-20261117.png)
+shows Screen Recording and Accessibility granted for this development app. A
+real GPUI screen recording also succeeded. No permission prompts or privacy
+settings changes were involved. The Mac has one built-in Liquid Retina XDR
+display at 3456×2234 pixels, so multi-display placement remains unverified.
+
+The real screen take is H.264, 3456×2234, 199 frames, 19.987 seconds. The editor
+test imported that captured movie, drew an annotation, saved and reopened the
+project, exported it, then compared decoded export pixels with the reopened
+preview. Mean channel error was 0.92 on the first frame and 0.38 at 13.9 seconds;
+the edited pixels matched the decoded export better than the unedited preview.
+The captured display included macOS notification banners and a purple status dot.
+It contained no Poratake recording bar or capture overlay. That frame was kept in
+the temporary smoke directory because the OS notifications are not suitable as
+repository evidence.
+
+A real area take used a 608×360-point region of a generated QuickTime pattern
+window and produced H.264 at 1216×720, 179 frames, and 29.145 seconds. The saved
+frame shows only the generated pattern and its embedded timecode, with no Poratake
+controls or selector. The video editor test saved and reopened an annotation,
+exported the take, and compared decoded frames with the preview: mean error was
+0.77 on the first frame and 0.38 at 20.4 seconds. The captured system-audio
+sidecar was AAC, 48 kHz, stereo, and 29.163 seconds. A generated 997 Hz tone was
+present from 10.5 to 13.5 seconds; the same tone survived editor export. The
+native smoke harness keeps system audio disabled by default and opts in with
+`PORATAKE_NATIVE_SMOKE_SYSTEM_AUDIO=1`.
+
+A real window take followed a generated QuickTime target after moving the window
+from `(108,141)` to `(250,220)`. It decoded as H.264, 1280×720, 1590 frames, and
+159.773 seconds; its saved frame contains the test pattern without recording
+controls or the window outline. A second take finalized after the generated
+QuickTime target process closed, as H.264, 1280×720, 1592 frames, and 160.083
+seconds. The video editor test imported this take, edited, saved and reopened it,
+exported it, and compared decoded frames with the preview: mean error was 0.69 on
+the first frame and 0.40 at 112 seconds. The
+[area metrics](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/area-export-metrics.json),
+[window metrics](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/window-export-metrics.json),
+[screen metrics](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/screen-export-metrics.json),
+[area source frame](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/area-recording-frame.png),
+[area editor preview](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/area-editor-preview.png),
+[area export frame](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/area-export-frame.png),
+[window source frame](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/window-recording-frame.png),
+[window editor preview](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/window-editor-preview.png),
+and [window export frame](tests/native/evidence/macos-ui/video-recording-editor-smoke-20261117/window-export-frame.png)
+are retained beside this audit.
+
+The app's Export Video button opened the native Save sheet in the scratch editor,
+but the background computer-control helper could not target that AppKit sheet
+(its child window was unavailable and its accessibility IDs immediately went
+stale). No export was claimed from that button interaction. The editor's existing
+UI integration test exercised the same editor export path directly with each
+real captured movie and compared its decoded output with the reopened preview.
+This verifies the editor and exporter, but leaves native Save-sheet interaction
+unverified.
+
+The real screenshot area, window, and timer captures saved only the chosen test
+content and cleaned up their selectors. Screenshot annotation, save and reopen,
+light and dark settings, the narrow 720×520 video editor, and bottom-right preview
+placement were also checked. Hover statuses appeared, but a native tooltip bubble
+was not visible in the window-only screenshots. The scroll-capture UI was opened,
+but no scroll image or history item was produced; the fixed-header scroll-stitch
+issue remains open. Microphone and camera capture were not attempted because
+authorization for this GPUI identity was not confirmed. No settings were changed
+and no dialogs were triggered.
 
 ## Review gate
 
-| Review category                       | Result                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                         |
-| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                      |
-| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                |
-| Deferred major or dangerous refactors | None. The music asset lifecycle refactor is implemented; live Mac editor workflows and Windows runtime behavior remain unverified.                                                                                                                                                                                       |
-| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                             |
-| Blocked or unverified                 | The last full-matrix CI pass was at [`b8dd8672`](https://github.com/Porabuild/Poratake/actions/runs/43688781846); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; physical mixed-DPI, native media/capture workflows and other platforms remain in the backlog. |
+| Review category                       | Result                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope reviewed                        | Capture/editor/recording behavior, shared themes, visual/workflow fixtures and dependency evidence. The initial review used `ac384ae`; later reviews covered tooltip client geometry, Electron frozen-frame ownership and hide failure handling, along with the targeted workflows listed above.                                                            |
+| Fixed                                 | The defects listed above, including click-position window picking, frozen selection lifecycle, failed timer cleanup, native selector client alignment and full-window QR detection; workflow checks verify capture-before-release and exact output.                                                                                                         |
+| Rejected after validation             | A proposed ZXing license truncation was rejected: raw bytes from the exact pinned upstream revision match the bundled file, including its upstream appendix (SHA-256 `3f62881f0566227a24b12e5a754cc79f39aaa94883038e95c94812e1f50af42f`).                                                                                                                   |
+| Deferred major or dangerous refactors | None. The music asset lifecycle refactor is implemented; Mac native Save-sheet interaction, microphone/camera authorization, scroll stitching, and multi-display behavior remain unverified; Windows runtime behavior also remains open.                                                                                                                    |
+| Verification                          | Local checks, exact visual comparison, native workflows and image review are recorded above.                                                                                                                                                                                                                                                                |
+| Blocked or unverified                 | The last full-matrix CI pass was at [`b8dd8672`](https://github.com/Porabuild/Poratake/actions/runs/43688781846); Windows packaging was skipped. Verify current PR-head checks before merging. NVIDIA baselines are stale; physical mixed-DPI, macOS scroll/tooltips/devices/multi-display, Windows runtime, and other platform gaps remain in the backlog. |
 
 An earlier local Windows GPUI suite passed serially with 948 tests and one ignored. One
 earlier parallel run exited with access violation 0xc0000005 in ntdll.dll while

@@ -87,6 +87,77 @@ struct RecordingTimelineTests {
         return buffer!
     }
 
+    static func nonInterleavedAudioSample(
+        at time: CMTime = .zero,
+        frames: Int = 480,
+        left: Float = 0.25,
+        right: Float = -0.5
+    ) -> CMSampleBuffer {
+        var description = AudioStreamBasicDescription(
+            mSampleRate: 48_000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        precondition(CMAudioFormatDescriptionCreate(
+            allocator: nil,
+            asbd: &description,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &format
+        ) == noErr)
+        let channelBytes = frames * MemoryLayout<Float>.size
+        var block: CMBlockBuffer?
+        precondition(CMBlockBufferCreateWithMemoryBlock(
+            allocator: nil,
+            memoryBlock: nil,
+            blockLength: channelBytes * 2,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: channelBytes * 2,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &block
+        ) == noErr)
+        var planar = [Float](repeating: left, count: frames)
+        planar.append(contentsOf: repeatElement(right, count: frames))
+        precondition(planar.withUnsafeBytes { bytes in
+            CMBlockBufferReplaceDataBytes(
+                with: bytes.baseAddress!,
+                blockBuffer: block!,
+                offsetIntoDestination: 0,
+                dataLength: channelBytes * 2
+            )
+        } == noErr)
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 48_000),
+            presentationTimeStamp: time,
+            decodeTimeStamp: .invalid
+        )
+        var buffer: CMSampleBuffer?
+        precondition(CMSampleBufferCreateReady(
+            allocator: nil,
+            dataBuffer: block!,
+            formatDescription: format!,
+            sampleCount: frames,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &buffer
+        ) == noErr)
+        return buffer!
+    }
+
     static func sample(at seconds: Int64, size: Int = 2, fill: UInt8 = 0) -> CMSampleBuffer {
         var pixelBuffer: CVPixelBuffer?
         precondition(CVPixelBufferCreate(nil, size, size, kCVPixelFormatType_32BGRA, nil, &pixelBuffer) == kCVReturnSuccess)
@@ -351,6 +422,47 @@ struct RecordingTimelineTests {
             await writer.finishWriting()
             precondition(writer.status == .completed, "\(String(describing: writer.error))")
             print("Final video frame accepted after backpressure on \(count) frames")
+            return
+        }
+        if ProcessInfo.processInfo.environment["PORATAKE_TEST_NONINTERLEAVED_SYSTEM_AUDIO"] != nil {
+            let source = nonInterleavedAudioSample()
+            let recorder = ScreenCaptureRecorder()
+            guard let normalized = recorder.testInterleavedAudioSampleBuffer(source),
+                  let formatDescription = CMSampleBufferGetFormatDescription(normalized),
+                  let format = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
+                fatalError("Could not normalize non-interleaved system audio")
+            }
+            precondition(format.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0)
+            precondition(format.mChannelsPerFrame == 2)
+            precondition(format.mBytesPerFrame == 8)
+            precondition(CMSampleBufferGetSampleSize(normalized, at: 0) == 8)
+            precondition(CMSampleBufferGetTotalSampleSize(normalized) == 480 * 8)
+            guard let suffix = recorder.testAudioSuffix(
+                source,
+                atOrAfter: CMTime(value: 240, timescale: 48_000)
+            ) else {
+                fatalError("Could not trim normalized system audio")
+            }
+            precondition(CMSampleBufferGetNumSamples(suffix) == 240)
+            precondition(CMTimeCompare(
+                CMSampleBufferGetPresentationTimeStamp(suffix),
+                CMTime(value: 240, timescale: 48_000)
+            ) == 0)
+            let block = CMSampleBufferGetDataBuffer(suffix)!
+            var samples = [Float](repeating: 0, count: 480)
+            precondition(samples.withUnsafeMutableBytes { bytes in
+                CMBlockBufferCopyDataBytes(
+                    block,
+                    atOffset: 0,
+                    dataLength: 240 * 8,
+                    destination: bytes.baseAddress!
+                )
+            } == noErr)
+            for index in stride(from: 0, to: samples.count, by: 2) {
+                precondition(abs(samples[index] - 0.25) < 0.0001)
+                precondition(abs(samples[index + 1] + 0.5) < 0.0001)
+            }
+            print("Non-interleaved system audio normalized and trimmed at a sample boundary")
             return
         }
         if let path = ProcessInfo.processInfo.environment["PORATAKE_TEST_SYSTEM_INITIAL_OVERLAP"] {

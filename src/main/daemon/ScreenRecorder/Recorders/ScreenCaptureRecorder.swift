@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import AppKit
 import CoreMedia
 import Foundation
@@ -1439,6 +1440,19 @@ extension ScreenCaptureRecorder: SCStreamOutput {
             guard ScreenCaptureFrame.canAnchorTimeline(sampleBuffer, type: type) else { return }
         }
 
+        let sampleForTimeline: CMSampleBuffer
+        if type == .audio {
+            guard let interleaved = interleavedAudioSampleBuffer(sampleBuffer) else {
+                systemAudioBufferQueue?.reportFailure(
+                    RecorderError.capture("Could not normalize non-interleaved system audio")
+                )
+                return
+            }
+            sampleForTimeline = interleaved
+        } else {
+            sampleForTimeline = sampleBuffer
+        }
+
         if let pauseStart = pauseStartTime {
             let pauseDuration = CMTimeSubtract(currentTime, pauseStart)
             totalPauseDuration = CMTimeAdd(totalPauseDuration, pauseDuration)
@@ -1479,17 +1493,19 @@ extension ScreenCaptureRecorder: SCStreamOutput {
 
         var presentationTime = CMTimeSubtract(currentTime, firstTime)
         presentationTime = CMTimeSubtract(presentationTime, totalPauseDuration)
-        var timedSampleBuffer = sampleBuffer
+        var timedSampleBuffer = sampleForTimeline
 
         if CMTimeCompare(presentationTime, .zero) < 0 {
             if #available(macOS 13.0, *), type == .audio {
                 let timelineStart = CMTimeAdd(firstTime, totalPauseDuration)
                 do {
-                    guard let suffix = try audioSuffix(sampleBuffer, atOrAfter: timelineStart) else { return }
+                    guard let suffix = try audioSuffix(sampleForTimeline, atOrAfter: timelineStart) else { return }
                     timedSampleBuffer = suffix
                     presentationTime = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(suffix), timelineStart)
                 } catch {
-                    systemAudioBufferQueue?.reportFailure(error)
+                    systemAudioBufferQueue?.reportFailure(
+                        RecorderError.capture("Pre-anchor system audio trim failed: \(error.localizedDescription)")
+                    )
                     return
                 }
             } else {
@@ -1629,6 +1645,15 @@ extension ScreenCaptureRecorder: SCStreamOutput {
         createAdjustedSampleBuffer(sampleBuffer, newTime: time)
     }
 
+    func testInterleavedAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        interleavedAudioSampleBuffer(sampleBuffer)
+    }
+
+    func testAudioSuffix(_ sampleBuffer: CMSampleBuffer, atOrAfter time: CMTime) -> CMSampleBuffer? {
+        guard let normalized = interleavedAudioSampleBuffer(sampleBuffer) else { return nil }
+        return try? audioSuffix(normalized, atOrAfter: time)
+    }
+
     func testSilencePrefix(_ sampleBuffer: CMSampleBuffer, fitting duration: CMTime) -> CMSampleBuffer? {
         silencePrefix(sampleBuffer, fitting: duration)
     }
@@ -1753,7 +1778,9 @@ extension ScreenCaptureRecorder: SCStreamOutput {
                 guard let suffix = try audioSuffix(adjustedBuffer, atOrAfter: lastSystemAudioEndTime) else { return }
                 remaining = suffix
             } catch {
-                systemAudioBufferQueue.reportFailure(error)
+                systemAudioBufferQueue.reportFailure(
+                    RecorderError.capture("System audio overlap trim failed: \(error.localizedDescription)")
+                )
                 return
             }
         } else {
@@ -1849,13 +1876,171 @@ extension ScreenCaptureRecorder: SCStreamOutput {
         }
         guard low < count else { return nil }
         var suffix: CMSampleBuffer?
-        guard CMSampleBufferCopySampleBufferForRange(
+        let copyStatus = CMSampleBufferCopySampleBufferForRange(
             allocator: kCFAllocatorDefault, sampleBuffer: buffer,
             sampleRange: CFRange(location: low, length: count - low), sampleBufferOut: &suffix
-        ) == noErr, let suffix else {
-            throw RecorderError.capture("Could not trim overlapping system audio")
+        )
+        guard copyStatus == noErr, let suffix else {
+            throw RecorderError.capture("Could not trim overlapping system audio (OSStatus \(copyStatus))")
         }
         return suffix
+    }
+
+    private func interleavedAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let sourceFormat = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
+            return nil
+        }
+        guard sourceFormat.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0 else {
+            return sampleBuffer
+        }
+        guard sourceFormat.mFormatID == kAudioFormatLinearPCM,
+              sourceFormat.mChannelsPerFrame > 0,
+              sourceFormat.mBytesPerFrame > 0,
+              sourceFormat.mFramesPerPacket > 0 else {
+            return nil
+        }
+
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        let channelCount = Int(sourceFormat.mChannelsPerFrame)
+        let channelBytesPerFrame = Int(sourceFormat.mBytesPerFrame)
+        guard frameCount > 0 else { return nil }
+        let (channelDataSize, channelSizeOverflow) = frameCount.multipliedReportingOverflow(by: channelBytesPerFrame)
+        let (interleavedBytesPerFrame, frameSizeOverflow) = channelBytesPerFrame.multipliedReportingOverflow(by: channelCount)
+        let (dataSize, dataSizeOverflow) = frameCount.multipliedReportingOverflow(by: interleavedBytesPerFrame)
+        guard !channelSizeOverflow, !frameSizeOverflow, !dataSizeOverflow else { return nil }
+
+        var bufferListSize = 0
+        var retainedSource: CMBlockBuffer?
+        let sizeStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: &bufferListSize,
+            bufferListOut: nil,
+            bufferListSize: 0,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &retainedSource
+        )
+        guard sizeStatus == noErr || sizeStatus == kCMSampleBufferError_ArrayTooSmall,
+              bufferListSize >= MemoryLayout<AudioBufferList>.size else {
+            return nil
+        }
+
+        let rawBufferList = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferListSize,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawBufferList.deallocate() }
+        let sourceBufferList = rawBufferList.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var sourceBlockBuffer: CMBlockBuffer?
+        let bufferListStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: &bufferListSize,
+            bufferListOut: sourceBufferList,
+            bufferListSize: bufferListSize,
+            blockBufferAllocator: kCFAllocatorDefault,
+            blockBufferMemoryAllocator: kCFAllocatorDefault,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &sourceBlockBuffer
+        )
+        guard bufferListStatus == noErr, sourceBlockBuffer != nil else { return nil }
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(sourceBufferList)
+        guard sourceBuffers.count == channelCount else { return nil }
+        for source in sourceBuffers {
+            guard source.mNumberChannels == 1,
+                  Int(source.mDataByteSize) >= channelDataSize,
+                  source.mData != nil else {
+                return nil
+            }
+        }
+
+        var outputFormat = sourceFormat
+        outputFormat.mFormatFlags &= ~kAudioFormatFlagIsNonInterleaved
+        outputFormat.mBytesPerFrame = UInt32(interleavedBytesPerFrame)
+        let (bytesPerPacket, packetSizeOverflow) = outputFormat.mBytesPerFrame
+            .multipliedReportingOverflow(by: outputFormat.mFramesPerPacket)
+        guard !packetSizeOverflow else { return nil }
+        outputFormat.mBytesPerPacket = bytesPerPacket
+
+        var layoutSize = 0
+        let channelLayout = CMAudioFormatDescriptionGetChannelLayout(formatDescription, sizeOut: &layoutSize)
+        var outputFormatDescription: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &outputFormat,
+            layoutSize: layoutSize,
+            layout: channelLayout,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &outputFormatDescription
+        )
+        guard formatStatus == noErr, let outputFormatDescription else { return nil }
+
+        var outputBlockBuffer: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: dataSize,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: dataSize,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &outputBlockBuffer
+        )
+        guard blockStatus == kCMBlockBufferNoErr, let outputBlockBuffer else { return nil }
+
+        var destinationLength = 0
+        var destinationTotalLength = 0
+        var destinationBytes: UnsafeMutablePointer<Int8>?
+        let destinationStatus = CMBlockBufferGetDataPointer(
+            outputBlockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: &destinationLength,
+            totalLengthOut: &destinationTotalLength,
+            dataPointerOut: &destinationBytes
+        )
+        guard destinationStatus == kCMBlockBufferNoErr,
+              destinationLength >= dataSize,
+              destinationTotalLength >= dataSize,
+              let destinationBytes else {
+            return nil
+        }
+
+        let destinationBase = UnsafeMutableRawPointer(destinationBytes)
+        for frame in 0..<frameCount {
+            for channel in 0..<channelCount {
+                guard let sourceBase = sourceBuffers[channel].mData else { return nil }
+                let sourceOffset = frame * channelBytesPerFrame
+                let destinationOffset = (frame * channelCount + channel) * channelBytesPerFrame
+                destinationBase.advanced(by: destinationOffset).copyMemory(
+                    from: sourceBase.advanced(by: sourceOffset),
+                    byteCount: channelBytesPerFrame
+                )
+            }
+        }
+
+        guard var timing = sampleTimingEntries(sampleBuffer) else {
+            return nil
+        }
+
+        var sampleSize = Int(outputFormat.mBytesPerFrame)
+        var outputSampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: outputBlockBuffer,
+            formatDescription: outputFormatDescription,
+            sampleCount: frameCount,
+            sampleTimingEntryCount: timing.count,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: &sampleSize,
+            sampleBufferOut: &outputSampleBuffer
+        )
+        guard sampleStatus == noErr else { return nil }
+        return outputSampleBuffer
     }
 
     private func createAdjustedSampleBuffer(_ buffer: CMSampleBuffer, newTime: CMTime)

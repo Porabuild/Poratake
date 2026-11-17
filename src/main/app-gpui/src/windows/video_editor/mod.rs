@@ -6275,10 +6275,23 @@ mod keyboard_demo_tests {
         let project = dir.path().join("Drawing workflow.poratake");
         std::fs::create_dir(&project).unwrap();
         let recording = project::recording_video_path(&project);
-        let recording_bytes = std::env::var_os("PORATAKE_TEST_RECORDING")
+        let external_recording = std::env::var_os("PORATAKE_TEST_RECORDING").map(PathBuf::from);
+        let recording_bytes = external_recording
+            .as_ref()
             .map(|path| std::fs::read(path).expect("read test recording"))
             .unwrap_or_else(|| include_bytes!("../../ui/parity/fixtures/capture.mov").to_vec());
         std::fs::write(&recording, recording_bytes).unwrap();
+        if let Some(system_audio) = external_recording
+            .as_ref()
+            .map(|path| crate::video::project::system_audio_path(path))
+            .filter(|path| path.is_file())
+        {
+            std::fs::copy(
+                system_audio,
+                crate::video::project::system_audio_path(&project),
+            )
+            .expect("copy test system audio");
+        }
         let source =
             crate::video::decoder::VideoDecoder::open(&recording).expect("open recording fixture");
         let source_info = source.info();

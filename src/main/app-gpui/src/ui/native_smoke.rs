@@ -854,7 +854,8 @@ pub fn open(cx: &mut App) {
         config.screenshot.format = "png".into();
         config.recording.start_delay = 0.;
         config.recording.frame_rate = 10;
-        config.recording.system_audio = false;
+        config.recording.system_audio =
+            std::env::var("PORATAKE_NATIVE_SMOKE_SYSTEM_AUDIO").as_deref() == Ok("1");
         config.recording.mic_enabled = false;
         config.recording.camera.enabled = false;
         config.recording.auto_zoom = false;
