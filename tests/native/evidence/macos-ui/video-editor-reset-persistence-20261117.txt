@@ -35,6 +35,16 @@ the change and preserving the editor state, bun run test
 There is still a crash window between replacing reset state and saving an edit
 made during reset; this test does not simulate process or machine failure.
 
+Initial generation previously overwrote a state created while cursor data was
+loading; the new temporary-project test failed before exclusive creation and
+passed afterward. bun run test
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 27 tests. Initial creation still writes directly to the new file and
+can leave an incomplete file if interrupted. No process crash was simulated.
+
 bun run typecheck and targeted oxlint and oxfmt checks passed for the changes.
 Tests used generated temporary files and mocked IPC; no existing project, live
 capture, native window, or export was exercised.

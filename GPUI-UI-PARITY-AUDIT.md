@@ -4939,6 +4939,13 @@ informs the user. A crash between the reset replacement and that follow-up save
 can still leave the reset state on disk; there is no crash-recovery journal for
 those in-flight edits.
 
+Initial Electron state creation now uses exclusive file creation, so an editor
+that writes state while initial generation is awaiting cursor data is not
+overwritten. The same [evidence](tests/native/evidence/macos-ui/video-editor-reset-persistence-20261117.txt)
+includes a temporary-project regression for that race. Initial creation still
+writes directly to the new file; interruption during that first write can leave
+an incomplete file and remains open.
+
 Both editors now write compatible project-local retention records for imported
 and removed music, and reserve recorded names when importing again. Electron
 also creates imported files exclusively to prevent concurrent imports from
