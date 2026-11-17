@@ -37,7 +37,7 @@ release verification; routine PR checks do not run the matrix.
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Native screenshot and recording workflows have earlier live evidence. Real recordings were edited, saved, reopened, and compared with decoded exports. System audio survived recording and export. The latest area, window and timer screenshot reruns failed. Fixed-header scroll stitching, ordinary pointer hover, microphone/camera authorization, and additional displays remain open. |
+| macOS critical capture and recording | Open   | Live area, window, and timer screenshots passed with one test daemon at a time on the Retina display. The screen, area, and window recordings were edited, saved, reopened, and compared with decoded exports. System audio survived recording and export. Fixed-header scroll stitching, ordinary pointer hover, microphone and camera authorization, and additional displays remain open. |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
@@ -5169,6 +5169,38 @@ temporary build that forced the existing window-list capture path returned
 `CAPTURE_FAILED` for both area and timer. The failing capture paths remain
 open. Foreground control was released immediately after the drag. The existing
 editor stayed open throughout.
+
+### 2026-11-17 serialized screenshot verification and timeout recovery
+
+The earlier failed runs kept a second copy of the temporary daemon open to
+collect reference captures. With that process still open, the second daemon
+stalled on a direct area request before GPUI launched. The newer filtered
+ScreenCaptureKit screenshot API and a one-frame ScreenCaptureKit stream also
+stalled in this setup. Keeping the dismissed GPUI selector's native window
+alive did not recover the capture.
+
+The smoke passed with one test daemon running at a time. GPUI saved a live
+840×520 area PNG in 0.32 seconds, an 840×520 timer PNG after 5.22 seconds, and
+a 1000×640 window PNG in 0.20 seconds. Each selector cleared and a 208×148
+preview opened at the bottom right. The timer target changed from green to
+magenta during the countdown, and the saved image contained the magenta block.
+References captured the generated window in a separate process after GPUI
+exited. Across decoded RGB channels, the area and timer PNGs differed from the
+cropped references by at most two levels. The window PNG matched exactly.
+
+A physical drag through the normal `--intent capture-area` selector also
+saved an 840×520 PNG and opened the bottom-right preview. A generated backdrop
+covered other desktop windows during the drag. The screenshot differed from
+the cropped window reference by at most two RGB levels. Foreground control
+was released after the drag and the existing editor stayed open.
+
+The filtered screenshot waits up to 15 seconds for a ScreenCaptureKit frame
+before returning an error and releasing the capture-exclusion barrier. A native
+regression exercises a missing callback followed by a late result and another
+successful request. With two daemons deliberately active again, the live area
+request returned `CAPTURE_FAILED` after 15.33 seconds. A pending protected
+tooltip became visible in the same daemon immediately afterward, dismissed
+normally, and no PNG was published for the timed-out request.
 
 ## Review gate
 

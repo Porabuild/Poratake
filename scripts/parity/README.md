@@ -21,6 +21,12 @@ disable audio, so use this harness only with a suitable already-authorized test
 daemon and isolated synthetic windows. It does not establish physical-pointer,
 audio, camera or other-display coverage.
 
+Exit the reference capture daemon before starting GPUI, or collect the
+reference after GPUI and its daemon exit. On macOS 27.2, running two copies of
+the test daemon together stalled screenshots even before the GPUI selector
+started. Capture the generated target window for the reference and crop that
+image for area and timer comparisons so other desktop windows cannot cover it.
+
 On Windows, run the visual regression matrix:
 
 ```sh
