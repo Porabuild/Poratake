@@ -4770,6 +4770,15 @@ Without that event the [placeholder covers the hovered video](tests/native/evide
 in the fixture; the normal Electron app has not been checked for that behavior.
 Neither probe verifies a physical hover, live recording or desktop compositing.
 
+An ended GPUI audio preview stem could not be replayed: rodio had removed its
+source, and a later seek returned without restoring it. This could leave a
+shorter music track or program audio silent after seeking back. The preview now
+requeues its existing decoded samples when seeking an ended stem, including
+paused scrubbing and normal playback. A [macOS software-mixer regression](tests/native/evidence/macos-ui/audio-preview-replay-20261117.txt)
+failed before the fix and checks nonzero generated samples after scrub and
+replay; it does not use a physical audio device. Live playback, hardware input
+and audio-device changes remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                   |
