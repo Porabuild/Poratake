@@ -259,6 +259,13 @@ impl VideoEditorWindow {
                     editor.request_audio_sync(cx);
                     editor
                 });
+                Self::guard_close(window, cx, view.downgrade(), || {
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("Could not save video edits")
+                        .set_description("The video editor will stay open. Check that the recording folder is writable and try closing again.")
+                        .show();
+                });
                 view.update(cx, |editor, cx| {
                     let mut last_size = window.bounds().size;
                     editor.bounds_sub =
@@ -1093,6 +1100,48 @@ impl VideoEditorWindow {
             });
         })
         .detach();
+    }
+
+    fn guard_close(
+        window: &Window,
+        cx: &App,
+        editor: gpui::WeakEntity<Self>,
+        on_failure: impl Fn() + 'static,
+    ) {
+        window.on_window_should_close(cx, move |_, cx| {
+            let saved = editor
+                .update(cx, |editor, _| editor.flush_pending_state())
+                .unwrap_or(true);
+            if !saved {
+                on_failure();
+            }
+            saved
+        });
+    }
+
+    fn flush_pending_state(&mut self) -> bool {
+        let gesture_changed = self
+            .gesture_snapshot
+            .as_ref()
+            .is_some_and(|before| before != &self.state);
+        if self.save_generation == self.saved_generation && !gesture_changed {
+            return true;
+        }
+        let Some(path) = self.path.as_deref() else {
+            return true;
+        };
+        let mut written = self.state.clone();
+        written.saved_at = chrono::Utc::now().to_rfc3339();
+        if !model::save_state_with_camera_segments_presence(
+            path,
+            &written,
+            self.camera_segments_initialized,
+        ) {
+            return false;
+        }
+        self.state.saved_at = written.saved_at;
+        self.saved_generation = self.save_generation;
+        true
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
@@ -3434,19 +3483,7 @@ impl VideoEditorWindow {
 
 impl Drop for VideoEditorWindow {
     fn drop(&mut self) {
-        if self.save_generation == self.saved_generation {
-            return;
-        }
-        let Some(path) = self.path.as_deref() else {
-            return;
-        };
-        let mut written = self.state.clone();
-        written.saved_at = chrono::Utc::now().to_rfc3339();
-        model::save_state_with_camera_segments_presence(
-            path,
-            &written,
-            self.camera_segments_initialized,
-        );
+        self.flush_pending_state();
     }
 }
 
@@ -5436,6 +5473,59 @@ mod keyboard_demo_tests {
         cx.run_until_parked();
         assert_eq!(model::load_state(&project).music_tracks, vec![track]);
         assert_eq!(std::fs::read(file).unwrap(), b"original audio");
+    }
+
+    #[herogpui::test]
+    fn close_save_fails_without_discarding_the_edit_and_can_be_retried(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir_all(project.join("state.json")).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, window, cx| {
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), || {});
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        assert!(!visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.state.ui.sidebar_open);
+                assert_ne!(editor.save_generation, editor.saved_generation);
+            })
+            .unwrap();
+        std::fs::remove_dir(project.join("state.json")).unwrap();
+        assert!(visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.save_generation, editor.saved_generation);
+            })
+            .unwrap();
+        assert!(!model::load_state(&project).ui.sidebar_open);
+    }
+
+    #[herogpui::test]
+    fn close_save_includes_a_gesture_that_has_not_ended(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.begin_gesture();
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+                assert_eq!(editor.save_generation, editor.saved_generation);
+                assert!(editor.flush_pending_state());
+            })
+            .unwrap();
+        assert!(!model::load_state(&project).ui.sidebar_open);
     }
 
     #[cfg(any(windows, target_os = "macos"))]
