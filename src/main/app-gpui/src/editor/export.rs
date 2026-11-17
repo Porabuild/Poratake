@@ -773,10 +773,11 @@ fn composite_tiles(
         for x in (0..composite.width()).step_by(side as usize) {
             let right = (x + side).min(composite.width());
             let bottom = (y + side).min(composite.height());
-            let source_x = x.saturating_sub(1);
-            let source_y = y.saturating_sub(1);
-            let source_right = (right + 1).min(composite.width());
-            let source_bottom = (bottom + 1).min(composite.height());
+            let overlap = crate::editor::image_tiles::TILE_OVERLAP;
+            let source_x = x.saturating_sub(overlap);
+            let source_y = y.saturating_sub(overlap);
+            let source_right = right.saturating_add(overlap).min(composite.width());
+            let source_bottom = bottom.saturating_add(overlap).min(composite.height());
             let mut pixels = composite.clone_rect(tiny_skia::IntRect::from_xywh(
                 source_x as i32,
                 source_y as i32,
@@ -2018,7 +2019,14 @@ mod tests {
                 tiles[4].inset_x,
                 tiles[4].inset_y
             ),
-            (8, 8, 8, 8, 1, 1)
+            (
+                8,
+                8,
+                8,
+                8,
+                crate::editor::image_tiles::TILE_OVERLAP,
+                crate::editor::image_tiles::TILE_OVERLAP
+            )
         );
         let mut expected = composite.clone();
         let mut paint = tiny_skia::Paint::default();

@@ -6,9 +6,9 @@ use herogpui::gpui;
 const MAX_IMAGE_SIDE: u32 = 16_384;
 const TILE_SIDE: u32 = 8_192;
 #[cfg(target_os = "macos")]
-const TILE_OVERLAP: u32 = (0.5 / crate::editor::options::MIN_ZOOM) as u32 + 1;
+pub(super) const TILE_OVERLAP: u32 = (0.5 / crate::editor::options::MIN_ZOOM) as u32 + 1;
 #[cfg(not(target_os = "macos"))]
-const TILE_OVERLAP: u32 = 1;
+pub(super) const TILE_OVERLAP: u32 = 1;
 
 pub fn create(image: &gpui::RenderImage) -> Vec<PreviewEdgeImage> {
     let size = image.size(0);

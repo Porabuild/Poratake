@@ -86,6 +86,7 @@ pub struct EditorCanvas {
     pub scroll: ScrollHandle,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn preview_tile(tile: &crate::editor::export::PreviewEdgeImage, zoom: f32) -> impl IntoElement {
     let size = tile.image.size(0);
     div()
@@ -499,6 +500,26 @@ impl RenderOnce for EditorCanvas {
                     ),
             );
             if layered_composite {
+                #[cfg(target_os = "macos")]
+                if let Some(image) = self.snapshot.borrow().backdrop.as_ref() {
+                    let tiles = self.snapshot.borrow().preview_edges.clone();
+                    if !tiles.is_empty() {
+                        let size = image.size(0);
+                        let (width, height) =
+                            (u32::from(size.width) as f32, u32::from(size.height) as f32);
+                        backdrop = backdrop.child(
+                            canvas(
+                                |_, _, _| (),
+                                move |bounds, (), window, _| {
+                                    paint_image_tiles(window, bounds, width, height, &tiles);
+                                },
+                            )
+                            .absolute()
+                            .inset_0(),
+                        );
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
                 for edge in &self.snapshot.borrow().preview_edges {
                     backdrop = backdrop.child(preview_tile(edge, zoom));
                 }

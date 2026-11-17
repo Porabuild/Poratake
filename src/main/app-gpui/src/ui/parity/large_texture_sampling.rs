@@ -17,6 +17,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(0.25);
+    let composed = std::env::var_os("PORATAKE_PARITY_LARGE_COMPOSED").is_some();
     assert!(zoom == 0.25 || zoom == 0.5);
     for horizontal in [true, false] {
         for transparent in [false, true] {
@@ -60,56 +61,39 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 editor
                     .update(cx, |editor, _, cx| {
                         editor.zoom = zoom;
+                        if composed {
+                            editor.wallpaper.gradient =
+                                Some(crate::editor::wallpaper::GradientOption {
+                                    id: "sampling".into(),
+                                    colors: vec!["#203060".into()],
+                                    angle: 0.,
+                                });
+                        }
                         cx.notify();
                     })
                     .unwrap();
                 settle(cx, editor.into());
+                if composed {
+                    cx.update(|cx| {
+                        let editor = editor.read(cx).unwrap();
+                        let snapshot = editor.snapshot.borrow();
+                        assert!(
+                            snapshot.backdrop_composite,
+                            "composed backdrop was not ready"
+                        );
+                        if path == &large_path {
+                            assert!(
+                                !snapshot.preview_edges.is_empty(),
+                                "large backdrop was not tiled"
+                            );
+                        }
+                    });
+                }
                 windows.push(editor);
             }
             let large = windows[0];
             let small_editor = windows[1];
-            let modifiers = Modifiers {
-                platform: true,
-                control: true,
-                ..Modifiers::none()
-            };
-            let start = point(px(640.), px(390.));
-            let end = if horizontal {
-                point(px(100.), px(390.))
-            } else {
-                point(px(640.), px(90.))
-            };
-            let drags = match (horizontal, zoom == 0.25) {
-                (true, true) => 2,
-                (false, true) => 5,
-                (true, false) => 7,
-                (false, false) => 12,
-            };
-            for _ in 0..drags {
-                for input in [
-                    PlatformInput::MouseDown(MouseDownEvent {
-                        position: start,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers,
-                        first_mouse: false,
-                    }),
-                    PlatformInput::MouseMove(MouseMoveEvent {
-                        position: end,
-                        pressed_button: Some(MouseButton::Left),
-                        modifiers,
-                    }),
-                    PlatformInput::MouseUp(MouseUpEvent {
-                        position: end,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers,
-                    }),
-                ] {
-                    event(cx, large.into(), input);
-                }
-                settle(cx, large.into());
-            }
+            pan(cx, large, horizontal, zoom);
             let (large_bounds, small_bounds) = cx.update(|cx| {
                 (
                     large.read(cx).unwrap().bounds.borrow().unwrap(),
@@ -130,23 +114,14 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 (w as f32 * zoom * scale).round() as u32,
                 (h as f32 * zoom * scale).round() as u32,
             );
-            let mut changed = 0;
-            let mut worst = 0;
-            for row in 2..compare_height - 2 {
-                for col in 2..compare_width - 2 {
-                    let actual = large_image.get_pixel(large_left + col, large_top + row).0;
-                    let expected = small_image.get_pixel(small_left + col, small_top + row).0;
-                    let delta = actual
-                        .iter()
-                        .zip(expected)
-                        .map(|(a, b)| a.abs_diff(b))
-                        .max()
-                        .unwrap();
-                    changed += usize::from(delta > 2);
-                    worst = worst.max(delta);
-                }
-            }
-            println!("oversized sampling horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={changed} max={worst}");
+            let (changed, worst) = compare(
+                &large_image,
+                (large_left, large_top),
+                &small_image,
+                (small_left, small_top),
+                (compare_width, compare_height),
+            );
+            println!("oversized sampling composed={composed} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={changed} max={worst}");
             if changed > 0 {
                 large_image
                     .save(scratch.join(format!(
@@ -160,10 +135,178 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     .unwrap();
             }
             assert_eq!(changed, 0, "oversized and cropped reference differ");
+            if composed {
+                let large_png = cx.update(|cx| large.read(cx).unwrap().export_png().unwrap());
+                let small_png =
+                    cx.update(|cx| small_editor.read(cx).unwrap().export_png().unwrap());
+                let large_output = image::load_from_memory(&large_png).unwrap().to_rgba8();
+                let small_output = image::load_from_memory(&small_png).unwrap().to_rgba8();
+                assert_eq!(small_output.dimensions(), (w, h));
+                for row in 0..h {
+                    for col in 0..w {
+                        assert_eq!(
+                            large_output.get_pixel(x + col, y + row),
+                            small_output.get_pixel(col, row)
+                        );
+                    }
+                }
+                let reopened_path =
+                    scratch.join(format!("sampling-reopened-{horizontal}-{transparent}.png"));
+                std::fs::write(&reopened_path, small_png).unwrap();
+                let reopened = cx
+                    .open_window(size(px(1280.), px(738.)), |window, cx| {
+                        window.set_scale_factor(scale);
+                        cx.new(|cx| {
+                            EditorWindow::from_file(reopened_path.to_str().unwrap(), window, cx)
+                        })
+                    })
+                    .unwrap();
+                reopened
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = zoom;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, reopened.into());
+                let reopened_bounds =
+                    cx.update(|cx| reopened.read(cx).unwrap().bounds.borrow().unwrap());
+                assert_eq!(small_bounds, reopened_bounds);
+                let reopened_image = cx.capture_screenshot(reopened.into()).unwrap();
+                let (reopen_changed, reopen_worst) = compare(
+                    &small_image,
+                    (small_left, small_top),
+                    &reopened_image,
+                    (small_left, small_top),
+                    (compare_width, compare_height),
+                );
+                println!("composed reopen horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={reopen_changed} max={reopen_worst}");
+                assert_eq!(
+                    reopen_changed, 0,
+                    "composed reference differs from reopened export"
+                );
+                cx.update_window(reopened.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+                let reopened_large_path = scratch.join(format!(
+                    "sampling-reopened-large-{horizontal}-{transparent}.png"
+                ));
+                std::fs::write(&reopened_large_path, large_png).unwrap();
+                let reopened_large = cx
+                    .open_window(size(px(1280.), px(738.)), |window, cx| {
+                        window.set_scale_factor(scale);
+                        cx.new(|cx| {
+                            EditorWindow::from_file(
+                                reopened_large_path.to_str().unwrap(),
+                                window,
+                                cx,
+                            )
+                        })
+                    })
+                    .unwrap();
+                reopened_large
+                    .update(cx, |editor, _, cx| {
+                        editor.zoom = zoom;
+                        cx.notify();
+                    })
+                    .unwrap();
+                settle(cx, reopened_large.into());
+                pan(cx, reopened_large, horizontal, zoom);
+                let reopened_large_bounds =
+                    cx.update(|cx| reopened_large.read(cx).unwrap().bounds.borrow().unwrap());
+                assert_eq!(large_bounds, reopened_large_bounds);
+                let reopened_large_image = cx.capture_screenshot(reopened_large.into()).unwrap();
+                let (large_changed, large_worst) = compare(
+                    &large_image,
+                    (large_left, large_top),
+                    &reopened_large_image,
+                    (large_left, large_top),
+                    (compare_width, compare_height),
+                );
+                println!("composed large reopen horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={large_changed} max={large_worst}");
+                assert_eq!(
+                    large_changed, 0,
+                    "composed preview differs from reopened large export"
+                );
+                cx.update_window(reopened_large.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
             for editor in windows {
                 cx.update_window(editor.into(), |_, window, _| window.remove_window())
                     .unwrap();
             }
         }
     }
+}
+
+fn pan(
+    cx: &mut HeadlessAppContext,
+    editor: gpui::WindowHandle<EditorWindow>,
+    horizontal: bool,
+    zoom: f32,
+) {
+    let modifiers = Modifiers {
+        platform: true,
+        control: true,
+        ..Modifiers::none()
+    };
+    let start = point(px(640.), px(390.));
+    let end = if horizontal {
+        point(px(100.), px(390.))
+    } else {
+        point(px(640.), px(90.))
+    };
+    let drags = match (horizontal, zoom == 0.25) {
+        (true, true) => 2,
+        (false, true) => 5,
+        (true, false) => 7,
+        (false, false) => 12,
+    };
+    for _ in 0..drags {
+        for input in [
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: start,
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: end,
+                pressed_button: Some(MouseButton::Left),
+                modifiers,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                position: end,
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers,
+            }),
+        ] {
+            event(cx, editor.into(), input);
+        }
+        settle(cx, editor.into());
+    }
+}
+
+fn compare(
+    actual: &image::RgbaImage,
+    actual_origin: (u32, u32),
+    expected: &image::RgbaImage,
+    expected_origin: (u32, u32),
+    size: (u32, u32),
+) -> (usize, u8) {
+    let (mut changed, mut worst) = (0, 0);
+    for row in 2..size.1 - 2 {
+        for col in 2..size.0 - 2 {
+            let a = actual
+                .get_pixel(actual_origin.0 + col, actual_origin.1 + row)
+                .0;
+            let b = expected
+                .get_pixel(expected_origin.0 + col, expected_origin.1 + row)
+                .0;
+            let delta = a.iter().zip(b).map(|(a, b)| a.abs_diff(b)).max().unwrap();
+            changed += usize::from(delta > 2);
+            worst = worst.max(delta);
+        }
+    }
+    (changed, worst)
 }
