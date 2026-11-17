@@ -1753,6 +1753,47 @@ mod tests {
     }
 
     #[test]
+    fn rounded_corners_clip_annotations_and_redactions() {
+        let mut settings = WallpaperSettings::default();
+        settings.set_gradient(preset("slate"));
+        settings.padding = 10.0;
+        settings.corners = 30.0;
+        let annotations = vec![
+            Annotation::Rectangle {
+                id: "fill".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 60.0,
+                height: 60.0,
+                stroke: "#00ff00".into(),
+                stroke_width: 1.0,
+                fill: Some("#00ff00".into()),
+            },
+            Annotation::Redact {
+                id: "blackout".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+                style: "blackout".into(),
+                intensity: 5.0,
+            },
+        ];
+        for alpha in [128, 255] {
+            let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                60,
+                60,
+                image::Rgba([255, 0, 0, alpha]),
+            ));
+            let clean = compose(Some(&base), 60, 60, &[], &settings, 1.0);
+            let annotated = compose(Some(&base), 60, 60, &annotations, &settings, 1.0);
+            assert_eq!(annotated.get_pixel(10, 10), clean.get_pixel(10, 10));
+            assert_eq!(annotated.get_pixel(30, 30).0, [0, 0, 0, 255]);
+            assert_eq!(annotated.get_pixel(40, 40).0, [0, 255, 0, 255]);
+        }
+    }
+
+    #[test]
     fn an_attached_layer_widens_the_composition() {
         use crate::editor::layers::{Edge, ImageLayer};
 

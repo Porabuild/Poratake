@@ -1,6 +1,7 @@
 use gpui::AppContext;
 use herogpui::gpui;
 
+use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::GradientOption;
 use crate::editor::window::EditorWindow;
 
@@ -29,6 +30,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.);
+    let annotation = std::env::var("PORATAKE_PARITY_LARGE_ANNOTATION").ok();
+    let pan_first = std::env::var_os("PORATAKE_PARITY_LARGE_PAN_FIRST").is_some();
     assert!(zoom == 0.25 || zoom == 0.5);
     for horizontal in [true, false] {
         for transparent in [false, true] {
@@ -72,6 +75,22 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     editor.wallpaper.corners = corners;
                     editor.wallpaper.shadow = shadow;
                     editor.wallpaper.window_frame.style = style.clone();
+                    if let Some(style) = &annotation {
+                        let (x, y, width, height) = if horizontal {
+                            (8162., 42., 60., 44.)
+                        } else {
+                            (42., 8162., 44., 60.)
+                        };
+                        editor.history.push(vec![Annotation::Redact {
+                            id: "redact".into(),
+                            x,
+                            y,
+                            width,
+                            height,
+                            style: style.clone(),
+                            intensity: 5.,
+                        }]);
+                    }
                     cx.notify();
                 })
                 .unwrap();
@@ -111,6 +130,25 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 (editor.export_png().unwrap(), snapshot.frame_scale)
             });
             let output = image::load_from_memory(&png).unwrap().to_rgba8();
+            if let Some(style) = &annotation {
+                let control_png = editor
+                    .update(cx, |editor, _, _| {
+                        assert!(editor.history.undo());
+                        let png = editor.export_png().unwrap();
+                        assert!(editor.history.redo());
+                        png
+                    })
+                    .unwrap();
+                let control = image::load_from_memory(&control_png).unwrap().to_rgba8();
+                assert_eq!(output.dimensions(), control.dimensions());
+                let modified = output
+                    .pixels()
+                    .zip(control.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                println!("large framed control=annotation style={style} horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(modified > 0, "the annotation must change exported pixels");
+            }
             let mut controls = Vec::new();
             if shadow > 0. {
                 controls.push(("shadow", 0., corners));
@@ -159,6 +197,14 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                     &settings.window_frame.style,
                     frame_scale,
                 )) as u32;
+            if annotation.as_deref() == Some("blackout") {
+                let (x, y) = if horizontal {
+                    (ox + 8192, oy + 64)
+                } else {
+                    (ox + 64, oy + 8192)
+                };
+                assert_eq!(output.get_pixel(x, y).0, [0, 0, 0, 255]);
+            }
             let (a, b) = if horizontal {
                 ((ox + 8000, oy + 45), (ox + 8005, oy + 45))
             } else {
@@ -185,7 +231,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                 })
                 .unwrap();
             settle(cx, reopened.into());
-            for panned in [false, true] {
+            for panned in if pan_first {
+                &[true][..]
+            } else {
+                &[false, true]
+            } {
+                let panned = *panned;
                 if panned {
                     pan(cx, editor, horizontal, zoom);
                     pan(cx, reopened, horizontal, zoom);
@@ -216,6 +267,40 @@ pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
                         (left..right).contains(&seam_x) && (top..bottom).contains(&seam_y),
                         "the tiled seam must be in the compared region"
                     );
+                    if let Some(style) = &annotation {
+                        assert!(
+                            seam_x >= left + 2
+                                && seam_x + 2 < right
+                                && seam_y >= top + 2
+                                && seam_y + 2 < bottom,
+                            "the annotation sample must be visible"
+                        );
+                        if style == "blackout" {
+                            assert_eq!(
+                                expected.get_pixel(seam_x, seam_y).0,
+                                [0, 0, 0, 255],
+                                "the sampled point must lie inside the blackout"
+                            );
+                        }
+                        let mut changed = 0;
+                        let mut worst = 0;
+                        for y in seam_y - 2..=seam_y + 2 {
+                            for x in seam_x - 2..=seam_x + 2 {
+                                let delta = actual
+                                    .get_pixel(x, y)
+                                    .0
+                                    .iter()
+                                    .zip(expected.get_pixel(x, y).0)
+                                    .map(|(a, b)| a.abs_diff(b))
+                                    .max()
+                                    .unwrap();
+                                changed += usize::from(delta > 2);
+                                worst = worst.max(delta);
+                            }
+                        }
+                        println!("large annotation style={style} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={changed} max={worst}");
+                        assert_eq!(changed, 0, "annotation differs from reopened PNG");
+                    }
                 }
                 let (mut changed, mut worst) = (0, 0);
                 for y in top..bottom {
