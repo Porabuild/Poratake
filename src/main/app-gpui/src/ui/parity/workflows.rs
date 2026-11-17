@@ -200,6 +200,19 @@ fn configure_recording_fixture(fixture: &mut serde_json::Value, target: &str) ->
 }
 
 #[cfg(target_os = "macos")]
+fn set_recording_fixture_scale(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
+    let Some(scale) = std::env::var("PORATAKE_PARITY_VIDEO_DPI")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+    else {
+        return;
+    };
+    assert!(scale.is_finite() && scale > 0.);
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+}
+
+#[cfg(target_os = "macos")]
 fn recorded_editor_and_export(
     cx: &mut HeadlessAppContext,
     project: &Path,
@@ -235,6 +248,7 @@ fn recorded_editor_and_export(
             .downcast::<VideoEditorWindow>()
             .unwrap()
     });
+    set_recording_fixture_scale(cx, video.into());
     let started = std::time::Instant::now();
     loop {
         cx.run_until_parked();
@@ -357,6 +371,7 @@ fn recorded_editor_and_export(
             .downcast::<VideoEditorWindow>()
             .unwrap()
     });
+    set_recording_fixture_scale(cx, video.into());
     let started = std::time::Instant::now();
     loop {
         cx.run_until_parked();
@@ -483,18 +498,55 @@ fn recorded_editor_and_export(
             "{target} preview and decoded export differ at {time}s: {mean}"
         );
         if time == 1.0 {
-            let (rendered_mean, rendered_above_twelve) =
-                super::recording_preview_comparison::compare(
-                    &screenshot,
-                    content,
-                    display_scale,
-                    &decoded,
-                );
-            assert!(
-                rendered_mean < 5.,
-                "{target} rendered preview differs from decoded export: {rendered_mean}"
+            let rendered = super::recording_preview_comparison::compare(
+                &screenshot,
+                content,
+                display_scale,
+                &decoded,
             );
-            eprintln!("fixture {target} rendered preview/export mean RGB error: {rendered_mean:.3}, channels above 12: {rendered_above_twelve}");
+            assert!(
+                rendered.mean < 5.,
+                "{target} rendered preview differs from decoded export: {}",
+                rendered.mean
+            );
+            let unencoded = crate::video::decoder::DecodedFrame {
+                width: decoded.width,
+                height: decoded.height,
+                bgra: std::sync::Arc::from(expected),
+            };
+            let displayed = super::recording_preview_comparison::compare(
+                &screenshot,
+                content,
+                display_scale,
+                &unencoded,
+            );
+            let at_display_size = super::recording_preview_comparison::compare_at_display_size(
+                &screenshot,
+                content,
+                display_scale,
+                &unencoded,
+            );
+            if (content.width * display_scale - decoded.width as f32).abs() < 0.01
+                && (content.height * display_scale - decoded.height as f32).abs() < 0.01
+            {
+                assert!(
+                    at_display_size.maximum <= 2,
+                    "{target} one-to-one preview differs from its composition by {} levels",
+                    at_display_size.maximum
+                );
+            }
+            eprintln!(
+                "fixture {target} rendered preview/export mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                rendered.mean, rendered.above_twelve, rendered.above_thirty_two, rendered.maximum
+            );
+            eprintln!(
+                "fixture {target} rendered preview/composition mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                displayed.mean, displayed.above_twelve, displayed.above_thirty_two, displayed.maximum
+            );
+            eprintln!(
+                "fixture {target} display-size preview/composition mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                at_display_size.mean, at_display_size.above_twelve, at_display_size.above_thirty_two, at_display_size.maximum
+            );
             let undrawn = undrawn.as_bytes(0).unwrap();
             let mut drawing_pixels = 0_u64;
             let mut drawing_error = 0_u64;
