@@ -776,6 +776,21 @@ difference was 1.570 for each case, with 4,780 of 172,800 channels differing by
 more than 12 levels. All three generated targets produced the same decoded frame,
 so they are not independent source-content tests. This does not establish native
 target movement, closure, capture controls exclusion or hardware access.
+
+The generated handoff workflow now accepts three distinct screen, area and
+window sources and checks that each project retains its assigned source frame.
+In light and dark appearance, each was edited with a zoom, rectangle and a
+quarter-second video cut, saved, reopened and exported. The three decoded
+outputs differ, and their in-memory previews at 0.5, 1.0 and 1.5 seconds have
+mean channel differences below 1.56. At one second, an independent comparison
+of the rendered editor screenshot with the decoded frame has mean RGB
+differences of 1.892 for area, 1.636 for window and 1.650 for screen; 8,137,
+5,886 and 6,339 of 172,800 channels respectively differ by more than 12 levels.
+The fixture now checks the rendered preview as well as the composition buffer.
+The [measurements](tests/native/evidence/macos-ui/distinct-recording-preview-export-20261117.txt)
+list the retained generated inputs, editor screenshots, decoded frames and MP4s.
+These use a fixture daemon, not real capture or devices, and do not prove
+physical target movement, closure or capture-control exclusion.
 The generated-audio editor test also passed on macOS: it compared preview and
 decoded export across a cut, two playback speeds, volume changes and synthetic
 keyboard clicks. The Mac sample's mean click contribution was below the
