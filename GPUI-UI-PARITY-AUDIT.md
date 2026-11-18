@@ -6157,6 +6157,23 @@ part of the stitch preview at a thin edge selection while the cursor is
 outside. Physical interaction on a narrow or secondary display remains
 unverified.
 
+### 2026-11-18 macOS tooltips after the pointer leaves their owner
+
+The protected tooltip previously held the pointer position from the start of
+its request. If the pointer left while the daemon waited for capture startup,
+the old panel could still appear. With known owner bounds, the daemon now
+checks the current pointer before staging the panel and again before revealing
+it. A panel already registered for exclusion is retired if the pointer leaves
+before reveal.
+
+The AppKit fixture advanced a synthetic pointer outside the owner while
+holding recording startup and then while holding an in-flight screenshot.
+In both cases the fixed tooltip stayed hidden and its exclusion entry was
+removed. The focused and full native fixtures passed on arm64 and x86_64
+under Rosetta. The Swift daemon typechecked, and eight Electron preview and
+daemon contract tests passed. Physical hover transitions between controls
+remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

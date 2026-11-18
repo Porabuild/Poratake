@@ -388,6 +388,45 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyTooltipPointerExit() async throws {
+        guard let screen = NSScreen.screens.first else {
+            print("SKIP tooltip pointer exit: no AppKit display")
+            return
+        }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        for captureStart in [true, false] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            var pointer = NSPoint(x: owner.midX, y: owner.midY)
+            if captureStart {
+                registry.beginCaptureStart()
+            } else {
+                _ = registry.beginScreenshot()
+            }
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: "Copy"))
+            let pending = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 1, text: "Copy", dark: false, at: pointer, ownerFrame: owner)
+            }
+            await waitUntil("The tooltip did not reach the capture barrier") {
+                captureStart ? registry.testPendingCaptureStartWaiterCount == 1
+                    : registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            precondition(captureStart ? tooltip.testPanel == nil : tooltip.testPanel?.alphaValue == 0)
+            pointer.x = owner.maxX + 8
+            if captureStart {
+                registry.finishCaptureStart()
+            } else {
+                registry.finishScreenshot()
+            }
+            let visible = try await pending.value
+            precondition(!visible, "The tooltip appeared after the pointer left its owner")
+            precondition(tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
+        }
+        print("tooltip pointer exit: no reveal after either capture barrier")
+    }
+
+    @MainActor
     static func main() {
         if CommandLine.arguments.contains("--tooltip-placement") {
             verifyTallTooltipPlacement()
@@ -398,7 +437,8 @@ struct ScrollCapturePreviewTest {
             return
         }
         let strictFrame = CommandLine.arguments.dropFirst().first == "--strict-scroll-frame"
-        if !strictFrame {
+        let tooltipPointerExit = CommandLine.arguments.contains("--tooltip-pointer-exit")
+        if !strictFrame && !tooltipPointerExit {
             FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
             runExistingScrollChecks()
             verifyScrollColorProfiles()
@@ -410,6 +450,8 @@ struct ScrollCapturePreviewTest {
             do {
                 if strictFrame {
                     await captureStrictScrollFrame(Array(CommandLine.arguments.dropFirst(2)))
+                } else if tooltipPointerExit {
+                    try await verifyTooltipPointerExit()
                 } else {
                     try await runRecordingCoordinationChecks()
                 }
@@ -815,6 +857,7 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("screenshot frame deadline: complete\n".utf8))
 
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
+        try await verifyTooltipPointerExit()
         verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {

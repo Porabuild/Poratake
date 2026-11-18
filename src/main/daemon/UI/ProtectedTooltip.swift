@@ -39,12 +39,14 @@ final class ProtectedTooltip {
         owner: UInt32,
         text: String,
         dark: Bool,
-        at point: NSPoint,
+        at pointerLocation: @autoclosure () -> NSPoint,
         ownerFrame: NSRect? = nil
     ) async throws -> Bool {
         guard isCurrent(sequence, owner: owner), !text.isEmpty else { return false }
         await registry.waitForCaptureStartIfNeeded()
         guard isCurrent(sequence, owner: owner) else { return false }
+        let point = pointerLocation()
+        guard ownerFrame?.contains(point) != false else { return false }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main else {
             return false
         }
@@ -71,7 +73,8 @@ final class ProtectedTooltip {
             await retire(panel)
             throw error
         }
-        guard isCurrent(sequence, owner: owner), self.panel === panel else {
+        guard isCurrent(sequence, owner: owner), self.panel === panel,
+              ownerFrame?.contains(pointerLocation()) != false else {
             if self.panel === panel {
                 self.panel = nil
                 await retire(panel)
