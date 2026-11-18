@@ -1222,18 +1222,17 @@ fn video_thumbnails(
     if frame.width == 0 || frame.height == 0 {
         return None;
     }
-    let mut rgba = frame.bgra.to_vec();
-    for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    let decoded = image::RgbaImage::from_raw(frame.width, frame.height, rgba)?;
-    let buffer = image::DynamicImage::ImageRgba8(decoded)
+    let decoded = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.to_vec())?;
+    let mut buffer = image::DynamicImage::ImageRgba8(decoded)
         .resize_to_fill(
             PREVIEW_WIDTH as u32,
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
         .to_rgba8();
+    for pixel in buffer.as_mut().as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
     let blurred = blur.then(|| blur_thumbnail(&buffer)).flatten();
     Some((render_thumbnail(buffer), blurred))
 }
@@ -4969,28 +4968,30 @@ mod tests {
     #[test]
     fn video_hover_blur_matches_the_screenshot_thumbnail() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("frame.png");
-        let pixels = image::RgbaImage::from_fn(320, 180, |x, y| {
-            let value = if (x / 12 + y / 12) % 2 == 0 { 0 } else { 255 };
-            image::Rgba([value, 80, 255 - value, 255])
-        });
-        pixels.save(&path).unwrap();
-        let mut bgra = pixels.into_raw();
-        for pixel in bgra.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
+        for (width, height) in [(320, 180), (180, 320)] {
+            let path = directory.path().join("frame.png");
+            let pixels = image::RgbaImage::from_fn(width, height, |x, y| {
+                let value = if (x / 12 + y / 12) % 2 == 0 { 0 } else { 255 };
+                image::Rgba([value, 80, 255 - value, 255])
+            });
+            pixels.save(&path).unwrap();
+            let mut bgra = pixels.into_raw();
+            for pixel in bgra.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let frame = crate::video::decoder::DecodedFrame {
+                width,
+                height,
+                bgra: bgra.into(),
+            };
+            let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
+            let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
+            let blurred = blurred.unwrap();
+            assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
+            assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
+            assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
+            assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
         }
-        let frame = crate::video::decoder::DecodedFrame {
-            width: 320,
-            height: 180,
-            bgra: bgra.into(),
-        };
-        let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
-        let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
-        let blurred = blurred.unwrap();
-        assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
-        assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
-        assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
-        assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
     }
 
     #[test]

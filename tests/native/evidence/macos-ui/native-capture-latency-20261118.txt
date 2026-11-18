@@ -957,3 +957,23 @@ Decoder exit and editor first-frame times both start at the Open
 Editor command. Decoder exit timings track a single PID at 4 ms
 polling intervals and include any work in progress. No screen or
 device access was required for these runs.
+
+2026-11-19 macOS recording thumbnail color conversion
+
+Twenty alternating pairs per size ran the copy, red/blue channel
+swap and 200 × 140 triangle resize before and after the change.
+The input was a generated BGRA frame. The standalone probe linked
+the same image crate build as the GPUI development app and used
+the same optimization level for the channel swap. Its exact pixel
+comparison passed at each size.
+
+Source       Before median (ms)  After median (ms)
+1920×1080               6.79               6.03
+3840×2160              25.59              22.55
+2160×3840              27.07              23.41
+
+The macOS Metal fixture played a generated 3840×2160 H.264 checker.
+At 2×, gpui-video-thumbnail-idle.png, gpui-video-thumbnail-hover.png
+and gpui-video-thumbnail-exit.png were byte-identical across old
+and new builds in each of the two appearances. This fixture uses
+offscreen rendering and excludes screen capture and device access.

@@ -7767,6 +7767,20 @@ The regression test checks the ownership change directly and confirms
 that dismissal retains the displayed images.
 [Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video thumbnail color conversion
+
+The recording thumbnail now resizes the decoded BGRA pixels before
+swapping channels for the existing thumbnail and blur pipeline.
+The offscreen macOS Metal runs produced byte-identical PNGs before and
+after for 4K video at idle, on hover and after pointer exit, in light and
+dark at 2×. The focused pixel test compares video and screenshot
+thumbnails and hover blur in landscape and portrait.
+
+A resize-only benchmark cut the median from 25.59 to 22.55 ms for a
+3840×2160 frame and from 27.07 to 23.41 ms for 2160×3840.
+These timings measure the thumbnail conversion stage.
+[Per-size measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
