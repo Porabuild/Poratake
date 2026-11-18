@@ -224,3 +224,33 @@ ScreenCaptureKit opt-in check also sampled a generated green source
 with a red control, verifying that the initially hidden control could
 appear later and still be excluded. A positive-control stream showed
 the red control without that exclusion.
+
+First recording preview and editor frame
+
+Paired current GPUI development builds used the same authorized
+screen-only daemon, generated changing backdrop and Retina display.
+Each recorded a fresh take using a temporary profile. Three runs per
+build and case. Small light pairs ran previous then fixed. Large dark
+pairs ran fixed then previous. The preview double-click used the
+app-local input handler. The editor's desktop wallpaper lookup was
+stubbed.
+
+The driver checked window visibility via WindowServer and queried the
+GPUI entities for the first decoded thumbnail and first composed editor
+image. Polls were roughly 4 ms apart plus AppKit and GPUI query time.
+
+Median (maximum) in milliseconds
+                              600x440 light              3000x1800 dark
+                         Previous       Fixed       Previous       Fixed
+Stop to preview window   52.8 (56.1)    47.6 (65.7)  59.9 (60.7)    71.0 (72.1)
+Stop to thumbnail       224.6 (242.5)   78.8 (98.8) 283.4 (284.8) 152.8 (173.0)
+Open to editor window    53.4 (56.7)    45.9 (49.5)  50.1 (51.6)    48.5 (49.2)
+Open to editor frame     70.3 (81.6)    72.3 (79.7) 128.1 (160.5)  127.7 (157.3)
+
+All 12 clips decoded at the requested size with the expected blue
+backdrop and a single video stream. In one separate run per case,
+the backdrop was dismissed after recording and the test captured only
+its own preview and editor windows. Both windows showed the clip.
+The preview and editor could briefly retain a placeholder after their
+image was ready. Sampling window captures confirmed the rendered
+result and left the exact time of the first composited pixels open.

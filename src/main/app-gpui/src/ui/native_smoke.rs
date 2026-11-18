@@ -1164,6 +1164,35 @@ pub fn open(cx: &mut App) {
                         .update(cx, |preview, _, _| preview.thumbnails_ready_for_parity())
                         .unwrap_or(false);
                 }
+                if command == "video preview ready" {
+                    let Some(handle) =
+                        registry::handle(WindowKind::CapturePreview, cx).and_then(|handle| {
+                            handle
+                                .downcast::<crate::windows::capture_preview::CapturePreviewWindow>()
+                        })
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |preview, _, _| {
+                            preview
+                                .video_thumbnail_status_for_parity()
+                                .is_some_and(|(_, image, _)| image)
+                        })
+                        .unwrap_or(false);
+                }
+                if command == "video editor ready" {
+                    let Some(handle) =
+                        registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {
+                            handle.downcast::<crate::windows::video_editor::VideoEditorWindow>()
+                        })
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |editor, _, _| editor.preview_image().is_some())
+                        .unwrap_or(false);
+                }
                 if command == "preview editor" {
                     let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) else {
                         return false;

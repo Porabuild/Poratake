@@ -6488,6 +6488,25 @@ a positive control. Its test-owned windows now close without releasing
 the Swift-owned reference. The production Swift daemon typechecked.
 Live production audio and mixed-display paths remain open.
 
+### 2026-11-18 macOS first recording preview and editor frame
+
+The GPUI recording preview waited for its 125 ms playback tick before
+requesting the first thumbnail. It now decodes immediately after attaching
+the decoder and uses the same interval for subsequent frames. The native
+regression verifies that the first image is ready before advancing the
+test clock and that playback updates it on the next tick.
+
+Across three paired screen-only runs per size, median Stop to thumbnail
+ready fell from 225 to 79 ms for a 600 × 440 recording in light mode and
+from 283 to 153 ms for a 3000 × 1800 recording in dark mode. The video
+editor's first composed frame was ready after 72 ms and 128 ms,
+respectively. GPUI image readiness and WindowServer window visibility
+were measured separately. In a separate run per size without the
+backdrop over the editor, native window captures verified the actual
+recording pixels in both the thumbnail and the editor. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the scope and timing endpoints.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

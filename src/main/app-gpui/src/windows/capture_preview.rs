@@ -1081,8 +1081,12 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                 if attached.is_none() {
                     return;
                 };
+                let mut first_frame = true;
                 loop {
-                    cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                    if !first_frame {
+                        cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                    }
+                    first_frame = false;
                     let job = cx.update(|cx| {
                         entity
                             .update(cx, |view, cx| {
@@ -4804,6 +4808,44 @@ mod tests {
             })
             .expect("stack window");
         assert_eq!(kinds, vec![(super::PreviewKind::Video, project)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn video_preview_decodes_its_first_frame_before_the_playback_tick(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("Take.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            crate::video::project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open_video(cx, project);
+        });
+        cx.run_until_parked();
+
+        let stack = stack_handle(cx)
+            .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
+            .unwrap();
+        let thumbnail = |cx: &mut gpui::TestAppContext| {
+            stack
+                .update(cx, |view, _, _| view.previews[0].image.clone())
+                .unwrap()
+                .expect("the video thumbnail should be ready")
+        };
+        let first = thumbnail(cx);
+
+        cx.executor().advance_clock(super::VIDEO_PLAYBACK_TICK);
+        cx.run_until_parked();
+        assert!(!Arc::ptr_eq(&first, &thumbnail(cx)));
     }
 
     #[test]
