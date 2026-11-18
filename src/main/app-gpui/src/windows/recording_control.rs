@@ -648,7 +648,9 @@ impl RecordingControl {
 
     pub(crate) fn start_enabled(&self, cx: &App) -> bool {
         #[cfg(target_os = "macos")]
-        if crate::intents::recording_outline_is_hiding(cx) {
+        if crate::intents::recording_outline_is_hiding(cx)
+            || crate::capture::overlay::pending_recording_overlay(cx).is_some()
+        {
             return false;
         }
         let _ = cx;
@@ -758,8 +760,6 @@ impl RecordingControl {
     }
 
     fn begin_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let service = crate::state::state(cx);
-        let recording = service.config.get().recording;
         let ios_recording = self.selected_ios_id.is_some();
         #[cfg(all(target_os = "macos", not(test)))]
         let native_window_id = super::macos_window_id(window);
@@ -783,10 +783,85 @@ impl RecordingControl {
         };
         #[cfg(any(not(target_os = "macos"), test))]
         let excluded_window_ids = Vec::new();
+        if !crate::capture::overlay::release_frozen_screen_in_place(cx) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Recording failed",
+                "Could not release the frozen screen",
+            );
+            return;
+        }
+        if ios_recording {
+            crate::capture::overlay::close_all(cx);
+        }
+        #[cfg(target_os = "macos")]
+        if !ios_recording {
+            if let Some(finished) = crate::capture::overlay::prepare_recording_overlay(cx) {
+                let rect = self.rect;
+                let generation = self.countdown_generation;
+                let control = window
+                    .window_handle()
+                    .downcast::<Self>()
+                    .expect("recording control");
+                let daemon = crate::state::state(cx).daemon;
+                cx.notify();
+                cx.spawn(async move |_, cx| {
+                    let shown = smol::unblock(move || daemon.recording_overlay().show(rect))
+                        .await
+                        .ok()
+                        == Some(true);
+                    cx.update(|cx| {
+                        crate::capture::overlay::finish_recording_overlay_preparation(cx);
+                        let continue_start = control
+                            .update(cx, |this, window, cx| {
+                                if this.mode != Mode::PreRecording
+                                    || this.countdown_generation != generation
+                                {
+                                    return false;
+                                }
+                                cx.notify();
+                                if shown {
+                                    crate::capture::overlay::close_all(cx);
+                                    this.start_after_handoff(excluded_window_ids, window, cx);
+                                } else {
+                                    crate::intents::hide_recording_outline(None, cx);
+                                    set_pre_recording_escape(true, cx);
+                                    crate::windows::toast::Toast::show(
+                                        cx,
+                                        "Recording failed",
+                                        "Could not show the recording overlay",
+                                    );
+                                }
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !continue_start {
+                            crate::intents::hide_recording_outline(None, cx);
+                        }
+                    });
+                    drop(finished);
+                })
+                .detach();
+                return;
+            }
+        }
+        self.start_after_handoff(excluded_window_ids, window, cx);
+    }
+
+    fn start_after_handoff(
+        &mut self,
+        excluded_window_ids: Vec<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let service = crate::state::state(cx);
+        let recording = service.config.get().recording;
         let project = match recorder::create_project(&service.config) {
             Ok(path) => path,
             Err(error) => {
                 eprintln!("[recorder] failed to create project: {error}");
+                #[cfg(target_os = "macos")]
+                crate::capture::overlay::rollback_recording_handoff(cx);
                 return;
             }
         };
@@ -810,28 +885,6 @@ impl RecordingControl {
             output_path: project.clone(),
         };
 
-        if !crate::capture::overlay::release_frozen_screen_in_place(cx) {
-            let _ = std::fs::remove_dir_all(&project);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Recording failed",
-                "Could not release the frozen screen",
-            );
-            return;
-        }
-        if ios_recording {
-            crate::capture::overlay::close_all(cx);
-        }
-        #[cfg(target_os = "macos")]
-        if !ios_recording && !crate::capture::overlay::begin_recording_handoff(self.rect, cx) {
-            let _ = std::fs::remove_dir_all(&project);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Recording failed",
-                "Could not show the recording overlay",
-            );
-            return;
-        }
         self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         let error_generation = self.recording_error_generation;
         self.watch_recorder_errors(window, cx, error_generation);
@@ -857,7 +910,7 @@ impl RecordingControl {
         }
         set_pre_recording_escape(false, cx);
         #[cfg(not(target_os = "macos"))]
-        let _ = crate::capture::overlay::begin_recording_handoff(self.rect, cx);
+        crate::capture::overlay::begin_recording_handoff(self.rect, cx);
 
         self.project = Some(project);
         self.mode = Mode::Recording;

@@ -380,6 +380,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             cx.advance_clock(std::time::Duration::from_secs(1));
             settle(cx, window);
         }
+        #[cfg(target_os = "macos")]
+        super::workflows::wait_for_recording_start(cx);
         assert_eq!(recorder::state(), RecorderState::Recording);
         capture(cx, window, output, "record-control-active");
         click_measured(cx, window, "recording-controls", 2);

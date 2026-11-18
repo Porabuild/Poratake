@@ -678,9 +678,11 @@ fn recorded_editor_and_export(
 }
 
 #[cfg(target_os = "macos")]
-fn wait_for_recording_start(cx: &mut HeadlessAppContext) {
+pub(super) fn wait_for_recording_start(cx: &mut HeadlessAppContext) {
     let started = std::time::Instant::now();
-    while crate::video::recorder::state() == crate::video::recorder::RecorderState::Starting {
+    while crate::video::recorder::state() == crate::video::recorder::RecorderState::Starting
+        || cx.update(|cx| crate::capture::overlay::pending_recording_overlay(cx).is_some())
+    {
         cx.run_until_parked();
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         std::thread::yield_now();

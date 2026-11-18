@@ -7128,6 +7128,21 @@ still be cancelled. App-local retries in light and dark saved a
 screen-only recording and opened its preview. Cancelling during the
 hold left no recording project. [Native startup recovery evidence](tests/native/evidence/macos-ui/native-recording-start-rollback-20261118.txt)
 
+### 2026-11-18 macOS recording outline Show during startup
+
+The area recording toolbar previously blocked while the daemon showed
+the recording overlay. A 650 ms hold on the successful Show reply
+blocked an independent app-local status command throughout the hold.
+GPUI now does that wait off the UI thread. Start stays disabled and
+the recorder waits for the overlay acknowledgement.
+
+The revised native status replies took 0.08–2.56 ms during the hold.
+After release, the light and dark runs recorded 600×440 screen-only
+video and opened the preview. Cancel before release delayed Hide until
+Show completed and left no recording project. A capture switch waited
+for Show and Hide before opening its selector. An injected failed
+overlay response cleaned up and re-enabled Start. [Native startup evidence](tests/native/evidence/macos-ui/native-recording-overlay-show-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -55,6 +55,8 @@ struct OverlaySession {
     outlined_window_id: Option<i64>,
     #[cfg(target_os = "macos")]
     native_recording_overlay_requested: bool,
+    #[cfg(target_os = "macos")]
+    pending_recording_overlay: Option<smol::channel::Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -261,43 +263,52 @@ pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
     true
 }
 
-pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
+#[cfg(not(target_os = "macos"))]
+pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) {
     if session(cx).outlined_window_id.is_some() {
-        return true;
+        return;
     }
+    let handles = session(cx).handles.clone();
+    for tracked in handles {
+        let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+            continue;
+        };
+        let _ = handle.update(cx, |overlay, window, cx| {
+            if overlay.intent != crate::capture::intent::CaptureIntent::Recording {
+                return;
+            }
+            overlay.rect = local_recording_rect(rect, overlay.display_bounds, overlay.scale);
+            overlay.handed_off = true;
+            overlay.interaction = None;
+            overlay.pointer = None;
+            set_overlay_hole(window, overlay.rect);
+            cx.notify();
+        });
+    }
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        session(cx).native_recording_overlay_requested = true;
-        let daemon = crate::state::state(cx).daemon;
-        if daemon.recording_overlay().show(rect).ok() != Some(true) {
-            return false;
-        }
-        close_all(cx);
-        true
+#[cfg(target_os = "macos")]
+pub(crate) fn prepare_recording_overlay(cx: &mut App) -> Option<smol::channel::Sender<()>> {
+    let session = session(cx);
+    if session.outlined_window_id.is_some() {
+        return None;
     }
+    let (finished, pending) = smol::channel::bounded(1);
+    session.pending_recording_overlay = Some(pending);
+    session.native_recording_overlay_requested = true;
+    Some(finished)
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let handles = session(cx).handles.clone();
-        for tracked in handles {
-            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
-                continue;
-            };
-            let _ = handle.update(cx, |overlay, window, cx| {
-                if overlay.intent != crate::capture::intent::CaptureIntent::Recording {
-                    return;
-                }
-                overlay.rect = local_recording_rect(rect, overlay.display_bounds, overlay.scale);
-                overlay.handed_off = true;
-                overlay.interaction = None;
-                overlay.pointer = None;
-                set_overlay_hole(window, overlay.rect);
-                cx.notify();
-            });
-        }
-        true
-    }
+#[cfg(target_os = "macos")]
+pub(crate) fn pending_recording_overlay(cx: &App) -> Option<smol::channel::Receiver<()>> {
+    cx.try_global::<OverlaySession>()?
+        .pending_recording_overlay
+        .clone()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn finish_recording_overlay_preparation(cx: &mut App) {
+    session(cx).pending_recording_overlay = None;
 }
 
 #[cfg(target_os = "macos")]

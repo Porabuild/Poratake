@@ -1,0 +1,28 @@
+macOS recording overlay Show during startup, 2026-11-18
+
+One built-in Retina display, temporary GPUI profile, generated moving
+AppKit backdrop and previously authorized screen-only daemon. The
+bridge held the successful recording-overlay Show reply for 650 ms.
+The app sent the recording start request only after the hold.
+Camera protection replies used a fixture. Audio, camera and key
+tracking were disabled on the live recordings.
+
+Baseline bf1d5f07 blocked an independent status command for the
+whole hold. The revised native probe answered in 0.08–2.56 ms
+across the observed runs. A second Start press did not send a recorder
+request while Show was held. The light and dark positive runs saved
+600×440 videos with a single video stream and at least four decoded
+frames, and opened the recording preview.
+
+Cancellation closed the toolbar while Show was held.
+The native Hide request followed release of Show. No recorder Start
+request or project appeared. A separate run switched to screenshot
+area selection while Show was held. Its new selector opened after
+Show and Hide completed, and cancelling it left the output empty.
+An injected Show response with visible=false also hid the staged
+overlay and restored Start without creating a project.
+
+All 1,173 runnable GPUI tests, both recording parity workflows, and
+76 Electron recording-control reference tests passed. Status samples
+measure app-local dispatch and replies. They do not measure physical
+input delivery or display scan-out.

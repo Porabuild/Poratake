@@ -150,7 +150,11 @@ pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool
     switch.hiding_outline = true;
     switch.next = next;
     set_pre_recording_escape(next.is_some(), cx);
+    let preparing = overlay::pending_recording_overlay(cx);
     cx.spawn(async move |cx| {
+        if let Some(preparing) = preparing {
+            let _ = preparing.recv().await;
+        }
         let result = smol::unblock(move || daemon.recording_overlay().hide()).await;
         cx.update(|cx| {
             let switch = cx.global_mut::<RecordingCaptureSwitch>();
