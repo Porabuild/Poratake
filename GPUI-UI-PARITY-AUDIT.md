@@ -6950,6 +6950,24 @@ also holds the Hide reply and asserts that opening directly in the
 editor works while cleanup is pending. The [native timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes the individual samples for one Retina display.
 
+### 2026-11-18 macOS recording toolbar tooltip replacement
+
+The native GPUI probe moved between all six pre-recording toolbar actions
+with app-local unpressed pointer events in light and dark. The requested
+native label followed the selected control in both directions, including
+back-to-back moves. During pointer hover the keyboard label stayed hidden.
+Pointer exit cleared the native request and restored the focused keyboard
+label.
+
+The AppKit regression separately holds an in-flight screenshot while the
+pointer moves from Start recording to Camera to Microphone. It verifies
+that only the last label appears after release, that a delayed hide from
+the earlier control is ignored, and that superseded panels stay excluded
+until retirement. The replacement fits the display work area and clears
+the toolbar. [Native tooltip handoff evidence](tests/native/evidence/macos-ui/native-tooltip-control-handoff-20261118.txt)
+records the cases. Physical unpressed pointer delivery and mixed-DPI
+placement remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

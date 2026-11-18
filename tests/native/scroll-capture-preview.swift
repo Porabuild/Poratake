@@ -388,6 +388,67 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyTooltipControlReplacement() async throws {
+        guard let screen = NSScreen.screens.first else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let startPoint = NSPoint(x: owner.minX + 24, y: owner.midY)
+        let cameraPoint = NSPoint(x: owner.minX + 68, y: owner.midY)
+        let microphonePoint = NSPoint(x: owner.minX + 112, y: owner.midY)
+        for dark in [false, true] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: "Start recording"))
+            let shown = try await tooltip.show(
+                sequence: 1, owner: 1, text: "Start recording", dark: dark, at: startPoint, ownerFrame: owner
+            )
+            precondition(shown)
+            guard let startPanel = tooltip.testPanel else { preconditionFailure("Start panel missing") }
+
+            _ = registry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 2, owner: 1, text: "Select camera"))
+            precondition(startPanel.alphaValue == 0)
+            let camera = Task { @MainActor in
+                try await tooltip.show(
+                    sequence: 2, owner: 1, text: "Select camera", dark: dark, at: cameraPoint, ownerFrame: owner
+                )
+            }
+            await waitUntil("Camera tooltip did not wait for the screenshot") { tooltip.testPanel != nil }
+            guard let cameraPanel = tooltip.testPanel else { preconditionFailure("Camera panel missing") }
+            precondition(cameraPanel.alphaValue == 0)
+
+            precondition(tooltip.accept(sequence: 4, owner: 1, text: "Select microphone"))
+            precondition(!tooltip.accept(sequence: 3, owner: 1, text: nil))
+            let microphone = Task { @MainActor in
+                try await tooltip.show(
+                    sequence: 4, owner: 1, text: "Select microphone", dark: dark, at: microphonePoint, ownerFrame: owner
+                )
+            }
+            await waitUntil("Replacement tooltip did not wait for the screenshot") { tooltip.testPanel != nil }
+            guard let newest = tooltip.testPanel else { preconditionFailure("Microphone panel missing") }
+            precondition(newest !== cameraPanel && newest.alphaValue == 0)
+            precondition(startPanel.alphaValue == 0 && cameraPanel.alphaValue == 0)
+            precondition(registry.currentWindowIDs().count == 3)
+            if work.width >= 640 {
+                precondition(newest.frame.minX > cameraPanel.frame.minX)
+            }
+
+            registry.finishScreenshot()
+            let cameraShown = try await camera.value
+            let microphoneShown = try await microphone.value
+            precondition(!cameraShown && microphoneShown && newest.alphaValue == 1)
+            let label = newest.contentView?.subviews.compactMap { $0 as? NSTextField }.first
+            precondition(label?.stringValue == "Select microphone")
+            precondition(newest.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == (dark ? .darkAqua : .aqua))
+            precondition(work.contains(newest.frame) && !owner.intersects(newest.frame))
+            await waitUntil("Superseded tooltip panels were not retired") { registry.currentWindowIDs().count == 1 }
+            precondition(!tooltip.accept(sequence: 5, owner: 1, text: nil))
+            await waitUntil("Replacement tooltip was not retired on exit") { registry.currentWindowIDs().isEmpty }
+        }
+        print("tooltip control replacement: only the newest label appeared in light and dark")
+    }
+
+    @MainActor
     static func verifyTooltipPointerExit() async throws {
         guard let screen = NSScreen.screens.first else {
             print("SKIP tooltip pointer exit: no AppKit display")
@@ -908,6 +969,7 @@ struct ScrollCapturePreviewTest {
 
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
         try await verifyTooltipPointerExit()
+        try await verifyTooltipControlReplacement()
         verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
