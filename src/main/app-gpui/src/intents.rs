@@ -131,11 +131,33 @@ pub(crate) fn recording_cleanup_is_pending(cx: &App) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn begin_recording_camera_hide(cx: &mut App) {
+pub(crate) fn begin_recording_camera_hide(
+    cx: &mut App,
+) -> smol::channel::Receiver<Result<(), String>> {
     let daemon = crate::state::state(cx).daemon;
     let wait = daemon.camera_preview().begin_hide();
-    let hide = smol::spawn(async move { smol::unblock(wait?).await });
+    let (reply, response) = smol::channel::bounded(1);
+    let hide = smol::spawn(async move {
+        let result = match wait {
+            Ok(wait) => smol::unblock(wait).await,
+            Err(error) => Err(error),
+        };
+        let _ = reply.try_send(result.as_ref().map(|_| ()).map_err(ToString::to_string));
+        result
+    });
     cx.default_global::<RecordingCaptureSwitch>().camera_hide = Some(hide);
+    response
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn recording_camera_hide_queued(cx: &App) -> bool {
+    cx.try_global::<RecordingCaptureSwitch>()
+        .is_some_and(|switch| switch.camera_hide.is_some())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn forget_recording_camera_hide(cx: &mut App) {
+    cx.default_global::<RecordingCaptureSwitch>().camera_hide = None;
 }
 
 #[cfg(target_os = "macos")]

@@ -7623,6 +7623,21 @@ reached Hide in 16–20 ms while both replies were pending. The AppKit
 lifecycle fixture also sent two position requests and checked the
 last clamped position on its generated panel. No camera feed was used.
 
+### 2026-11-18 macOS camera-off toggle during recording setup
+
+The pre-recording camera-off toggle now waits for Hide off the UI
+thread. It keeps the confirmed state and preference until Hide
+succeeds. A rejected reply keeps the camera enabled. Start waits until
+the toggle resolves.
+
+Eight native runs used simulated replies in light and dark. A camera-off
+command reached Hide in 6.05–9.42 ms. Closing the toolbar or switching to
+an area screenshot reused the pending Hide instead of sending another.
+The area selector waited for cleanup, and a late reply after leaving
+setup did not change the saved preference. The Metal workflow holds
+Hide during the camera-off toggle and checks the selector handoff.
+No live camera feed was used.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

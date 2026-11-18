@@ -635,6 +635,8 @@ impl RecordingControl {
                     }
                     if this.preference_scope != preference_scope {
                         this.hide_camera_preview(cx);
+                        #[cfg(target_os = "macos")]
+                        crate::intents::forget_recording_camera_hide(cx);
                         this.close_pre_recording_toolbar(window, cx);
                         return false;
                     }
@@ -1406,6 +1408,10 @@ impl RecordingControl {
             if enabled {
                 return self.request_pre_recording_camera(None, cx);
             }
+            if self.camera_preview_visible {
+                self.request_pre_recording_camera_off(cx);
+                return true;
+            }
         }
         #[cfg(not(target_os = "macos"))]
         if enabled {
@@ -1432,6 +1438,35 @@ impl RecordingControl {
         self.persist_pre_recording_preference(RecordingPreference::Camera(enabled), cx);
         cx.notify();
         true
+    }
+
+    #[cfg(target_os = "macos")]
+    fn request_pre_recording_camera_off(&mut self, cx: &mut Context<Self>) {
+        let response = crate::intents::begin_recording_camera_hide(cx);
+        self.camera_pending = true;
+        let generation = self.recording_error_generation;
+        cx.spawn(async move |entity, cx| {
+            let Ok(result) = response.recv().await else {
+                return;
+            };
+            let _ = entity.update(cx, |this, cx| {
+                if this.recording_error_generation != generation || this.mode != Mode::PreRecording {
+                    return;
+                }
+                crate::intents::forget_recording_camera_hide(cx);
+                if let Err(error) = result {
+                    report_toggle_failure(cx, &anyhow::anyhow!(error));
+                } else {
+                    this.detach_camera_preview();
+                    this.camera = false;
+                    this.persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                }
+                this.camera_pending = false;
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     #[cfg(target_os = "macos")]
@@ -2606,8 +2641,8 @@ impl RecordingControl {
         #[cfg(target_os = "macos")]
         self.cancel_camera_protection(cx);
         #[cfg(target_os = "macos")]
-        if self.detach_camera_preview() {
-            crate::intents::begin_recording_camera_hide(cx);
+        if self.detach_camera_preview() && !crate::intents::recording_camera_hide_queued(cx) {
+            let _ = crate::intents::begin_recording_camera_hide(cx);
         }
         #[cfg(not(target_os = "macos"))]
         self.hide_camera_preview(cx);

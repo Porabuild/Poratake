@@ -806,6 +806,15 @@ fn check_camera_hide_handoff(cx: &mut HeadlessAppContext, output: &Path) {
         (registry::handle(WindowKind::RecordingControl, cx).unwrap(), original)
     });
     wait_for_camera_change(cx, window);
+    cx.update_window(window, |root, _, cx| {
+        root.downcast::<RecordingControl>()
+            .unwrap()
+            .update(cx, |control, cx| {
+                assert!(control.set_camera(false, cx));
+                assert_eq!(control.parity_camera_status(), (true, true));
+            });
+    })
+    .unwrap();
     cx.update(|cx| crate::intents::dispatch(Intent::CaptureArea, None, cx));
     let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
