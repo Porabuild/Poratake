@@ -48,6 +48,12 @@ private struct ScrollAlignmentSnapshot {
     let stoppedForNoOverlap: Bool
 }
 
+private struct ScrollComposition {
+    let image: CGImage
+    let width: Int
+    let height: Int
+}
+
 private final class ScrollPreviewSession {
     struct Snapshot {
         let width: Int
@@ -62,7 +68,7 @@ private final class ScrollPreviewSession {
         let alignments: [ScrollFrameAlignment]
         let frameCount: Int
         let pointsPerPixel: CGFloat
-        let compose: ([CGImage], [ScrollFrameAlignment], () -> Bool) -> CGImage?
+        let compose: ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?
         let encode: (CGImage) -> String?
         let completion: ((Snapshot) -> Void)?
     }
@@ -90,7 +96,7 @@ private final class ScrollPreviewSession {
         pointsPerPixel: CGFloat,
         align: @escaping (CGImage, CGImage, Int, () -> Bool) -> ScrollFrameAlignment?,
         alignmentFailure: @escaping (Int) -> Void,
-        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> CGImage?,
+        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
         encode: @escaping (CGImage) -> String?,
         completion: ((Snapshot) -> Void)?
     ) {
@@ -186,7 +192,7 @@ private final class ScrollPreviewSession {
     private func makePreviewRequest(
         frameCount: Int,
         pointsPerPixel: CGFloat,
-        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> CGImage?,
+        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
         encode: @escaping (CGImage) -> String?,
         completion: ((Snapshot) -> Void)?
     ) -> PreviewRequest? {
@@ -243,17 +249,17 @@ private final class ScrollPreviewSession {
             lock.unlock()
 
             let isStale = { [weak self] in self?.shouldStopPreview() ?? true }
-            guard let image = request.compose(request.frames, request.alignments, isStale), !isStale(),
-                  let encodedImage = request.encode(image), !isStale() else {
+            guard let composition = request.compose(request.frames, request.alignments, isStale), !isStale(),
+                  let encodedImage = request.encode(composition.image), !isStale() else {
                 continue
             }
 
             let snapshot = Snapshot(
-                width: image.width,
-                height: image.height,
+                width: composition.width,
+                height: composition.height,
                 encodedImage: encodedImage,
                 frameCount: request.frameCount,
-                estimatedHeight: Int(CGFloat(image.height) * request.pointsPerPixel)
+                estimatedHeight: Int(CGFloat(composition.height) * request.pointsPerPixel)
             )
             lock.lock()
             guard !cancelled,
@@ -1262,7 +1268,7 @@ class ScrollCaptureModule: NSObject, Module {
             frames: acceptedFrames.map(\.image),
             alignments: alignments,
             isCancelled: isCancelled
-        ) else { return nil }
+        )?.image else { return nil }
 
         let url = URL(fileURLWithPath: outputPath)
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
@@ -1288,53 +1294,54 @@ class ScrollCaptureModule: NSObject, Module {
     private func composeFrames(
         frames: [CGImage],
         alignments: [ScrollFrameAlignment],
+        maximumWidth: Int? = nil,
         isCancelled: () -> Bool
-    ) -> CGImage? {
-        guard let firstFrame = frames.first, !isCancelled() else { return nil }
-        guard frames.count > 1 else { return firstFrame }
-
-        guard alignments.count == frames.count - 1 else { return nil }
-        let trimBottoms = alignments.map(\.footerHeight) + [0]
-
-        let firstContentHeight = firstFrame.height - trimBottoms[0]
-        var totalHeight = firstContentHeight
-        for index in 1..<frames.count {
-            guard !isCancelled() else { return nil }
-            let newContent = frames[index].height - alignments[index - 1].overlap - trimBottoms[index]
-            guard newContent > 0 else { return nil }
-            totalHeight += newContent
+    ) -> ScrollComposition? {
+        guard let firstFrame = frames.first, !isCancelled(),
+              alignments.count == frames.count - 1 else { return nil }
+        let width = firstFrame.width
+        let targetWidth = min(width, maximumWidth ?? width)
+        if frames.count == 1 && targetWidth == width {
+            return ScrollComposition(image: firstFrame, width: width, height: firstFrame.height)
         }
-        guard !isCancelled() else { return nil }
 
-        guard let context = scrollBitmapContext(
-            width: firstFrame.width,
-            height: totalHeight,
-            matching: firstFrame
+        let trimTop = [0] + alignments.map(\.overlap)
+        let trimBottom = alignments.map(\.footerHeight) + [0]
+        var contentHeights: [Int] = []
+        var height = 0
+        for index in frames.indices {
+            guard !isCancelled() else { return nil }
+            let contentHeight = frames[index].height - trimTop[index] - trimBottom[index]
+            guard contentHeight > 0 else { return nil }
+            contentHeights.append(contentHeight)
+            height += contentHeight
+        }
+
+        let targetHeight = max(1, Int(CGFloat(height) * (CGFloat(targetWidth) / CGFloat(width))))
+        guard !isCancelled(), let context = scrollBitmapContext(
+            width: targetWidth, height: targetHeight, matching: firstFrame
         ) else { return nil }
 
-        var currentY = totalHeight - firstContentHeight
-        guard let firstContent = firstFrame.cropping(
-            to: CGRect(x: 0, y: 0, width: firstFrame.width, height: firstContentHeight)
-        ) else { return nil }
-        context.draw(firstContent, in: CGRect(x: 0, y: currentY, width: firstFrame.width, height: firstContentHeight))
-
-        for index in 1..<frames.count {
+        if targetWidth != width { context.interpolationQuality = .high }
+        let scaleY = CGFloat(targetHeight) / CGFloat(height)
+        var remainingRows = height
+        var top = targetHeight
+        for index in frames.indices {
             guard !isCancelled() else { return nil }
             let frame = frames[index]
-            let overlap = alignments[index - 1].overlap
-            let newContentHeight = frame.height - overlap - trimBottoms[index]
-
-            guard newContentHeight > 0 else { return nil }
-
-            let cropRect = CGRect(x: 0, y: overlap, width: frame.width, height: newContentHeight)
-            guard let croppedImage = frame.cropping(to: cropRect) else { continue }
-
-            currentY -= newContentHeight
-            context.draw(croppedImage, in: CGRect(x: 0, y: currentY, width: firstFrame.width, height: newContentHeight))
+            let contentHeight = contentHeights[index]
+            remainingRows -= contentHeight
+            let bottom = Int((CGFloat(remainingRows) * scaleY).rounded())
+            if bottom < top {
+                let crop = CGRect(x: 0, y: trimTop[index], width: frame.width, height: contentHeight)
+                guard let image = frame.cropping(to: crop) else { return nil }
+                context.draw(image, in: CGRect(x: 0, y: bottom, width: targetWidth, height: top - bottom))
+            }
+            top = bottom
         }
 
-        guard !isCancelled() else { return nil }
-        return context.makeImage()
+        guard !isCancelled(), let image = context.makeImage() else { return nil }
+        return ScrollComposition(image: image, width: width, height: height)
     }
 
     private func saveSingleFrame(
@@ -2020,7 +2027,7 @@ class ScrollCaptureModule: NSObject, Module {
         let scrollStepPixels = Int(CGFloat(scrollStepPoints) * pixelScale)
         let expectedOverlap = image.height - min(max(scrollStepPixels, 1), image.height)
         let pointsPerPixel = captureArea.height / CGFloat(image.height)
-        let backingScaleFactor = targetScreen?.backingScaleFactor ?? 1
+        let previewWidth = max(1, Int(previewWidthPoints * (targetScreen?.backingScaleFactor ?? 1)))
 #if SCROLL_CAPTURE_TEST
         let testPreviewAlignment = self.testPreviewAlignment
         let testPreviewEncoder = self.testPreviewEncoder
@@ -2061,7 +2068,7 @@ class ScrollCaptureModule: NSObject, Module {
                 self.emitScrollEnded(reason: "no-overlap", frameCount: acceptedFrameCount)
             },
             compose: { [weak self] frames, alignments, isCancelled in
-                self?.composeFrames(frames: frames, alignments: alignments, isCancelled: isCancelled)
+                self?.composeFrames(frames: frames, alignments: alignments, maximumWidth: previewWidth, isCancelled: isCancelled)
             },
             encode: { [weak self] image in
 #if SCROLL_CAPTURE_TEST
@@ -2069,7 +2076,7 @@ class ScrollCaptureModule: NSObject, Module {
                     return testPreviewEncoder(image)
                 }
 #endif
-                return self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
+                return self?.base64PNG(for: image)
             },
             completion: completion
         )
@@ -2099,30 +2106,6 @@ class ScrollCaptureModule: NSObject, Module {
             "previewHeight": snapshot.height
         ]
         emit(event: "frame", data: payload)
-    }
-
-    private func encodePreviewBase64(_ image: CGImage, backingScaleFactor: CGFloat) -> String? {
-        let targetWidth = Int(previewWidthPoints * backingScaleFactor)
-        guard image.width > targetWidth else {
-            return base64PNG(for: image)
-        }
-
-        let scale = CGFloat(targetWidth) / CGFloat(image.width)
-        let targetHeight = max(1, Int(CGFloat(image.height) * scale))
-
-        guard let context = scrollBitmapContext(
-            width: targetWidth,
-            height: targetHeight,
-            matching: image
-        ) else {
-            return nil
-        }
-
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-
-        guard let scaled = context.makeImage() else { return nil }
-        return base64PNG(for: scaled)
     }
 
     private func scrollBitmapContext(width: Int, height: Int, matching image: CGImage) -> CGContext? {
@@ -2276,20 +2259,6 @@ class ScrollCaptureModule: NSObject, Module {
         captureArea = NSRect(x: 0, y: 0, width: first.width, height: first.height)
         scrollStepPoints = step
         capturedFrames.removeAll()
-        let previousEncoder = testPreviewEncoder
-        let backingScaleFactor = targetScreen?.backingScaleFactor ?? 1
-        var renderedPreview: CGImage?
-        testSetPreviewEncoder { [weak self] image in
-            let encoded: String?
-            if let previousEncoder {
-                encoded = previousEncoder(image)
-            } else {
-                encoded = self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
-            }
-            if encoded != nil { renderedPreview = image }
-            return encoded
-        }
-        defer { testPreviewEncoder = previousEncoder }
         for (index, image) in frames.enumerated() {
             let previousFrame = index > 0 ? frames[index - 1] : nil
             capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
@@ -2301,12 +2270,16 @@ class ScrollCaptureModule: NSObject, Module {
                 completion: nil
             )
         }
-        guard let snapshot = session.previewSnapshot(), let renderedPreview else {
+        guard let snapshot = session.previewSnapshot() else {
             fatalError("Failed to create scroll preview")
         }
         let alignmentSnapshot = session.alignmentSnapshot()
         let overlaps = alignmentSnapshot.alignments.map(\.overlap)
-        guard stitchFrames(
+        guard let unscaled = composeFrames(
+            frames: Array(frames.prefix(snapshot.frameCount)),
+            alignments: Array(alignmentSnapshot.alignments.prefix(snapshot.frameCount - 1)),
+            isCancelled: { false }
+        ), stitchFrames(
             frames: capturedFrames,
             captureAreaHeight: captureArea.height,
             scrollStepPoints: step,
@@ -2319,7 +2292,7 @@ class ScrollCaptureModule: NSObject, Module {
             fatalError("Failed to create preview or saved scroll capture")
         }
         return (
-            renderedPreview,
+            unscaled.image,
             saved,
             snapshot.encodedImage,
             overlaps,

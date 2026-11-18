@@ -432,3 +432,31 @@ authorized generated page in both themes. Both 1200x5200 Display P3
 PNGs matched 6,239,946 of 6,240,000 reference pixels exactly. The other
 54 pixels differed by at most one channel level. No global pointer
 input was posted.
+
+Rendering scroll previews directly at thumbnail resolution
+
+The fixture used the same nine 3400x2060 generated Display P3 frames
+and a 600-pixel overlap as the previous memory test. It waited for each
+preview to encode before supplying the next frame. Timing includes
+frame generation, composition and encoding, ending when the 3400x13740
+preview was ready. Fresh native processes ran in the order shown.
+
+Sample                Total time       Steady memory     Peak memory
+Previous 1             295.6 ms          184.4 MiB        391.2 MiB
+Fixed 1                166.9 ms          185.0 MiB        212.5 MiB
+Fixed 2                165.7 ms          184.8 MiB        212.4 MiB
+Previous 2             301.2 ms          184.5 MiB        391.2 MiB
+
+The prior build already released the full bitmap after encoding. This
+change removes that bitmap allocation during preview composition.
+It leaves full-size composition in the final PNG path.
+
+A second probe reused three captured Display P3 page frames. The old
+and new preview PNGs were both 240x1040 and tagged Display P3. Direct
+per-strip scaling produced 5.31 mean absolute RGB levels of difference
+on this high-frequency fixture, and all output pixels were opaque.
+The corresponding full-size PNGs decoded pixel-identically. The
+synthetic fractional-boundary test also verified exact opaque rows
+across the two bands. In the live light and dark runs, all three
+captured frames saved and the output stayed within one RGB level of
+unobstructed references.

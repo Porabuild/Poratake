@@ -6639,9 +6639,31 @@ A focused regression verified that the encoder received the stitched
 bitmap and the published preview released it. The light and dark
 overlapping-control runs each saved three filtered frames. The
 1200 × 5200 Display P3 PNGs stayed within one RGB level of their
-unobstructed references. Transient allocation during composition
-remains open. The [memory record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+unobstructed references. The follow-up below measures peak allocation
+during preview composition. The [memory record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the individual samples.
+
+### 2026-11-18 macOS scroll previews render at thumbnail resolution
+
+The daemon now draws the aligned scroll strips directly into the
+preview-sized canvas. It uses adjacent integer row bounds at each seam
+and publishes the same original dimensions and scroll height. The final
+PNG uses the shared strip layout at full resolution.
+
+In two generated runs per build, nine sequential previews ending at
+3400 × 13740 took 296–301 ms before the change and 166–167 ms after it.
+Peak process footprint went from 391.2 MiB to 212.4–212.5 MiB. The
+benchmark includes source-frame generation, composition and PNG encoding.
+The full-resolution save still requires a full-size canvas.
+
+A fractional-seam test checked every pixel for continuous opaque bands.
+The high-frequency Display P3 page produced 240 × 1040 thumbnails in
+both versions, with small per-strip resampling differences. Its
+full-resolution output was pixel-identical. Both native light and dark
+overlapping-control saves again matched the unobstructed references
+within one RGB level. The native fixtures passed on arm64 and under
+Rosetta. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the sample sizes and thumbnail comparison.
 
 ## Review gate
 

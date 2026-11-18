@@ -442,6 +442,7 @@ struct ScrollCapturePreviewTest {
             FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
             runExistingScrollChecks()
             verifyScrollColorProfiles()
+            verifyDirectPreviewBands()
             FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
         }
         let application = NSApplication.shared
@@ -489,6 +490,42 @@ struct ScrollCapturePreviewTest {
             precondition(pixels(saved, colorSpace: space) == pixels(expected, colorSpace: space))
             precondition(pixels(preview, colorSpace: space) == pixels(expected, colorSpace: space))
             print("scroll profile \(name): stitched and scaled preview profiles preserved")
+        }
+    }
+
+    static func verifyDirectPreviewBands() {
+        let width = 480
+        let height = 161
+        let step = 113
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let frames = [[CGFloat(1), 0, 0, 1], [0, 0, 1, 1]].map { color in
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            context.setFillColor(CGColor(colorSpace: space, components: color)!)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            return context.makeImage()!
+        }
+        let module = ScrollCaptureModule()
+        module.testSetPreviewAlignment { _, _, expected, _ in expected }
+        let output = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-preview-bands-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let (_, saved, encoded, _, count, estimatedHeight) = module
+            .testPreviewAndSave(frames: frames, step: step, outputPath: output.path)
+        let source = CGImageSourceCreateWithData(Data(base64Encoded: encoded)! as CFData, nil)!
+        let preview = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+        precondition(count == 2 && estimatedHeight == 274)
+        precondition(saved.width == 480 && saved.height == 274)
+        precondition(preview.width == 240 && preview.height == 137)
+        let rgba = Array(pixels(preview, colorSpace: space))
+        for row in 0..<preview.height {
+            let expected: [UInt8] = row < 80 ? [255, 0, 0, 255] : [0, 0, 255, 255]
+            for column in 0..<preview.width {
+                let offset = (row * preview.width + column) * 4
+                precondition(rgba[offset..<(offset + 4)].elementsEqual(expected), "Unexpected preview pixel in row \(row)")
+            }
         }
     }
 
