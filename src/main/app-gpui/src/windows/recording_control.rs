@@ -1940,21 +1940,24 @@ impl RecordingControl {
         }
         #[cfg(all(target_os = "macos", not(test)))]
         {
-            if self.pending_native_bounds.replace(Some(bounds)) == Some(bounds) {
+            if self.pending_native_bounds.replace(Some(bounds)).is_some() {
                 return;
             }
             let pending = self.pending_native_bounds.clone();
-            window.on_next_frame(move |window, cx| {
-                if pending.get() != Some(bounds) {
-                    return;
-                }
-                pending.set(None);
-                if super::set_macos_window_bounds(window, bounds) {
-                    window.bounds_changed(cx);
-                } else {
-                    window.resize(bounds.size);
-                }
-            });
+            let handle = window.window_handle();
+            cx.spawn(async move |_, cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let Some(bounds) = pending.take() else {
+                        return;
+                    };
+                    if super::set_macos_window_bounds(window, bounds) {
+                        window.bounds_changed(cx);
+                    } else {
+                        window.resize(bounds.size);
+                    }
+                });
+            })
+            .detach();
         }
         #[cfg(any(not(target_os = "macos"), test))]
         {

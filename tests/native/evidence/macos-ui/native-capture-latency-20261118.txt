@@ -66,3 +66,17 @@ All 18 light and 18 dark Metal toolbar images matched their baseline byte
 for byte. The separate native popup fixture also passed. The menu timings
 are frame expansion and collapse, while the toolbar timings are visible
 window transitions. Physical input and compositor paint remain open.
+
+Recording toolbar menu resize follow-up
+
+The same native probe measured the latest-bounds foreground update against
+the prior next-frame update. The light pair ran old then new and the dark
+pair ran new then old. Seven cycles per build and theme with the first
+cycle excluded from warm statistics.
+
+Warm median (warm maximum), milliseconds
+                  Light before  Light after  Dark before   Dark after
+Expand menu        17.0 (34.4)   16.4 (21.6)   16.4 (17.0)   14.1 (17.1)
+Collapse menu      30.6 (37.2)   11.5 (25.5)   30.7 (33.7)    9.1 (14.1)
+Cancel toolbar     20.4 (32.1)   18.7 (21.4)    8.4 (19.4)   15.2 (17.7)
+Reopen toolbar     25.4 (49.7)   26.8 (31.2)   24.1 (30.4)   24.6 (25.1)

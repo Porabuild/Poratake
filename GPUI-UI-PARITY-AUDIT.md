@@ -6359,6 +6359,24 @@ probe passed. All 36 light and dark Metal toolbar images matched the
 baseline byte for byte. Physical clicks and time to the first composited
 menu pixels remain unverified.
 
+### 2026-11-18 macOS recording toolbar menu resize latency
+
+Toolbar bounds changes previously waited for GPUI's next frame callback.
+The toolbar now schedules the native resize on the foreground executor
+after the current input callback and applies the latest pending bounds.
+The existing window observer still opens the device menu after the
+expanded bounds arrive. Escape behavior during menu dismissal is unchanged.
+
+Paired native runs measured six warm cycles per build and theme using
+generated microphone data. The warm median to the collapsed frame fell
+from 30.6 to 11.5 ms in light and from 30.7 to 9.1 ms in dark. Expansion
+moved from 17.0 to 16.4 ms in light and from 16.4 to 14.1 ms in dark.
+The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes warm maxima and the control window timings. These are
+WindowServer bounds measurements. Physical input and composited pixels
+were outside the latency probe. All 1,163 GPUI tests passed with 23
+ignored, and all 36 Metal toolbar PNGs matched their baselines.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
