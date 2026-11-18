@@ -937,3 +937,23 @@ Light                  230.4 / 160.9                           233.5 / 210.1
 Dark                   207.4 / 159.5                           221.4 / 221.0
 Light                  186.8 / 158.3                           227.1 / 190.9
 Dark                   171.4 / 167.4                           215.7 / 200.9
+
+2026-11-19 macOS thumbnail decoder handoff
+
+Native GPUI windows used a generated 3840 × 2160 H.264 clip
+supplied by the recording daemon fixture. Each run started a fresh
+app process. The benchmark observed the FFmpeg PID already running
+at thumbnail readiness until that PID exited. App command polling
+measured readiness of the video editor's first decoded frame.
+
+Theme  Stop to thumbnail (ms)  Thumbnail decoder exit (ms)  Open Editor to first frame (ms)
+           Before / after            Before / after                  Before / after
+Light      1099.5 / 595.6            2022.9 / 402.7                    391.6 / 491.1
+Dark        403.3 / 464.5             310.0 / 263.4                    500.0 / 354.5
+Light       419.2 / 342.6             355.7 / 583.0                    467.1 / 400.8
+Dark        393.1 / 417.2             321.5 / 309.4                    350.2 / 361.2
+
+Decoder exit and editor first-frame times both start at the Open
+Editor command. Decoder exit timings track a single PID at 4 ms
+polling intervals and include any work in progress. No screen or
+device access was required for these runs.

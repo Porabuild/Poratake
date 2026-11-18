@@ -7750,6 +7750,23 @@ readiness from 197 to 160 ms and median preview-to-editor frame time
 from 224 to 206 ms. The native launches covered light and dark on the
 built-in Retina display. [Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video preview dismissal
+
+A dismissing video preview now stops scheduling thumbnail decoding as
+soon as its exit animation starts. It holds its last displayed image
+and blur through the fade. If a decode is already running, it can finish
+without replacing those images.
+
+Four paired native GPUI runs used a generated 4K clip in light and dark
+on the built-in display. From the Open Editor action, the thumbnail
+decoder exited in a median 338 ms before the change and 356 ms after.
+Median editor first-frame readiness was 429 ms before and 381 ms after.
+Individual results varied, including a two-second decoder exit before
+the change. This sample does not establish a consistent timing gain.
+The regression test checks the ownership change directly and confirms
+that dismissal retains the displayed images.
+[Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

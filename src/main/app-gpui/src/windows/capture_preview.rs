@@ -1078,7 +1078,10 @@ fn pump_video_preview(cx: &mut App, id: u64) {
     let started = handle
         .update(cx, |view, _, cx| {
             let preview = view.previews.iter().find(|preview| preview.id == id)?;
-            if preview.kind != PreviewKind::Video || preview.video.is_some() {
+            if preview.kind != PreviewKind::Video
+                || preview.video.is_some()
+                || preview.dismiss_animation.is_some()
+            {
                 return None;
             }
             let video_path = crate::video::project::recording_video_path(&preview.path);
@@ -1097,8 +1100,11 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                         .update(cx, |view, cx| {
                             let preview =
                                 view.previews.iter_mut().find(|preview| preview.id == id)?;
+                            if preview.dismiss_animation.is_some() {
+                                return None;
+                            }
                             preview.video = Some(VideoPlayback {
-                                decoder: decoder.clone(),
+                                decoder,
                                 duration,
                                 started: cx.background_executor().now(),
                                 in_flight: false,
@@ -1151,7 +1157,9 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     let Some((decoder, time, blur)) = job else {
                         let alive = entity
                             .update(cx, |view, _| {
-                                view.previews.iter().any(|preview| preview.id == id)
+                                view.previews
+                                    .iter()
+                                    .any(|preview| preview.id == id && preview.video.is_some())
                             })
                             .unwrap_or(false);
                         if !alive {
@@ -1162,7 +1170,6 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     let frame = cx
                         .background_executor()
                         .spawn({
-                            let decoder = decoder.clone();
                             async move {
                                 decoder
                                     .frame_at(time)
@@ -1177,9 +1184,10 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                             else {
                                 return;
                             };
-                            if let Some(playback) = preview.video.as_mut() {
-                                playback.in_flight = false;
-                            }
+                            let Some(playback) = preview.video.as_mut() else {
+                                return;
+                            };
+                            playback.in_flight = false;
                             if let Some((image, blurred)) = frame {
                                 release_preview_images(preview, cx, None);
                                 preview.image = Some(image);
@@ -1828,6 +1836,7 @@ fn begin_remove_preview(
     }
     preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
     preview.dismiss_animation = Some(start_dismiss_animation(preview, behavior, now));
+    preview.video = None;
     let bottom_aligned = preview_bottom_aligned(cx);
     let layout_generation = start_layout_transition(view, bottom_aligned, now);
     cx.notify();
@@ -5134,6 +5143,25 @@ mod tests {
             })
             .unwrap();
         redraw(cx, &blurred, Some(&first));
+
+        let decoder = stack
+            .update(cx, |view, window, cx| {
+                let preview = &view.previews[0];
+                let decoder = Arc::downgrade(&preview.video.as_ref().unwrap().decoder);
+                let displayed = preview.image.clone().unwrap();
+                begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
+                let dismissing = &view.previews[0];
+                assert!(dismissing.dismiss_animation.is_some());
+                assert!(dismissing.video.is_none());
+                assert!(Arc::ptr_eq(dismissing.image.as_ref().unwrap(), &displayed));
+                assert!(Arc::ptr_eq(dismissing.blurred.as_ref().unwrap(), &blurred));
+                decoder
+            })
+            .unwrap();
+        assert!(
+            decoder.upgrade().is_none(),
+            "dismissal retained the decoder"
+        );
 
         cx.update(|cx| CapturePreviewWindow::open_video(cx, dir.path().join("Other.poratake")));
         stack
