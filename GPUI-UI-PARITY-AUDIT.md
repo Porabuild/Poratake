@@ -5569,6 +5569,34 @@ Metal readback times fluctuated substantially in those runs. Interactive
 4K frame pacing remains unverified. All 11 canvas tests, 92 runnable
 composition tests and the rounded-camera decoded-export test passed.
 
+### 2026-11-18 macOS recording reopen and regression checks
+
+An offscreen 4K trial overlapped the screen and camera decode requests.
+The frame checksums matched through continuous camera visibility and a
+visibility gap. In three alternating runs, median preparation time was
+28.9–29.5 ms with the existing decoder flow and 28.8–28.9 ms with overlap.
+The first visible frame after the gap took 42.4 and 43.1 ms, respectively.
+The overlap experiment was reverted because the runs showed little gain.
+
+The full dark Metal workflow then failed when reopening the generated area
+recording. An isolated reproduction reported that music was being cleaned
+up, even though that project had no retention records. The background
+close worker briefly held the collector marker while checking for work.
+GPUI now skips that worker and collector lock when the records directory
+is missing or empty. The next open still recovers crashed session markers.
+Regression coverage checks both directory states and immediate reopening.
+
+The local macOS runs passed 1,150 GPUI tests and 2,414 repository tests.
+The Swift daemon type-checked for arm64 and x86_64 against the local SDK.
+After the reopen fix, the dark Metal run reached two stale selection
+expectations in the wallpaper fixture. The fixture now expects the
+upper annotation at the overlapping point, following the established
+paint order. The focused Metal check passed with both corrected cases.
+The full offscreen dark workflow then completed at 1280×738 and 1×,
+producing 457 GPUI PNG artifacts. It exercised recording reopen and
+export, timer, analysis, scroll, attachments, pin, and screenshot
+save/reopen workflows with generated media and the fixture daemon.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
