@@ -414,6 +414,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         key(cx, window, "home");
         key(cx, window, "enter");
         settle(cx, window);
+        #[cfg(target_os = "macos")]
+        wait_for_camera_change(cx, window);
         let calls = super::daemon_fixture::calls(output);
         let failed_toggle = &calls[before_failed_toggle..];
         assert!(failed_toggle
@@ -446,10 +448,15 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             };
             #[cfg(target_os = "macos")]
             if name == "microphone" {
-                check_held_audio_change(cx, window, output, true, disable);
+                check_held_disable(cx, window, output, "setMicrophone", disable);
                 continue;
             }
+            #[cfg(target_os = "macos")]
+            check_held_disable(cx, window, output, "setCamera", disable);
+            #[cfg(not(target_os = "macos"))]
             disable(cx);
+            #[cfg(target_os = "macos")]
+            wait_for_camera_change(cx, window);
             if name == "camera-locked" {
                 cx.update(|cx| {
                     crate::state::state(cx).daemon.emit_parity_event(
@@ -464,11 +471,13 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             key(cx, window, "home");
             key(cx, window, "enter");
             settle(cx, window);
+            #[cfg(target_os = "macos")]
+            wait_for_camera_change(cx, window);
         }
         #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 8);
         #[cfg(target_os = "macos")]
-        check_held_audio_change(cx, window, output, false, |cx| {
+        check_held_disable(cx, window, output, "setSystemAudio", |cx| {
             click_measured(cx, window, "recording-controls", 8);
         });
         cx.update(|cx| {
@@ -714,18 +723,23 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
 
 
 #[cfg(target_os = "macos")]
-fn check_held_audio_change(
+fn check_held_disable(
     cx: &mut HeadlessAppContext,
     window: gpui::AnyWindowHandle,
     output: &Path,
-    microphone: bool,
+    method: &str,
     disable: impl FnOnce(&mut HeadlessAppContext),
 ) {
     use crate::windows::recording_control::RecordingControl;
     use std::io::Write;
     use std::time::{Duration, Instant};
 
-    let (method, index) = if microphone { ("setMicrophone", 7) } else { ("setSystemAudio", 8) };
+    let index = match method {
+        "setCamera" => 6,
+        "setMicrophone" => 7,
+        "setSystemAudio" => 8,
+        _ => unreachable!(),
+    };
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let ready = super::workflows::accept_fixture_barrier(&listener);
     let fixture_path = output.join("capture-fixture.json");
@@ -733,7 +747,7 @@ fn check_held_audio_change(
     std::fs::write(
         &fixture_path,
         serde_json::to_vec(&serde_json::json!({
-            "recordingAudioBarrier": method,
+            "recordingSettingBarrier": method,
             "barrier": listener.local_addr().unwrap().to_string(),
         }))
         .unwrap(),
@@ -741,20 +755,25 @@ fn check_held_audio_change(
     .unwrap();
     disable(cx);
     let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
-    let audio_is_on = |cx: &mut HeadlessAppContext| {
+    let setting_is_on = |cx: &mut HeadlessAppContext| {
         cx.update_window(window, |root, _, cx| {
             let view = root.downcast::<RecordingControl>().unwrap();
             let control = view.read(cx);
-            if microphone { control.parity_microphone() } else { control.parity_system_audio() }
+            match method {
+                "setCamera" => control.parity_camera_status().0,
+                "setMicrophone" => control.parity_microphone(),
+                "setSystemAudio" => control.parity_system_audio(),
+                _ => unreachable!(),
+            }
         })
         .unwrap()
     };
-    assert!(audio_is_on(cx), "audio state must await the daemon reply");
+    assert!(setting_is_on(cx), "recording state must await the daemon reply");
     click_measured(cx, window, "recording-controls", index);
-    assert!(audio_is_on(cx));
+    assert!(setting_is_on(cx));
     connection.write_all(&[1]).unwrap();
     let acknowledged = Instant::now();
-    while audio_is_on(cx) {
+    while setting_is_on(cx) {
         cx.run_until_parked();
         assert!(acknowledged.elapsed() < Duration::from_secs(5));
         std::thread::yield_now();
@@ -764,4 +783,22 @@ fn check_held_audio_change(
     } else {
         std::fs::remove_file(&fixture_path).unwrap();
     }
+}
+
+
+#[cfg(target_os = "macos")]
+fn wait_for_camera_change(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
+    use crate::windows::recording_control::RecordingControl;
+    let started = std::time::Instant::now();
+    while cx
+        .update_window(window, |root, _, cx| {
+            root.downcast::<RecordingControl>().unwrap().read(cx).parity_camera_status().1
+        })
+        .unwrap()
+    {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    settle(cx, window);
 }

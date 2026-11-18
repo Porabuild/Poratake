@@ -7415,6 +7415,24 @@ original. The Metal toolbar workflow separately exercised the real
 microphone menu during a held disable acknowledgement. These checks
 used an isolated profile and did not access the microphone.
 
+### 2026-11-18 macOS live camera toggle and preview responsiveness
+
+During recording, GPUI now waits for camera and preview replies off the
+UI thread. Enabling waits for the protected preview before enabling the
+camera track. Disabling keeps the confirmed state and preview until the
+recorder accepts the change. A rejected disable leaves the preview open.
+Stop sends preview cleanup even if the preview open is still pending.
+A late open reply cannot re-enable the camera after Stop.
+
+Ten native runs used isolated light and dark profiles and a simulated
+daemon. Stop reached the daemon in 0.62–11.05 ms while a recorder toggle,
+preview open or preview close reply was held. The fixture verified that
+each preview was closed once and that a late open never sent a camera
+enable request. The Metal toolbar workflow also holds the camera disable
+reply and checks the confirmed state before allowing the hide. All
+1,175 runnable GPUI tests and 111 Electron reference tests passed. The
+native probe used app-local input and simulated camera responses.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -1381,7 +1381,9 @@ pub fn open(cx: &mut App) {
         config.recording.system_audio =
             std::env::var("PORATAKE_NATIVE_SMOKE_SYSTEM_AUDIO").as_deref() == Ok("1");
         config.recording.mic_enabled = false;
-        config.recording.camera.enabled = false;
+        config.recording.camera.enabled = std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON")
+            .is_some()
+            && std::env::var_os("PORATAKE_NATIVE_SMOKE_CAMERA").is_some();
         config.recording.auto_zoom = false;
         config.recording.show_preview = true;
         config.history.enabled = false;
@@ -1644,6 +1646,17 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() {
+                    if matches!(command.as_str(), "camera-enable" | "camera-disable" | "camera-state") {
+                        return handle
+                            .update(cx, |control, _, cx| {
+                                if command == "camera-state" {
+                                    return control.parity_camera_status().0;
+                                }
+                                recorder::state() == recorder::RecorderState::Recording
+                                    && control.set_camera(command == "camera-enable", cx)
+                            })
+                            .unwrap_or(false);
+                    }
                     if let Some(id) = command.strip_prefix("microphone-select ") {
                         return handle
                             .update(cx, |control, _, cx| {

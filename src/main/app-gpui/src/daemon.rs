@@ -473,6 +473,26 @@ impl DaemonHandle {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn begin_timed_call(
+        &self,
+        module: &'static str,
+        method: &'static str,
+        params: Option<Value>,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        let (id, response) = self.begin_call(module, method, params)?;
+        let daemon = self.clone();
+        Ok(move || {
+            daemon.wait_for_call(
+                module,
+                method,
+                id,
+                response,
+                Duration::from_millis(REQUEST_TIMEOUT_MS),
+            )
+        })
+    }
+
     fn begin_call(
         &self,
         module: &str,
@@ -571,6 +591,35 @@ impl CameraPreviewClient<'_> {
     pub fn hide(&self) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(CameraPreviewMethod::Hide, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_show(
+        &self,
+        request: &CameraPreviewRequest,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let wait = self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Show.id(),
+            Some(serde_json::to_value(request)?),
+        )?;
+        Ok(move || {
+            if wait()?["visible"].as_bool() == Some(true) {
+                Ok(())
+            } else {
+                Err(anyhow!("Camera preview did not open"))
+            }
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_hide(&self) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let wait = self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Hide.id(),
+            None,
+        )?;
+        Ok(move || wait().map(|_| ()))
     }
 
     pub fn update(&self, request: &CameraPreviewUpdateRequest) -> Result<()> {
@@ -875,26 +924,26 @@ impl ScreenRecorderClient<'_> {
         method: ScreenRecorderMethod,
         params: Value,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
-        let method = method.id();
-        let (id, response) = self.daemon.begin_call(SCREEN_RECORDER_MODULE, method, Some(params))?;
-        let daemon = self.daemon.clone();
-        Ok(move || {
-            daemon
-                .wait_for_call(
-                    SCREEN_RECORDER_MODULE,
-                    method,
-                    id,
-                    response,
-                    Duration::from_millis(REQUEST_TIMEOUT_MS),
-                )
-                .map(|_| ())
-        })
+        let wait = self
+            .daemon
+            .begin_timed_call(SCREEN_RECORDER_MODULE, method.id(), Some(params))?;
+        Ok(move || wait().map(|_| ()))
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn begin_camera(&self, enabled: bool) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        self.begin_setting(
+            ScreenRecorderMethod::SetCamera,
+            serde_json::to_value(ScreenRecorderToggleRequest { enabled })?,
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn set_camera(&self, enabled: bool) -> Result<()> {
         self.toggle(ScreenRecorderMethod::SetCamera, enabled)
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn toggle(&self, method: ScreenRecorderMethod, enabled: bool) -> Result<()> {
         self.call(
             method,
