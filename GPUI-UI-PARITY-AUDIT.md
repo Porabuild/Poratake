@@ -6582,6 +6582,26 @@ Live recording throughput at 4K and physical mixed-display transitions
 remain open. The [native record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the measurements.
 
+### 2026-11-18 macOS high-resolution window recording throughput
+
+The screen-only native benchmark recorded a continuously changing
+3200 × 1800 window with a 60 fps request. It recorded five seconds at the
+original size and five seconds after a portrait resize. Four matched
+takes alternated centering off and on in the same daemon binary.
+The fixture's 60 Hz timer ran at 59.9–60.0 Hz.
+
+The centered build decoded 51.2–57.5 fps in the portrait phase, compared
+with 53.0–57.9 fps with centering bypassed. The full-size phase varied
+between 51.5 and 57.8 fps in the same runs. Each take's two phases were
+within 1.3 fps of one another. The corrected portrait footage remained
+centered, and every take kept its original 3200 × 1800 output size.
+In a separate pair with frame counters, the writer appended every
+delivered image in both runs. The results cover the built-in display.
+Sustained 60 fps at UHD, more complex content and mixed displays
+remain open. The
+[measurement record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the individual results.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

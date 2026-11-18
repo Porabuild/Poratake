@@ -342,3 +342,42 @@ Core Image render took 59.60 ms. The median over the next 60 was
 0.94 ms, with 4.69 ms p95 and 7.46 ms maximum. This isolates the centering
 step. Sustained 4K capture and mixed-display transitions were outside
 the test.
+
+Sustained high-resolution window capture
+
+An AppKit fixture on the built-in 3456x2234 Retina display changed its
+fill color at 60 Hz. The native smoke bridge requested 60 fps from the
+authorized screen-only recorder. Initial output was 3200x1800. Five
+seconds later, the fixture resized from 1600x900 to 520x900 points and
+switched its fill from red to blue. It closed after a further five
+seconds. Audio, camera and physical input were outside the run.
+
+The same scratch daemon binary used a test-only switch for the
+centering path. The first pair ran bypassed then enabled; the second
+pair ran enabled then bypassed. For each color phase, the analysis
+removed its first and last half second and measured decoded source
+timestamps in the middle. At 80x44 inspection resolution, the blue
+span was left-aligned when bypassed and centered when enabled.
+
+                              Full-size phase        Portrait phase
+                              fps    p95 gap          fps    p95 gap
+Pair 1, bypassed             57.77    18.33 ms       57.88    18.33 ms
+Pair 1, centered             51.51    35.00 ms       51.21    35.00 ms
+Pair 2, centered             57.62    18.33 ms       57.53    18.33 ms
+Pair 2, bypassed             51.73    35.00 ms       52.98    33.33 ms
+
+Each take finalized at 3200x1800, with 517–583 decoded frames total.
+The centered runs showed the same range of throughput variation as
+the full-size phase. These measurements are from simple generated
+content and a single display, at a resolution below 3840x2160 UHD.
+
+A second daemon build instrumented the count of delivered image buffers
+and successful or missed writer appends. With centering enabled,
+ScreenCaptureKit delivered 584 images and the writer appended all 584.
+With it bypassed, the counts were 599 and 599. There were zero missed
+appends in both takes, and decoded output contained one additional
+frame per take from the static-tail finalizer. The centered phases
+decoded 57.63 and 57.90 fps, compared with 57.96 and 57.87 fps in
+the bypassed phases. These counters locate the gap before the writer
+in this sample. The run leaves the precise cause of upstream variation
+open.
