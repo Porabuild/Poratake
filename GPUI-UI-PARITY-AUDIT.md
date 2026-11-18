@@ -6815,6 +6815,22 @@ fixtures also passed idle, hover, and exit at 2×. The native keyboard
 probe used generated input on the built-in display. Physical input and
 mixed-display focus remain open.
 
+### 2026-11-18 macOS keyboard reveal in a clipped capture preview stack
+
+The short-preview regression focused a Close button at y=469–493 in a
+360-point viewport. The scroll position stayed at the top, leaving the
+focused action outside the visible area. The preview now measures the
+focused button and reveals its card when the card fits, so the label has
+space too. In smaller viewports it reveals the focused button. Deferred
+movement checks that the same focus scope still owns focus.
+
+In light and dark AppKit runs, a 360-point preview of four generated
+cards started at the top. Tab moved focus to the clipped card, scrolled
+about 240 points, and painted one keyboard tooltip. The regression also
+returns to pointer interaction, scrolls to the top, and closes the
+expected card. All 1,170 runnable GPUI tests passed. The probe used
+app-local input. Physical mixed-display navigation remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

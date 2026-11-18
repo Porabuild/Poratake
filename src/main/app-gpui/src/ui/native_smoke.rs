@@ -663,6 +663,40 @@ pub fn native_ui_probe() {
                             println!("record hover dispatched: {index}");
                             return;
                         }
+                        if command == "preview-short-stack" {
+                            for _ in 0..3 {
+                                crate::windows::capture_preview::CapturePreviewWindow::open(
+                                    cx,
+                                    probe_directory.join("preview.png"),
+                                );
+                            }
+                            if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
+                                let _ = cx.update_window(handle, |_, window, _| {
+                                    window.resize(gpui::size(px(208.), px(360.)));
+                                });
+                            }
+                            println!("preview short stack requested");
+                            return;
+                        }
+                        if matches!(command.as_str(), "preview-scroll-top" | "preview-scroll-status") {
+                            if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
+                                .and_then(|handle| handle.downcast::<crate::windows::capture_preview::CapturePreviewWindow>())
+                            {
+                                let _ = handle.update(cx, |view, window, cx| {
+                                    if command == "preview-scroll-top" {
+                                        window.dispatch_event(PlatformInput::Scroll(gpui::ScrollEvent {
+                                            position: point(px(100.), px(200.)),
+                                            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(320.))),
+                                            modifiers: Modifiers::none(),
+                                            touch_phase: gpui::TouchPhase::Moved,
+                                            ..Default::default()
+                                        }), cx);
+                                    }
+                                    println!("preview scroll status: height={:.0} offset={:?}", f32::from(window.viewport_size().height), view.parity_viewport_scroll_y());
+                                });
+                            }
+                            return;
+                        }
                         if command == "preview-activate" {
                             cx.activate(true);
                             if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {

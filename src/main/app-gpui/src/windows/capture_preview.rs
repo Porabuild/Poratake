@@ -326,6 +326,13 @@ pub struct CapturePreviewWindow {
 
 impl CapturePreviewWindow {
     #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_viewport_scroll_y(&self) -> Option<f32> {
+        self.viewport_scroll
+            .as_ref()
+            .map(|(_, scroll)| scroll.offset().y.into())
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     pub(crate) fn parity_hovered(&self) -> bool {
         self.previews.iter().any(|preview| preview.hovered)
     }
@@ -2691,12 +2698,23 @@ impl CapturePreviewWindow {
 impl CapturePreviewWindow {
     #[cfg(target_os = "macos")]
     fn preview_is_clipped(&self, preview: &CapturePreview, window: &Window) -> bool {
-        let Some((corner, scroll)) = &self.viewport_scroll else {
+        if self.viewport_scroll.is_none() {
             return false;
-        };
-        let Some(y) = preview.layout_y else {
+        }
+        let Some(bounds) = self.preview_scroll_bounds(preview) else {
             return true;
         };
+        let viewport = window.viewport_size();
+        bounds.top() >= viewport.height
+            || bounds.bottom() <= px(0.)
+            || bounds.left() >= viewport.width
+            || bounds.right() <= px(0.)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn preview_scroll_bounds(&self, preview: &CapturePreview) -> Option<Bounds<Pixels>> {
+        let (corner, scroll) = self.viewport_scroll.as_ref()?;
+        let y = preview.layout_y?;
         let bottom_aligned = matches!(
             corner,
             PreviewCorner::BottomLeft | PreviewCorner::BottomRight
@@ -2705,11 +2723,10 @@ impl CapturePreviewWindow {
         let offset = scroll.offset();
         let top = px(y) - preview_stack_top_inset(height, bottom_aligned) + offset.y;
         let left = px(PREVIEW_SHADOW_PADDING) + offset.x;
-        let viewport = window.viewport_size();
-        top >= viewport.height
-            || top + px(PREVIEW_HEIGHT) <= px(0.)
-            || left >= viewport.width
-            || left + px(PREVIEW_WIDTH) <= px(0.)
+        Some(Bounds::new(
+            gpui::point(left, top),
+            size(px(PREVIEW_WIDTH), px(PREVIEW_HEIGHT)),
+        ))
     }
 
     fn keyboard_controls_visible(&self, _window: &Window) -> bool {
@@ -2928,6 +2945,30 @@ impl Render for CapturePreviewWindow {
 }
 
 impl preview::NativeTooltipHost for CapturePreviewWindow {
+    #[cfg(target_os = "macos")]
+    fn keyboard_reveal_target(
+        &self,
+        window: &Window,
+        button: Bounds<Pixels>,
+    ) -> Option<(gpui::ScrollHandle, Bounds<Pixels>)> {
+        if !self.keyboard_controls_visible(window) {
+            return None;
+        }
+        let (_, scroll) = self.viewport_scroll.as_ref()?;
+        let viewport = scroll.bounds();
+        let card = self
+            .previews
+            .iter()
+            .filter_map(|preview| self.preview_scroll_bounds(preview))
+            .map(|card| Bounds::new(card.origin + viewport.origin, card.size))
+            .find(|card| {
+                card.size.width <= viewport.size.width
+                    && card.size.height <= viewport.size.height
+                    && card.contains(&button.center())
+            });
+        Some((scroll.clone(), card.unwrap_or(button)))
+    }
+
     #[cfg(any(windows, target_os = "macos"))]
     fn preview_tooltip_hover(
         &mut self,
@@ -4461,6 +4502,48 @@ mod tests {
         visual.simulate_resize(size(px(208.), px(480.)));
         visual.settle();
         assert_eq!(scroll_offset(&mut visual), px(0.));
+
+        let oldest = handle
+            .update(&mut visual, |view, _, _| view.previews[0].id)
+            .unwrap();
+        let oldest_close: &'static str =
+            Box::leak(format!("preview-close-{oldest}-tooltip-trigger").into_boxed_str());
+        visual.simulate_resize(size(px(208.), px(360.)));
+        visual.update(|window, _| window.activate_window());
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+        visual.press("tab");
+        visual.executor().advance_clock(Duration::from_millis(500));
+        let bounds = visual.expect(oldest_close);
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() < px(360.),
+            "{bounds:?}"
+        );
+        assert!(scroll_offset(&mut visual) < px(0.));
+        assert!(
+            visual.update(|window, cx| {
+                let overlay = gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let scale = window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    quad.background == overlay
+                        && (31. ..=35.).contains(&(quad.bounds.size.height.0 / scale))
+                        && quad.bounds.top().0 >= 0.
+                        && quad.bounds.bottom().0
+                            <= f32::from(window.viewport_size().height) * scale
+                })
+            }),
+            "the focused action's keyboard label must also be visible"
+        );
+        visual.click_at(gpui::point(px(100.), px(12.)));
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(320.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
 
         let close = gpui::point(px(25.), px(25.));
         visual.simulate_mouse_move(close, None, gpui::Modifiers::none());
