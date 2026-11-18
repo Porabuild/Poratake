@@ -7071,6 +7071,21 @@ in light and dark. The window stayed anchored and returned to one
 card after dismissal. [Native preview pixel evidence](tests/native/evidence/macos-ui/preview-stack-resize-20261118.txt)
 records the generated input and capture method.
 
+### 2026-11-18 macOS native status-bar menu dismissal
+
+Sampling the live GPUI status-bar menu with synthetic left and right
+anchors showed fitted 304×564-point frames and no stretched menu pixels.
+Dismissal exposed an additional AppKit window transition after the menu's
+own animation. The tray now disables the native transition at the point
+of dismissal. Escape still plays the menu's 100 ms fade.
+
+Warm median toggle-to-hidden fell from 162.0 to 9.2 ms in light and from
+161.1 to 13.9 ms in dark. Warm Escape-to-hidden fell from 266.1 to
+119.8 ms in light and from 270.1 to 118.2 ms in dark. A rapid
+Escape, toggle, and reopen sequence kept the replacement registered
+after the previous menu's delayed callback, so the new menu still
+closed on Escape. [Native tray evidence](tests/native/evidence/macos-ui/native-tray-dismissal-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

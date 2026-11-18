@@ -668,6 +668,36 @@ pub fn native_ui_probe() {
                             println!("record hover dispatched: {index}");
                             return;
                         }
+                        if matches!(command.as_str(), "tray-toggle-left" | "tray-toggle-right") {
+                            let display = cx.primary_display().expect("tray probe display");
+                            let bounds = crate::system::work_area::display_bounds(display.as_ref());
+                            let x = if command == "tray-toggle-left" {
+                                bounds.left() + px(4.)
+                            } else {
+                                bounds.right() - px(24.)
+                            };
+                            let rect = crate::system::native::TrayRect {
+                                x: f32::from(x),
+                                y: f32::from(bounds.top()) + 2.,
+                                width: 20.,
+                                height: 24.,
+                            };
+                            crate::windows::tray_menu::TrayMenuWindow::toggle(Some(rect), cx);
+                            println!("tray menu toggled");
+                            return;
+                        }
+                        if command == "tray-escape" {
+                            if let Some(handle) = registry::handle(WindowKind::TrayMenu, cx) {
+                                let event = PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                    keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                });
+                                let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                            }
+                            println!("tray Escape dispatched");
+                            return;
+                        }
                         if command == "preview-stack-close" {
                             if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
                                 let position = point(px(25.), px(25.));

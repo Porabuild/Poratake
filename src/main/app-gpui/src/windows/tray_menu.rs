@@ -188,8 +188,14 @@ impl TrayMenuWindow {
                 .timer(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
                 .await;
             cx.update(|cx| {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
-                registry::forget(RegistryKind::TrayMenu, cx);
+                let _ = handle.update(cx, |_, window, _| {
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    crate::system::window_visibility::disable_macos_transitions(window);
+                    window.remove_window();
+                });
+                if registry::handle(RegistryKind::TrayMenu, cx) == Some(handle) {
+                    registry::forget(RegistryKind::TrayMenu, cx);
+                }
             });
         })
         .detach();
@@ -255,6 +261,12 @@ impl TrayMenuWindow {
             tray_menu_cache(cx).handle = opened;
         }
 
+        #[cfg(all(target_os = "macos", not(test)))]
+        if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
+            let _ = handle.update(cx, |_, window, _| {
+                crate::system::window_visibility::disable_macos_transitions(window);
+            });
+        }
         #[cfg(not(windows))]
         registry::toggle(RegistryKind::TrayMenu, cx, |cx| {
             Self::open(tray_rect, true, cx).map(Into::into)
