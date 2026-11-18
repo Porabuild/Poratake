@@ -341,19 +341,60 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func captureStrictScrollFrame(_ args: [String]) async {
+        guard CGPreflightScreenCaptureAccess() else {
+            print("SKIP strict scroll frame: Screen Recording permission was not already granted")
+            return
+        }
+        precondition(args.count == 8)
+        let numbers = args.dropLast().compactMap(Int.init)
+        precondition(numbers.count == 7)
+        let module = ScrollCaptureModule()
+        var started = false
+        module.testSetCaptureStartResult { started = $0 }
+        var captured = false
+        module.testSetScheduleAutoScroll { captured = true }
+        module.handle(method: DaemonContract.ScrollCapture.Method.start.rawValue, params: [
+            "x": AnyCodable(numbers[0]), "y": AnyCodable(numbers[1]),
+            "width": AnyCodable(numbers[2]), "height": AnyCodable(numbers[3]),
+            "boundaryOnly": AnyCodable(true),
+        ], requestId: "strict-frame-start")
+        await waitUntil("The scroll capture region did not start") { started }
+        module.handle(method: DaemonContract.ScrollCapture.Method.startAutoScroll.rawValue, params: [
+            "excludedWindowIds": AnyCodable(Array(numbers[4...])),
+        ], requestId: "strict-frame-capture")
+        await waitUntil("Scroll capture did not accept its first filtered frame") { captured }
+        var finished: [String: Any]?
+        module.testSetFinishResponder { _, result in finished = result }
+        module.handle(method: DaemonContract.ScrollCapture.Method.finish.rawValue, params: [
+            "outputPath": AnyCodable(args[7]),
+        ], requestId: "strict-frame-save")
+        await waitUntil("Scroll capture did not save its first filtered frame") { finished != nil }
+        precondition(finished?["success"] as? Bool == true && finished?["frameCount"] as? Int == 1)
+        print("strict scroll capture saved one filtered frame without posting pointer input")
+    }
+
+    @MainActor
     static func main() {
         if CommandLine.arguments.contains("--tooltip-placement") {
             verifyTallTooltipPlacement()
             return
         }
-        FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
-        runExistingScrollChecks()
-        FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        let strictFrame = CommandLine.arguments.dropFirst().first == "--strict-scroll-frame"
+        if !strictFrame {
+            FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
+            runExistingScrollChecks()
+            FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        }
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         Task { @MainActor in
             do {
-                try await runRecordingCoordinationChecks()
+                if strictFrame {
+                    await captureStrictScrollFrame(Array(CommandLine.arguments.dropFirst(2)))
+                } else {
+                    try await runRecordingCoordinationChecks()
+                }
                 exit(EXIT_SUCCESS)
             } catch {
                 FileHandle.standardError.write(Data("Recording coordination checks failed: \(error)\n".utf8))

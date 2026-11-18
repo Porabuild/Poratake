@@ -6076,6 +6076,23 @@ reports individual positive controls and verification scope. This check
 uses the shared screenshot filter on a single display and leaves live
 auto-scroll with deliberate panel overlap and mixed-DPI displays open.
 
+### 2026-11-18 native macOS strict scroll capture and saved pixels
+
+The opt-in Swift fixture ran the production scroll start, first-frame
+capture and finish handlers with the three real GPUI window IDs. It opened
+the native selection boundary and used the strict ScreenCaptureKit exclusion
+path. The fixture intercepted scheduling to stop after one frame and
+disabled pointer input. A Screen Recording preflight confirmed existing
+authorization before each capture.
+
+The saved 3456×2168 PNG matched the bare backdrop exactly in dark mode.
+In light mode the preview, prompt, toolbar and boundary regions matched
+exactly. The 2,990 other differences were at most one RGB channel level.
+The default native scroll fixture also passed. The
+[native run record](tests/native/evidence/macos-ui/native-scroll-strict-frame-20261118.txt)
+details the capture and comparison. Scrolling through multiple live frames
+with deliberately overlapping panels remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -892,7 +892,7 @@ class ScrollCaptureModule: NSObject, Module {
 
     private func warpCursorToCaptureCenter() {
 #if SCROLL_CAPTURE_TEST
-        if testCaptureProvider != nil { return }
+        if testCaptureProvider != nil || testScheduleAutoScroll != nil { return }
 #endif
         let centerX = captureArea.midX
         let centerY = primaryScreenHeight() - captureArea.midY
@@ -909,6 +909,9 @@ class ScrollCaptureModule: NSObject, Module {
 
     private func startCursorMonitor() {
         stopCursorMonitor()
+#if SCROLL_CAPTURE_TEST
+        if testScheduleAutoScroll != nil { return }
+#endif
         cursorMonitorTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.checkCursorPosition()
         }
