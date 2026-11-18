@@ -417,6 +417,61 @@ pub(crate) fn open_native_control_probe(cx: &mut App) -> gpui::AnyWindowHandle {
 }
 
 #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
+    use base64::Engine;
+
+    let display = cx.primary_display().expect("primary display");
+    let work = crate::system::work_area::work_area(display.as_ref());
+    let area = ScreenRect {
+        x: f32::from(work.left()) as i32,
+        y: f32::from(work.top()) as i32,
+        width: f32::from(work.size.width) as i32,
+        height: f32::from(work.size.height) as i32,
+    };
+    let (signal, _receiver) = smol::channel::bounded(1);
+    let ui = ScrollCaptureSession::open(cx, crate::state::state(cx).daemon, area, signal);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        240,
+        180,
+        image::Rgba([235, 14, 200, 255]),
+    ))
+    .write_to(&mut png, image::ImageFormat::Png)
+    .unwrap();
+    apply_progress(
+        &ui,
+        ScrollSessionSignal::Frame {
+            preview: Some(base64::engine::general_purpose::STANDARD.encode(png.into_inner())),
+        },
+        cx,
+    );
+    apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+    apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
+    let ids = ui
+        .read(cx)
+        .excluded_window_ids
+        .as_ref()
+        .expect("native scroll controls");
+    println!(
+        "scroll exclusion fixture {} {} {} {} {} {} {}",
+        area.x, area.y, area.width, area.height, ids[0], ids[1], ids[2]
+    );
+    let (done, finished) = smol::channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = std::io::stdin().read_line(&mut String::new());
+        let _ = done.send_blocking(());
+    });
+    cx.spawn(async move |cx| {
+        let _ = finished.recv().await;
+        cx.update(|cx| {
+            ScrollCaptureSession::close(cx);
+            cx.quit();
+        });
+    })
+    .detach();
+}
+
+#[cfg(all(feature = "parity", target_os = "macos", not(test)))]
 pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
     use cocoa::appkit::NSWindowStyleMask;
     use cocoa::base::{id, nil, BOOL, YES};

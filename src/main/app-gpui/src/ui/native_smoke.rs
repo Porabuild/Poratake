@@ -335,6 +335,10 @@ pub fn native_ui_probe() {
                 attachment_cancel_probe(&image_path, cx);
                 return;
             }
+            if std::env::args().nth(2).as_deref() == Some("--scroll-exclusion") {
+                crate::windows::scroll_capture::native_scroll_exclusion_probe(cx);
+                return;
+            }
             RecordingControl::open(
                 cx,
                 RecordingTarget::Area,

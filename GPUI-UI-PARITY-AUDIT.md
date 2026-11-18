@@ -4413,8 +4413,9 @@ verified the native capture-preview tooltip's text, window state and paint, then
 compared every pixel in its screenshot region while the tooltip was hidden and
 shown. That paint check does not independently prove its monitor-composited pixels.
 
-macOS scroll-overlay capture exclusion remains unverified with real pixels. The
-GPUI preview can overlap the selected area when there is no room beside it. GPUI
+The native pixel check below verifies overlapping GPUI scroll windows through
+the shared macOS screenshot exclusion helper. The GPUI preview can overlap the
+selected area when there is no room beside it. GPUI
 now passes the preview, prompt and control window IDs when starting auto-scroll;
 the daemon also includes its boundary windows and uses the same ScreenCaptureKit
 exclusion and visible-window validation as live area capture. If an ID is missing
@@ -6056,6 +6057,24 @@ selector. Physical Escape delivery, translated execution with Freeze Screen
 enabled, and additional displays remain unverified. The development probe
 enables this path with `PORATAKE_NATIVE_UI_ATTACHMENT_FREEZE=1` and an authorized
 `PORATAKE_DAEMON_PATH`.
+
+### 2026-11-18 native macOS scroll windows over the selected region
+
+The development app painted the actual GPUI stitch preview, resume prompt
+and toolbar over a generated backdrop. All three native windows intersected
+the selected region. The authorized Swift daemon captured that region with
+its production ScreenCaptureKit exclusion helper, using the three IDs from
+the GPUI scroll session. Including each window individually changed pixels
+in a separate part of the captured area.
+
+With all three excluded, light mode matched the bare backdrop across all
+7,492,608 pixels. Dark mode matched exactly across the three painted
+regions. Outside those regions, 2,362 pixels differed by at most one
+8-bit level per channel. All 15 focused GPUI scroll tests passed.
+The [native run record](tests/native/evidence/macos-ui/native-scroll-overlap-exclusion-20261118.txt)
+reports individual positive controls and verification scope. This check
+uses the shared screenshot filter on a single display and leaves live
+auto-scroll with deliberate panel overlap and mixed-DPI displays open.
 
 ## Review gate
 
