@@ -132,7 +132,8 @@ struct ScrollCapturePreviewTest {
             for x in 0..<width {
                 var pixel: [UInt8]
                 if y < headerHeight {
-                    pixel = [255, UInt8(truncatingIfNeeded: y), UInt8(truncatingIfNeeded: x), 255]
+                    let noise = x == 0 ? index * bodyNoise : 0
+                    pixel = [255, UInt8(truncatingIfNeeded: y + noise), UInt8(truncatingIfNeeded: x), 255]
                 } else if y >= height - footerHeight {
                     let offset = changingFooter ? 10 + index : 0
                     pixel = blankTail
@@ -2082,16 +2083,28 @@ struct ScrollCapturePreviewTest {
             precondition(count == frameCount && estimatedHeight == expectedHeight)
             precondition(pixels(preview) == pixels(saved))
             precondition(pixels(saved) == pixels(document), "The saved scroll capture must contain all body rows and one header")
+
+            let noisyFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: width, height: viewportHeight,
+                    footerHeight: footerRows, step: bodyShift, bodyNoise: 1, headerHeight: headerRows
+                )
+            }
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: noisyFrames[0], bottomFrame: noisyFrames[1], expectedOverlap: viewportHeight - bodyShift + 11
+            ) == expectedOverlap, "A short visible seam with capture noise must align below the header")
         }
-        let repeatedBodyFrames = (0..<2).map { index in
-            fixedFooterFrame(
-                index: index, periodic: true, width: width, height: 160,
-                footerHeight: 0, step: 84, headerHeight: headerRows
-            )
+        for shift in [84, 85] {
+            let repeatedBodyFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: true, width: width, height: 160,
+                    footerHeight: 0, step: shift, headerHeight: headerRows
+                )
+            }
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: repeatedBodyFrames[0], bottomFrame: repeatedBodyFrames[1], expectedOverlap: 160 - shift
+            ) == nil, "A fixed header must not make multiple equally valid body overlaps acceptable")
         }
-        precondition(ScrollCaptureModule().testFindOverlap(
-            topFrame: repeatedBodyFrames[0], bottomFrame: repeatedBodyFrames[1], expectedOverlap: 76
-        ) == nil, "A fixed header must not make multiple equally valid body overlaps acceptable")
 
         let footerWidth = 640
         let footerHeight = 160

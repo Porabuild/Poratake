@@ -386,6 +386,7 @@ class ScrollCaptureModule: NSObject, Module {
     private let maxDuplicateFrames = 3
     private let previewWidthPoints: CGFloat = 240
     private let maxMeanOverlapChannelDifference = 18.0
+    private let minimumOverlapRows = 8
 
     private var canStartCapture: Bool {
         !isCapturing && finishingJob == nil
@@ -1327,7 +1328,7 @@ class ScrollCaptureModule: NSObject, Module {
         }
         let stripWidth = min(topFrame.width, 800)
         let stripHeight = 40
-        guard let footer = fixedFooterHeight(
+        guard let (headerHeight, footer) = fixedViewportEdges(
             topFrame: topFrame,
             bottomFrame: bottomFrame,
             isCancelled: isCancelled
@@ -1338,25 +1339,19 @@ class ScrollCaptureModule: NSObject, Module {
         let footerHeight = footer.height
         let contentHeight = topFrame.height - footerHeight
 
-        guard contentHeight >= stripHeight else { return nil }
-        let topStrip: [UInt8]?
-        if footerHeight == 0 {
-            guard !isCancelled() else { return nil }
-            topStrip = extractBottomStrip(from: topFrame, height: stripHeight, width: stripWidth)
-        } else {
-            guard !isCancelled() else { return nil }
-            topStrip = extractStrip(
-                from: topFrame,
-                y: contentHeight - stripHeight,
-                height: stripHeight,
-                width: stripWidth
-            )
-        }
-        guard !isCancelled() else { return nil }
-        guard let topStrip else { return nil }
+        guard contentHeight >= stripHeight,
+              let topStrip = extractStrip(
+                  from: topFrame, y: contentHeight - stripHeight, height: stripHeight, width: stripWidth
+              ),
+              !isCancelled(),
+              let bottomStrip = extractStrip(from: bottomFrame, y: 0, height: contentHeight, width: stripWidth),
+              !isCancelled() else { return nil }
+        let bytesPerRow = stripWidth * 4
 
-        let minOverlap = stripHeight
-        let maxOverlap = max(minOverlap, contentHeight)
+        let minOverlap = headerHeight == 0 ? stripHeight : headerHeight + minimumOverlapRows
+        let maxOverlap = contentHeight
+        guard minOverlap <= maxOverlap else { return nil }
+        let firstFullOverlap = min(headerHeight + stripHeight, maxOverlap + 1)
         let adjustedExpected = footerHeight > 0
             ? max(minOverlap, expectedOverlap - footerHeight)
             : expectedOverlap
@@ -1366,67 +1361,67 @@ class ScrollCaptureModule: NSObject, Module {
         var scores = [(overlap: Int, score: Double)]()
 
         let step = 4
+        let scoreMargin = 1.0
 
-        let checkMatch = { (overlap: Int, score: Double) in
+        func checkMatch(_ overlap: Int) -> Bool {
+            guard !isCancelled() else { return false }
+            let height = min(stripHeight, overlap - headerHeight)
+            let range = (overlap - height) * bytesPerRow..<overlap * bytesPerRow
+            let score = compareStrips(topStrip, bottomStrip[range])
             scores.append((overlap, score))
-            if score < bestScore - 1.0 {
+            if score < bestScore - scoreMargin {
                 bestScore = score
                 bestMatch = overlap
-            } else if abs(score - bestScore) <= 1.0 {
+            } else if abs(score - bestScore) <= scoreMargin {
                 if abs(overlap - adjustedExpected) < abs(bestMatch - adjustedExpected) {
                     bestMatch = overlap
                 }
             }
+            return true
         }
 
-        for overlap in stride(from: minOverlap, through: maxOverlap, by: step) {
-            guard !isCancelled() else { return nil }
-            let bottomStrip = extractTopStrip(from: bottomFrame, overlap: overlap, height: stripHeight, width: stripWidth)
-            guard !isCancelled() else { return nil }
-            guard let bottomStrip else {
-                continue
+        for overlap in minOverlap..<firstFullOverlap {
+            guard checkMatch(overlap) else { return nil }
+        }
+        for overlap in stride(from: firstFullOverlap, through: maxOverlap, by: step) {
+            guard checkMatch(overlap) else { return nil }
+        }
+        let shortMatchIsCompetitive = bestScore / 3 <= maxMeanOverlapChannelDifference
+            && scores.contains { $0.overlap < firstFullOverlap && $0.score <= bestScore + scoreMargin }
+        if shortMatchIsCompetitive {
+            for overlap in firstFullOverlap..<(maxOverlap + 1) where (overlap - firstFullOverlap) % step != 0 {
+                guard checkMatch(overlap) else { return nil }
             }
-
-            let score = compareStrips(topStrip, bottomStrip)
-            checkMatch(overlap, score)
-        }
-
-        let fineMin = max(minOverlap, bestMatch - step)
-        let fineMax = min(maxOverlap, bestMatch + step)
-
-        for overlap in fineMin...fineMax {
-            guard !isCancelled() else { return nil }
-            let bottomStrip = extractTopStrip(from: bottomFrame, overlap: overlap, height: stripHeight, width: stripWidth)
-            guard !isCancelled() else { return nil }
-            guard let bottomStrip else {
-                continue
+        } else {
+            let fineMin = max(firstFullOverlap, bestMatch - step)
+            let fineMax = min(maxOverlap, bestMatch + step)
+            for overlap in stride(from: fineMin, through: fineMax, by: 1) {
+                guard checkMatch(overlap) else { return nil }
             }
-
-            let score = compareStrips(topStrip, bottomStrip)
-            checkMatch(overlap, score)
         }
 
-        let nearMatches = scores.filter { $0.score <= bestScore + 1.0 }
+        let nearMatches = scores.filter { $0.score <= bestScore + scoreMargin }
         let nearOverlapMinimum = nearMatches.map(\.overlap).min()
         let nearOverlapMaximum = nearMatches.map(\.overlap).max()
         let hasAmbiguousMatches: Bool
         if let minimum = nearOverlapMinimum, let maximum = nearOverlapMaximum {
-            hasAmbiguousMatches = maximum - minimum >= 8
+            hasAmbiguousMatches = minimum < firstFullOverlap
+                ? minimum != maximum
+                : maximum - minimum >= 8
         } else {
             hasAmbiguousMatches = false
         }
         let requiresExactOverlap = hasAmbiguousMatches
             || bestScore / 3 > maxMeanOverlapChannelDifference
-            || bestMatch == minOverlap
+            || (headerHeight == 0 && bestMatch == minOverlap)
         if !footer.isExact || requiresExactOverlap {
-            let exactMinimumOverlap = min(8, minOverlap)
             guard let (overlap, alternative) = exactFullImageOverlap(
                 topFrame: topFrame,
                 bottomFrame: bottomFrame,
                 contentHeight: contentHeight,
-                minimumOverlap: exactMinimumOverlap,
+                minimumOverlap: minimumOverlapRows,
                 isCancelled: isCancelled
-            ), alternative < exactMinimumOverlap else {
+            ), alternative < minimumOverlapRows else {
                 return nil
             }
             return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
@@ -1512,16 +1507,17 @@ class ScrollCaptureModule: NSObject, Module {
         return (headerHeight + bodyMatch.overlap, 0)
     }
 
-    private func fixedFooterHeight(
+    private func fixedViewportEdges(
         topFrame: CGImage,
         bottomFrame: CGImage,
         isCancelled: () -> Bool,
         extractPixels: ((CGImage) -> [UInt8]?)? = nil
-    ) -> ScrollFooterDetection? {
+    ) -> (headerHeight: Int, footer: ScrollFooterDetection)? {
         guard !isCancelled() else { return nil }
+        let noFooter = ScrollFooterDetection(height: 0, isExact: true)
         guard topFrame.width == bottomFrame.width,
               topFrame.height == bottomFrame.height else {
-            return ScrollFooterDetection(height: 0, isExact: true)
+            return (0, noFooter)
         }
         let extract = extractPixels ?? { image in self.extractPixelData(from: image) }
         let topPixels = extract(topFrame)
@@ -1532,62 +1528,49 @@ class ScrollCaptureModule: NSObject, Module {
         guard let bottomPixels else { return nil }
 
         let rowBytes = topFrame.width * 4
-        var exactFooterHeight = 0
-        var similarFooterHeight = 0
-        for row in (0..<topFrame.height).reversed() {
-            guard !isCancelled() else { return nil }
-            let range = row * rowBytes..<(row + 1) * rowBytes
-            let previousRow = topPixels[range]
-            let currentRow = bottomPixels[range]
-            if exactFooterHeight == similarFooterHeight && previousRow == currentRow {
-                exactFooterHeight += 1
-                similarFooterHeight += 1
-                continue
-            }
+        func stationaryRows(_ rows: some Sequence<Int>) -> (height: Int, isExact: Bool)? {
+            var height = 0
+            var isExact = true
+            for row in rows {
+                guard !isCancelled() else { return nil }
+                let range = row * rowBytes..<(row + 1) * rowBytes
+                if topPixels[range] == bottomPixels[range] {
+                    height += 1
+                    continue
+                }
 
-            var difference = 0
-            for offset in stride(from: 0, to: rowBytes, by: 4) {
-                let index = range.lowerBound + offset
-                difference += abs(Int(topPixels[index]) - Int(bottomPixels[index]))
-                difference += abs(Int(topPixels[index + 1]) - Int(bottomPixels[index + 1]))
-                difference += abs(Int(topPixels[index + 2]) - Int(bottomPixels[index + 2]))
+                var difference = 0
+                for index in stride(from: range.lowerBound, to: range.upperBound, by: 4) {
+                    difference += abs(Int(topPixels[index]) - Int(bottomPixels[index]))
+                    difference += abs(Int(topPixels[index + 1]) - Int(bottomPixels[index + 1]))
+                    difference += abs(Int(topPixels[index + 2]) - Int(bottomPixels[index + 2]))
+                }
+                guard Double(difference) / Double(rowBytes / 4 * 3) <= maxMeanOverlapChannelDifference else {
+                    break
+                }
+                isExact = false
+                height += 1
             }
-            guard Double(difference) / Double(rowBytes / 4 * 3) <= maxMeanOverlapChannelDifference else {
-                break
-            }
-            similarFooterHeight += 1
+            return (height, isExact)
         }
 
-        guard !isCancelled() else { return nil }
-        if similarFooterHeight >= 8, similarFooterHeight < topFrame.height / 2 {
-            return ScrollFooterDetection(
-                height: similarFooterHeight,
-                isExact: similarFooterHeight == exactFooterHeight
-            )
-        }
-        return ScrollFooterDetection(height: 0, isExact: true)
-    }
-
-    private func extractBottomStrip(from image: CGImage, height: Int, width: Int) -> [UInt8]? {
-        extractStrip(from: image, y: image.height - height, height: height, width: width)
+        guard let trailing = stationaryRows((0..<topFrame.height).reversed()) else { return nil }
+        let footer = trailing.height >= minimumOverlapRows && trailing.height < topFrame.height / 2
+            ? ScrollFooterDetection(height: trailing.height, isExact: trailing.isExact)
+            : noFooter
+        let contentHeight = topFrame.height - footer.height
+        guard let leading = stationaryRows(0..<contentHeight),
+              !isCancelled() else { return nil }
+        let headerHeight = leading.height >= minimumOverlapRows && contentHeight - leading.height >= minimumOverlapRows
+            ? leading.height
+            : 0
+        return (headerHeight, footer)
     }
 
     private func extractStrip(from image: CGImage, y: Int, height: Int, width: Int) -> [UInt8]? {
         let startX = (image.width - width) / 2
 
         let rect = CGRect(x: startX, y: y, width: width, height: height)
-        guard let cropped = image.cropping(to: rect) else { return nil }
-
-        return extractPixelData(from: cropped)
-    }
-
-    private func extractTopStrip(from image: CGImage, overlap: Int, height: Int, width: Int) -> [UInt8]? {
-        let startX = (image.width - width) / 2
-        let startY = overlap - height
-
-        guard startY >= 0 else { return nil }
-
-        let rect = CGRect(x: startX, y: startY, width: width, height: height)
         guard let cropped = image.cropping(to: rect) else { return nil }
 
         return extractPixelData(from: cropped)
@@ -1617,25 +1600,27 @@ class ScrollCaptureModule: NSObject, Module {
         return pixelData
     }
 
-    private func compareStrips(_ strip1: [UInt8], _ strip2: [UInt8]) -> Double {
-        guard strip1.count == strip2.count else { return Double.infinity }
+    private func compareStrips(_ strip1: [UInt8], _ strip2: ArraySlice<UInt8>) -> Double {
+        guard !strip2.isEmpty, strip1.count >= strip2.count else { return Double.infinity }
 
         var totalDiff: Int = 0
         let strideAmount = 4
+        let start = strip1.count - strip2.count
 
-        for i in Swift.stride(from: 0, to: strip1.count, by: strideAmount) {
-            let r1 = Int(strip1[i])
-            let g1 = Int(strip1[i + 1])
-            let b1 = Int(strip1[i + 2])
+        for i in Swift.stride(from: 0, to: strip2.count, by: strideAmount) {
+            let r1 = Int(strip1[start + i])
+            let g1 = Int(strip1[start + i + 1])
+            let b1 = Int(strip1[start + i + 2])
 
-            let r2 = Int(strip2[i])
-            let g2 = Int(strip2[i + 1])
-            let b2 = Int(strip2[i + 2])
+            let index = strip2.startIndex + i
+            let r2 = Int(strip2[index])
+            let g2 = Int(strip2[index + 1])
+            let b2 = Int(strip2[index + 2])
 
             totalDiff += abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
         }
 
-        return Double(totalDiff) / Double(strip1.count / strideAmount)
+        return Double(totalDiff) / Double(strip2.count / strideAmount)
     }
 
     private func screenForDisplayId(_ displayId: CGDirectDisplayID) -> NSScreen? {
@@ -2356,19 +2341,19 @@ class ScrollCaptureModule: NSObject, Module {
         bottomFrame: CGImage,
         isCancelled: () -> Bool
     ) -> Int? {
-        fixedFooterHeight(topFrame: topFrame, bottomFrame: bottomFrame, isCancelled: isCancelled)?.height
+        fixedViewportEdges(topFrame: topFrame, bottomFrame: bottomFrame, isCancelled: isCancelled)?.footer.height
     }
 
     func testFooterDetection(
         topFrame: CGImage,
         bottomFrame: CGImage
     ) -> (height: Int, isExact: Bool)? {
-        fixedFooterHeight(topFrame: topFrame, bottomFrame: bottomFrame, isCancelled: { false })
-            .map { ($0.height, $0.isExact) }
+        fixedViewportEdges(topFrame: topFrame, bottomFrame: bottomFrame, isCancelled: { false })
+            .map { ($0.footer.height, $0.footer.isExact) }
     }
 
     func testFooterExtractionFailure(topFrame: CGImage, bottomFrame: CGImage) -> Bool {
-        fixedFooterHeight(
+        fixedViewportEdges(
             topFrame: topFrame,
             bottomFrame: bottomFrame,
             isCancelled: { false },
