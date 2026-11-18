@@ -1046,7 +1046,10 @@ pub fn open(cx: &mut App) {
             std::env::var("PORATAKE_NATIVE_SMOKE_FREEZE").as_deref() == Ok("1");
         config.screenshot.show_preview = true;
         config.screenshot.format = "png".into();
-        config.recording.start_delay = 0.;
+        config.recording.start_delay = std::env::var("PORATAKE_NATIVE_SMOKE_START_DELAY")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0.);
         config.recording.frame_rate = 10;
         config.recording.system_audio =
             std::env::var("PORATAKE_NATIVE_SMOKE_SYSTEM_AUDIO").as_deref() == Ok("1");
@@ -1242,12 +1245,23 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 match command.as_str() {
-                    "start" => handle
-                        .update(cx, |control, window, cx| {
-                            control.start(window, cx);
-                            recorder::is_recording()
-                        })
-                        .unwrap_or(false),
+                    "start" | "start-stall" => {
+                        if command == "start-stall" {
+                            assert_eq!(
+                                std::env::var("PORATAKE_NATIVE_SMOKE_START_DELAY").as_deref(),
+                                Ok("5")
+                            );
+                        }
+                        handle
+                            .update(cx, |control, window, cx| {
+                                control.start(window, cx);
+                                if command == "start-stall" {
+                                    std::thread::sleep(std::time::Duration::from_millis(2250));
+                                }
+                                recorder::is_recording()
+                            })
+                            .unwrap_or(false)
+                    }
                     "stop" => handle
                         .update(cx, |control, window, cx| control.finish(false, window, cx))
                         .unwrap_or(false),

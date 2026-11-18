@@ -6412,8 +6412,31 @@ after 7.49 seconds. The fixed light and dark runs attempted setup after
 recording could start. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the measurements. All 1,165 GPUI tests and 76 Electron reference
 tests passed, and all 36 light and dark Metal toolbar images matched the
-baseline. Actual ScreenCaptureKit startup after the deadline remains
-unverified in this stall case.
+baseline.
+
+### 2026-11-18 macOS live recording startup, preview and editor latency
+
+The current GPUI development app recorded a 300 × 220 point area on the
+built-in Retina display with the previously authorized screen-only Swift
+daemon. With a generated changing backdrop, the no-countdown Start command
+returned in 21–35 ms and ScreenCaptureKit startup was confirmed in
+333–410 ms. After the same 2.25-second foreground stall, the real recorder
+received Start at 5.080–5.087 seconds and confirmed it at 5.455–5.496 seconds.
+The four clips decoded as 600 × 440 video-only recordings with 9–10 frames
+and the expected backdrop on the first decoded frame.
+
+Stop to visible recording preview took 59–66 ms. Opening the video editor
+from the preview took 81–84 ms to a visible window. These timings end at
+WindowServer visibility. Editor frame readiness and physical input were
+outside this probe. The editor's background wallpaper lookup was stubbed.
+
+Four successful runs against a static backdrop had recorder startup
+responses in 445–561 ms. One additional static run took 4.19 seconds at
+the daemon and another returned an asset-writer error on Stop after a short
+recording. The exact source of the startup tail and the failure on the
+production daemon remain unverified. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes both conditions and the measurement details.
 
 ## Review gate
 

@@ -116,3 +116,53 @@ The pre-fix light and dark runs without the warmed daemon also showed
 five seconds after resuming. The setup request is measured from the
 app-local countdown command. This verifies countdown scheduling with
 generated device data and leaves actual recorder startup open.
+
+Live screen-only recorder follow-up
+
+Current GPUI parity development app on the same Apple M5 Pro and Retina
+display. Each case launched a fresh app and the previously authorized
+Swift fixture with a screen grant preflight and freeze prewarm. The
+fixture bypassed system audio and key capture and required microphone
+and camera to be off. The app used a temporary profile, recorded a
+300x220 point region at 10 fps, and received commands through its local
+smoke driver. No global input was posted.
+
+The generated panel alternated two blue shades every 60 ms and covered
+the display. The Stop command followed 800 ms of requested capture
+after the daemon confirmed startup. Preview and editor endpoints are
+WindowServer visibility, sampled roughly every 40 ms plus query time.
+The editor followed the actual preview double-click handler; the bridge
+returned an empty result for the optional OS wallpaper lookup.
+
+Single run per case with the changing panel, milliseconds
+                    Normal light  Normal dark  Stalled light  Stalled dark
+Start command ack           21.3         35.4         2251.2        2250.8
+Start command to RPC       16.8         34.4         5079.9        5087.3
+Start RPC response         393.1        298.4          374.8         408.4
+Start command to confirm   409.9        332.8         5454.6        5495.7
+Stop RPC response            9.1         10.4           10.0          11.3
+Stop to visible preview     60.7         62.1           58.8          65.5
+Preview to video editor     81.1         82.1           84.1          81.3
+Frames decoded                10            9              9             9
+
+The stalled app acknowledged once its forced UI pause ended. The start
+request was issued after the intended five-second countdown. All four
+takes decoded as 600x440 video-only. The first decoded RGB frame per
+take had uniform backdrop values of (40, 87, 141) or (34, 86, 141).
+
+Four successful runs with a static solid blue panel, milliseconds
+                    Normal light  Normal dark  Stalled light  Stalled dark
+Start command ack           39.1         19.9         2252.7        2252.3
+Start command to RPC        38.0         18.6         5071.4        5079.8
+Start RPC response         561.0        444.8          512.2         468.2
+Start command to confirm   599.0        463.3         5583.6        5548.1
+Stop RPC response           11.1         13.0           15.7          12.4
+Stop to visible preview     99.4         75.9           74.9         149.3
+
+The static clips each had two frames and a uniform first frame. In a
+separate static run, the daemon replied to Start after 4193.2 ms and
+the resulting two-frame clip decoded. Another static run confirmed
+Start but returned CAPTURE_ERROR on Stop with the message "Asset
+writer error: The operation could not be completed". These runs used
+the prior screen-only fixture. They leave the cause and current
+production-daemon reproduction open.
