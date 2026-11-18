@@ -1326,6 +1326,7 @@ impl VideoEditorWindow {
         self.invalidate_preview_frames();
         self.is_playing = !self.is_playing;
         if self.is_playing {
+            self.playhead = self.preview_playhead.take().unwrap_or(self.playhead);
             if self.playhead >= self.total_duration() {
                 self.playhead = 0.0;
             }
@@ -7047,6 +7048,55 @@ mod keyboard_demo_tests {
                 editor.state.ui.sidebar_open && editor.active_tab() == SidebarTab::Export
             })
             .unwrap());
+    }
+
+    #[herogpui::test]
+    fn space_starts_playback_from_the_hovered_frame(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.source_duration = Some(4.);
+            editor.state.segments = vec![model::Segment::spanning(4.)];
+            editor.pixels_per_second = 80.;
+            editor.playhead = 0.5;
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.settle();
+        let lane = cx.expect("timeline-lane-zoom");
+        let pointer = gpui::point(lane.left() + px(160.), lane.center().y);
+        cx.simulate_mouse_move(pointer, None, gpui::Modifiers::none());
+        cx.settle();
+        let hovered = cx.update(|_, cx| editor.read(cx).preview_playhead.unwrap());
+        assert_eq!(hovered, 2.);
+
+        cx.press("space");
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert_eq!(editor.playhead, hovered);
+            assert!(editor.preview_playhead.is_none());
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.playhead > hovered);
+            assert!(editor.preview_playhead.is_none());
+        });
+
+        cx.press("space");
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.preview_seek(Some(4.), cx)));
+        cx.press("space");
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert_eq!(editor.playhead, 0.);
+            assert!(editor.preview_playhead.is_none());
+        });
     }
 
     #[herogpui::test]

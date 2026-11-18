@@ -5883,6 +5883,22 @@ Metal profile at 2× and the dark 950×700 profile at 1× both passed. All 367
 PNGs matched the reference captures byte for byte. Interactive 4K latency on a
 physical display remains open.
 
+### 2026-11-18 GPUI playback from the hovered timeline frame
+
+Electron starts playback from the hover position and clears the hover preview.
+A GPUI test moved the pointer over the two-second position and pressed Space
+without moving it away. On the old build, the playback clock started from
+0.5 seconds while the hover override continued to select the two-second frame.
+
+GPUI now adopts the hover position and clears the override before starting
+its playback clock and audio transport. The regression verified playback from
+two seconds, advancement with the pointer stationary, and playback from zero
+when starting at the exact end. The arm64 suite passed 1,158 tests with 23
+marked ignored. Both offscreen Metal profiles passed, with all 367 PNGs
+matching their references byte for byte. If the hovered frame is still being
+composed when playback starts, the displayed image can wait for the first
+playback tick and compose. Physical 4K first-frame latency remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
