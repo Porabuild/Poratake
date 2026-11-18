@@ -6136,6 +6136,27 @@ level away from the seams. Four GPUI image color tests and 12 Electron
 preview and daemon contract tests passed. Mixed physical displays remain
 unverified.
 
+### 2026-11-18 macOS scroll-resume prompt on thin selections
+
+The GPUI layout fixture measured a 284×38-point resume prompt inside a
+24×11-point selection window, clipping the message. Electron renders its
+prompt inside a display-sized overlay. GPUI now expands its prompt window
+only when the selection needs more room, clamping the expanded dimensions
+to the display's work area. On a narrow viewport the text wraps. The
+toolbar clears the expanded prompt when the two would intersect. The
+stitch preview's anchor still follows the selected area.
+
+The 200-point viewport regression verifies the full prompt, wrapped label
+and clearance from the toolbar. The hidden AppKit probe rendered the
+prompt for a thin selection at the lower-left edge and verified its
+painted pixels fit the window. The prompt stayed click-through and kept its
+capture exclusion ID. The arm64 suite passed 1,162 tests with 23 ignored,
+and 14 Electron reference tests passed. All 15 light and dark Metal
+workflow images matched their baselines. The expanded prompt can cover
+part of the stitch preview at a thin edge selection while the cursor is
+outside. Physical interaction on a narrow or secondary display remains
+unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

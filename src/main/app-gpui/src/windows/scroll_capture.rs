@@ -25,6 +25,8 @@ pub const CONTROL_HEIGHT: f32 = 52.0;
 pub const CONTROL_GAP: f32 = 16.0;
 const PREVIEW_SCALE: u32 = 2;
 const PROMPT_TEXT: &str = "Move cursor here to continue";
+const PROMPT_MIN_WIDTH: f32 = 300.0;
+const PROMPT_MIN_HEIGHT: f32 = 64.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinishState {
@@ -209,7 +211,8 @@ impl ScrollCaptureSession {
             session_bounds(area, display_bounds, work_area);
         let preview_width = f32::from(preview_bounds.size.width);
         let preview_max_height = f32::from(preview_bounds.size.height);
-        let preview_offset = f32::from(prompt_bounds.origin.y - preview_bounds.origin.y);
+        let preview_offset =
+            area.y as f32 - f32::from(display_bounds.origin.y + preview_bounds.origin.y);
         let ui = cx.new(|_| ScrollCaptureUi {
             daemon,
             signal,
@@ -500,11 +503,21 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
     let display = cx.primary_display().expect("primary display");
     let display_bounds = crate::system::work_area::display_bounds(display.as_ref());
     let work_area = crate::system::work_area::work_area(display.as_ref());
-    let area = ScreenRect {
-        x: f32::from(display_bounds.origin.x) as i32,
-        y: f32::from(display_bounds.origin.y) as i32,
-        width: f32::from(display_bounds.size.width) as i32,
-        height: f32::from(display_bounds.size.height) as i32,
+    let thin = selector_id.is_some();
+    let area = if thin {
+        ScreenRect {
+            x: f32::from(work_area.left()) as i32,
+            y: f32::from(work_area.bottom()) as i32 - 11,
+            width: 24,
+            height: 11,
+        }
+    } else {
+        ScreenRect {
+            x: f32::from(display_bounds.origin.x) as i32,
+            y: f32::from(display_bounds.origin.y) as i32,
+            width: f32::from(display_bounds.size.width) as i32,
+            height: f32::from(display_bounds.size.height) as i32,
+        }
     };
     let (control, preview, prompt) = session_bounds(area, display_bounds, work_area);
     let (signal, _receiver) = smol::channel::bounded(1);
@@ -519,6 +532,8 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
     );
     if let Some(selector_id) = selector_id {
         ScrollCaptureSession::include_selector_windows(&ui, vec![selector_id], cx);
+        apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+        apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
     }
     let excluded_window_ids = ui
         .read(cx)
@@ -553,7 +568,7 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
                 _ => false,
             })
             .expect("scroll window");
-        cx.update_window(handle, |_, window, _| {
+        cx.update_window(handle, |_, window, cx| {
             assert_eq!(super::macos_window_id(window), Some(excluded_window_ids[index]));
             let handle = HasWindowHandle::window_handle(window).unwrap();
             let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
@@ -579,7 +594,7 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
             assert_eq!(frame.origin.y, expected_y, "{name} y");
             assert_eq!(frame.size.width, f32::from(expected.size.width) as f64, "{name} width");
             assert_eq!(frame.size.height, f32::from(expected.size.height) as f64, "{name} height");
-            if name != "prompt" {
+            if name != "prompt" || thin {
                 let bounds = super::desktop_window_bounds(window);
                 assert!(
                     bounds.left() >= work_area.left()
@@ -588,6 +603,15 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
                         && bounds.bottom() <= work_area.bottom(),
                     "scroll {name} bounds {bounds:?} must fit the work area {work_area:?}"
                 );
+            }
+            if name == "prompt" && thin {
+                window.draw(cx).clear(cx);
+                let pixels = window.render_to_image().expect("hidden resume prompt render");
+                assert!(pixels.pixels().any(|pixel| pixel[3] > 0));
+                assert!(pixels.enumerate_pixels().all(|(x, y, pixel)| {
+                    pixel[3] == 0 || (x > 0 && y > 0 && x + 1 < pixels.width() && y + 1 < pixels.height())
+                }), "resume prompt painted against a viewport edge");
+                println!("scroll resume prompt: native rendering fits a thin edge selection");
             }
             println!("scroll {name}: borderless, hidden, click-through={click_through}, frame and exclusion ID match");
         })
@@ -733,6 +757,8 @@ impl Render for ScrollAreaPrompt {
             .justify_center()
             .children(show_prompt.then(|| {
                 div()
+                    .debug_selector(|| "scroll-resume-prompt".to_string())
+                    .max_w_full()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -745,7 +771,12 @@ impl Render for ScrollAreaPrompt {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(crate::ui::colors::white(1.0))
                     .child(icon_element("mouse-pointer-click", px(16.0)))
-                    .child(PROMPT_TEXT)
+                    .child(
+                        div()
+                            .debug_selector(|| "scroll-resume-label".to_string())
+                            .min_w_0()
+                            .child(PROMPT_TEXT),
+                    )
             }))
     }
 }
@@ -1009,9 +1040,22 @@ fn session_bounds(
         f32::from(work_area.size.width),
         f32::from(work_area.size.height),
     );
-    let (control_x, control_y) = control_origin(selection, work_size);
+    let (control_x, mut control_y) = control_origin(selection, work_size);
     let preview_width = PREVIEW_WIDTH.min(work_size.0);
     let preview_height = PREVIEW_MAX_HEIGHT.min(work_size.1);
+    let (prompt_x, prompt_width) =
+        prompt_axis(selection.0, selection.2, PROMPT_MIN_WIDTH, work_size.0);
+    let (prompt_y, prompt_height) =
+        prompt_axis(selection.1, selection.3, PROMPT_MIN_HEIGHT, work_size.1);
+    if prompt_height > selection.3
+        && control_y < prompt_y + prompt_height
+        && control_y + CONTROL_HEIGHT > prompt_y
+    {
+        (_, control_y) = control_origin(
+            (selection.0, prompt_y, selection.2, prompt_height),
+            work_size,
+        );
+    }
     (
         Bounds {
             origin: work_origin + gpui::point(px(control_x), px(control_y)),
@@ -1026,10 +1070,19 @@ fn session_bounds(
             size: size(px(preview_width), px(preview_height)),
         },
         Bounds {
-            origin: work_origin + gpui::point(px(selection.0), px(selection.1)),
-            size: size(px(selection.2), px(selection.3)),
+            origin: work_origin + gpui::point(px(prompt_x), px(prompt_y)),
+            size: size(px(prompt_width), px(prompt_height)),
         },
     )
+}
+
+fn prompt_axis(start: f32, length: f32, minimum: f32, work_length: f32) -> (f32, f32) {
+    let padded = minimum.min(work_length);
+    if length >= padded {
+        return (start, length);
+    }
+    let centered = start + (length - padded) / 2.0;
+    (centered.clamp(0.0, work_length - padded), padded)
 }
 
 fn control_origin(area: (f32, f32, f32, f32), display: (f32, f32)) -> (f32, f32) {
@@ -1197,7 +1250,7 @@ mod tests {
             gpui::point(px(-1540.0), px(-162.0)),
             size(px(1460.0), px(800.0)),
         );
-        for (area, control_origin, preview_origin, prompt_origin) in [
+        for (area, control_origin, preview_origin, prompt_origin, prompt_size) in [
             (
                 ScreenRect {
                     x: -1600,
@@ -1208,6 +1261,7 @@ mod tests {
                 (716.0, 38.0),
                 (60.0, 38.0),
                 (0.0, 0.0),
+                (1600.0, 900.0),
             ),
             (
                 ScreenRect {
@@ -1218,7 +1272,8 @@ mod tests {
                 },
                 (1352.0, 692.0),
                 (1280.0, 478.0),
-                (1588.0, 760.0),
+                (1220.0, 751.0),
+                (300.0, 64.0),
             ),
         ] {
             let (control, preview, prompt) = session_bounds(area, display, work_area);
@@ -1234,10 +1289,7 @@ mod tests {
                 prompt.origin,
                 gpui::point(px(prompt_origin.0), px(prompt_origin.1))
             );
-            assert_eq!(
-                prompt.size,
-                size(px(area.width as f32), px(area.height as f32))
-            );
+            assert_eq!(prompt.size, size(px(prompt_size.0), px(prompt_size.1)));
         }
     }
 
@@ -1259,6 +1311,73 @@ mod tests {
         );
         assert_eq!(preview.left(), px(0.0));
         assert_eq!(preview.size.width, px(200.0));
+    }
+
+    #[herogpui::test]
+    fn resume_prompt_fits_a_thin_selection_at_the_display_edge(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let (signal, _) = smol::channel::bounded(1);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let display = Bounds::new(gpui::point(px(0.), px(0.)), size(px(200.), px(400.)));
+            let ui = ScrollCaptureSession::open_on_display(
+                cx,
+                crate::state::state(cx).daemon,
+                ScreenRect {
+                    x: 0,
+                    y: 389,
+                    width: 24,
+                    height: 11,
+                },
+                signal,
+                display,
+                None,
+                true,
+            );
+            let control = cx
+                .windows()
+                .into_iter()
+                .find(|handle| handle.downcast::<ScrollControlBar>().is_some())
+                .unwrap();
+            let prompt = cx
+                .windows()
+                .into_iter()
+                .find(|handle| handle.downcast::<ScrollAreaPrompt>().is_some())
+                .unwrap();
+            let control = control.update(cx, |_, window, _| window.bounds()).unwrap();
+            let prompt = prompt.update(cx, |_, window, _| window.bounds()).unwrap();
+            assert!(control.bottom() <= prompt.top());
+            apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+            apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
+        });
+        let prompt = cx.read(|cx| {
+            cx.windows()
+                .into_iter()
+                .find(|handle| handle.downcast::<ScrollAreaPrompt>().is_some())
+                .unwrap()
+        });
+        let mut visual = gpui::VisualTestContext::from_window(prompt, cx);
+        let message = visual.expect("scroll-resume-prompt");
+        let label = visual.expect("scroll-resume-label");
+        let viewport = visual.update(|window, _| window.viewport_size());
+        assert!(
+            message.left() >= px(0.)
+                && message.top() >= px(0.)
+                && message.right() <= viewport.width
+                && message.bottom() <= viewport.height,
+            "resume prompt {message:?} is clipped by its {viewport:?} window"
+        );
+        assert!(label.right() <= message.right() - px(12.));
+        assert!(
+            label.size.height > px(22.),
+            "message should wrap on the narrow display"
+        );
+        let bounds = visual.update(|window, _| window.bounds());
+        assert!(bounds.left() >= px(0.) && bounds.bottom() <= px(400.));
     }
 
     #[herogpui::test]
