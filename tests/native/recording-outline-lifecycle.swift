@@ -100,13 +100,40 @@ struct RecordingOutlineLifecycleTest {
         )
         precondition(visible.contains(preview.frame), "camera preview extended beyond the display work area")
         precondition(preview.frame.origin == NSPoint(x: visible.maxX - preview.frame.width, y: visible.minY))
+        try await waitFor("the camera panel did not report its fitted position") {
+            cameraPreview.testReportedPositions.last == NSPoint(
+                x: Int(preview.frame.minX), y: Int(screen.frame.height - preview.frame.maxY)
+            )
+        }
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [previewID])
         print("camera preview placement: edge position fits the work area")
+        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: preview)
         await cameraPreview.testHidePanel()
         precondition(onScreenAlpha(previewID).map { $0 == 0 } ?? true,
                      "camera preview remained opaque after cleanup")
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
         print("camera preview cleanup: panel absent or transparent in window server")
+
+        let replacement = NSPanel(contentRect: NSRect(x: 140, y: 140, width: 270, height: 270),
+                                  styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        replacement.orderFrontRegardless()
+        precondition(cameraPreview.testInstallPanel(replacement))
+        precondition(cameraPreview.testInstallPanel(replacement))
+        let reportCount = cameraPreview.testReportedPositions.count
+        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: preview)
+        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: replacement)
+        try await waitFor("the replacement camera panel did not report movement") {
+            cameraPreview.testReportedPositions.count > reportCount
+        }
+        precondition(cameraPreview.testReportedPositions.count == reportCount + 1,
+                     "the closed camera panel reported a move for its replacement")
+        precondition(cameraPreview.testReportedPositions.last == NSPoint(
+            x: Int(replacement.frame.minX), y: Int(screen.frame.height - replacement.frame.maxY)
+        ))
+        await cameraPreview.testHidePanel()
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
+        print("camera preview move tracking: only the current panel reports")
+
         let freeze = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 100, height: 100),
                               styleMask: .borderless, backing: .buffered, defer: false)
         freeze.animationBehavior = .none

@@ -8,6 +8,7 @@ class CameraPreviewModule: Module {
     
     private var panel: NSPanel?
     private var contentView: CameraPreviewContentView?
+    private var moveObserver: NSObjectProtocol?
     
     private var deviceId: String?
     private var deviceName: String?
@@ -15,6 +16,8 @@ class CameraPreviewModule: Module {
     private var flipped: Bool = false
     private var isContentProtected: Bool = false
     private var presentationGeneration = WindowPresentationGeneration()
+
+    deinit { stopMoveTracking() }
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         guard let method = DaemonContract.CameraPreview.Method(rawValue: method) else {
@@ -150,6 +153,7 @@ class CameraPreviewModule: Module {
                     try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
                 } catch {
                     guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
+                    stopMoveTracking()
                     panel.orderOut(nil)
                     RecordingCaptureWindowRegistry.shared.unregister(panel)
                     contentView?.stopCamera()
@@ -163,6 +167,7 @@ class CameraPreviewModule: Module {
                 panel.alphaValue = 1
                 panel.ignoresMouseEvents = false
             }
+            setupMoveTracking(for: panel)
             contentView?.updateFlipped(flipped)
             if let x = x, let y = y {
                 updatePosition(x: x, y: y)
@@ -240,13 +245,14 @@ class CameraPreviewModule: Module {
         panel.alphaValue = 1
         panel.ignoresMouseEvents = false
         
-        setupMoveTracking()
+        setupMoveTracking(for: panel)
         return true
     }
     
     @MainActor
     private func hidePanel() async {
         presentationGeneration.cancel()
+        stopMoveTracking()
         let contentView = self.contentView
         let panel = self.panel
         self.panel = nil
@@ -315,14 +321,15 @@ class CameraPreviewModule: Module {
     }
     
     @MainActor
-    private func setupMoveTracking() {
-        NotificationCenter.default.addObserver(
+    private func setupMoveTracking(for panel: NSPanel) {
+        guard moveObserver == nil else { return }
+        moveObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didMoveNotification,
             object: panel,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self, weak panel] _ in
             Task { @MainActor in
-                guard let self = self, let panel = self.panel else { return }
+                guard let self, let panel, self.panel === panel else { return }
 
                 let x = Int(panel.frame.origin.x)
                 let y = Int(DisplayCoordinates.topLeftY(
@@ -330,16 +337,29 @@ class CameraPreviewModule: Module {
                     primaryHeight: DisplayCoordinates.primaryHeight
                 ))
 
+                #if RECORDING_OUTLINE_TEST
+                self.testReportedPositions.append(NSPoint(x: x, y: y))
+                #endif
                 self.emit(event: "position-changed", data: ["x": x, "y": y])
             }
         }
     }
 
+    private func stopMoveTracking() {
+        guard let moveObserver else { return }
+        NotificationCenter.default.removeObserver(moveObserver)
+        self.moveObserver = nil
+    }
+
     #if RECORDING_OUTLINE_TEST
+    private(set) var testReportedPositions: [NSPoint] = []
+
     @MainActor
     func testInstallPanel(_ panel: NSPanel) -> Bool {
         self.panel = panel
-        return RecordingCaptureWindowRegistry.shared.register(panel) != nil
+        guard RecordingCaptureWindowRegistry.shared.register(panel) != nil else { return false }
+        setupMoveTracking(for: panel)
+        return true
     }
 
     @MainActor

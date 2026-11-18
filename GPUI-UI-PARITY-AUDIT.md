@@ -5800,6 +5800,22 @@ full fixture type-checked, and all six module-parity tests passed. The test used
 a generated stand-in for the camera feed. Live camera access and physical
 mixed-DPI placement remain open.
 
+### 2026-11-18 macOS camera preview movement observers
+
+The camera preview registered a window move observer without keeping its
+removal token. A notification from a retired panel could read the replacement
+panel's frame and emit a duplicate position update. The generated-panel fixture
+reproduced two reports of the replacement coordinates before the fix.
+
+The daemon now owns one move observer per visible panel and removes it during
+hide and cleanup. A queued callback verifies the identity of its panel before
+emitting. Revealing an existing panel also ensures tracking is installed. The
+arm64 and Rosetta fixtures verified one position report for each current panel,
+including after repeated observer setup and a retired-panel notification. The
+production daemon and full fixture type-checked, and all six module-parity tests
+passed. This run used generated AppKit panels. Live camera capture and physical
+dragging remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
