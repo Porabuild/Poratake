@@ -65,7 +65,7 @@ struct RecordingTimelineTests {
         precondition(failure == nil, "\(String(describing: failure))")
     }
 
-    static func audioSample(multipleTimings: Bool = false, fill: UInt8 = 0x55) -> CMSampleBuffer {
+    static func audioSample(at seconds: Int64 = 0, multipleTimings: Bool = false, fill: UInt8 = 0x55) -> CMSampleBuffer {
         let count = 480
         var description = AudioStreamBasicDescription(
             mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
@@ -79,7 +79,7 @@ struct RecordingTimelineTests {
         precondition(CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: count * 4, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: count * 4, flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block) == noErr)
         precondition(CMBlockBufferFillDataBytes(with: Int8(bitPattern: fill), blockBuffer: block!, offsetIntoDestination: 0, dataLength: count * 4) == noErr)
         var timing = (0..<(multipleTimings ? count : 1)).map { index in
-            CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000), presentationTimeStamp: CMTime(value: Int64(index), timescale: 48_000), decodeTimeStamp: .invalid)
+            CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000), presentationTimeStamp: CMTime(value: seconds * 48_000 + Int64(index), timescale: 48_000), decodeTimeStamp: .invalid)
         }
         var size = 4
         var buffer: CMSampleBuffer?
@@ -323,7 +323,7 @@ struct RecordingTimelineTests {
             if droppedFirst { recorder.testSetVideoBackpressure(true) }
             recorder.testProcessSample(frame, type: .screen)
             if droppedFirst { recorder.testSetVideoBackpressure(false) }
-            recorder.testProcessSample(sample(at: 120), type: .audio)
+            recorder.testProcessSample(audioSample(at: 120), type: .audio)
             recorder.testSetCameraClockTime(CMTime(value: 125, timescale: 1))
             if droppedChange || recoveredChange {
                 recorder.testSetVideoBackpressure(true)
@@ -679,7 +679,7 @@ struct RecordingTimelineTests {
         let preFramePause = ScreenCaptureRecorder()
         preFramePause.testStartTimeline()
         try! preFramePause.pause()
-        preFramePause.testProcessSample(sample(at: 5), type: .audio)
+        preFramePause.testProcessSample(audioSample(at: 5), type: .audio)
         precondition(preFramePause.testTimeline.pause == nil)
         preFramePause.testProcessSample(sample(at: 10), type: .screen)
         precondition(CMTimeCompare(preFramePause.testTimeline.pause!, CMTime(value: 10, timescale: 1)) == 0)
@@ -690,7 +690,7 @@ struct RecordingTimelineTests {
 
         let recorder = ScreenCaptureRecorder()
         recorder.testStartTimeline()
-        recorder.testProcessSample(sample(at: 99), type: .audio)
+        recorder.testProcessSample(audioSample(at: 99), type: .audio)
         precondition(!recorder.testTimeline.started)
 
         let stopped = sample(at: 0)
@@ -706,7 +706,7 @@ struct RecordingTimelineTests {
         let cameraRanges = ScreenCaptureRecorder()
         cameraRanges.testStartTimeline()
         cameraRanges.testProcessSample(sample(at: 100), type: .screen)
-        cameraRanges.testProcessSample(sample(at: 120), type: .audio)
+        cameraRanges.testProcessSample(audioSample(at: 120), type: .audio)
         cameraRanges.testSetCameraClockTime(CMTime(value: 120, timescale: 1))
         cameraRanges.testOpenCameraRange()
         cameraRanges.testSetCameraClockTime(CMTime(value: 125, timescale: 1))
@@ -731,7 +731,7 @@ struct RecordingTimelineTests {
         pausedCameraRanges.testSetCameraClockTime(CMTime(value: 125, timescale: 1))
         pausedCameraRanges.testCloseCameraRange()
         pausedCameraRanges.testOpenCameraRange()
-        pausedCameraRanges.testProcessSample(sample(at: 130), type: .audio)
+        pausedCameraRanges.testProcessSample(audioSample(at: 130), type: .audio)
         pausedCameraRanges.testSetCameraClockTime(CMTime(value: 133, timescale: 1))
         pausedCameraRanges.testCloseCameraRange()
         precondition(pausedCameraRanges.testCameraRanges.count == 2)
@@ -750,7 +750,7 @@ struct RecordingTimelineTests {
         print("Camera visibility follows the screen clock through static frames and pauses")
 
         recorder.testBeginResume(from: CMTime(value: 110, timescale: 1))
-        recorder.testProcessSample(sample(at: 114), type: .audio)
+        recorder.testProcessSample(audioSample(at: 114), type: .audio)
         precondition(recorder.testTimeline.pause == nil)
         precondition(CMTimeCompare(recorder.testTimeline.pausedDuration, CMTime(value: 4, timescale: 1)) == 0)
         for multipleTimings in [false, true] {

@@ -5293,8 +5293,8 @@ The focused native regression reproduces that error with 512-frame planar
 mono samples and partial leading silence. The microphone path now reuses the
 system audio interleaving step before timing and silence padding. The focused
 regression and existing static microphone timing fixture both pass. The full
-timeline fixture still stops at a camera-range assertion on macOS 27.2. The
-same assertion failed with the unchanged branch source and fixture.
+timeline fixture initially stopped at a camera-range assertion on macOS 27.2.
+The same assertion failed with the unchanged branch source and fixture.
 
 After the fix, GPUI started and stopped a 4.41-second area recording and
 opened its preview. RPCs sent to the same daemon enabled and disabled the
@@ -5302,6 +5302,20 @@ microphone twice. The saved 48 kHz stereo AAC track had active samples in both
 intervals, with 1.25 seconds of leading silence and a 0.88-second silent gap.
 The audio was decoded to check timing and then removed with the temporary test
 project. Camera capture and microphone editor export remain open.
+
+### 2026-11-18 macOS timeline and editor export fixtures
+
+The camera-range assertion was caused by a fixture feeding video buffers to
+the audio callback. The recorder rejected those buffers before their timestamps
+could resolve the pause. With valid 48 kHz PCM at the same timestamps, the full
+native timeline fixture and its CI variants passed on macOS 27.2. This includes
+camera visibility across a pause and resume while the screen is static.
+
+Three GPUI editor comparisons passed using development FFmpeg. They cover a
+delayed camera toggle after edits, camera ranges and zoom across a cut, and
+microphone timing after a trim. They compare the preview with decoded export
+using generated media. Live camera capture and a live microphone export
+comparison remain open.
 
 ## Review gate
 
