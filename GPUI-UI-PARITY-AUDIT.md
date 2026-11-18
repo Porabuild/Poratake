@@ -5252,6 +5252,25 @@ can render its reference directly to a PNG given an output path.
 Alignment rules are still the same. Cases where distinct scroll histories
 produce the same visible frames remain open.
 
+### 2026-11-18 macOS scroll seams under a taller fixed header
+
+The previous exact fallback rejected a three-frame capture when a fixed header
+covered part of the matching area. The fallback now tries matching below the
+unchanged top rows when the whole-frame comparison has no usable overlap. It
+requires a unique exact body overlap and retains the header in the first frame.
+The native fixture covers 28 visible matching rows without a footer and 16 with
+a footer. For both cases, the reopened PNG matches the generated document and
+the preview pixel for pixel. A repeating body with multiple exact alignments
+still stops. The fixture reproduced the early stop before the fix.
+
+A separate GPUI selector run used a 460×380-point generated page with a
+102-point header. Done saved two frames as a 920×1284 PNG, opened a preview and
+added a history item. Compared with the rendered document, the mean RGB channel
+error was 0.410 before the seam and 15.116 after it. The latter fell to 0.456
+when the reference was shifted by eight pixels, confirming skipped rows at the
+seam. The live capture was stopped partway through the page. The exact fixture
+improvement is verified, and the live alignment error remains open.
+
 ### 2026-11-18 unpressed pointer entry and exit on macOS
 
 The isolated native GPUI probe used its normal floating windows at layer 101
