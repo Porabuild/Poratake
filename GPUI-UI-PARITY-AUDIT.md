@@ -4389,7 +4389,7 @@ appearance.
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Ambiguous scroll seams, physical pointer movement between controls, live camera capture, and multi-display workflows remain open.                                                                                                                                                                                                                                                                                                                                      |
-| P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History popover visibility, dismissal and editor handoff also passed in both themes. Onboarding and broader native interaction remain outstanding. [Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt) [History popover timings](#2026-11-18-macos-history-popover-dismissal-and-editor-handoff)                                                                               |
+| P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History popover visibility, dismissal and editor handoff also passed in both themes. All four onboarding pages and both exit paths passed in both themes. Broader native interaction remains outstanding. [Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt) [History popover timings](#2026-11-18-macos-history-popover-dismissal-and-editor-handoff)                        |
 
 GPUI now attempts to restore history after returned write errors and reports when a
 capture was deleted but its history update failed. Isolated store tests cover
@@ -7312,6 +7312,24 @@ median uses three samples after the first attempt for that action. The
 probe measured WindowServer visibility with app-local events and an
 isolated History profile. The editor timing ends when its window is
 visible. All 53 Electron History and popover reference tests passed.
+
+### 2026-11-18 macOS onboarding pages and exit paths
+
+The GPUI dev probe opened onboarding with a fresh profile four times on
+the built-in Retina display. The 500 × 650 point window showed the Welcome,
+Disable macOS Screenshot Shortcuts, Set Your Shortcuts and Setup Permissions
+pages in both appearances. Next reached each page, and Back returned from
+permissions to shortcut setup. Both permission rows showed existing grants.
+[Light pages](tests/native/evidence/macos-ui/onboarding-light-20261118.png)
+[Dark pages](tests/native/evidence/macos-ui/onboarding-dark-20261118.png)
+
+Skip for now and Get Started each closed the window and persisted their
+respective status in separate profiles. A repeat open request honored that
+status. First WindowServer visibility took 181–215 ms, and dismissal took
+17–25 ms across the four trials. The probe raised only its onboarding
+window above occluding windows and routed clicks inside that window.
+Permission request and Settings actions were outside the run. All 15
+Electron onboarding reference tests passed.
 
 ## Review gate
 

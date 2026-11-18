@@ -147,6 +147,11 @@ impl OnboardingWindow {
         self.step + 1 >= steps().len()
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_step_index(&self) -> usize {
+        self.step
+    }
+
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_last_step() {
             self.step += 1;

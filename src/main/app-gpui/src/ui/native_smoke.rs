@@ -716,6 +716,55 @@ pub fn native_ui_probe() {
                             println!("history toggled");
                             return;
                         }
+                        if command == "onboarding-open" {
+                            let store = crate::state::state(cx).config;
+                            if crate::windows::onboarding::OnboardingWindow::should_show(&store) {
+                                crate::windows::onboarding::OnboardingWindow::open(cx, store);
+                                if let Some(handle) = registry::handle(WindowKind::Onboarding, cx) {
+                                    let _ = cx.update_window(handle, |_, window, _| {
+                                        use cocoa::base::id;
+                                        use objc::{msg_send, sel, sel_impl};
+                                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                        let RawWindowHandle::AppKit(appkit) = window.window_handle().unwrap().as_raw() else {
+                                            return;
+                                        };
+                                        unsafe {
+                                            let native: id = msg_send![appkit.ns_view.as_ptr() as id, window];
+                                            let _: () = msg_send![native, setLevel: 3isize];
+                                        }
+                                    });
+                                }
+                                println!("onboarding opened");
+                            } else {
+                                println!("onboarding already resolved");
+                            }
+                            return;
+                        }
+                        if let Some(action) = command.strip_prefix("onboarding-action ") {
+                            let position = match action {
+                                "back" => point(px(130.), px(545.)),
+                                "next" | "finish" => point(px(370.), px(545.)),
+                                "welcome-next" => point(px(250.), px(540.)),
+                                "skip" => point(px(250.), px(609.)),
+                                _ => return,
+                            };
+                            let Some(handle) = registry::handle(WindowKind::Onboarding, cx) else {
+                                return;
+                            };
+                            for event in [
+                                PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::none() }),
+                                PlatformInput::MouseDown(MouseDownEvent { position, button: MouseButton::Left, click_count: 1, modifiers: Modifiers::none(), first_mouse: false }),
+                                PlatformInput::MouseUp(MouseUpEvent { position, button: MouseButton::Left, click_count: 1, modifiers: Modifiers::none() }),
+                            ] {
+                                let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                            }
+                            let step = handle
+                                .downcast::<crate::windows::onboarding::OnboardingWindow>()
+                                .and_then(|handle| handle.read(cx).ok())
+                                .map(|view| view.parity_step_index());
+                            println!("{command} dispatched: {step:?}");
+                            return;
+                        }
                         if matches!(command.as_str(), "history-escape" | "history-enter") {
                             if let Some(handle) = registry::handle(WindowKind::History, cx) {
                                 let key = if command == "history-enter" { "enter" } else { "escape" };
