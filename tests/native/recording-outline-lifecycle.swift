@@ -36,8 +36,33 @@ struct RecordingOutlineLifecycleTest {
                       width: target.width + 4, height: target.height + 4)
     }
 
+    static func verifyCameraPreviewPlacement() {
+        let primary = NSRect(x: 0, y: 0, width: 1728, height: 1117)
+        let primaryWorkArea = NSRect(x: 30, y: 44, width: 1698, height: 1040)
+        let secondary = NSRect(x: -960, y: 1117, width: 960, height: 600)
+        let secondaryWorkArea = NSRect(x: -940, y: 1137, width: 900, height: 560)
+        let size = NSSize(width: 270, height: 270)
+        let displays = [
+            (frame: primary, visibleFrame: primaryWorkArea),
+            (frame: secondary, visibleFrame: secondaryWorkArea),
+        ]
+        func placement(_ x: Int?, _ y: Int?) -> NSPoint {
+            CameraPreviewModule.fittedPanelOrigin(
+                x: x, y: y, size: size, primaryHeight: primary.height,
+                displays: displays, fallback: primaryWorkArea
+            )
+        }
+        precondition(placement(800, 200) == NSPoint(x: 800, y: 647))
+        precondition(placement(-950, -1) == NSPoint(x: -940, y: 1137))
+        precondition(placement(-41, -590) == NSPoint(x: -310, y: 1427))
+        precondition(placement(3500, -450) == placement(nil, nil))
+        precondition(placement(nil, nil) == NSPoint(x: 1426, y: 76))
+        print("camera preview geometry: dock insets, negative origins and disconnected display")
+    }
+
     @MainActor
     static func run() async throws {
+        verifyCameraPreviewPlacement()
         guard NSScreen.screens.first != nil else {
             print("SKIP recording outline lifecycle: no AppKit display")
             return
@@ -59,7 +84,7 @@ struct RecordingOutlineLifecycleTest {
             precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
             print("area cleanup: overlay absent or transparent in window server")
         }
-        let preview = NSPanel(contentRect: NSRect(x: 100, y: 100, width: 100, height: 100),
+        let preview = NSPanel(contentRect: NSRect(x: 100, y: 100, width: 270, height: 270),
                               styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         preview.orderFrontRegardless()
         let cameraPreview = CameraPreviewModule()
@@ -68,6 +93,15 @@ struct RecordingOutlineLifecycleTest {
         try await waitFor("camera preview stand-in was not visible to the window server") {
             onScreenAlpha(previewID) == 1
         }
+        let visible = screen.visibleFrame
+        cameraPreview.testUpdatePanelPosition(
+            x: Int(visible.maxX) - 1,
+            y: Int(screen.frame.height - visible.minY) - 1
+        )
+        precondition(visible.contains(preview.frame), "camera preview extended beyond the display work area")
+        precondition(preview.frame.origin == NSPoint(x: visible.maxX - preview.frame.width, y: visible.minY))
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [previewID])
+        print("camera preview placement: edge position fits the work area")
         await cameraPreview.testHidePanel()
         precondition(onScreenAlpha(previewID).map { $0 == 0 } ?? true,
                      "camera preview remained opaque after cleanup")

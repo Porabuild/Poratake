@@ -174,11 +174,11 @@ class CameraPreviewModule: Module {
         let previewSize: CGFloat = 230
         let shadowPadding: CGFloat = 20
         let totalSize = previewSize + shadowPadding * 2
-        
-        let position = calculatePosition(x: x, y: y, width: totalSize, height: totalSize)
+        let size = NSSize(width: totalSize, height: totalSize)
+        let position = calculatePosition(x: x, y: y, size: size)
         
         let panel = NSPanel(
-            contentRect: NSRect(x: position.x, y: position.y, width: totalSize, height: totalSize),
+            contentRect: NSRect(origin: position, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -196,7 +196,7 @@ class CameraPreviewModule: Module {
         panel.ignoresMouseEvents = true
 
         let contentView = CameraPreviewContentView(
-            frame: NSRect(x: 0, y: 0, width: totalSize, height: totalSize),
+            frame: NSRect(origin: .zero, size: size),
             deviceId: deviceId,
             deviceName: deviceName,
             resolution: resolution,
@@ -264,35 +264,54 @@ class CameraPreviewModule: Module {
     @MainActor
     private func updatePosition(x: Int, y: Int) {
         guard let panel = panel else { return }
-        let cocoaY = DisplayCoordinates.cocoaY(
-            topLeftY: CGFloat(y), height: panel.frame.height,
-            primaryHeight: DisplayCoordinates.primaryHeight
-        )
-        panel.setFrameOrigin(NSPoint(x: CGFloat(x), y: cocoaY))
+        panel.setFrameOrigin(calculatePosition(x: x, y: y, size: panel.frame.size))
     }
     
     @MainActor
-    private func calculatePosition(x: Int?, y: Int?, width: CGFloat, height: CGFloat) -> NSPoint {
-        if let x = x, let y = y {
-            let cocoaY = DisplayCoordinates.cocoaY(
-                topLeftY: CGFloat(y), height: height,
-                primaryHeight: DisplayCoordinates.primaryHeight
+    private func calculatePosition(x: Int?, y: Int?, size: NSSize) -> NSPoint {
+        let screens = NSScreen.screens
+        return Self.fittedPanelOrigin(
+            x: x, y: y, size: size,
+            primaryHeight: screens.first?.frame.height ?? 0,
+            displays: screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) },
+            fallback: (panel?.screen ?? NSScreen.main ?? screens.first)?.visibleFrame
+        )
+    }
+
+    static func fittedPanelOrigin(
+        x: Int?, y: Int?, size: NSSize, primaryHeight: CGFloat,
+        displays: [(frame: NSRect, visibleFrame: NSRect)],
+        fallback: NSRect?
+    ) -> NSPoint {
+        func constrained(_ origin: NSPoint, to visible: NSRect) -> NSPoint {
+            NSPoint(
+                x: min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size.width)),
+                y: min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
             )
-            return NSPoint(x: CGFloat(x), y: cocoaY)
         }
-        
-        guard let screen = NSScreen.main else {
-            return NSPoint(x: 100, y: 100)
+        let topLeft = x.flatMap { x in
+            y.map { y in
+                NSPoint(
+                    x: CGFloat(x),
+                    y: DisplayCoordinates.cocoaY(topLeftY: CGFloat(y), height: 0, primaryHeight: primaryHeight)
+                )
+            }
         }
-        
-        let screenWidth = screen.visibleFrame.width
-        let screenHeight = screen.visibleFrame.height
+        let requestedOrigin = topLeft.map { NSPoint(x: $0.x, y: $0.y - size.height) }
+        if let topLeft, let requestedOrigin,
+           let display = displays.first(where: {
+               topLeft.x >= $0.frame.minX && topLeft.x < $0.frame.maxX
+                   && topLeft.y > $0.frame.minY && topLeft.y <= $0.frame.maxY
+           }) {
+            return constrained(requestedOrigin, to: display.visibleFrame)
+        }
+        guard let fallback else { return requestedOrigin ?? NSPoint(x: 100, y: 100) }
         let margin: CGFloat = 32
-        
-        let defaultX = screenWidth - width - margin + screen.visibleFrame.origin.x
-        let defaultY = screen.visibleFrame.origin.y + margin
-        
-        return NSPoint(x: defaultX, y: defaultY)
+        let defaultOrigin = NSPoint(
+            x: fallback.maxX - size.width - margin,
+            y: fallback.minY + margin
+        )
+        return constrained(defaultOrigin, to: fallback)
     }
     
     @MainActor
@@ -322,6 +341,9 @@ class CameraPreviewModule: Module {
         self.panel = panel
         return RecordingCaptureWindowRegistry.shared.register(panel) != nil
     }
+
+    @MainActor
+    func testUpdatePanelPosition(x: Int, y: Int) { updatePosition(x: x, y: y) }
 
     @MainActor
     func testHidePanel() async { await hidePanel() }

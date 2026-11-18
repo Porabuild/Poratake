@@ -5782,6 +5782,24 @@ cleanup. The full fixture and production Swift daemon also type-checked. The
 runs used window-server metadata with a generated target. Live captured pixels
 and physical multi-display movement remain outside this check.
 
+### 2026-11-18 macOS camera preview work-area placement
+
+Both GPUI and Electron forward camera preview positions to the Swift daemon.
+A requested position close to the bottom-right edge placed the native panel
+outside the work area on the old build. Showing and updating the panel now
+share a display-aware calculation. It uses the work area of the display
+containing the requested point, or the current or main display when the
+requested display is unavailable.
+
+The native generated-panel check passed on arm64 and under Rosetta with
+identical output. It verified the fitted frame, the retained capture-exclusion
+ID through repositioning, and an absent or transparent panel on hide. Geometry
+fixtures covered dock insets, a display above and left of the
+primary, and a saved position for a disconnected display. The Swift daemon and
+full fixture type-checked, and all six module-parity tests passed. The test used
+a generated stand-in for the camera feed. Live camera access and physical
+mixed-DPI placement remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
