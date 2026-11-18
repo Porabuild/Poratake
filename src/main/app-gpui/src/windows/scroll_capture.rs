@@ -201,11 +201,15 @@ impl ScrollCaptureSession {
         platform_display_id: Option<gpui::DisplayId>,
         show: bool,
     ) -> Entity<ScrollCaptureUi> {
-        let (control_bounds, preview_bounds, prompt_bounds) = session_bounds(area, display_bounds);
+        let work_area = platform_display_id
+            .and_then(|id| cx.displays().into_iter().find(|display| display.id() == id))
+            .map(|display| crate::system::work_area::work_area(display.as_ref()))
+            .unwrap_or(display_bounds);
+        let (control_bounds, preview_bounds, prompt_bounds) =
+            session_bounds(area, display_bounds, work_area);
         let preview_width = f32::from(preview_bounds.size.width);
         let preview_max_height = f32::from(preview_bounds.size.height);
-        let preview_offset =
-            area.y as f32 - f32::from(display_bounds.origin.y) - f32::from(preview_bounds.origin.y);
+        let preview_offset = f32::from(prompt_bounds.origin.y - preview_bounds.origin.y);
         let ui = cx.new(|_| ScrollCaptureUi {
             daemon,
             signal,
@@ -422,13 +426,14 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
 
     let display = cx.primary_display().expect("primary display");
     let display_bounds = crate::system::work_area::display_bounds(display.as_ref());
+    let work_area = crate::system::work_area::work_area(display.as_ref());
     let area = ScreenRect {
         x: f32::from(display_bounds.origin.x) as i32,
         y: f32::from(display_bounds.origin.y) as i32,
         width: f32::from(display_bounds.size.width) as i32,
         height: f32::from(display_bounds.size.height) as i32,
     };
-    let (control, preview, prompt) = session_bounds(area, display_bounds);
+    let (control, preview, prompt) = session_bounds(area, display_bounds, work_area);
     let (signal, _receiver) = smol::channel::bounded(1);
     let ui = ScrollCaptureSession::open_on_display(
         cx,
@@ -501,6 +506,16 @@ pub(crate) fn native_window_probe(cx: &mut App, selector_id: Option<i64>) {
             assert_eq!(frame.origin.y, expected_y, "{name} y");
             assert_eq!(frame.size.width, f32::from(expected.size.width) as f64, "{name} width");
             assert_eq!(frame.size.height, f32::from(expected.size.height) as f64, "{name} height");
+            if name != "prompt" {
+                let bounds = super::desktop_window_bounds(window);
+                assert!(
+                    bounds.left() >= work_area.left()
+                        && bounds.top() >= work_area.top()
+                        && bounds.right() <= work_area.right()
+                        && bounds.bottom() <= work_area.bottom(),
+                    "scroll {name} bounds {bounds:?} must fit the work area {work_area:?}"
+                );
+            }
             println!("scroll {name}: borderless, hidden, click-through={click_through}, frame and exclusion ID match");
         })
         .unwrap();
@@ -904,39 +919,42 @@ fn set_native_tooltip(_window: &Window, _tooltip: Option<&str>) {}
 fn session_bounds(
     area: ScreenRect,
     display: Bounds<gpui::Pixels>,
+    work_area: Bounds<gpui::Pixels>,
 ) -> (
     Bounds<gpui::Pixels>,
     Bounds<gpui::Pixels>,
     Bounds<gpui::Pixels>,
 ) {
-    let logical = (
-        area.x as f32 - f32::from(display.origin.x),
-        area.y as f32 - f32::from(display.origin.y),
+    let work_origin = work_area.origin - display.origin;
+    let selection = (
+        area.x as f32 - f32::from(work_area.origin.x),
+        area.y as f32 - f32::from(work_area.origin.y),
         area.width as f32,
         area.height as f32,
     );
-    let display_size = (
-        f32::from(display.size.width),
-        f32::from(display.size.height),
+    let work_size = (
+        f32::from(work_area.size.width),
+        f32::from(work_area.size.height),
     );
-    let (control_x, control_y) = control_origin(logical, display_size);
-    let preview_width = PREVIEW_WIDTH.min(display_size.0);
-    let preview_height = PREVIEW_MAX_HEIGHT.min(display_size.1);
+    let (control_x, control_y) = control_origin(selection, work_size);
+    let preview_width = PREVIEW_WIDTH.min(work_size.0);
+    let preview_height = PREVIEW_MAX_HEIGHT.min(work_size.1);
     (
         Bounds {
-            origin: gpui::point(px(control_x), px(control_y)),
+            origin: work_origin + gpui::point(px(control_x), px(control_y)),
             size: size(px(CONTROL_WIDTH), px(CONTROL_HEIGHT)),
         },
         Bounds {
-            origin: gpui::point(
-                px(preview_left(logical, display_size.0)),
-                px(logical.1.clamp(0.0, display_size.1 - preview_height)),
-            ),
+            origin: work_origin
+                + gpui::point(
+                    px(preview_left(selection, work_size.0)),
+                    px(selection.1.clamp(0.0, work_size.1 - preview_height)),
+                ),
             size: size(px(preview_width), px(preview_height)),
         },
         Bounds {
-            origin: gpui::point(px(logical.0), px(logical.1)),
-            size: size(px(logical.2), px(logical.3)),
+            origin: work_origin + gpui::point(px(selection.0), px(selection.1)),
+            size: size(px(selection.2), px(selection.3)),
         },
     )
 }
@@ -947,22 +965,23 @@ fn control_origin(area: (f32, f32, f32, f32), display: (f32, f32)) -> (f32, f32)
     let top = if preferred_top + CONTROL_HEIGHT <= display.1 {
         preferred_top
     } else {
-        (area.1 - CONTROL_GAP - CONTROL_HEIGHT).max(0.0)
+        area.1 - CONTROL_GAP - CONTROL_HEIGHT
     };
     (
         (center_x - CONTROL_WIDTH / 2.0).clamp(0.0, (display.0 - CONTROL_WIDTH).max(0.0)),
-        top,
+        top.clamp(0.0, (display.1 - CONTROL_HEIGHT).max(0.0)),
     )
 }
 
 fn preview_left(area: (f32, f32, f32, f32), display_width: f32) -> f32 {
     let preview_width = PREVIEW_WIDTH.min(display_width);
     let space_right = display_width - (area.0 + area.2);
-    if space_right >= preview_width + PREVIEW_GAP {
+    let left = if space_right >= preview_width + PREVIEW_GAP {
         area.0 + area.2 + PREVIEW_GAP
     } else {
-        (area.0 - preview_width - PREVIEW_GAP).max(0.0)
-    }
+        area.0 - preview_width - PREVIEW_GAP
+    };
+    left.clamp(0.0, display_width - preview_width)
 }
 
 fn preview_image_height(
@@ -1073,7 +1092,7 @@ mod tests {
         };
         for scale in [1.0, 2.0] {
             let area = crate::capture::overlay::physical_rect(selection, scale);
-            let (control, preview, prompt) = session_bounds(area, display);
+            let (control, preview, prompt) = session_bounds(area, display, display);
             assert_eq!(control.origin, gpui::point(px(326.0), px(456.0)));
             assert_eq!(control.size, size(px(168.0), px(52.0)));
             assert_eq!(preview.origin, gpui::point(px(626.0), px(140.0)));
@@ -1096,7 +1115,65 @@ mod tests {
     }
 
     #[test]
+    fn scroll_controls_and_preview_stay_in_an_inset_work_area() {
+        let display = Bounds::new(
+            gpui::point(px(-1600.0), px(-200.0)),
+            size(px(1600.0), px(900.0)),
+        );
+        let work_area = Bounds::new(
+            gpui::point(px(-1540.0), px(-162.0)),
+            size(px(1460.0), px(800.0)),
+        );
+        for (area, control_origin, preview_origin, prompt_origin) in [
+            (
+                ScreenRect {
+                    x: -1600,
+                    y: -200,
+                    width: 1600,
+                    height: 900,
+                },
+                (716.0, 38.0),
+                (60.0, 38.0),
+                (0.0, 0.0),
+            ),
+            (
+                ScreenRect {
+                    x: -12,
+                    y: 560,
+                    width: 12,
+                    height: 46,
+                },
+                (1352.0, 692.0),
+                (1280.0, 478.0),
+                (1588.0, 760.0),
+            ),
+        ] {
+            let (control, preview, prompt) = session_bounds(area, display, work_area);
+            assert_eq!(
+                control.origin,
+                gpui::point(px(control_origin.0), px(control_origin.1))
+            );
+            assert_eq!(
+                preview.origin,
+                gpui::point(px(preview_origin.0), px(preview_origin.1))
+            );
+            assert_eq!(
+                prompt.origin,
+                gpui::point(px(prompt_origin.0), px(prompt_origin.1))
+            );
+            assert_eq!(
+                prompt.size,
+                size(px(area.width as f32), px(area.height as f32))
+            );
+        }
+    }
+
+    #[test]
     fn preview_window_fits_a_narrow_display() {
+        let display = Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(200.0), px(180.0)),
+        };
         let (_, preview, _) = session_bounds(
             ScreenRect {
                 x: 100,
@@ -1104,10 +1181,8 @@ mod tests {
                 width: 80,
                 height: 20,
             },
-            Bounds {
-                origin: gpui::point(px(0.0), px(0.0)),
-                size: size(px(200.0), px(180.0)),
-            },
+            display,
+            display,
         );
         assert_eq!(preview.left(), px(0.0));
         assert_eq!(preview.size.width, px(200.0));
@@ -1597,6 +1672,7 @@ mod tests {
                     width: 200,
                     height: 20,
                 },
+                display,
                 display,
             );
             assert_eq!(preview.top(), px(top));

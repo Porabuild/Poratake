@@ -5917,6 +5917,25 @@ daemon contract tests passed. The dark offscreen Metal check at width 1280 and
 Live cursor interaction remains open. Repeated scroll histories can still
 produce identical frames and leave the seam ambiguous.
 
+### 2026-11-18 macOS scroll capture placement at the menu bar and Dock
+
+The native popup probe reproduced a scroll preview starting at y=0 on the
+1728×1117-point Retina display, where AppKit's work area started at y=33.
+Electron's scroll control placement also uses the full display bounds. GPUI now
+places the scroll controls and preview inside the selected display's work area.
+The resume prompt remains centered over the selected capture region. When space
+allows, the controls still go below the selection and the preview to its right.
+
+An inset-display fixture covers a negative desktop origin, a full-display
+selection, and a narrow selection in the area reserved for a side Dock. It
+checks the two popup origins and preserves the prompt's selection bounds.
+The hidden AppKit probe verified that both popups fit the actual work area
+and kept their capture exclusion IDs. The macOS GPUI suite passed 1,159 tests
+with 23 ignored, and 14 Electron reference tests passed. Light and dark
+offscreen Metal workflows passed at 1× and width 1280, with all 15 workflow
+PNGs matching the preceding runs byte for byte. Live placement on a second
+display and next to a visible Dock remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
