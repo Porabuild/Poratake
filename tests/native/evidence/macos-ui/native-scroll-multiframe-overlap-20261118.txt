@@ -1,0 +1,29 @@
+2026-11-18 macOS multi-frame scroll capture with overlapping GPUI controls
+
+Apple Silicon development build, built-in Retina display at 2×. The fixture
+selected x=0, y=33, width=600, height=1084 points. All three GPUI scroll
+windows were visible and intersected the region. The test moved the preview
+to the left edge to exercise deliberate overlap.
+
+Generated source: tests/native/scroll-overlap-page.swift. It advances in
+response to an offset on stdin. Offsets were 0, 758 and 1516 points.
+The native GPUI probe used --native-ui-probe --scroll-exclusion with
+PORATAKE_NATIVE_SCROLL_FIXTURE_WIDTH=600. The Swift fixture used
+--strict-scroll-frame x y width height preview-id prompt-id control-id
+output-path 3. After each readiness message, the driver changed the source
+offset, waited for the page to acknowledge the update and sent advance to
+the Swift fixture. No global pointer events were posted.
+
+Both themes: three accepted frames and a 1200×5200 stitched PNG.
+The reference combined the first unobstructed frame with the last 1516
+pixel rows of each subsequent frame. Its Display P3 source frames were
+converted to sRGB through ColorSync to match the stitched PNG's profile.
+
+Light: 6239946 of 6240000 RGB pixels matched exactly, peak difference 1.
+Dark: 6239946 of 6240000 RGB pixels matched exactly, peak difference 1.
+Differences were confined to x 3–287, y 640–641 in each run.
+
+The full-width experiment encountered unrelated changing pixels and stopped
+at the verified prefix. The narrower region isolated the generated content.
+The matcher was unchanged. The default Swift fixture passed. Temporary
+processes and raw captures were removed.

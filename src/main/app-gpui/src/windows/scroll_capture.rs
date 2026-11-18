@@ -422,14 +422,32 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
 
     let display = cx.primary_display().expect("primary display");
     let work = crate::system::work_area::work_area(display.as_ref());
+    let width = f32::from(work.size.width) as i32;
+    let fixture_width = std::env::var("PORATAKE_NATIVE_SCROLL_FIXTURE_WIDTH")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|requested| *requested >= PREVIEW_WIDTH as i32 && *requested < width);
     let area = ScreenRect {
         x: f32::from(work.left()) as i32,
         y: f32::from(work.top()) as i32,
-        width: f32::from(work.size.width) as i32,
+        width: fixture_width.unwrap_or(width),
         height: f32::from(work.size.height) as i32,
     };
     let (signal, _receiver) = smol::channel::bounded(1);
     let ui = ScrollCaptureSession::open(cx, crate::state::state(cx).daemon, area, signal);
+    if fixture_width.is_some() {
+        cx.windows()
+            .into_iter()
+            .find_map(|handle| handle.downcast::<ScrollPreviewPanel>())
+            .expect("scroll preview window")
+            .update(cx, |_, window, cx| {
+                let mut bounds = super::desktop_window_bounds(window);
+                bounds.origin.x = px(area.x as f32);
+                assert!(super::set_macos_window_bounds(window, bounds));
+                window.bounds_changed(cx);
+            })
+            .unwrap();
+    }
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         240,

@@ -346,14 +346,16 @@ struct ScrollCapturePreviewTest {
             print("SKIP strict scroll frame: Screen Recording permission was not already granted")
             return
         }
-        precondition(args.count == 8)
-        let numbers = args.dropLast().compactMap(Int.init)
+        precondition(args.count == 8 || args.count == 9)
+        let numbers = args.prefix(7).compactMap(Int.init)
         precondition(numbers.count == 7)
+        let frameCount = args.count == 9 ? Int(args[8]) : 1
+        guard let frameCount, frameCount > 0 else { preconditionFailure("Invalid scroll frame count") }
         let module = ScrollCaptureModule()
         var started = false
         module.testSetCaptureStartResult { started = $0 }
-        var captured = false
-        module.testSetScheduleAutoScroll { captured = true }
+        var captured = 0
+        module.testSetScheduleAutoScroll { captured += 1 }
         module.handle(method: DaemonContract.ScrollCapture.Method.start.rawValue, params: [
             "x": AnyCodable(numbers[0]), "y": AnyCodable(numbers[1]),
             "width": AnyCodable(numbers[2]), "height": AnyCodable(numbers[3]),
@@ -363,15 +365,26 @@ struct ScrollCapturePreviewTest {
         module.handle(method: DaemonContract.ScrollCapture.Method.startAutoScroll.rawValue, params: [
             "excludedWindowIds": AnyCodable(Array(numbers[4...])),
         ], requestId: "strict-frame-capture")
-        await waitUntil("Scroll capture did not accept its first filtered frame") { captured }
+        await waitUntil("Scroll capture did not accept its first filtered frame") { captured == 1 }
+        let generation = module.testCaptureGeneration()
+        for index in 1..<frameCount {
+            print("strict scroll frame \(index) ready")
+            fflush(stdout)
+            let command = await withCheckedContinuation { continuation in
+                DispatchQueue.global().async { continuation.resume(returning: readLine()) }
+            }
+            precondition(command == "advance")
+            module.testCaptureAfterScroll(generation: generation)
+            await waitUntil("Scroll capture did not accept the next filtered frame") { captured == index + 1 }
+        }
         var finished: [String: Any]?
         module.testSetFinishResponder { _, result in finished = result }
         module.handle(method: DaemonContract.ScrollCapture.Method.finish.rawValue, params: [
             "outputPath": AnyCodable(args[7]),
         ], requestId: "strict-frame-save")
         await waitUntil("Scroll capture did not save its first filtered frame") { finished != nil }
-        precondition(finished?["success"] as? Bool == true && finished?["frameCount"] as? Int == 1)
-        print("strict scroll capture saved one filtered frame without posting pointer input")
+        precondition(finished?["success"] as? Bool == true && finished?["frameCount"] as? Int == frameCount, "Unexpected result: \(String(describing: finished))")
+        print("strict scroll capture saved \(frameCount) filtered frames without posting pointer input")
     }
 
     @MainActor

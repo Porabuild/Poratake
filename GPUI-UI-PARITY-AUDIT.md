@@ -6093,6 +6093,28 @@ The default native scroll fixture also passed. The
 details the capture and comparison. Scrolling through multiple live frames
 with deliberately overlapping panels remains open.
 
+### 2026-11-18 native macOS multi-frame scroll capture with overlapping controls
+
+An AppKit fixture moved a generated page by 758 points between captures.
+The actual GPUI preview, resume prompt and toolbar stayed visible inside
+the selected 600×1084-point region. The test placed the preview over the
+page explicitly and used the left side of the display after a full-width
+attempt encountered unrelated pixels in the overlap. AppKit advanced only
+the generated page. The fixture called the production post-scroll capture
+and finish paths without posting pointer events.
+
+ScreenCaptureKit supplied three 1200×2168 frames. Both seams matched the
+expected 652-pixel overlap and the daemon saved a 1200×5200 PNG. The
+independent reference used three unobstructed captures converted from
+Display P3 to sRGB with ColorSync. In each theme, 6,239,946 of 6,240,000
+pixels matched exactly. The other 54 differed by one RGB level in two
+rows away from the seams. The default Swift fixture passed.
+
+The [native run record](tests/native/evidence/macos-ui/native-scroll-multiframe-overlap-20261118.txt)
+describes the test. Pointer-driven movement with deliberately overlapping
+controls, ambiguous repeated content and physical mixed-DPI displays
+remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
