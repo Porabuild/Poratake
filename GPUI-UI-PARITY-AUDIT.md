@@ -7465,6 +7465,20 @@ the confirmed paused state after a failed Stop. The Metal toolbar
 workflow also checked the rendered Pause and Resume controls with both
 replies held. The native probes used app-local input and a fixture daemon.
 
+### 2026-11-18 macOS camera protection cleanup after Stop
+
+After a successful Stop, GPUI sends camera protection cleanup before
+returning to Idle and waits for the reply off the UI thread. The macOS
+daemon applies protection changes in request order on the main queue
+so a subsequent recording can enable protection safely.
+
+With the cleanup reply held, the native GPUI test decoded the preview
+frame in 93–113 ms after Stop and the editor frame 77–108 ms after opening
+it from the preview. Both appearances used a generated recording and a
+simulated daemon. The Metal recording workflow checks direct editor
+opening while the same reply is held. The AppKit lifecycle fixture
+checks protection request order and the panel's final sharing state.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

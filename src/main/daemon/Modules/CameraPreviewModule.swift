@@ -132,11 +132,12 @@ class CameraPreviewModule: Module {
         }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            Task { @MainActor in
-                self.isContentProtected = enabled
-                self.panel?.sharingType = enabled ? .none : .readOnly
-                self.respond(id: requestId, result: ["protected": enabled])
-            }
+            self.isContentProtected = enabled
+            self.panel?.sharingType = enabled ? .none : .readOnly
+            #if RECORDING_OUTLINE_TEST
+            self.testProtectionReplies.append(enabled)
+            #endif
+            self.respond(id: requestId, result: ["protected": enabled])
         }
     }
     
@@ -365,6 +366,7 @@ class CameraPreviewModule: Module {
     private(set) var testShowResults: [String: Bool] = [:]
     private(set) var testFailedShows: Set<String> = []
     private(set) var testHideReplies: [String] = []
+    private(set) var testProtectionReplies: [Bool] = []
 
     @MainActor
     var testStartup: (panel: NSPanel?, generation: UInt64, starts: [String?]) {

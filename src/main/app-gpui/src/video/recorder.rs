@@ -265,6 +265,17 @@ pub fn stop(daemon: &DaemonHandle) -> anyhow::Result<RecordingStop> {
 }
 
 pub fn complete_stop(daemon: &DaemonHandle) {
+    #[cfg(target_os = "macos")]
+    match daemon.camera_preview().begin_content_protection(false) {
+        Ok(wait) => smol::spawn(async move {
+            if let Err(error) = smol::unblock(wait).await {
+                eprintln!("[recorder] camera content protection failed: {error}");
+            }
+        })
+        .detach(),
+        Err(error) => eprintln!("[recorder] camera content protection failed: {error}"),
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Err(error) = set_camera_content_protection(daemon, false) {
         eprintln!("[recorder] camera content protection failed: {error}");
     }

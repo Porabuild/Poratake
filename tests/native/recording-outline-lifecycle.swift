@@ -94,6 +94,18 @@ struct RecordingOutlineLifecycleTest {
         }
         precondition(camera.testStartup.starts == ["generated camera"],
                      "initial camera preview started more than once: \(camera.testStartup.starts)")
+        let protectionOrder = [true, false, true]
+        for (index, enabled) in protectionOrder.enumerated() {
+            camera.handle(
+                method: "setContentProtection", params: ["enabled": AnyCodable(enabled)],
+                requestId: "camera-protection-\(index)"
+            )
+        }
+        try await waitFor("camera protection requests did not finish") {
+            camera.testProtectionReplies.count == protectionOrder.count
+        }
+        precondition(camera.testProtectionReplies == protectionOrder)
+        precondition(camera.testStartup.panel?.sharingType == NSWindow.SharingType.none)
         show("generated camera", requestId: "repeated-camera")
         try await waitFor("repeated camera preview request did not finish") {
             camera.testShowResults["repeated-camera"] == true

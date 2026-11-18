@@ -892,6 +892,20 @@ pub fn run() {
                 );
                 continue;
             }
+            ("camera-preview", "setContentProtection")
+                if request.params.as_ref().is_some_and(|params| params["enabled"] == false) =>
+            {
+                if let Some(fixture) = optional_capture_fixture(&output)
+                    .filter(|fixture| fixture["recordingProtectionBarrier"] == true)
+                {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"protected": false}));
+                    });
+                    continue;
+                }
+                json!({"protected": false})
+            }
             ("screen-recorder", "setSystemAudio")
                 if optional_capture_fixture(&output)
                     .is_some_and(|fixture| fixture["recordingAudioFailure"] == true) =>

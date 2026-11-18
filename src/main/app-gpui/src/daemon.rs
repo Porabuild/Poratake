@@ -638,6 +638,18 @@ impl CameraPreviewClient<'_> {
         )
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn begin_content_protection(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::SetContentProtection.id(),
+            Some(serde_json::to_value(ContentProtectionRequest { enabled })?),
+        )
+    }
+
     fn call(&self, method: CameraPreviewMethod, params: Option<Value>) -> Result<()> {
         self.daemon
             .call(CAMERA_PREVIEW_MODULE, method.id(), params)

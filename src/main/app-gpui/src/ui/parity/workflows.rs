@@ -725,6 +725,7 @@ fn recorded_screen_handoff(
     output: &Path,
 ) {
     use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
 
     let recordings = output.join("recording-screen-handoff");
     std::fs::create_dir_all(&recordings).unwrap();
@@ -738,6 +739,10 @@ fn recorded_screen_handoff(
         )
     });
     let mut fixture = serde_json::json!({"freeze": "live"});
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let protection = accept_fixture_barrier(&listener);
+    fixture["recordingProtectionBarrier"] = true.into();
+    fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
     let duration = configure_recording_fixture(&mut fixture, "screen");
     std::fs::write(
         output.join("capture-fixture.json"),
@@ -765,6 +770,15 @@ fn recorded_screen_handoff(
     click_measured(cx, control, "recording-controls", 1);
     cx.run_until_parked();
     wait_for_recording_stop(cx);
+    let mut protection = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| registry::is_open(WindowKind::VideoEditor, cx)),
+        "The recording editor must open while the camera protection reply is held"
+    );
+    protection.write_all(&[1]).unwrap();
     assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
     let calls = super::daemon_fixture::calls(output);
     let recording = Path::new(
