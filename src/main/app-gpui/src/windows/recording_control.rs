@@ -367,12 +367,12 @@ impl RecordingControl {
     }
 
     #[cfg(any(windows, target_os = "macos"))]
-    fn clear_native_tooltip(&mut self, _window: &Window) {
+    fn clear_native_tooltip(&mut self, _window: &Window, _cx: &mut Context<Self>) {
+        let _had_tooltip = self.hovered_tooltip.take().is_some();
         #[cfg(all(test, windows))]
-        if self.hovered_tooltip.is_some() {
+        if _had_tooltip {
             crate::system::native_tooltip::record_test_hide("recording-control");
         }
-        self.hovered_tooltip = None;
         #[cfg(windows)]
         {
             self.tooltip_generation = self.tooltip_generation.wrapping_add(1);
@@ -381,7 +381,12 @@ impl RecordingControl {
             }
         }
         #[cfg(target_os = "macos")]
-        super::scroll_capture::set_native_tooltip(_window, None);
+        {
+            super::scroll_capture::set_native_tooltip(_window, None);
+            if _had_tooltip && herogpui::extend::focus_visible(_cx) {
+                _cx.notify();
+            }
+        }
     }
 
     #[cfg(any(windows, target_os = "macos"))]
@@ -399,7 +404,7 @@ impl RecordingControl {
                 .as_ref()
                 .is_some_and(|(current, _)| *current == id)
             {
-                self.clear_native_tooltip(window);
+                self.clear_native_tooltip(window, cx);
             }
             return;
         }
@@ -407,12 +412,14 @@ impl RecordingControl {
         if !self.pointer_inside {
             return;
         }
-        self.clear_native_tooltip(window);
+        self.clear_native_tooltip(window, cx);
         self.hovered_tooltip = Some((id, tooltip.clone()));
         #[cfg(target_os = "macos")]
         {
-            let _ = cx;
             super::scroll_capture::set_native_tooltip(window, Some(tooltip.as_ref()));
+            if herogpui::extend::focus_visible(cx) {
+                cx.notify();
+            }
         }
         #[cfg(windows)]
         {
@@ -443,11 +450,19 @@ impl RecordingControl {
         }
     }
 
+    fn suppress_keyboard_tooltip(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.hovered_tooltip.is_some();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
     fn tooltip(
         id: &'static str,
         tooltip: impl Into<SharedString>,
         child: impl IntoElement,
         max_body_width: Option<f32>,
+        suppress_keyboard_tooltip: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip = tooltip.into();
@@ -464,7 +479,8 @@ impl RecordingControl {
             }
             None => herogpui::components::Tooltip::new(tooltip.clone()),
         }
-        .id((gpui::ElementId::from("recording-focus-tooltip"), id));
+        .id((gpui::ElementId::from("recording-focus-tooltip"), id))
+        .is_disabled(suppress_keyboard_tooltip);
         let placement = match id {
             "recording-target-tip"
             | "recording-start"
@@ -483,8 +499,8 @@ impl RecordingControl {
                 .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                     this.hover_native_tooltip(id, hover_tooltip.clone(), *hovered, window, cx);
                 }))
-                .capture_any_mouse_down(cx.listener(|this, _, window, _| {
-                    this.clear_native_tooltip(window);
+                .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                    this.clear_native_tooltip(window, cx);
                 }))
                 .child(child);
             #[cfg(target_os = "macos")]
@@ -564,7 +580,7 @@ impl RecordingControl {
                             this.pending_device_menu = None;
                             this.menu.close(window, cx);
                             this.device_request = this.device_request.wrapping_add(1);
-                            this.clear_native_tooltip(window);
+                            this.clear_native_tooltip(window, cx);
                             this.pointer_inside = false;
                             this.countdown_generation = this.countdown_generation.wrapping_add(1);
                             this.countdown_active = false;
@@ -1149,6 +1165,7 @@ impl RecordingControl {
                 cx,
             ),
             overlay_icon(
+                self.suppress_keyboard_tooltip(),
                 "recording-system-audio",
                 if self.system_audio {
                     "volume-2"
@@ -1227,7 +1244,14 @@ impl RecordingControl {
         div()
             .relative()
             .flex()
-            .child(Self::tooltip(id, tooltip, trigger, None, cx))
+            .child(Self::tooltip(
+                id,
+                tooltip,
+                trigger,
+                None,
+                self.suppress_keyboard_tooltip(),
+                cx,
+            ))
             .child(self.menu.render_dropdown(&format!("recording-{id}"), cx))
             .into_any_element()
     }
@@ -2283,6 +2307,7 @@ fn control_window_metrics(
 }
 
 fn overlay_icon(
+    suppress_keyboard_tooltip: bool,
     id: &'static str,
     icon: &'static str,
     tooltip: &'static str,
@@ -2299,6 +2324,7 @@ fn overlay_icon(
                 on_click(this, window, cx);
             })),
         None,
+        suppress_keyboard_tooltip,
         cx,
     )
 }
@@ -2384,6 +2410,7 @@ impl Render for RecordingControl {
                     name.clone(),
                     target_label,
                     Some(tooltip_body_width),
+                    self.suppress_keyboard_tooltip(),
                     cx,
                 ))
                 .child(toolbar::hairline(&theme));
@@ -2398,7 +2425,7 @@ impl Render for RecordingControl {
         if self.mode == Mode::PreRecording {
             let start_name = "Start recording";
             return recording_shell(
-                &self.focus_handle,
+                self,
                 bar.child(Self::tooltip(
                     "recording-start",
                     start_name,
@@ -2407,12 +2434,14 @@ impl Render for RecordingControl {
                         .child(toolbar::filled_glyph(theme.accent, true))
                         .on_press(cx.listener(|this, _, window, cx| this.start(window, cx))),
                     None,
+                    self.suppress_keyboard_tooltip(),
                     cx,
                 ))
                 .child(toolbar::hairline(&theme))
                 .children(toggles)
                 .child(toolbar::hairline(&theme))
                 .child(overlay_icon(
+                    self.suppress_keyboard_tooltip(),
                     "recording-cancel",
                     "x",
                     "Close",
@@ -2430,8 +2459,9 @@ impl Render for RecordingControl {
 
         let stop_name = "Stop recording";
         recording_shell(
-            &self.focus_handle,
+            self,
             bar.child(overlay_icon(
+                self.suppress_keyboard_tooltip(),
                 "recording-pause",
                 if paused { "play" } else { "pause" },
                 if paused {
@@ -2453,6 +2483,7 @@ impl Render for RecordingControl {
                         this.finish(false, window, cx);
                     })),
                 None,
+                self.suppress_keyboard_tooltip(),
                 cx,
             ))
             .child(
@@ -2474,6 +2505,7 @@ impl Render for RecordingControl {
             .children(toggles)
             .child(toolbar::hairline(&theme))
             .child(overlay_icon(
+                self.suppress_keyboard_tooltip(),
                 "recording-discard",
                 "trash-2",
                 "Discard recording",
@@ -2493,7 +2525,7 @@ impl Render for RecordingControl {
 }
 
 fn recording_shell(
-    focus: &FocusHandle,
+    control: &RecordingControl,
     bar: impl IntoElement,
     menu: &MenuHandle,
     countdown: Option<u32>,
@@ -2503,7 +2535,7 @@ fn recording_shell(
 ) -> impl IntoElement {
     let content = crate::ui::font::root()
         .id("recording-control")
-        .track_focus(focus)
+        .track_focus(&control.focus_handle)
         .size_full()
         .flex()
         .flex_col()
@@ -2511,7 +2543,7 @@ fn recording_shell(
         .on_key_down(
             cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                 #[cfg(any(windows, target_os = "macos"))]
-                this.clear_native_tooltip(window);
+                this.clear_native_tooltip(window, cx);
                 #[cfg(target_os = "macos")]
                 cx.notify();
                 if event.keystroke.key != "escape" {
@@ -2563,6 +2595,7 @@ fn recording_shell(
                             ),
                     )
                     .child(overlay_icon(
+                        control.suppress_keyboard_tooltip(),
                         "recording-countdown-cancel",
                         "x",
                         "Cancel countdown",
@@ -2588,9 +2621,9 @@ fn recording_shell(
                 let exiting = control.clone();
                 window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, window, cx| {
                     if phase == gpui::DispatchPhase::Capture {
-                        let _ = exiting.update(cx, |this, _| {
+                        let _ = exiting.update(cx, |this, cx| {
                             this.pointer_inside = false;
-                            this.clear_native_tooltip(window);
+                            this.clear_native_tooltip(window, cx);
                         });
                     }
                 });

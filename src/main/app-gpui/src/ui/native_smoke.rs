@@ -616,6 +616,61 @@ pub fn native_ui_probe() {
                             });
                             return;
                         }
+                        if let Some(key) = command.strip_prefix("record-key ") {
+                            use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+                            let key = match key {
+                                "tab" => "tab",
+                                "shift-tab" => "shift-tab",
+                                _ => panic!("unsupported recording probe keystroke"),
+                            };
+                            let keystroke = Keystroke::parse(key).expect("recording probe keystroke");
+                            if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+                                let _ = cx.update_window(handle, |_, window, cx| {
+                                    window.dispatch_event(PlatformInput::KeyDown(KeyDownEvent {
+                                        keystroke: keystroke.clone(),
+                                        is_held: false,
+                                        prefer_character_input: false,
+                                    }), cx);
+                                });
+                                if cx.windows().contains(&handle) {
+                                    let _ = cx.update_window(handle, |_, window, cx| {
+                                        window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+                                    });
+                                }
+                            }
+                            println!("record key dispatched: {key}");
+                            return;
+                        }
+                        if let Some(index) = command.strip_prefix("record-hover-control ") {
+                            let index: usize = index.parse().expect("recording control index");
+                            if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+                                let _ = cx.update_window(handle, |_, window, cx| {
+                                    let position = crate::ui::parity::measured("recording-controls", index).center();
+                                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
+                                        position,
+                                        pressed_button: None,
+                                        modifiers: Modifiers::none(),
+                                    }), cx);
+                                });
+                            }
+                            println!("record hover dispatched: {index}");
+                            return;
+                        }
+                        if command == "record-focus-status" {
+                            if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+                                let _ = cx.update_window(handle, |_, window, cx| {
+                                    let background = gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                                    let scale = window.scale_factor();
+                                    let tips = window.painted_quads().into_iter().filter(|quad| {
+                                        quad.background == background
+                                            && (31. ..=35.).contains(&(quad.bounds.size.height.0 / scale))
+                                            && quad.bounds.size.width.0 / scale > 35.
+                                    }).count();
+                                    println!("record focus status: visible={} inline={tips} native={}", herogpui::extend::focus_visible(cx), probe_tooltip(window).as_deref().unwrap_or("none"));
+                                });
+                            }
+                            return;
+                        }
                         if matches!(command.as_str(), "record-hover" | "record-exit") {
                             let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) else {
                                 return;

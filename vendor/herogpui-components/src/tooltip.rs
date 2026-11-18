@@ -432,7 +432,7 @@ impl ParentElement for Tooltip {
 
 impl RenderOnce for Tooltip {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        if self.is_disabled {
+        if self.is_disabled && self.trigger != TooltipTrigger::Focus {
             // A disabled tooltip renders its trigger and nothing else.
             return util::apply_sx(gpui::div().flex().children(self.children), &self.sx)
                 .into_any_element();
@@ -498,10 +498,11 @@ impl RenderOnce for Tooltip {
         let hover_open = state_snapshot.is_open();
         // `trigger="focus"` takes the pointer out of it; `hover` is both, which
         // is React Aria's behaviour for the default.
-        let open = match self.trigger {
-            TooltipTrigger::Hover => hover_open || focus_open,
-            TooltipTrigger::Focus => focus_open,
-        };
+        let open = !self.is_disabled
+            && match self.trigger {
+                TooltipTrigger::Hover => hover_open || focus_open,
+                TooltipTrigger::Focus => focus_open,
+            };
 
         let hover_state = state.clone();
         let dismiss_current = current_tooltip.clone();
@@ -629,7 +630,7 @@ impl RenderOnce for Tooltip {
         // The tip — and the max-content line shaping it is sized from — is
         // only built while it is visible: `shape_line` is the most expensive
         // call in this render, and a closed tooltip has no surface to size.
-        if phase != util::OverlayPhase::Closed {
+        if !self.is_disabled && phase != util::OverlayPhase::Closed {
             // The caller's body is built first: it takes `cx` mutably, and the
             // theme reads below hold it borrowed for the rest of this block.
             let body = self.body.take().map(|render| render(window, cx));

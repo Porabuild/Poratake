@@ -195,15 +195,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             capture(cx, window, output, "record-control-microphone-open");
             escape(cx, window);
             #[cfg(any(windows, target_os = "macos"))]
-            {
+            let tooltip = |cx: &mut HeadlessAppContext| {
                 let control = window.downcast::<RecordingControl>().unwrap();
-                let tooltip = |cx: &mut HeadlessAppContext| {
-                    cx.update(|cx| {
-                        control
-                            .update(cx, |control, _, _| control.parity_hovered_tooltip())
-                            .unwrap()
-                    })
-                };
+                cx.update(|cx| {
+                    control
+                        .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                        .unwrap()
+                })
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            {
                 let audio = measured("recording-controls", 4).center();
                 hover(cx, window, f32::from(audio.x), f32::from(audio.y));
                 assert_eq!(tooltip(cx).as_deref(), Some("Turn system sounds off"));
@@ -285,6 +286,26 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             }
             #[cfg(target_os = "macos")]
             {
+                let focused = cx
+                    .update_window(window, |_, window, cx| window.focused(cx))
+                    .unwrap()
+                    .expect("recording button should keep keyboard focus");
+                let camera = measured("recording-controls", 2).center();
+                hover(cx, window, f32::from(camera.x), f32::from(camera.y));
+                assert_eq!(tooltip(cx).as_deref(), Some("Select camera"));
+                assert!(
+                    focus_tips(cx).is_empty(),
+                    "hover should replace the keyboard tooltip"
+                );
+                cx.update_window(window, |_, window, cx| {
+                    assert_eq!(window.focused(cx), Some(focused));
+                    assert!(herogpui::extend::focus_visible(cx));
+                })
+                .unwrap();
+                hover(cx, window, 1., 1.);
+                assert!(tooltip(cx).is_none());
+                assert_focus_tooltip(cx, 6, false);
+
                 click_measured(cx, window, "recording-controls", 1);
                 settle(cx, window);
                 let width = cx.update(|cx| {

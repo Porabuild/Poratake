@@ -6757,6 +6757,28 @@ hosted run for this branch at the time of the check. The local camera
 authorization probe reported undetermined, and System Information
 listed one built-in Retina display.
 
+### 2026-11-18 macOS toolbar keyboard and pointer tooltip handoff
+
+The native recording toolbar previously kept a keyboard-focus label
+visible when the pointer opened a native label over another control.
+The camera hover now suppresses the inline keyboard label, and pointer
+exit restores it to the focused control. The vendored HeroGPUI focus
+tooltip keeps its keyed focus scope mounted while hiding the label. The recording control retains keyboard focus and focus
+indication through the handoff.
+
+The native development probe dispatched app-local input in light and
+dark mode. After Tab, one inline label painted. Hover over Camera
+previously reported that label alongside the native Select camera
+label. The fixed build painted zero inline labels during the native
+hover. Pointer exit restored one inline label, and the next Tab
+showed a single label for the next control.
+
+The offscreen Metal regression also asserted that the focused handle
+stayed the same during pointer hover. All 36 existing toolbar PNGs
+matched before and after byte for byte. The probe verified AppKit
+windows and GPUI dispatch with generated input. Physical pointer
+delivery and physical mixed-display focus remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

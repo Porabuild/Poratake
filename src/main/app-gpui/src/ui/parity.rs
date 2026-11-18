@@ -70,7 +70,7 @@ pub(crate) fn record(name: &'static str, bounds: Vec<Bounds<Pixels>>) {
     });
 }
 
-fn measured(group: &str, index: usize) -> Bounds<Pixels> {
+pub(super) fn measured(group: &str, index: usize) -> Bounds<Pixels> {
     GEOMETRY.with_borrow(|geometry| geometry[group][index])
 }
 
