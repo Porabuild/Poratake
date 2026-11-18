@@ -12,6 +12,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private let windowFrame = WindowRecordingFrame()
 
     private var systemAudioAssetWriter: AVAssetWriter?
     private var systemAudioInput: AVAssetWriterInput?
@@ -273,11 +274,16 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput?.expectsMediaDataInRealTime = true
 
-        let sourcePixelBufferAttributes: [String: Any] = [
+        var sourcePixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: videoWidth,
             kCVPixelBufferHeightKey as String: videoHeight,
         ]
+
+        if capturedWindow != nil {
+            sourcePixelBufferAttributes[kCVPixelBufferIOSurfacePropertiesKey as String] = [:]
+            sourcePixelBufferAttributes[kCVPixelBufferMetalCompatibilityKey as String] = true
+        }
 
         pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoInput!,
@@ -1544,10 +1550,13 @@ extension ScreenCaptureRecorder: SCStreamOutput {
                 return
             }
 
-            guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            guard let capturedImage = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
             let time = presentationTime
             writerQueue.sync {
+                let imageBuffer = config?.windowID == nil ? capturedImage : windowFrame.centered(
+                    capturedImage, sample: sampleBuffer, pool: pixelBufferAdaptor.pixelBufferPool
+                )
                 #if RECORDING_TIMELINE_TEST
                 if testVideoBackpressure {
                     pendingVideoFrame = (imageBuffer, time)

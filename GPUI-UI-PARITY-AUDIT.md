@@ -6550,13 +6550,37 @@ and a complete WindowServer lookup still contained the target. The
 current recorder handled actual closure once the fixture released the
 window. No polling change was kept.
 
-**Open visual issue.** After the target changed from 360 × 240 points to
-220 × 315 points, the decoded blue image filled columns 0–335 of the
+Before the follow-up below, changing the target from 360 × 240 points to
+220 × 315 points put the decoded blue image in columns 0–335 of the
 720-pixel frame. Black padding occupied the right side. The ScreenCaptureKit
 frame attachments reported the same origin before encoding. The expected
 centered fit leaves padding on both sides. The
 [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes both native sample results.
+
+### 2026-11-18 macOS resized-window recording alignment
+
+The recorder now uses the ScreenCaptureKit frame's content rectangle and
+scale to move already-fitted window pixels into the center of the fixed
+output. Core Image fills the remaining area with opaque black in a writer
+pool buffer. Full-sized and already-centered frames reuse the input buffer.
+That centered geometry matches the cursor tracker's existing fit.
+
+Two live screen-only window takes in light and dark kept their 720 × 480
+resolution. The portrait target occupied columns 192–527, with 192 pixels
+of black on each side. The wide target occupied rows 132–347, with 132
+pixels above and below. The target also moved, hid, returned and closed,
+and both takes opened in the video editor. The drawing, reopen and export
+fixture passed on the original take and on a copy starting at a
+post-resize portrait frame. It checks the composed preview against the
+decoded export within codec tolerance.
+
+The focused frame test checked exact pixels and opaque padding on arm64
+and x86_64 under Rosetta. At 4K, a generated-buffer measurement gave a
+0.94 ms warm median and 4.69 ms warm p95, with a 59.60 ms first render.
+Live recording throughput at 4K and physical mixed-display transitions
+remain open. The [native record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the measurements.
 
 ## Review gate
 

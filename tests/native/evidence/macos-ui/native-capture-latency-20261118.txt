@@ -311,3 +311,34 @@ with a scale factor of 2. The original content rect was (0, 0, 360, 240)
 points. The resized content rect was approximately (0, 0, 167.62, 240)
 points at content scale 0.762. The left alignment was present before
 the video writer received the frame.
+
+Centering resized window frames
+
+Two live light and dark recordings used the authorized screen-only
+daemon, with the window centering change and timing probes. The source
+was 360x240 points, moved while green, resized to 220x315 while blue,
+then resized to 500x150 while yellow. The test also hid and restored
+the target, then closed it while the owning process stayed open.
+
+                                      Light                 Dark
+Output                                720x480               720x480
+Decoded frames                         11                     10
+Portrait content columns              192..527               192..527
+Wide content rows                     132..347               132..347
+Close to automatic Stop request       273.1 ms               274.0 ms
+First centering operation             19.65 ms               13.05 ms
+Later centering operations            0.43–4.12 ms            1.77–5.82 ms
+
+The source frame order was red, green, blue and yellow. Both previews
+and video editors opened. The headless GPUI drawing, reopen and export
+check ran with the captured dark take and a trimmed, re-encoded copy
+starting on the portrait frame. Its annotation-mask mean RGB preview
+versus export error was 1.45 and 5.07 levels, respectively.
+
+The native pixel fixture also verified both orientations and passthrough
+of the input buffer for full-frame or missing content metadata. A
+separate 3840x2160 pooled-buffer run measured 61 operations. The initial
+Core Image render took 59.60 ms. The median over the next 60 was
+0.94 ms, with 4.69 ms p95 and 7.46 ms maximum. This isolates the centering
+step. Sustained 4K capture and mixed-display transitions were outside
+the test.
