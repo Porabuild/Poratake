@@ -474,9 +474,29 @@ struct PresetDraft {
 
 pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
+pub(crate) struct PreparedScreenshot {
+    base: Arc<image::DynamicImage>,
+    image: Arc<gpui::RenderImage>,
+    tiles: Vec<crate::editor::export::PreviewEdgeImage>,
+}
+
+impl PreparedScreenshot {
+    pub(crate) fn open(path: &str) -> image::ImageResult<Self> {
+        let decoded = crate::render::images::open(path)?;
+        let base = Arc::new(image::DynamicImage::ImageRgba8(decoded.into_rgba8()));
+        let image = render_image_from_base(&base);
+        let tiles = crate::editor::image_tiles::create(&image);
+        Ok(Self { base, image, tiles })
+    }
+
+    pub(crate) fn dimensions(&self) -> (f32, f32) {
+        (self.base.width() as f32, self.base.height() as f32)
+    }
+}
+
 impl EditorWindow {
     pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::from_decoded(path, None, decode_editor_image(path), window, cx)
+        Self::from_prepared(path, None, load_editor_image(path), window, cx)
     }
 
     #[cfg(test)]
@@ -486,13 +506,13 @@ impl EditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::from_decoded(path, Some(persisted), decode_editor_image(path), window, cx)
+        Self::from_prepared(path, Some(persisted), load_editor_image(path), window, cx)
     }
 
-    pub(crate) fn from_decoded(
+    pub(crate) fn from_prepared(
         path: &str,
         persisted: Option<PersistedEditorState>,
-        decoded: Option<image::DynamicImage>,
+        prepared: Option<PreparedScreenshot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -501,15 +521,13 @@ impl EditorWindow {
                 .and_then(|state| serde_json::from_value(state).ok())
                 .unwrap_or_default()
         });
-        let base = decoded.map(|image| image::DynamicImage::ImageRgba8(image.into_rgba8()));
-        let (width, height) = base.as_ref().map_or((0., 0.), |image| {
-            (image.width() as f32, image.height() as f32)
-        });
-        let image = base.as_ref().map(render_image_from_base);
-        let image_tiles = image
-            .as_deref()
-            .map(crate::editor::image_tiles::create)
-            .unwrap_or_default();
+        let (width, height) = prepared
+            .as_ref()
+            .map_or((0., 0.), PreparedScreenshot::dimensions);
+        let (base_image, image, image_tiles) = prepared.map_or_else(
+            || (None, None, Vec::new()),
+            |prepared| (Some(prepared.base), Some(prepared.image), prepared.tiles),
+        );
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
@@ -523,7 +541,7 @@ impl EditorWindow {
             .unwrap_or(0);
         let mut editor = Self {
             image,
-            base_image: base.map(Arc::new),
+            base_image,
             layers: persisted.layers,
             capture_mode: false,
             meta_held: false,
@@ -3977,8 +3995,8 @@ impl EditorWindow {
         self.history.push(annotations);
     }
 }
-fn decode_editor_image(path: &str) -> Option<image::DynamicImage> {
-    match crate::render::images::open(path) {
+fn load_editor_image(path: &str) -> Option<PreparedScreenshot> {
+    match PreparedScreenshot::open(path) {
         Ok(image) => Some(image),
         Err(error) => {
             eprintln!("[editor] failed to load {path}: {error}");

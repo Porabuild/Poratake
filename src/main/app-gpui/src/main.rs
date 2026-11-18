@@ -67,7 +67,12 @@ pub(crate) fn open_editor_with_state(
     path: &str,
     editor_state: Option<editor::window::PersistedEditorState>,
 ) -> bool {
-    open_editor_with_image(cx, path, editor_state, crate::render::images::open(path))
+    open_editor_with_image(
+        cx,
+        path,
+        editor_state,
+        editor::window::PreparedScreenshot::open(path),
+    )
 }
 
 pub(crate) fn open_editor_async(cx: &mut App, path: String) {
@@ -75,7 +80,7 @@ pub(crate) fn open_editor_async(cx: &mut App, path: String) {
         let source = path.clone();
         let image = cx
             .background_executor()
-            .spawn(async move { crate::render::images::open(source) })
+            .spawn(async move { editor::window::PreparedScreenshot::open(&source) })
             .await;
         cx.update(|cx| open_editor_with_image(cx, &path, None, image));
     })
@@ -86,7 +91,7 @@ fn open_editor_with_image(
     cx: &mut App,
     path: &str,
     editor_state: Option<editor::window::PersistedEditorState>,
-    image: image::ImageResult<image::DynamicImage>,
+    image: image::ImageResult<editor::window::PreparedScreenshot>,
 ) -> bool {
     let image = match image {
         Ok(image) => image,
@@ -109,13 +114,9 @@ fn open_editor_with_image(
         })
         .unwrap_or((1920.0, 1080.0));
     let stored = crate::config::window_state::get(crate::config::window_state::SCREENSHOT_EDITOR);
-    let (width, height) = chrome::editor_window_size(
-        image.width() as f32,
-        image.height() as f32,
-        work_width,
-        work_height,
-        stored,
-    );
+    let (image_width, image_height) = image.dimensions();
+    let (width, height) =
+        chrome::editor_window_size(image_width, image_height, work_width, work_height, stored);
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
@@ -129,7 +130,7 @@ fn open_editor_with_image(
         ),
         |window, cx| {
             cx.new(|cx| {
-                editor::EditorWindow::from_decoded(path, editor_state, Some(image), window, cx)
+                editor::EditorWindow::from_prepared(path, editor_state, Some(image), window, cx)
             })
         },
     );

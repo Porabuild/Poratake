@@ -6266,6 +6266,30 @@ export matches the selected screenshot. It passed in light at 2× and
 dark at 1×. The arm64 suite passed 1,162 tests with 23 ignored. Physical
 input and final compositor paint timing remain open.
 
+### 2026-11-18 macOS screenshot editor bitmap preparation
+
+The background editor worker now prepares the color-managed base image,
+the GPUI display bitmap and any required tiles before handing the result
+to the UI thread. Synchronous editor entry points reuse the same image
+preparation. The editor's pixel format, tile geometry and history loading
+remain consistent with the previous path.
+
+An initial unpaired timing run was inconclusive, so the native probe
+alternated old and new builds in opposite order. It recorded eight warm
+samples per build for each case on the Retina Apple M5 Pro. During the
+editor handoff, a lightweight app command measured the longest UI response
+in each trial. The median of those longest responses fell from 25.8 to
+16.7 ms for live 3400×2060 captures and from 21.0 to 16.3 ms for a generated
+17000×400 tiled PNG. The median time to a visible editor stayed at 61 ms
+for the live case and moved from 56.9 to 59.3 ms for the tiled case. The
+highest live probe response was 39.2 ms on the new build versus 35.7 ms
+on the old build. Physical event and final compositor timing remain open.
+
+All 1,162 arm64 GPUI tests passed with 23 ignored. The light Metal
+preview-to-editor workflow and the 2× Metal 17000-pixel texture tests
+passed, including panning across horizontal and vertical tile seams and
+reopening the saved images.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
