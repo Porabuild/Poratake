@@ -6307,6 +6307,23 @@ Electron preview tests passed. The native hidden-window probe and both
 light and dark Metal scroll workflows passed. Physical scroll motion
 and compositor timing remain open.
 
+### 2026-11-18 macOS recording overlay dismissal latency
+
+The daemon previously waited for ScreenCaptureKit's capture-filter refresh
+before returning the hide reply, even after the recording overlay was
+transparent, ordered out and unregistered. GPUI waited for that reply.
+The daemon now acknowledges the hide once the window cleanup is complete.
+The remaining filter refresh still runs through the same registry.
+
+The native fixture held the filter refresh after ordering out the overlay.
+The old build failed the reply check. The fixed build replied with
+`visible: false` while the refresh was still held and showed no remaining
+registered overlay. The focused and full fixtures passed on arm64 and
+x86_64 under Rosetta. The production Swift daemon typechecked, and the
+light and dark recording toolbar Metal workflows and 82 Electron and
+daemon contract tests passed. The held refresh is simulated. Live filter
+and compositor timings remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

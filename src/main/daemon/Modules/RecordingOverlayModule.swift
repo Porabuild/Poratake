@@ -92,8 +92,12 @@ class RecordingOverlayModule: Module {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
-                await self.hideOverlay()
+                self.hideOverlay()
+                #if RECORDING_OUTLINE_TEST
+                self.testHideReplies.append(requestId)
+                #endif
                 self.respond(id: requestId, result: ["visible": false])
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             }
         }
     }
@@ -313,10 +317,9 @@ class RecordingOverlayModule: Module {
     }
     
     @MainActor
-    private func hideOverlay() async {
+    private func hideOverlay() {
         presentationGeneration.cancel()
         removeOverlayWindows()
-        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
     }
 
     @MainActor
@@ -342,6 +345,8 @@ class RecordingOverlayModule: Module {
     }
 
     #if RECORDING_OUTLINE_TEST
+    private(set) var testHideReplies: [String] = []
+
     @MainActor
     var testHighlightWindow: NSWindow? { highlightWindow }
 
@@ -367,7 +372,10 @@ class RecordingOverlayModule: Module {
     }
 
     @MainActor
-    func testHideOverlay() async { await hideOverlay() }
+    func testHideOverlay() async {
+        hideOverlay()
+        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+    }
     #endif
 }
 

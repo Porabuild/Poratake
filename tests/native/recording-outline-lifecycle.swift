@@ -199,10 +199,41 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyRecordingOverlayHideReply() async throws {
+        guard let screen = NSScreen.screens.first, NSScreen.screens.count == 1 else {
+            print("SKIP recording overlay hide reply: needs a single AppKit display")
+            return
+        }
+        let module = RecordingOverlayModule()
+        let shown = try await module.testShowArea(x: 0, y: 0,
+            width: Int(screen.frame.width), height: Int(screen.frame.height))
+        precondition(shown && module.testOverlayWindows.count == 1)
+        let window = module.testOverlayWindows[0]
+        let registry = RecordingCaptureWindowRegistry.shared
+        var releaseRefresh: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater { ids in
+            precondition(ids.isEmpty)
+            await withCheckedContinuation { releaseRefresh = $0 }
+        }
+        module.handle(method: "hide", params: nil, requestId: "overlay-hide")
+        try await waitFor("hide did not reach capture filter refresh") { releaseRefresh != nil }
+        precondition(module.testOverlayWindows.isEmpty && registry.currentWindowIDs().isEmpty)
+        precondition(window.alphaValue == 0 && !window.isVisible)
+        precondition(module.testHideReplies == ["overlay-hide"],
+                     "Overlay hide reply waited for capture filter refresh")
+        guard let releaseRefresh else { preconditionFailure("no filter refresh to release") }
+        releaseRefresh.resume()
+        registry.setFilterUpdater(nil)
+        try await registry.updateFilterIfNeeded()
+        print("recording overlay hide replied before the held filter refresh finished")
+    }
+
+    @MainActor
     static func run() async throws {
         verifyCameraSelection()
         verifyCameraPreviewPlacement()
         verifyCameraPreviewError()
+        try await verifyRecordingOverlayHideReply()
         guard NSScreen.screens.first != nil else {
             print("SKIP recording outline lifecycle: no AppKit display")
             return
@@ -396,7 +427,11 @@ struct RecordingOutlineLifecycleTest {
         }
         Task { @MainActor in
             do {
-                try await run()
+                if CommandLine.arguments.contains("--recording-overlay-hide-reply") {
+                    try await verifyRecordingOverlayHideReply()
+                } else {
+                    try await run()
+                }
                 exit(EXIT_SUCCESS)
             } catch {
                 fputs("recording outline lifecycle failed: \(error)\n", stderr)
