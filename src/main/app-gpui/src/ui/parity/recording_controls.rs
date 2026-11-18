@@ -360,6 +360,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 output,
                 &format!("record-control-{name}-keyboard-focused"),
             );
+            #[cfg(target_os = "macos")]
+            if name == "camera" {
+                check_held_setting(cx, window, output, "show", |cx| key(cx, window, "enter"));
+                wait_for_camera_change(cx, window);
+                continue;
+            }
             key(cx, window, "enter");
             settle(cx, window);
         }
@@ -448,11 +454,11 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             };
             #[cfg(target_os = "macos")]
             if name == "microphone" {
-                check_held_disable(cx, window, output, "setMicrophone", disable);
+                check_held_setting(cx, window, output, "setMicrophone", disable);
                 continue;
             }
             #[cfg(target_os = "macos")]
-            check_held_disable(cx, window, output, "setCamera", disable);
+            check_held_setting(cx, window, output, "setCamera", disable);
             #[cfg(not(target_os = "macos"))]
             disable(cx);
             #[cfg(target_os = "macos")]
@@ -477,7 +483,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 8);
         #[cfg(target_os = "macos")]
-        check_held_disable(cx, window, output, "setSystemAudio", |cx| {
+        check_held_setting(cx, window, output, "setSystemAudio", |cx| {
             click_measured(cx, window, "recording-controls", 8);
         });
         cx.update(|cx| {
@@ -723,18 +729,19 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
 
 
 #[cfg(target_os = "macos")]
-fn check_held_disable(
+fn check_held_setting(
     cx: &mut HeadlessAppContext,
     window: gpui::AnyWindowHandle,
     output: &Path,
     method: &str,
-    disable: impl FnOnce(&mut HeadlessAppContext),
+    change: impl FnOnce(&mut HeadlessAppContext),
 ) {
     use crate::windows::recording_control::RecordingControl;
     use std::io::Write;
     use std::time::{Duration, Instant};
 
     let index = match method {
+        "show" => 4,
         "setCamera" => 6,
         "setMicrophone" => 7,
         "setSystemAudio" => 8,
@@ -753,14 +760,12 @@ fn check_held_disable(
         .unwrap(),
     )
     .unwrap();
-    disable(cx);
-    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
     let setting_is_on = |cx: &mut HeadlessAppContext| {
         cx.update_window(window, |root, _, cx| {
             let view = root.downcast::<RecordingControl>().unwrap();
             let control = view.read(cx);
             match method {
-                "setCamera" => control.parity_camera_status().0,
+                "show" | "setCamera" => control.parity_camera_status().0,
                 "setMicrophone" => control.parity_microphone(),
                 "setSystemAudio" => control.parity_system_audio(),
                 _ => unreachable!(),
@@ -768,12 +773,20 @@ fn check_held_disable(
         })
         .unwrap()
     };
-    assert!(setting_is_on(cx), "recording state must await the daemon reply");
+    let before = setting_is_on(cx);
+    change(cx);
+    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(setting_is_on(cx), before, "camera or audio state must await the daemon reply");
+    if method == "show" {
+        assert!(!cx.update_window(window, |root, _, cx| {
+            root.downcast::<RecordingControl>().unwrap().read(cx).start_enabled(cx)
+        }).unwrap(), "Start must wait for the camera preview");
+    }
     click_measured(cx, window, "recording-controls", index);
-    assert!(setting_is_on(cx));
+    assert_eq!(setting_is_on(cx), before);
     connection.write_all(&[1]).unwrap();
     let acknowledged = Instant::now();
-    while setting_is_on(cx) {
+    while setting_is_on(cx) == before {
         cx.run_until_parked();
         assert!(acknowledged.elapsed() < Duration::from_secs(5));
         std::thread::yield_now();

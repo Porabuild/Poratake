@@ -1509,6 +1509,10 @@ pub fn open(cx: &mut App) {
                 if command == "cancel capture switch" {
                     return crate::intents::cancel_recording_capture_switch(cx);
                 }
+                if command == "area selector" {
+                    return crate::capture::overlay::active_intents_for_test(cx)
+                        == [crate::capture::intent::CaptureIntent::Screenshot];
+                }
                 if command == "timer selector" {
                     return crate::capture::overlay::active_intents_for_test(cx)
                         == [crate::capture::intent::CaptureIntent::Timer];
@@ -1646,14 +1650,27 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() {
-                    if matches!(command.as_str(), "camera-enable" | "camera-disable" | "camera-state") {
+                    if let Some(id) = command.strip_prefix("camera-select ") {
                         return handle
                             .update(cx, |control, _, cx| {
-                                if command == "camera-state" {
-                                    return control.parity_camera_status().0;
-                                }
-                                recorder::state() == recorder::RecorderState::Recording
-                                    && control.set_camera(command == "camera-enable", cx)
+                                control.select_device(
+                                    crate::system::devices::DeviceKind::Camera,
+                                    Some((id.into(), id.into())),
+                                    cx,
+                                );
+                                true
+                            })
+                            .unwrap_or(false);
+                    }
+                    if matches!(
+                        command.as_str(),
+                        "camera-enable" | "camera-disable" | "camera-state" | "camera-pending"
+                    ) {
+                        return handle
+                            .update(cx, |control, _, cx| match command.as_str() {
+                                "camera-state" => control.parity_camera_status().0,
+                                "camera-pending" => control.parity_camera_status().1,
+                                _ => control.set_camera(command == "camera-enable", cx),
                             })
                             .unwrap_or(false);
                     }

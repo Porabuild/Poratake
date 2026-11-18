@@ -7433,6 +7433,23 @@ reply and checks the confirmed state before allowing the hide. All
 1,175 runnable GPUI tests and 111 Electron reference tests passed. The
 native probe used app-local input and simulated camera responses.
 
+### 2026-11-18 macOS camera preview before recording
+
+Opening the pre-recording camera preview now waits for the daemon off
+the UI thread. Start stays disabled until the preview request resolves.
+The camera selection is saved after a successful reply. Closing or
+replacing the toolbar invalidates its pending reply and sends Hide for
+the preview, including a preview that has yet to appear.
+
+Ten native runs with a simulated daemon covered accepted and rejected
+device selections, restoring an enabled camera, cancellation, and
+switching to an area screenshot in light and dark. While Show was held,
+cancellation completed in 21–23 ms and the screenshot selector became
+active in 53–56 ms. Both paths sent Hide before the delayed reply and
+sent no Start request. The Metal toolbar workflow also checks that
+Start is disabled during a pending Show. The fixture simulated camera
+replies with no device access.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

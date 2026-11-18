@@ -320,6 +320,12 @@ impl RecordingControl {
                             this.activation_subscription =
                                 Some(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
                         }
+                        #[cfg(target_os = "macos")]
+                        if this.camera && !this.request_pre_recording_camera(None, cx) {
+                            this.camera = false;
+                            this.persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                        }
+                        #[cfg(not(target_os = "macos"))]
                         if this.camera {
                             if let Err(error) = this.show_camera_preview(cx) {
                                 this.camera = false;
@@ -605,8 +611,7 @@ impl RecordingControl {
                         return false;
                     }
                     if this.preference_scope != preference_scope {
-                        this.hide_camera_preview(cx);
-                        close_toolbar(window);
+                        this.close_pre_recording_toolbar(window, cx);
                         return false;
                     }
                     #[cfg(not(any(windows, target_os = "macos")))]
@@ -675,7 +680,8 @@ impl RecordingControl {
 
     pub(crate) fn start_enabled(&self, cx: &App) -> bool {
         #[cfg(target_os = "macos")]
-        if crate::intents::recording_outline_is_hiding(cx)
+        if self.camera_pending
+            || crate::intents::recording_outline_is_hiding(cx)
             || crate::capture::overlay::pending_recording_preparation(cx).is_some()
         {
             return false;
@@ -1209,10 +1215,11 @@ impl RecordingControl {
         cx: &mut Context<Self>,
     ) {
         let generation = self.recording_error_generation;
+        let mode = self.mode;
         cx.spawn(async move |entity, cx| {
             let result = smol::unblock(wait).await;
             let _ = entity.update(cx, |this, cx| {
-                if this.recording_error_generation != generation || this.mode != Mode::Recording {
+                if this.recording_error_generation != generation || this.mode != mode {
                     return;
                 }
                 complete(this, result.is_ok(), cx);
@@ -1301,9 +1308,15 @@ impl RecordingControl {
             return false;
         }
         #[cfg(target_os = "macos")]
-        if self.mode == Mode::Recording {
-            return self.request_recording_camera(enabled, cx);
+        {
+            if self.mode == Mode::Recording {
+                return self.request_recording_camera(enabled, cx);
+            }
+            if enabled {
+                return self.request_pre_recording_camera(None, cx);
+            }
         }
+        #[cfg(not(target_os = "macos"))]
         if enabled {
             if let Err(error) = self.show_camera_preview(cx) {
                 report_toggle_failure(cx, &error);
@@ -1331,25 +1344,59 @@ impl RecordingControl {
     }
 
     #[cfg(target_os = "macos")]
+    fn request_pre_recording_camera(
+        &mut self,
+        selection: Option<(Option<String>, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.camera_pending {
+            return false;
+        }
+        let had_preview = self.camera_preview_visible;
+        let rect = self.rect;
+        let mut request = self.prepare_camera_preview(cx);
+        if let Some((id, name)) = &selection {
+            request.device_id = id.clone();
+            request.device_name = name.clone();
+        }
+        self.request_camera_preview(
+            request,
+            move |this, shown, cx| {
+                this.camera_pending = false;
+                if !shown {
+                    if !had_preview {
+                        this.hide_camera_preview(cx);
+                        this.camera = false;
+                        this.persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                    }
+                    return;
+                }
+                this.camera = true;
+                this.persist_pre_recording_preference(RecordingPreference::Camera(true), cx);
+                if let Some((id, name)) = selection {
+                    this.selected_camera_id = id.clone();
+                    crate::state::state(cx).config.update(move |config| {
+                        config.recording.camera.selected_device_id = id;
+                        config.recording.camera.selected_device_name = name;
+                    });
+                }
+                if this.rect != rect {
+                    this.reposition_camera_preview(cx);
+                }
+            },
+            cx,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
     fn request_recording_camera(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         if !enabled || self.camera_preview_visible {
             return self.send_recording_camera(enabled, cx);
         }
 
-        let daemon = crate::state::state(cx).daemon;
         let request = self.prepare_camera_preview(cx);
-        let wait = match daemon.camera_preview().begin_show(&request) {
-            Ok(wait) => wait,
-            Err(error) => {
-                self.camera_preview_subscription = None;
-                report_toggle_failure(cx, &error);
-                return false;
-            }
-        };
-        self.camera_pending = true;
-        self.camera_preview_visible = true;
-        self.await_recording_setting(
-            wait,
+        self.request_camera_preview(
+            request,
             |this, shown, cx| {
                 if !shown
                     || !matches!(
@@ -1365,7 +1412,31 @@ impl RecordingControl {
                 }
             },
             cx,
-        );
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn request_camera_preview(
+        &mut self,
+        request: CameraPreviewRequest,
+        complete: impl FnOnce(&mut Self, bool, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let daemon = crate::state::state(cx).daemon;
+        let had_preview = self.camera_preview_visible;
+        let wait = match daemon.camera_preview().begin_show(&request) {
+            Ok(wait) => wait,
+            Err(error) => {
+                if !had_preview {
+                    self.camera_preview_subscription = None;
+                }
+                report_toggle_failure(cx, &error);
+                return false;
+            }
+        };
+        self.camera_pending = true;
+        self.camera_preview_visible = true;
+        self.await_recording_setting(wait, complete, cx);
         true
     }
 
@@ -1502,6 +1573,10 @@ impl RecordingControl {
     }
 
     fn reposition_camera_preview(&self, cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        if self.camera_pending {
+            return;
+        }
         if !self.camera_preview_visible {
             return;
         }
@@ -1898,7 +1973,7 @@ impl RecordingControl {
         cx.notify();
     }
 
-    fn select_device(
+    pub(crate) fn select_device(
         &mut self,
         kind: crate::system::devices::DeviceKind,
         selection: Option<(String, String)>,
@@ -1927,17 +2002,24 @@ impl RecordingControl {
                     cx.notify();
                     return;
                 }
-                let previous = self.selected_camera_id.clone();
-                self.selected_camera_id = id.clone();
-                if !self.set_camera(true, cx) {
-                    self.selected_camera_id = previous;
-                    cx.notify();
-                    return;
+                #[cfg(target_os = "macos")]
+                if crate::system::permissions::ensure_access(crate::system::permissions::Device::Camera) {
+                    self.request_pre_recording_camera(Some((id, name)), cx);
                 }
-                crate::state::state(cx).config.update(move |config| {
-                    config.recording.camera.selected_device_id = id;
-                    config.recording.camera.selected_device_name = name;
-                });
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let previous = self.selected_camera_id.clone();
+                    self.selected_camera_id = id.clone();
+                    if !self.set_camera(true, cx) {
+                        self.selected_camera_id = previous;
+                        cx.notify();
+                        return;
+                    }
+                    crate::state::state(cx).config.update(move |config| {
+                        config.recording.camera.selected_device_id = id;
+                        config.recording.camera.selected_device_name = name;
+                    });
+                }
             }
         }
     }
@@ -2355,6 +2437,7 @@ impl RecordingControl {
     }
 
     fn close_pre_recording_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording_error_generation = self.recording_error_generation.wrapping_add(1);
         self.countdown_generation += 1;
         self.countdown_active = false;
         self.countdown_remaining = None;

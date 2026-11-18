@@ -924,7 +924,18 @@ pub fn run() {
                 }
                 json!({})
             }
-            ("camera-preview", "show") => json!({"visible": true}),
+            ("camera-preview", "show") => {
+                if let Some(fixture) = optional_capture_fixture(&output)
+                    .filter(|fixture| fixture["recordingSettingBarrier"] == "show")
+                {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"visible": true}));
+                    });
+                    continue;
+                }
+                json!({"visible": true})
+            }
             ("camera-preview", "hide" | "update" | "setContentProtection")
             | (
                 "screen-recorder",
