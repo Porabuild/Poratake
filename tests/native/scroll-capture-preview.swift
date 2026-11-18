@@ -2127,6 +2127,39 @@ struct ScrollCapturePreviewTest {
         resumeFinishMemoryEncoder.signal()
         finishMemoryModule.testWaitForRetiredPreviewWork()
 
+        let drawingModule = ScrollCaptureModule()
+        let thirdStripStarted = DispatchSemaphore(value: 0)
+        let resumeDrawing = DispatchSemaphore(value: 0)
+        var drawingPublications: [Int] = []
+        drawingModule.testPreparePreview(step: step, width: width, height: height)
+        drawingModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        drawingModule.testSetPreviewEncoder { _ in "preview" }
+        drawingModule.testSetPreviewResponder { count, _ in drawingPublications.append(count) }
+        drawingModule.testSetBeforePreviewStrip { index in
+            if index == 2 {
+                thirdStripStarted.signal()
+                precondition(resumeDrawing.wait(timeout: .now() + 10) == .success)
+            }
+        }
+        weak var drawnFrame: CGImage?
+        autoreleasepool {
+            drawingModule.testAppendPreviewFrame(frame(start: 0, width: width, height: height))
+            let second = frame(start: step, width: width, height: height)
+            drawnFrame = second
+            drawingModule.testAppendPreviewFrame(second)
+            drawingModule.testAppendPreviewFrame(frame(start: 2 * step, width: width, height: height))
+        }
+        precondition(thirdStripStarted.wait(timeout: .now() + 5) == .success)
+        let drawingOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-finish-drawing-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: drawingOutput) }
+        let drawingFinish = drawingModule.testFinishCurrentCapture(outputPath: drawingOutput.path)
+        precondition(drawingFinish?["frameCount"] as? Int == 3)
+        precondition(drawnFrame == nil, "A held preview must release the strips it has drawn")
+        resumeDrawing.signal()
+        drawingModule.testWaitForRetiredPreviewWork()
+        precondition(!drawingPublications.contains(3), "A preview must not publish after Finish")
+
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
         let releaseFirstEncode = DispatchSemaphore(value: 0)

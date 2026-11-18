@@ -506,3 +506,22 @@ to a capture source, verified its release after saving, and released
 the encoder only after that assertion. These samples exercise the hold
 at encoding. Composition that is still drawing at the moment of Finish
 was outside the memory probe.
+
+Finishing while a scroll preview is drawing
+
+The same nine-frame fixture held the final preview after five strips
+were drawn and before it drew the sixth. Finish completed through the
+normal daemon handler before the gate was released. The process was
+sampled with VMMap. Both variants saved a 3400x13740 PNG.
+
+Sample                  Finish time       Peak memory
+Previous 1                236.3 ms          364.0 MiB
+Fixed 1                   239.5 ms          288.1 MiB
+Fixed 2                   234.7 ms          288.1 MiB
+Previous 2                232.8 ms          364.0 MiB
+
+The compared PNGs were byte-identical. The regression holds a preview
+before its third strip and verifies that a drawn source frame is
+released during Finish. The held preview resumes and publishes no
+stale update. The peak figures apply to this controlled overlap and
+depend on which strips have already been drawn.

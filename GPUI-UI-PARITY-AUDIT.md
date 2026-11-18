@@ -6702,6 +6702,26 @@ the last preview, peak process footprint fell from 363.4–364.5 MiB to
 covers overlap with the encoding stage. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains individual results.
 
+### 2026-11-18 macOS scroll save while a preview is drawing
+
+The preview worker now transfers its frame references to the compositor
+and releases them strip by strip. When Finish overlaps an active preview,
+already-drawn strips can leave memory as the save uses them. The preview
+checks cancellation before drawing the next strip.
+
+The native regression held drawing before the third strip, finished
+saving all three frames, and verified that a previously drawn image had
+been released. After the preview resumed, it published no stale update.
+The fixtures passed on arm64 and under Rosetta, and the production Swift
+daemon typechecked.
+
+In two paired 3400 × 13740 saves held after five of nine preview strips,
+peak memory fell from 364.0 MiB to 288.1 MiB. Finish took 233–239 ms
+across the measured runs, and the saved PNGs were byte-identical. The
+held preview still owned its undrawn frames in this probe. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the measurements.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

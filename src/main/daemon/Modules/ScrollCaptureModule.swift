@@ -73,7 +73,7 @@ private final class ScrollPreviewSession {
         let alignments: [ScrollFrameAlignment]
         let frameCount: Int
         let pointsPerPixel: CGFloat
-        let compose: ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?
+        let compose: (inout [CGImage?], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?
         let encode: (CGImage) -> String?
         let completion: ((Snapshot) -> Void)?
     }
@@ -101,7 +101,7 @@ private final class ScrollPreviewSession {
         pointsPerPixel: CGFloat,
         align: @escaping (CGImage, CGImage, Int, () -> Bool) -> ScrollFrameAlignment?,
         alignmentFailure: @escaping (Int) -> Void,
-        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
+        compose: @escaping (inout [CGImage?], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
         encode: @escaping (CGImage) -> String?,
         completion: ((Snapshot) -> Void)?
     ) {
@@ -199,7 +199,7 @@ private final class ScrollPreviewSession {
     private func makePreviewRequest(
         frameCount: Int,
         pointsPerPixel: CGFloat,
-        compose: @escaping ([CGImage], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
+        compose: @escaping (inout [CGImage?], [ScrollFrameAlignment], () -> Bool) -> ScrollComposition?,
         encode: @escaping (CGImage) -> String?,
         completion: ((Snapshot) -> Void)?
     ) -> PreviewRequest? {
@@ -256,10 +256,11 @@ private final class ScrollPreviewSession {
             lock.unlock()
 
             let isStale = { [weak self] in self?.shouldStopPreview() ?? true }
-            guard let composition = request.compose(request.frames, request.alignments, isStale), !isStale() else {
+            var frames = request.frames.map(Optional.some)
+            request.frames.removeAll()
+            guard let composition = request.compose(&frames, request.alignments, isStale), !isStale() else {
                 continue
             }
-            request.frames.removeAll()
             guard let encodedImage = request.encode(composition.image), !isStale() else {
                 continue
             }
@@ -381,6 +382,7 @@ class ScrollCaptureModule: NSObject, Module {
     private var testFinishWorker: (() -> (width: Int, height: Int, frameCount: Int, stoppedForNoOverlap: Bool))?
     private var testFinishResponder: ((String, [String: Any]) -> Void)?
     private var testPreviewAlignment: ((CGImage, CGImage, Int, () -> Bool) -> Int?)?
+    private var testBeforePreviewStrip: ((Int) -> Void)?
     private var testPreviewEncoder: ((CGImage) -> String?)?
     private var testPreviewResponder: ((Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
@@ -1292,6 +1294,9 @@ class ScrollCaptureModule: NSObject, Module {
         var remainingRows = height
         var top = targetHeight
         for index in frames.indices {
+#if SCROLL_CAPTURE_TEST
+            if maximumWidth != nil { testBeforePreviewStrip?(index) }
+#endif
             guard !isCancelled(), let frame = frames[index] else { return nil }
             frames[index] = nil
             let contentHeight = contentHeights[index]
@@ -2033,8 +2038,7 @@ class ScrollCaptureModule: NSObject, Module {
                 self.emitScrollEnded(reason: "no-overlap", frameCount: acceptedFrameCount)
             },
             compose: { [weak self] frames, alignments, isCancelled in
-                var images = frames.map(Optional.some)
-                return self?.composeFrames(frames: &images, alignments: alignments, maximumWidth: previewWidth, isCancelled: isCancelled)
+                self?.composeFrames(frames: &frames, alignments: alignments, maximumWidth: previewWidth, isCancelled: isCancelled)
             },
             encode: { [weak self] image in
 #if SCROLL_CAPTURE_TEST
@@ -2403,6 +2407,10 @@ class ScrollCaptureModule: NSObject, Module {
             minimumOverlap: minimumOverlap,
             isCancelled: isCancelled
         )?.overlap
+    }
+
+    func testSetBeforePreviewStrip(_ hook: @escaping (Int) -> Void) {
+        testBeforePreviewStrip = hook
     }
 
     func testSetPreviewEncoder(_ encoder: @escaping (CGImage) -> String?) {
