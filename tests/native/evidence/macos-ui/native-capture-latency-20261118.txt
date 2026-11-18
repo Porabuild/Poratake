@@ -849,3 +849,34 @@ and acknowledged outline cleanup. The fixture's original NSPanel
 was retained in WindowServer and was therefore unsuitable as a
 closure check. The final runs used an NSWindow created on the
 running AppKit main queue, then closed and released it explicitly.
+
+2026-11-19 OCR and QR phase timing outside the app
+
+A standalone fixture built OCRModule and QRCodeModule with the current
+daemon router. It measured system Vision using generated 600 × 440
+PNGs with English and Chinese text, a QR payload and blank content.
+The first request rotated among the four inputs. Twelve fresh
+processes ran five requests each. No screenshot capture, foreground
+app, clipboard, model service restart or privacy changes were involved.
+
+Input         Requests  Median (ms)  Max (ms)
+Light text          24        44.53  14441.65
+Dark text           12        44.75    174.74
+Blank               12        32.80    136.66
+QR                  12        36.23   1085.56
+
+Stage                Median (ms)   Max (ms)
+Dispatch to worker        0.024       0.308
+Image decode              0.195       6.145
+Request configuration    0.059      10.042
+Vision perform           42.793   14422.343
+Wait after perform        0.023       1.566
+Worker to reply           0.099       1.549
+
+Stages for blank OCR include both recognition passes. The first
+text request spent 14422.343 ms inside Vision and 0.020 ms in the
+following semaphore wait. The first QR call in that same process
+spent 1084.307 ms inside Vision. All 60 replies matched their
+expected content. These are fresh subprocesses and may share
+framework caches. The fixture locates the delay within Vision's
+perform call without identifying its internal cause.

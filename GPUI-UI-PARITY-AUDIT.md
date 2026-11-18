@@ -7674,6 +7674,23 @@ older reply posts no notification. The workflow uses GPUI's isolated
 clipboard. Live system clipboard delivery and the cause of the
 intermittent OCR delay remain open.
 
+### 2026-11-19 macOS OCR and QR first-request timing
+
+A standalone timing fixture built the current Swift OCR and QR modules
+and ran 60 requests across 12 fresh processes. It used generated
+600 × 440 PNGs and no capture selector or clipboard. The first OCR
+call reproduced the prior delay at 14.44 seconds. Vision's request
+handler accounted for 14.42 seconds. Image decoding took 6.15 ms,
+request configuration took 10.04 ms, and reply dispatch took 0.16 ms.
+
+The first QR call in that process took 1.09 seconds, nearly all inside
+Vision. Each request recognized the expected bilingual text, exact
+QR payload or empty result. Median round trips by input were
+44.53–44.75 ms for text, 36.23 ms for QR and 32.80 ms for blanks.
+Fresh processes shared the existing macOS service state. The cause
+inside Vision and performance after an OS restart remain unverified.
+[Stage timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
