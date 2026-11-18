@@ -1543,6 +1543,9 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 match command.as_str() {
+                    "start-ready" => handle
+                        .update(cx, |control, _, cx| control.start_enabled(cx))
+                        .unwrap_or(false),
                     "start" | "start-stall" => {
                         if command == "start-stall" {
                             assert_eq!(

@@ -1489,6 +1489,12 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             click_measured(cx, control, "recording-controls", 0);
             cx.run_until_parked();
             wait_for_recording_start(cx);
+            let cleanup_started = std::time::Instant::now();
+            while cx.update(|cx| crate::intents::recording_outline_is_hiding(cx)) {
+                cx.run_until_parked();
+                assert!(cleanup_started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            }
             let calls = super::daemon_fixture::calls(output);
             let calls = &calls[before..];
             let show = calls

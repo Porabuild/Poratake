@@ -1,0 +1,28 @@
+macOS area recording startup recovery, 2026-11-18
+
+Native GPUI dev app in a temporary profile, with one built-in Retina
+display and an authorized screen-only daemon. A generated moving
+backdrop covered the recording area. The bridge injected a definite
+START_FAILED reply on the first recording attempt and held the real
+successful recording-overlay Hide response for 650 ms. It supplied
+fixture replies for camera content protection. Audio, camera and
+keyboard tracking were disabled for the live retry.
+
+Baseline 71540c69 could not answer the independent app-local status
+command during the hold. The revised status command answered in
+0.05 ms in each of three observed runs while the reply was still held.
+The toolbar stayed visible, Start reported disabled, and a retry
+request sent during the hold issued no second recorder Start RPC.
+
+After the held response, Start was enabled and the light and dark
+retry runs completed real screen-only recordings and opened the video
+preview. Each file contained a single video stream with at least
+four frames. The first failed project did not remain. A separate
+dark run cancelled the pre-recording toolbar during the hold and
+saw the toolbar close and the output directory stay empty.
+
+These are individual app-local response observations. They do not
+measure input delivery from a physical device or compositor scan-out.
+
+All 1,173 runnable GPUI tests, both recording parity workflows, and 76
+Electron recording-control reference tests passed.

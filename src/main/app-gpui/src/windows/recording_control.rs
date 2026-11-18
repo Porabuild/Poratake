@@ -628,8 +628,35 @@ impl RecordingControl {
         false
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn refresh_after_outline_cleanup(cx: &mut App) -> bool {
+        let Some(handle) = registry::handle(RegistryKind::RecordingControl, cx)
+            .and_then(|handle| handle.downcast::<Self>())
+        else {
+            return false;
+        };
+        handle
+            .update(cx, |this, _, cx| {
+                if this.mode != Mode::PreRecording {
+                    return false;
+                }
+                cx.notify();
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn start_enabled(&self, cx: &App) -> bool {
+        #[cfg(target_os = "macos")]
+        if crate::intents::recording_outline_is_hiding(cx) {
+            return false;
+        }
+        let _ = cx;
+        self.mode == Mode::PreRecording && !self.countdown_active
+    }
+
     pub(crate) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.countdown_active {
+        if !self.start_enabled(cx) {
             return;
         }
         let delay = crate::state::state(cx)
@@ -2453,7 +2480,7 @@ impl Render for RecordingControl {
                     "recording-start",
                     start_name,
                     toolbar::button("recording-start", start_name)
-                        .is_disabled(self.countdown_active)
+                        .is_disabled(!self.start_enabled(cx))
                         .child(toolbar::filled_glyph(theme.accent, true))
                         .on_press(cx.listener(|this, _, window, cx| this.start(window, cx))),
                     None,

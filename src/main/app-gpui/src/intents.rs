@@ -124,9 +124,15 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn recording_outline_is_hiding(cx: &App) -> bool {
+    cx.try_global::<RecordingCaptureSwitch>()
+        .is_some_and(|switch| switch.hiding_outline)
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool {
     use crate::capture::overlay;
-    use crate::windows::recording_control::set_pre_recording_escape;
+    use crate::windows::recording_control::{set_pre_recording_escape, RecordingControl};
 
     if !overlay::recording_overlay_needs_hide(cx) {
         return false;
@@ -150,7 +156,8 @@ pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool
             let switch = cx.global_mut::<RecordingCaptureSwitch>();
             switch.hiding_outline = false;
             let next = switch.next.take();
-            set_pre_recording_escape(false, cx);
+            let pre_recording = RecordingControl::refresh_after_outline_cleanup(cx);
+            set_pre_recording_escape(pre_recording, cx);
             match result {
                 Ok(()) => {
                     overlay::mark_recording_overlay_hidden(cx);

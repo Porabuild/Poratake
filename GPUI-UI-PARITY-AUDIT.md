@@ -7115,6 +7115,19 @@ appearance. Selecting the Capture Area row still passed. Every
 pixel in each native 380×320 crop of the former menu region matched
 the generated backdrop. [Native shortcut evidence](tests/native/evidence/macos-ui/native-tray-shortcut-handoff-20261118.txt)
 
+### 2026-11-18 macOS toolbar recovery after a failed recording start
+
+A definite area-recording startup error left the UI waiting for the
+native overlay Hide reply. With that successful reply held for 650 ms,
+the baseline could not answer an app-local status request. The revised
+toolbar processes events while cleanup runs off the UI thread.
+
+Start stays disabled until cleanup completes, so a second click cannot
+start a recording over a pending Hide. The pre-recording toolbar can
+still be cancelled. App-local retries in light and dark saved a
+screen-only recording and opened its preview. Cancelling during the
+hold left no recording project. [Native startup recovery evidence](tests/native/evidence/macos-ui/native-recording-start-rollback-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

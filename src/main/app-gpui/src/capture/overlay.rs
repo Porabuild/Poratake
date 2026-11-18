@@ -316,24 +316,14 @@ pub(crate) fn mark_recording_overlay_hidden(cx: &mut App) {
 }
 
 pub fn end_recording_handoff(cx: &mut App) {
-    #[cfg(not(test))]
+    #[cfg(all(not(target_os = "macos"), not(test)))]
     {
-        #[cfg(target_os = "macos")]
-        let should_hide = recording_overlay_needs_hide(cx);
-        #[cfg(not(target_os = "macos"))]
-        let should_hide = true;
-        if should_hide {
-            let daemon = crate::state::state(cx).daemon;
-            let _hidden = daemon.recording_overlay().hide().is_ok();
-            #[cfg(target_os = "macos")]
-            if _hidden {
-                mark_recording_overlay_hidden(cx);
-            }
-        }
+        let daemon = crate::state::state(cx).daemon;
+        let _ = daemon.recording_overlay().hide();
     }
-    #[cfg(all(target_os = "macos", test))]
-    mark_recording_overlay_hidden(cx);
     clear_recording_handoff(cx);
+    #[cfg(target_os = "macos")]
+    crate::intents::hide_recording_outline(None, cx);
 }
 
 #[cfg(target_os = "macos")]
