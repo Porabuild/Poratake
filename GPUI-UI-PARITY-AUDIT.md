@@ -5409,6 +5409,31 @@ saved. The native run covers successful freeze and release on one display.
 Failure handling has fixture coverage. Native Linux and multiple displays
 remain open.
 
+### 2026-11-18 macOS frozen and live area pixels
+
+The real GPUI area selector was opened twice over a generated AppKit
+background on the Retina display. After each selector opened, the target
+changed color and moved a marker. Both pointer drags used the same
+300×210-point area and saved a 600×420 PNG. Each capture opened a
+bottom-right preview and added one history entry.
+
+With Freeze Screen enabled, GPUI requested cached pixels and retained the
+original marker and colors. GPUI saved sRGB and the direct reference used
+Display P3. After ColorSync conversion to sRGB, the saved pixels differed
+from the original by 0.560 levels per RGB channel on average, with a maximum
+of eight. The changed reference differed by 126.004 levels on average. The
+native frozen window and GPUI selector cleared after save. With Freeze Screen
+disabled, GPUI requested live pixels and the saved result matched the changed
+reference pixel for pixel after the same conversion. In both cases the
+changed background was visible after capture.
+
+A setup that kept a second reference daemon open timed out in the freeze
+request. A process sample found the Swift daemon waiting in the legacy window
+list capture through ScreenCaptureKit. The successful pair closed each
+reference daemon before starting GPUI. The Electron area-capture and
+freeze-screen suites passed all 35 tests. The generated backdrop and temporary
+apps closed, and the existing editor stayed open.
+
 ### 2026-11-18 macOS Settings accessibility at minimum size
 
 The native Settings window measured 880×700 points. The original accessibility
