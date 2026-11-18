@@ -598,6 +598,7 @@ impl Render for HistoryWindow {
             .when(self.layout == HistoryLayout::Grid, |el| {
                 el.flex_row()
                     .flex_wrap()
+                    .content_start()
                     .gap(px(crate::ui::chrome::HISTORY_GRID_GAP))
             })
             .when(self.layout == HistoryLayout::List, |el| {
@@ -654,6 +655,12 @@ impl Render for HistoryWindow {
             }
         }
 
+        let background =
+            if cfg!(target_os = "macos") && !crate::system::reduced_transparency::enabled() {
+                theme.background.opacity(0.9)
+            } else {
+                theme.background
+            };
         let content = crate::ui::font::root()
             .id("history-window")
             .key_context("HistoryWindow")
@@ -665,7 +672,7 @@ impl Render for HistoryWindow {
             .flex_col()
             .overflow_hidden()
             .rounded(px(crate::ui::chrome::HISTORY_RADIUS))
-            .when(!cfg!(target_os = "macos"), |el| el.bg(theme.background))
+            .bg(background)
             .text_color(theme.foreground)
             .child(toolbar::header(has_items, columns == 1, &theme, cx))
             .when(has_items, |el| {
@@ -790,6 +797,16 @@ mod tests {
         visual.update(|_, cx| {
             crate::theme::vars::update_theme(cx, crate::theme::presets::ThemeMode::Light, "default")
         });
+        visual.simulate_scale_factor_change(2.0);
+        visual.simulate_resize(size(px(400.0), px(500.0)));
+        let first = visual.expect("history-card-first");
+        let second = visual.expect("history-card-second");
+        let third = visual.expect("history-card-third");
+        assert_eq!(first.top(), second.top());
+        assert_eq!(
+            third.top() - first.bottom(),
+            px(crate::ui::chrome::HISTORY_GRID_GAP)
+        );
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
             visual.simulate_scale_factor_change(scale);
             for width in [140.0, 148.0] {
