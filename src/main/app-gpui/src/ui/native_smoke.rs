@@ -1644,6 +1644,19 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 match command.as_str() {
+                    "system-audio-on" | "system-audio-state"
+                        if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() =>
+                    {
+                        handle
+                            .update(cx, |control, _, cx| {
+                                if command == "system-audio-state" {
+                                    return control.parity_system_audio();
+                                }
+                                recorder::state() == recorder::RecorderState::Recording
+                                    && control.set_system_audio(true, cx)
+                            })
+                            .unwrap_or(false)
+                    }
                     "start-ready" => handle
                         .update(cx, |control, _, cx| control.start_enabled(cx))
                         .unwrap_or(false),

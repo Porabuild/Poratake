@@ -457,7 +457,53 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             key(cx, window, "enter");
             settle(cx, window);
         }
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 8);
+        #[cfg(target_os = "macos")]
+        {
+            use std::io::Write;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let ready = super::workflows::accept_fixture_barrier(&listener);
+            let fixture_path = output.join("capture-fixture.json");
+            let previous = std::fs::read(&fixture_path).ok();
+            std::fs::write(
+                &fixture_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "recordingAudioBarrier": true,
+                    "barrier": listener.local_addr().unwrap().to_string(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            click_measured(cx, window, "recording-controls", 8);
+            let mut connection = ready
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let audio_is_on = |cx: &mut HeadlessAppContext| {
+                cx.update_window(window, |root, _, cx| {
+                    root.downcast::<RecordingControl>()
+                        .unwrap()
+                        .read(cx)
+                        .parity_system_audio()
+                })
+                .unwrap()
+            };
+            assert!(audio_is_on(cx), "audio state must await the daemon reply");
+            click_measured(cx, window, "recording-controls", 8);
+            assert!(audio_is_on(cx));
+            connection.write_all(&[1]).unwrap();
+            let acknowledged = std::time::Instant::now();
+            while audio_is_on(cx) {
+                cx.run_until_parked();
+                assert!(acknowledged.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::yield_now();
+            }
+            if let Some(contents) = previous {
+                std::fs::write(&fixture_path, contents).unwrap();
+            } else {
+                std::fs::remove_file(&fixture_path).unwrap();
+            }
+        }
         cx.update(|cx| {
             assert_eq!(
                 serde_json::to_value(crate::state::state(cx).config.get().recording).unwrap(),

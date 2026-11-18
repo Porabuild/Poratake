@@ -700,7 +700,7 @@ fn wait_for_recording_stop(cx: &mut HeadlessAppContext) {
 }
 
 #[cfg(target_os = "macos")]
-fn accept_fixture_barrier(
+pub(super) fn accept_fixture_barrier(
     listener: &std::net::TcpListener,
 ) -> std::sync::mpsc::Receiver<std::net::TcpStream> {
     use std::io::Read;
@@ -902,6 +902,14 @@ fn recording_failure_preserves_project(
         );
     }
     cx.run_until_parked();
+    if !on_stop && !queued && !during_stop {
+        let started = std::time::Instant::now();
+        while cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+    }
     wait_for_recording_stop(cx);
     assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
     assert_eq!(std::fs::read(&recording).unwrap(), contents);

@@ -288,6 +288,7 @@ pub fn set_microphone(
         })
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn set_system_audio(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
     daemon.screen_recorder().set_system_audio(enabled)
 }

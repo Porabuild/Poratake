@@ -434,7 +434,17 @@ impl DaemonHandle {
         timeout: Duration,
     ) -> Result<Value> {
         let (id, rx) = self.begin_call(module, method, params)?;
+        self.wait_for_call(module, method, id, rx, timeout)
+    }
 
+    fn wait_for_call(
+        &self,
+        module: &str,
+        method: &str,
+        id: String,
+        rx: Receiver<std::result::Result<Value, DaemonRpcError>>,
+        timeout: Duration,
+    ) -> Result<Value> {
         match rx.recv_timeout(timeout) {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(error)) => Err(anyhow::Error::new(error)),
@@ -834,8 +844,34 @@ impl ScreenRecorderClient<'_> {
         )
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn set_system_audio(&self, enabled: bool) -> Result<()> {
         self.toggle(ScreenRecorderMethod::SetSystemAudio, enabled)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_system_audio(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let method = ScreenRecorderMethod::SetSystemAudio.id();
+        let (id, response) = self.daemon.begin_call(
+            SCREEN_RECORDER_MODULE,
+            method,
+            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
+        )?;
+        let daemon = self.daemon.clone();
+        Ok(move || {
+            daemon
+                .wait_for_call(
+                    SCREEN_RECORDER_MODULE,
+                    method,
+                    id,
+                    response,
+                    Duration::from_millis(REQUEST_TIMEOUT_MS),
+                )
+                .map(|_| ())
+        })
     }
 
     pub fn set_camera(&self, enabled: bool) -> Result<()> {

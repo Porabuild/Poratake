@@ -7381,6 +7381,24 @@ the request to a visible preview, including the remaining startup time.
 These runs used one Retina display and disabled keystroke capture.
 Live audio and camera were outside the runs. [Short take timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-18 macOS live system-sound control responsiveness
+
+The recording toolbar previously waited on the system-sound daemon
+reply on the UI thread. The macOS path now sends the request in order
+and waits off the UI thread. The button retains its confirmed state
+and blocks repeat clicks until the reply. A rejection leaves the
+original state intact and allows a retry.
+
+In the native app with an isolated simulated daemon, a status check
+and repeat toggle returned within 0.09–9.45 ms while the reply was held.
+Stop reached the fixture before the hold was released in 5.77 ms in
+light and 8.36 ms in dark. The fixture observed one audio request
+before Stop and exercised both accepted and rejected replies. The Metal
+toolbar workflow separately checked the actual button against a held
+reply, and the wider recording workflow exercised a terminal audio
+failure. All 1,175 runnable GPUI tests and 111 Electron reference tests
+passed. The native probe used app-local input and simulated system audio.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

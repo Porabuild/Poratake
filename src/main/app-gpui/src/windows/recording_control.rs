@@ -82,6 +82,8 @@ pub struct RecordingControl {
     window_id: Option<i64>,
     project: Option<PathBuf>,
     system_audio: bool,
+    #[cfg(target_os = "macos")]
+    system_audio_pending: bool,
     microphone: bool,
     camera: bool,
     camera_locked: bool,
@@ -138,7 +140,7 @@ impl RecordingControl {
         self.rect
     }
 
-    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    #[cfg(all(feature = "parity", target_os = "macos"))]
     pub(crate) fn parity_system_audio(&self) -> bool {
         self.system_audio
     }
@@ -231,6 +233,8 @@ impl RecordingControl {
                         window_id,
                         project: None,
                         system_audio: toggles.system_audio,
+                        #[cfg(target_os = "macos")]
+                        system_audio_pending: false,
                         microphone: toggles.mic_enabled,
                         camera: toggles.camera_enabled,
                         camera_locked: false,
@@ -1128,9 +1132,14 @@ impl RecordingControl {
     /// AGENTS documents that the microphone, system-sound and camera toggles
     /// stay live while a recording runs, so they are applied through the
     /// recorder's setters instead of being frozen at start.
-    fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         if self.mode == Mode::Recording {
+            #[cfg(target_os = "macos")]
+            return self.request_system_audio(enabled, cx);
+
+            #[cfg(not(target_os = "macos"))]
             let result = recorder::set_system_audio(&crate::state::state(cx).daemon, enabled);
+            #[cfg(not(target_os = "macos"))]
             if let Err(error) = result {
                 report_toggle_failure(cx, &error);
                 return false;
@@ -1138,6 +1147,40 @@ impl RecordingControl {
         }
         self.system_audio = enabled;
         self.persist_pre_recording_preference(RecordingPreference::SystemAudio(enabled), cx);
+        cx.notify();
+        true
+    }
+
+    #[cfg(target_os = "macos")]
+    fn request_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+        if self.system_audio_pending {
+            return false;
+        }
+        let daemon = crate::state::state(cx).daemon;
+        let wait = match daemon.screen_recorder().begin_system_audio(enabled) {
+            Ok(wait) => wait,
+            Err(error) => {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
+        };
+        self.system_audio_pending = true;
+        let generation = self.recording_error_generation;
+        cx.spawn(async move |entity, cx| {
+            let result = smol::unblock(wait).await;
+            let _ = entity.update(cx, |this, cx| {
+                if this.recording_error_generation != generation || this.mode != Mode::Recording {
+                    return;
+                }
+                this.system_audio_pending = false;
+                match result {
+                    Ok(()) => this.system_audio = enabled,
+                    Err(error) => report_toggle_failure(cx, &error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
         true
     }
@@ -1335,7 +1378,12 @@ impl RecordingControl {
                 } else {
                     "Turn system sounds on"
                 },
-                self.countdown_active || starting,
+                {
+                    let disabled = self.countdown_active || starting;
+                    #[cfg(target_os = "macos")]
+                    let disabled = disabled || self.system_audio_pending;
+                    disabled
+                },
                 |this, _window, cx| {
                     if this.countdown_active
                         || matches!(
@@ -3816,6 +3864,8 @@ mod tests {
                 window_id: None,
                 project: None,
                 system_audio: true,
+                #[cfg(target_os = "macos")]
+                system_audio_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
@@ -3985,6 +4035,8 @@ mod tests {
                 window_id: None,
                 project: None,
                 system_audio: true,
+                #[cfg(target_os = "macos")]
+                system_audio_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,

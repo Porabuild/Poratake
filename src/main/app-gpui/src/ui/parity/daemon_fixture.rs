@@ -902,6 +902,18 @@ pub fn run() {
                 );
                 json!({})
             }
+            ("screen-recorder", "setSystemAudio") => {
+                if let Some(fixture) = optional_capture_fixture(&output)
+                    .filter(|fixture| fixture["recordingAudioBarrier"] == true)
+                {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({}));
+                    });
+                    continue;
+                }
+                json!({})
+            }
             ("recording-overlay", "hide") => {
                 if let Some(fixture) = recording_outline_hide_barrier.take() {
                     std::thread::spawn(move || {
@@ -915,7 +927,7 @@ pub fn run() {
             ("camera-preview", "show" | "hide" | "update" | "setContentProtection")
             | (
                 "screen-recorder",
-                "pause" | "resume" | "setMicrophone" | "setSystemAudio" | "setCamera",
+                "pause" | "resume" | "setMicrophone" | "setCamera",
             ) => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");
