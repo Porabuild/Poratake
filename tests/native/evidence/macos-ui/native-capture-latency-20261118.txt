@@ -80,3 +80,22 @@ Expand menu        17.0 (34.4)   16.4 (21.6)   16.4 (17.0)   14.1 (17.1)
 Collapse menu      30.6 (37.2)   11.5 (25.5)   30.7 (33.7)    9.1 (14.1)
 Cancel toolbar     20.4 (32.1)   18.7 (21.4)    8.4 (19.4)   15.2 (17.7)
 Reopen toolbar     25.4 (49.7)   26.8 (31.2)   24.1 (30.4)   24.6 (25.1)
+
+Recording target switching follow-up
+
+The native probe alternated an area target and a named generated window
+target on the built-in Retina display. Seven cycles per build and theme.
+Each endpoint required one visible toolbar with the requested frame width.
+The first cycle was excluded from latency medians. An initial script
+comparison encountered intermediate widths. The recorded runs distinguish
+the compact and named target sizes before counting complete switches.
+
+Warm median, milliseconds
+                        Light before  Light after  Dark before  Dark after
+Area to named window         32.9          7.6         26.2         11.3
+Named window to area         27.9          8.9         32.2          8.8
+Native window ID reused    0 of 14     14 of 14     0 of 14     14 of 14
+
+The test uses app-local target changes and generated device state.
+It verifies toolbar continuity on one display. Real target movement
+between displays and compositor paint latency remain open.

@@ -520,7 +520,7 @@ impl RecordingControl {
         target_name: Option<&str>,
         preference_scope: PreferenceScope,
     ) -> bool {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let bounds = bar_bounds(
             cx,
             rect,
@@ -544,18 +544,39 @@ impl RecordingControl {
                         close_toolbar(window);
                         return false;
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(not(any(windows, target_os = "macos")))]
                     if super::desktop_window_bounds(window).origin != bounds.origin {
                         close_toolbar(window);
                         return false;
+                    }
+                    let moved = this.rect != rect || this.display_id != display_id;
+                    #[cfg(target_os = "macos")]
+                    {
+                        if this.target_name.is_some() != target_name.is_some() {
+                            this.measured_width = None;
+                        }
+                        if moved || this.target != target || this.window_id != window_id {
+                            this.pending_device_menu = None;
+                            this.menu.close(window, cx);
+                            this.device_request = this.device_request.wrapping_add(1);
+                            this.clear_native_tooltip(window);
+                            this.pointer_inside = false;
+                            this.countdown_generation = this.countdown_generation.wrapping_add(1);
+                            this.countdown_active = false;
+                            this.countdown_remaining = None;
+                        }
                     }
                     this.target = target;
                     this.rect = rect;
                     this.display_id = display_id;
                     this.window_id = window_id;
                     this.target_name = target_name.clone().map(SharedString::from);
-                    this.reposition_camera_preview(cx);
-                    this.sync_window_bounds(window, cx, false);
+                    if moved || !cfg!(target_os = "macos") {
+                        this.reposition_camera_preview(cx);
+                    }
+                    let device_menu_open = cfg!(target_os = "macos")
+                        && (this.pending_device_menu.is_some() || this.menu.is_open(cx));
+                    this.sync_window_bounds(window, cx, device_menu_open);
                     cx.notify();
                     true
                 })
@@ -3072,6 +3093,74 @@ mod tests {
                 "the input title must remain unchanged"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn replacing_a_pre_recording_target_preserves_the_toolbar_and_cancels_the_countdown(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|config| config.recording.start_delay = 1.);
+        let rect = ScreenRect {
+            x: 100,
+            y: 200,
+            width: 640,
+            height: 360,
+        };
+        let original = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                rect,
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+            let toolbar = registry::handle(RegistryKind::RecordingControl, cx).unwrap();
+            toolbar
+                .downcast::<RecordingControl>()
+                .unwrap()
+                .update(cx, |control, window, cx| {
+                    control.microphone = true;
+                    control.start(window, cx);
+                    assert!(control.countdown_active);
+                })
+                .unwrap();
+            toolbar
+        });
+        cx.update(|cx| {
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                rect,
+                None,
+                Some(7),
+                Some("Generated window".into()),
+                PreferenceScope::Global,
+            );
+            assert_eq!(
+                registry::handle(RegistryKind::RecordingControl, cx),
+                Some(original)
+            );
+            original
+                .downcast::<RecordingControl>()
+                .unwrap()
+                .update(cx, |control, _, _| {
+                    assert_eq!(control.window_id, Some(7));
+                    assert!(control.microphone && !control.countdown_active);
+                    assert_eq!(control.countdown_remaining, None);
+                })
+                .unwrap();
+        });
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(recorder::state(), recorder::RecorderState::Idle);
     }
 
     #[herogpui::test]

@@ -6377,6 +6377,25 @@ WindowServer bounds measurements. Physical input and composited pixels
 were outside the latency probe. All 1,163 GPUI tests passed with 23
 ignored, and all 36 Metal toolbar PNGs matched their baselines.
 
+### 2026-11-18 macOS recording toolbar target switching
+
+When the target label changed the toolbar's centered position, GPUI could
+tear down the pre-recording window and open a replacement. The macOS
+toolbar now reuses its existing native window for target changes in the
+same preference scope. It measures the new label width and keeps the
+current input choices. A changed target clears its old menu and tooltip
+state and invalidates the previous countdown.
+
+In the native probe, all 28 switches between an area and a generated
+window target changed window IDs before the fix. All 28 reused the same
+ID afterward. Warm median switching fell from 26–33 ms to 8–11 ms.
+The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+has the light and dark results. The GPUI countdown regression kept the
+microphone setting and verified that the old countdown could no longer
+start a recording. All 1,164 GPUI tests passed with 23 ignored, and all
+36 light and dark Metal toolbar images matched their baselines. Live
+switching across physical displays remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
