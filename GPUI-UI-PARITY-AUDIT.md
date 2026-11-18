@@ -2428,9 +2428,8 @@ Bugs fixed in this pass:
 - A failed or timed-out freeze could continue in the daemon after the app opened
   a live selector. The app now releases the failed freeze before falling back;
   if cleanup fails, it closes the selector and retains the generation for retry.
-  An isolated GPUI test exercises failed cleanup and live fallback. A daemon
-  fixture simulates a partially installed failed freeze, but its hosted run and
-  a real delayed timeout remain unverified.
+  The native failure-injection check below verifies cleanup, live fallback,
+  and retry after a rejection. Natural daemon timeouts remain open.
 - On Linux, release could complete while an X11 freeze window was still being
   presented or a replaced window was still closing. Generation changes,
   presentation and release now share a lock, and partial presentation failures
@@ -7214,6 +7213,30 @@ release, and left no stale countdown or saved output. A focused unit
 test covers the successful, failed, and newer-generation cases. All
 1,175 GPUI tests and 48 Electron reference tests passed, along with
 the light and dark timer and recording workflows.
+
+### 2026-11-18 native macOS fallback after a failed freeze
+
+The native development probe on one Retina display let the authorized
+daemon install a real freeze over a generated backdrop. The bridge
+then substituted an error for the successful freeze acknowledgement.
+GPUI issued Release, and the probe held its reply for 650 ms. The
+app-local status round trip was 0.27 ms in light and 0.16 ms in dark.
+The selector opened after cleanup. With the backdrop changed from
+blue to orange, both saved one 600×320 PNG using the live path.
+
+A separate dark run rejected the first Release before forwarding it
+to the daemon. The real frozen surface stayed present, the selector
+stayed closed, and the app-local status reply took 0.29 ms during
+the hold. The next capture retried Release, made a new freeze, and
+saved the selected pixels. Every pixel in each of the three saved
+PNGs matched the new backdrop at (194, 77, 30) after ColorSync
+conversion. Each opened a preview, and the native freeze surface
+cleared after the capture.
+
+The failure replies were injected at the app boundary. The underlying
+AppKit freeze, release, and captures ran through the screen-only
+daemon. The probe used application-local input and 48 Electron
+freeze and capture reference tests passed.
 
 ## Review gate
 
