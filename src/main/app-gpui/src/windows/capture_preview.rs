@@ -326,10 +326,10 @@ pub struct CapturePreviewWindow {
 
 impl CapturePreviewWindow {
     #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
-    pub(crate) fn parity_viewport_scroll_y(&self) -> Option<f32> {
+    pub(crate) fn parity_viewport_scroll_offset(&self) -> Option<gpui::Point<Pixels>> {
         self.viewport_scroll
             .as_ref()
-            .map(|(_, scroll)| scroll.offset().y.into())
+            .map(|(_, scroll)| scroll.offset())
     }
 
     #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
@@ -4534,6 +4534,35 @@ mod tests {
             }),
             "the focused action's keyboard label must also be visible"
         );
+        let close_focus = visual.update(|window, cx| window.focused(cx)).unwrap();
+        visual.simulate_resize(size(px(128.), px(100.)));
+        let bounds = visual.expect(oldest_close);
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() <= px(100.),
+            "{bounds:?}"
+        );
+        assert_eq!(
+            visual.update(|window, cx| window.focused(cx)),
+            Some(close_focus.clone())
+        );
+        let oldest_delete: &'static str =
+            Box::leak(format!("preview-delete-{oldest}-tooltip-trigger").into_boxed_str());
+        visual.press("tab");
+        let bounds = visual.expect(oldest_delete);
+        assert!(
+            bounds.left() >= px(0.) && bounds.right() <= px(128.),
+            "{bounds:?}"
+        );
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() <= px(100.),
+            "{bounds:?}"
+        );
+        assert_ne!(
+            visual.update(|window, cx| window.focused(cx)),
+            Some(close_focus)
+        );
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
         visual.click_at(gpui::point(px(100.), px(12.)));
         visual.simulate_event(gpui::ScrollEvent {
             position: gpui::point(px(100.), px(240.)),

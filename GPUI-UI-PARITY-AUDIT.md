@@ -6831,6 +6831,19 @@ returns to pointer interaction, scrolls to the top, and closes the
 expected card. All 1,170 runnable GPUI tests passed. The probe used
 app-local input. Physical mixed-display navigation remains open.
 
+### 2026-11-18 macOS keyboard reveal when the preview card cannot fit
+
+The smaller fallback now has explicit coverage. A 128 × 100-point
+viewport clipped each 200 × 140-point card on both axes. In both
+AppKit appearances, Tab to Close moved the viewport from
+`(-80, 0)` to `(-13, -393)` points. Tab to Delete moved it to
+`(-67, -393)`, revealing the other side of the card.
+
+The headless regression verifies that the focused Close control stays
+inside the viewport after shrinking it and that Delete becomes fully
+visible on the next Tab. The AppKit probe used a generated four-card
+stack and app-local input. Physical mixed-display focus remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

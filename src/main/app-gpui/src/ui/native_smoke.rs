@@ -663,7 +663,7 @@ pub fn native_ui_probe() {
                             println!("record hover dispatched: {index}");
                             return;
                         }
-                        if command == "preview-short-stack" {
+                        if matches!(command.as_str(), "preview-short-stack" | "preview-tiny-stack") {
                             for _ in 0..3 {
                                 crate::windows::capture_preview::CapturePreviewWindow::open(
                                     cx,
@@ -672,7 +672,12 @@ pub fn native_ui_probe() {
                             }
                             if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
                                 let _ = cx.update_window(handle, |_, window, _| {
-                                    window.resize(gpui::size(px(208.), px(360.)));
+                                    let viewport = if command == "preview-tiny-stack" {
+                                        gpui::size(px(128.), px(100.))
+                                    } else {
+                                        gpui::size(px(208.), px(360.))
+                                    };
+                                    window.resize(viewport);
                                 });
                             }
                             println!("preview short stack requested");
@@ -685,14 +690,15 @@ pub fn native_ui_probe() {
                                 let _ = handle.update(cx, |view, window, cx| {
                                     if command == "preview-scroll-top" {
                                         window.dispatch_event(PlatformInput::Scroll(gpui::ScrollEvent {
-                                            position: point(px(100.), px(200.)),
-                                            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(320.))),
+                                            position: gpui::Bounds::new(point(px(0.), px(0.)), window.viewport_size()).center(),
+                                            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(1024.))),
                                             modifiers: Modifiers::none(),
                                             touch_phase: gpui::TouchPhase::Moved,
                                             ..Default::default()
                                         }), cx);
                                     }
-                                    println!("preview scroll status: height={:.0} offset={:?}", f32::from(window.viewport_size().height), view.parity_viewport_scroll_y());
+                                    let offset = view.parity_viewport_scroll_offset();
+                                    println!("preview scroll status: height={:.0} offset={:?} width={:.0} x={:?}", f32::from(window.viewport_size().height), offset.map(|offset| f32::from(offset.y)), f32::from(window.viewport_size().width), offset.map(|offset| f32::from(offset.x)));
                                 });
                             }
                             return;
