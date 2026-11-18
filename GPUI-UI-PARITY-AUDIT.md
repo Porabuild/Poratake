@@ -4383,7 +4383,7 @@ appearance.
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
-| P1       | Video redaction crop and rounded camera                  | Crops include camera clips and rectangle corners. Offscreen macOS editor frames with rounded camera, zoom and pixelation match decoded export within two mean RGB levels in the effect region. The 17 residual channels and 4K playback cost remain open.                                                                                                                                                                                                                                                                                                                                                                                |
+| P1       | Video redaction crop and rounded camera                  | Crops include camera clips and rectangle corners. Offscreen macOS editor frames with rounded camera, zoom and pixelation match decoded export within two mean RGB levels in the effect region. 4K offscreen timing is recorded below. The 17 residual channels and interactive frame pacing remain open.                                                                                                                                                                                                                                                                                                                                 |
 | P1       | Native accessibility action delivery                     | Native macOS Settings verified dropdown opening and selection, switch toggling, and slider setting and stepping at 880×700. Isolated tests exercise HeroGPUI actions. Verify screen readers and other operating system adapters.                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | History visual and native verification                   | Verified native macOS contrast, 2× grid spacing, compact list at 140pt, opening and Finder reveal on one display. Mock tests cover grid and list tooltip boundaries. Verify live tooltips and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -5526,6 +5526,27 @@ RGB difference over the full image was 0.899–0.951 levels at 1× and
 1× and 0.774–1.414 at 2×. The existing composition and decoded-export
 fixture also passed. The generated camera clip required no device access.
 Live camera and playback performance remain open.
+
+### 2026-11-18 macOS 4K preview timing across camera gaps
+
+A generated 3840×2160 H.264 recording and 1920×1080 camera clip at 30 fps
+exercised zoom, a rounded camera with shadow, and overlapping pixelation.
+With the camera visible, the original fixed 640×360 preview pipeline had a
+43.2 ms median. Sequential seeks through the offscreen editor, including
+Metal rendering and readback at 2×, had a 59.1 ms median and selected a
+384×216 preview by the end of the run. These measurements cover the local
+offscreen path. Interactive frame pacing remains open.
+
+The decoder now stays warm while a later camera range exists, and the
+preview builds camera pixmaps only for visible frames. The paired tests
+measured 52 frames inside a camera gap. The decode, composition, and GPUI
+image median went from 14.2–17.4 ms to 12.3–12.4 ms. A trial that skipped
+all hidden camera decoding delayed the first visible frame to 263–265 ms.
+Keeping the decoder warm returned the transition to 44–45 ms. The before
+and after runs produced identical checksums across the hidden and visible
+frames. Decode is skipped completely when the camera is disabled or its
+last visible range has ended. All 92 runnable composition tests passed,
+along with the FFmpeg preview visibility and rounded-camera export tests.
 
 ## Review gate
 
