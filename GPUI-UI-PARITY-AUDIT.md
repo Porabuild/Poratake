@@ -5597,6 +5597,20 @@ producing 457 GPUI PNG artifacts. It exercised recording reopen and
 export, timer, analysis, scroll, attachments, pin, and screenshot
 save/reopen workflows with generated media and the fixture daemon.
 
+### 2026-11-18 macOS light Retina layout verification
+
+Both light offscreen Metal profiles passed at 2×. The 950×700-point
+profile produced 194 GPUI PNGs, including History grid and compact list
+checks at 140, 200 and 240 points. The 720×520-point profile produced
+169 GPUI PNGs and verified access to the narrow video editor's horizontally
+scrollable controls by keyboard.
+
+Visual inspection confirmed that the 140-point History list showed the
+complete Show in folder tooltip and that the focused Scrub Audio control
+and its focus ring fit inside the 720-point video editor. Both profiles
+also checked capture-preview placement, image pixels and editor handoff.
+Physical display transitions and live pointer delivery remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
