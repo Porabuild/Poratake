@@ -61,12 +61,62 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyCameraPreviewStartup() async throws {
+        let camera = CameraPreviewModule()
+        func show(_ name: String, requestId: String) {
+            camera.handle(method: "show", params: ["deviceName": AnyCodable(name)], requestId: requestId)
+        }
+
+        show("generated camera", requestId: "initial-camera")
+        try await waitFor("initial camera preview never revealed") {
+            camera.testShowResults["initial-camera"] == true
+        }
+        precondition(camera.testStartup.starts == ["generated camera"],
+                     "initial camera preview started more than once: \(camera.testStartup.starts)")
+        show("generated camera", requestId: "repeated-camera")
+        try await waitFor("repeated camera preview request did not finish") {
+            camera.testShowResults["repeated-camera"] == true
+        }
+        precondition(camera.testStartup.starts == ["generated camera"], "unchanged preview restarted the camera")
+        await camera.testHidePanel()
+
+        let registry = RecordingCaptureWindowRegistry.shared
+        _ = registry.beginScreenshot()
+        show("superseded camera", requestId: "camera-superseded")
+        try await waitFor("camera preview did not stage a hidden panel") {
+            camera.testStartup.panel?.alphaValue == 0
+        }
+        let generation = camera.testStartup.generation
+        show("latest camera", requestId: "camera-intermediate")
+        try await waitFor("intermediate camera show did not reach the presentation barrier") {
+            camera.testStartup.generation == generation + 1
+        }
+        show("latest camera", requestId: "camera-latest")
+        try await waitFor("repeated camera shows did not reach the presentation barrier") {
+            camera.testStartup.generation == generation + 2
+        }
+        precondition(camera.testStartup.starts.isEmpty, "camera started before the preview could be revealed")
+        registry.finishScreenshot()
+        try await waitFor("camera preview requests did not settle after the barrier") {
+            camera.testShowResults["camera-latest"] == true
+                && camera.testShowResults["camera-superseded"] == false
+                && camera.testShowResults["camera-intermediate"] == false
+        }
+        precondition(camera.testStartup.starts == ["latest camera"],
+                     "camera preview used a superseded configuration: \(camera.testStartup.starts)")
+        await camera.testHidePanel()
+        precondition(registry.currentWindowIDs().isEmpty)
+        print("camera preview startup: one accepted camera request after protection")
+    }
+
+    @MainActor
     static func run() async throws {
         verifyCameraPreviewPlacement()
         guard NSScreen.screens.first != nil else {
             print("SKIP recording outline lifecycle: no AppKit display")
             return
         }
+        try await verifyCameraPreviewStartup()
         let module = RecordingOverlayModule()
         let screen = NSScreen.screens.first!
         if NSScreen.screens.count == 1 {

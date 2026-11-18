@@ -3,6 +3,12 @@ import Cocoa
 import Foundation
 import QuartzCore
 
+private struct CameraPreviewSource: Equatable {
+    var deviceId: String?
+    var deviceName: String?
+    var resolution = "720p"
+}
+
 class CameraPreviewModule: Module {
     let name = DaemonContract.CameraPreview.module
     
@@ -10,9 +16,7 @@ class CameraPreviewModule: Module {
     private var contentView: CameraPreviewContentView?
     private var moveObserver: NSObjectProtocol?
     
-    private var deviceId: String?
-    private var deviceName: String?
-    private var resolution: String = "720p"
+    private var source = CameraPreviewSource()
     private var flipped: Bool = false
     private var isContentProtected: Bool = false
     private var presentationGeneration = WindowPresentationGeneration()
@@ -38,9 +42,11 @@ class CameraPreviewModule: Module {
     }
     
     private func handleShow(params: [String: AnyCodable]?, requestId: String) {
-        let newDeviceId = params?["deviceId"]?.string()
-        let newDeviceName = params?["deviceName"]?.string()
-        let newResolution = params?["resolution"]?.string() ?? "720p"
+        let source = CameraPreviewSource(
+            deviceId: params?["deviceId"]?.string(),
+            deviceName: params?["deviceName"]?.string(),
+            resolution: params?["resolution"]?.string() ?? "720p"
+        )
         let newFlipped = params?["flipped"]?.bool() ?? false
         
         let x = params?["x"]?.int()
@@ -50,22 +56,12 @@ class CameraPreviewModule: Module {
             guard let self = self else { return }
             Task { @MainActor in
                 do {
-                    let deviceChanged = newDeviceId != self.deviceId || newDeviceName != self.deviceName
-                    let resolutionChanged = newResolution != self.resolution
-                    self.deviceId = newDeviceId
-                    self.deviceName = newDeviceName
-                    self.resolution = newResolution
+                    self.source = source
                     self.flipped = newFlipped
                     let visible = try await self.showPanel(x: x, y: y)
-
-                    if visible && (deviceChanged || resolutionChanged) && self.contentView != nil {
-                        self.contentView?.updateCamera(
-                            deviceId: self.deviceId,
-                            deviceName: self.deviceName,
-                            resolution: self.resolution
-                        )
-                    }
-
+                    #if RECORDING_OUTLINE_TEST
+                    self.testShowResults[requestId] = visible
+                    #endif
                     self.respond(id: requestId, result: ["visible": visible])
                 } catch {
                     self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
@@ -85,10 +81,9 @@ class CameraPreviewModule: Module {
     }
     
     private func handleUpdate(params: [String: AnyCodable]?, requestId: String) {
-        let deviceChanged = params?["deviceId"] != nil || params?["deviceName"] != nil
-        let resolutionChanged = params?["resolution"] != nil
         let hasDeviceId = params?["deviceId"] != nil
         let hasDeviceName = params?["deviceName"] != nil
+        let hasResolution = params?["resolution"] != nil
         let deviceId = params?["deviceId"]?.string()
         let deviceName = params?["deviceName"]?.string()
         let resolution = params?["resolution"]?.string()
@@ -100,13 +95,13 @@ class CameraPreviewModule: Module {
             guard let self = self else { return }
             Task { @MainActor in
                 if hasDeviceId {
-                    self.deviceId = deviceId
+                    self.source.deviceId = deviceId
                 }
                 if hasDeviceName {
-                    self.deviceName = deviceName
+                    self.source.deviceName = deviceName
                 }
                 if let resolution {
-                    self.resolution = resolution
+                    self.source.resolution = resolution
                 }
                 if let flipped {
                     self.flipped = flipped
@@ -115,12 +110,8 @@ class CameraPreviewModule: Module {
                 if let x, let y {
                     self.updatePosition(x: x, y: y)
                 }
-                if deviceChanged || resolutionChanged {
-                    self.contentView?.updateCamera(
-                        deviceId: self.deviceId,
-                        deviceName: self.deviceName,
-                        resolution: self.resolution
-                    )
+                if self.panel?.alphaValue == 1 && (hasDeviceId || hasDeviceName || hasResolution) {
+                    self.contentView?.updateCamera(self.source)
                 }
                 self.respond(id: requestId, result: ["updated": true])
             }
@@ -172,6 +163,9 @@ class CameraPreviewModule: Module {
             if let x = x, let y = y {
                 updatePosition(x: x, y: y)
             }
+            if let contentView, contentView.source != source {
+                contentView.updateCamera(source)
+            }
             panel.orderFrontRegardless()
             return true
         }
@@ -202,9 +196,6 @@ class CameraPreviewModule: Module {
 
         let contentView = CameraPreviewContentView(
             frame: NSRect(origin: .zero, size: size),
-            deviceId: deviceId,
-            deviceName: deviceName,
-            resolution: resolution,
             flipped: flipped,
             padding: shadowPadding
         )
@@ -246,6 +237,7 @@ class CameraPreviewModule: Module {
         panel.ignoresMouseEvents = false
         
         setupMoveTracking(for: panel)
+        contentView.updateCamera(source)
         return true
     }
     
@@ -353,6 +345,12 @@ class CameraPreviewModule: Module {
 
     #if RECORDING_OUTLINE_TEST
     private(set) var testReportedPositions: [NSPoint] = []
+    private(set) var testShowResults: [String: Bool] = [:]
+
+    @MainActor
+    var testStartup: (panel: NSPanel?, generation: UInt64, starts: [String?]) {
+        (panel, presentationGeneration.value, contentView?.testStartedCameras ?? [])
+    }
 
     @MainActor
     func testInstallPanel(_ panel: NSPanel) -> Bool {
@@ -375,25 +373,23 @@ private class CameraPreviewContentView: NSView {
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var containerView: NSView!
     
-    private var deviceId: String?
-    private var deviceName: String?
-    private var resolution: String
+    private(set) var source: CameraPreviewSource?
     private var isMirrored: Bool
     private let padding: CGFloat
     private let cornerRadius: CGFloat = 65
     
     private let cameraQueue = DispatchQueue(label: "com.porabuild.poratake.camera-preview")
     private var isStopped: Bool = false
+
+    #if RECORDING_OUTLINE_TEST
+    private(set) var testStartedCameras: [String?] = []
+    #endif
     
-    init(frame: NSRect, deviceId: String?, deviceName: String?, resolution: String, flipped: Bool, padding: CGFloat) {
-        self.deviceId = deviceId
-        self.deviceName = deviceName
-        self.resolution = resolution
+    init(frame: NSRect, flipped: Bool, padding: CGFloat) {
         self.isMirrored = flipped
         self.padding = padding
         super.init(frame: frame)
         setupView()
-        startCamera()
     }
     
     required init?(coder: NSCoder) {
@@ -430,14 +426,18 @@ private class CameraPreviewContentView: NSView {
         addSubview(containerView)
     }
     
-    func startCamera() {
+    private func startCamera(_ source: CameraPreviewSource) {
+        #if RECORDING_OUTLINE_TEST
+        testStartedCameras.append(source.deviceName)
+        alphaValue = 0
+        #else
         cameraQueue.async { [weak self] in
             guard let self = self else { return }
             
             self.stopCameraInternal()
             self.isStopped = false
             
-            guard let camera = self.findCamera() else {
+            guard let camera = self.findCamera(source) else {
                 DispatchQueue.main.async { [weak self] in
                     self?.showError("No camera found")
                 }
@@ -492,6 +492,7 @@ private class CameraPreviewContentView: NSView {
                 self.previewLayer = previewLayer
             }
         }
+        #endif
     }
     
     private func cleanupSession(_ session: AVCaptureSession) {
@@ -526,11 +527,9 @@ private class CameraPreviewContentView: NSView {
         }
     }
     
-    func updateCamera(deviceId: String?, deviceName: String?, resolution: String) {
-        self.deviceId = deviceId
-        self.deviceName = deviceName
-        self.resolution = resolution
-        startCamera()
+    func updateCamera(_ source: CameraPreviewSource) {
+        self.source = source
+        startCamera(source)
     }
 
     func updateFlipped(_ flipped: Bool) {
@@ -540,7 +539,7 @@ private class CameraPreviewContentView: NSView {
         )
     }
     
-    private func findCamera() -> AVCaptureDevice? {
+    private func findCamera(_ source: CameraPreviewSource) -> AVCaptureDevice? {
         let discoverySession: AVCaptureDevice.DiscoverySession
         if #available(macOS 14.0, *) {
             discoverySession = AVCaptureDevice.DiscoverySession(
@@ -556,7 +555,7 @@ private class CameraPreviewContentView: NSView {
             )
         }
         
-        if let deviceName = deviceName {
+        if let deviceName = source.deviceName {
             if let device = discoverySession.devices.first(where: { $0.localizedName == deviceName }) {
                 return device
             }
@@ -567,7 +566,7 @@ private class CameraPreviewContentView: NSView {
             }
         }
         
-        if let deviceId = deviceId {
+        if let deviceId = source.deviceId {
             if let device = discoverySession.devices.first(where: { $0.uniqueID == deviceId }) {
                 return device
             }

@@ -5816,6 +5816,25 @@ production daemon and full fixture type-checked, and all six module-parity tests
 passed. This run used generated AppKit panels. Live camera capture and physical
 dragging remain open.
 
+### 2026-11-18 macOS camera preview startup
+
+The first camera preview show could start its source twice. The view started
+capture at construction and the show handler started it again when the request
+changed device settings. The generated fixture recorded two startup calls for
+the same device name on the prior build.
+
+A newly created preview now starts its source only after the capture-exclusion
+and screenshot checks let it reveal. A reused panel compares its applied source
+with the latest request. With a simulated screenshot barrier held, the fixture
+saw no startup calls for the hidden panel. After release the latest request
+succeeded, both superseded requests returned false, and one source started.
+An identical repeat show also kept the startup count at one.
+
+The generated fixture passed on arm64 and under Rosetta. The Swift daemon and
+full native fixture type-checked. All 21 camera-preview IPC and daemon-parity
+tests passed. The native fixture records startup requests without opening a
+camera. Device output, first-frame latency and live switching remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
