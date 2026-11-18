@@ -7276,6 +7276,21 @@ request. The light and dark parity workflows also hold ShowWindow
 and verify that Start is disabled and the recorder idle. [Native outline
 evidence](tests/native/evidence/macos-ui/native-window-outline-acknowledgement-20261118.txt)
 
+### 2026-11-18 macOS startup freeze prewarm and Screen Recording access
+
+The GPUI and Electron startup paths each issue one prewarm call to
+the shared macOS daemon. The daemon now checks for existing Screen
+Recording access before reading a screen frame. A denied preflight
+returns prewarmed=false, as does an unavailable image. The call
+uses Apple's permission status API. [Apple permission guidance](https://developer.apple.com/forums/thread/839069?answerId=898801022)
+
+The native lifecycle fixture injected a denied status and verified
+zero capture calls. It also checked successful and unavailable frame
+results with access granted by the fixture. Both the focused check
+and the generated AppKit lifecycle passed on arm64 and under Rosetta.
+The Swift daemon typechecked and 41 Electron and daemon contract
+reference tests passed. The test uses simulated permission outcomes.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

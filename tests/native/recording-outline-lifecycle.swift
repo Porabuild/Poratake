@@ -463,7 +463,31 @@ struct RecordingOutlineLifecycleTest {
         print("closed target and explicit cleanup: outline hidden and unregistered")
     }
 
+    static func verifyFreezePrewarm() {
+        var captureAttempts = 0
+        let denied = FreezeScreenModule.prewarmDisplay(hasAccess: { false }) {
+            captureAttempts += 1
+            return true
+        }
+        precondition(!denied && captureAttempts == 0)
+
+        let warmed = FreezeScreenModule.prewarmDisplay(hasAccess: { true }) {
+            captureAttempts += 1
+            return true
+        }
+        precondition(warmed && captureAttempts == 1)
+
+        let unavailable = FreezeScreenModule.prewarmDisplay(hasAccess: { true }) {
+            captureAttempts += 1
+            return false
+        }
+        precondition(!unavailable && captureAttempts == 2)
+        print("freeze prewarm requires existing permission and reports capture availability")
+    }
+
     static func main() {
+        verifyFreezePrewarm()
+        if CommandLine.arguments.contains("--freeze-prewarm") { return }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--camera-selection") {
