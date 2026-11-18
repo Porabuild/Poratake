@@ -229,11 +229,60 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyCameraPreviewHideReply() async throws {
+        guard NSScreen.screens.first != nil else {
+            print("SKIP camera preview hide reply: no AppKit display")
+            return
+        }
+        let camera = CameraPreviewModule()
+        let registry = RecordingCaptureWindowRegistry.shared
+        camera.handle(method: "show", params: ["deviceName": AnyCodable("generated original")],
+                      requestId: "camera-original")
+        try await waitFor("original camera preview did not reveal") {
+            camera.testShowResults["camera-original"] == true
+        }
+        let original = camera.testStartup.panel!
+        var releaseRefresh: CheckedContinuation<Void, Never>?
+        var refreshedIDs: [CGWindowID] = []
+        registry.setFilterUpdater { ids in
+            if ids.isEmpty {
+                await withCheckedContinuation { releaseRefresh = $0 }
+            } else {
+                refreshedIDs = ids
+            }
+        }
+        camera.handle(method: "hide", params: nil, requestId: "camera-hide")
+        try await waitFor("camera hide did not reach filter refresh") { releaseRefresh != nil }
+        precondition(camera.testStartup.panel == nil && registry.currentWindowIDs().isEmpty)
+        precondition(original.alphaValue == 0 && !original.isVisible)
+        precondition(camera.testHideReplies == ["camera-hide"],
+                     "Camera preview hide reply waited for capture filter refresh")
+
+        camera.handle(method: "show", params: ["deviceName": AnyCodable("generated replacement")],
+                      requestId: "camera-replacement")
+        try await waitFor("replacement camera panel was not staged") { camera.testStartup.panel != nil }
+        let replacement = camera.testStartup.panel!
+        precondition(replacement !== original && replacement.alphaValue == 0)
+        precondition(camera.testStartup.starts.isEmpty)
+        releaseRefresh!.resume()
+        try await waitFor("replacement camera did not reveal after the refresh") {
+            camera.testShowResults["camera-replacement"] == true
+        }
+        precondition(refreshedIDs == [CGWindowID(replacement.windowNumber)])
+        precondition(camera.testStartup.starts == ["generated replacement"])
+        registry.setFilterUpdater(nil)
+        await camera.testHidePanel()
+        precondition(registry.currentWindowIDs().isEmpty)
+        print("camera preview hide replied during refresh; replacement waited for protection")
+    }
+
+    @MainActor
     static func run() async throws {
         verifyCameraSelection()
         verifyCameraPreviewPlacement()
         verifyCameraPreviewError()
         try await verifyRecordingOverlayHideReply()
+        try await verifyCameraPreviewHideReply()
         guard NSScreen.screens.first != nil else {
             print("SKIP recording outline lifecycle: no AppKit display")
             return
@@ -429,6 +478,8 @@ struct RecordingOutlineLifecycleTest {
             do {
                 if CommandLine.arguments.contains("--recording-overlay-hide-reply") {
                     try await verifyRecordingOverlayHideReply()
+                } else if CommandLine.arguments.contains("--camera-preview-hide-reply") {
+                    try await verifyCameraPreviewHideReply()
                 } else {
                     try await run()
                 }

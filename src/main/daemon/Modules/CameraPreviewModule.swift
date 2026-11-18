@@ -77,8 +77,12 @@ class CameraPreviewModule: Module {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
-                await self.hidePanel()
+                self.hidePanel()
                 self.respond(id: requestId, result: ["visible": false])
+                #if RECORDING_OUTLINE_TEST
+                self.testHideReplies.append(requestId)
+                #endif
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             }
         }
     }
@@ -245,7 +249,7 @@ class CameraPreviewModule: Module {
     }
     
     @MainActor
-    private func hidePanel() async {
+    private func hidePanel() {
         presentationGeneration.cancel()
         stopMoveTracking()
         let contentView = self.contentView
@@ -259,7 +263,6 @@ class CameraPreviewModule: Module {
         if let panel {
             RecordingCaptureWindowRegistry.shared.unregister(panel)
         }
-        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
     }
     
     @MainActor
@@ -361,6 +364,7 @@ class CameraPreviewModule: Module {
     private(set) var testReportedPositions: [NSPoint] = []
     private(set) var testShowResults: [String: Bool] = [:]
     private(set) var testFailedShows: Set<String> = []
+    private(set) var testHideReplies: [String] = []
 
     @MainActor
     var testStartup: (panel: NSPanel?, generation: UInt64, starts: [String?]) {
@@ -384,7 +388,10 @@ class CameraPreviewModule: Module {
     func testUpdatePanelPosition(x: Int, y: Int) { updatePosition(x: x, y: y) }
 
     @MainActor
-    func testHidePanel() async { await hidePanel() }
+    func testHidePanel() async {
+        hidePanel()
+        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+    }
     #endif
 }
 
@@ -546,8 +553,8 @@ private class CameraPreviewContentView: NSView {
     }
     
     func stopCamera() {
-        cameraQueue.async { [weak self] in
-            self?.stopCameraInternal()
+        cameraQueue.async {
+            self.stopCameraInternal()
         }
     }
     

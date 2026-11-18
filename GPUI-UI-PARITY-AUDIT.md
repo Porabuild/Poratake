@@ -6324,6 +6324,22 @@ light and dark recording toolbar Metal workflows and 82 Electron and
 daemon contract tests passed. The held refresh is simulated. Live filter
 and compositor timings remain open.
 
+### 2026-11-18 macOS camera preview dismissal and replacement
+
+Camera preview dismissal also waited for the capture-filter refresh after
+the panel was already hidden and unregistered. The native fixture reproduced
+the delayed reply. The daemon now acknowledges the hide once panel cleanup
+is complete, then refreshes the filter asynchronously. The queued camera
+stop retains its view until cleanup runs.
+
+With the old filter refresh held, the fixed fixture received the hide
+reply and staged a replacement panel. That panel stayed transparent and
+deferred camera startup until the filter contained its new window ID.
+Only the replacement source started. The focused and full generated
+fixtures passed on arm64 and x86_64 under Rosetta. The production daemon
+typechecked and 79 Electron and daemon contract tests passed. The fixture
+used generated camera sources. Live camera switching remains unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
