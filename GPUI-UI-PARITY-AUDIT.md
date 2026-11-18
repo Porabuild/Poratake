@@ -2405,7 +2405,8 @@ Bugs fixed in this pass:
   prevents the next selector from opening and remains available for retry.
   Isolated GPUI tests force the delayed-open path, simulate successful freezes
   and release failures, and cover rapid replacements and cancellation. Native
-  macOS and Linux handoffs remain unverified.
+  macOS replacement and cancellation are verified on one display in the
+  follow-up below. Native Linux and multiple displays remain unverified.
 - After a completed frozen capture, a failed release could lose its retry token.
   The token now remains pending, with an immediate retry and notification if it
   still fails. Isolated tests cover the shared capture/release path, replacement
@@ -4367,7 +4368,7 @@ appearance.
 | P1       | Screenshot annotation order                              | GPUI and Electron now apply redactions and highlights in annotation order. Generated GPUI Metal tests cover blur and pixelation in both orders, both themes, 73%/100%/137% zoom and simulated 100%/200% scale, and compare the entire preview with the reopened PNG. The earlier blackout corner comparison used the old order; rounded raster coverage can still differ. Verify live editing, other annotations, zooms, complex compositions and physical DPI.                                                                                                                                                                          |
 | P1       | Full capture-service matrix                              | Fixtures cover window/area/display, timer, OCR/QR and scroll lifecycles. Native area/timer output and OCR/QR service probes are verified. A [live Mac GPUI scroll capture](tests/native/evidence/macos-ui/native-gpui-scroll-20261117.txt) saved a generated page and a history entry. Native pin movement/OS-close and one controlled attachment/save are verified. Extend native display/OCR/QR/scroll, clipboard and attachment cases; compare output with Electron.                                                                                                                                                                  |
 | P1       | Frozen all-in-one desktop icons                          | Capture and recording unit checks pass; hosted fake-daemon workflows reach the visual baseline gate for hide-before-freeze and recording restoration. Verify native icon timing, mode switches and recording handoffs on real displays.                                                                                                                                                                                                                                                                                                                                                                                                  |
-| P1       | Native pending-freeze handoff                            | Mock-platform tests cover delayed selector replacement, cancellation, successful freeze ownership and failed-release retry. Verify the same transitions with real macOS and Linux daemons and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| P1       | Native pending-freeze handoff                            | Single-display macOS verified pending-freeze cancellation and replacement by live and frozen selectors. Fixtures cover release failures. Verify native Linux and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | P1       | Native screen-recording selector handoff                 | Mock-platform tests cover replacing an existing or pending selector, release failure and retry, and a newer request that supersedes recording. Hosted Windows verifies the area-recording selection hole, restoration, pooled-overlay reuse and cancellation. Native pending/replacement handoffs and multi-display picker behavior remain unverified.                                                                                                                                                                                                                                                                                   |
 | P1       | Capture filename collisions                              | GPUI and Electron screenshot, scroll and clipboard-to-editor captures now use exclusive filenames. Real-filesystem tests cover concurrent saves, cancellation, forced unsupported-hard-link fallback copying, timeout recovery and history/editor handoff. Verify simultaneous captures across both shells and on filesystems without hard links.                                                                                                                                                                                                                                                                                        |
 | P1       | Linux daemon shutdown after printing                     | A scaled GTK X11 test failed while waiting for daemon exit with the print dialog open; the next run passed. An earlier X11 exit failure also passed on retry. Capture the exit status if it recurs and identify the cause.                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -5383,6 +5384,30 @@ the cut to confirm the exact trim position. The preview and decoded export
 retained the silent gap. Their RMS energy envelopes had a cosine agreement of
 0.99999 over 43 windows of 100 milliseconds each. The comparison reported
 timing and levels, and the temporary project and export were removed.
+
+### 2026-11-18 native macOS pending screen freeze handoff
+
+An isolated GPUI development app used the authorized Swift daemon on the
+built-in Retina display. A temporary test bridge delayed successful freeze
+and release replies while the daemon performed real screen captures and
+AppKit window operations. Core Graphics window enumeration tracked the
+daemon’s full-screen frozen overlay and GPUI’s selector independently.
+
+- Replacing a pending area capture with Scroll Capture left GPUI without a
+  selector while the original freeze reply was held. The native frozen window
+  disappeared on release. GPUI opened one live selector after the release
+  reply arrived, and cancellation cleared it.
+- Cancelling the pending area capture cleared the native frozen window after
+  the reply was delivered. The cancelled selector did not reopen.
+- Replacing a pending area capture with Window Capture released the original
+  frozen window before creating a new one. GPUI then queried the window list
+  and showed one picker. Closing the picker released the second frozen window.
+
+The test used a generated full-screen backdrop and a temporary profile. The
+test windows closed, the existing editor stayed open, and no captures were
+saved. The native run covers successful freeze and release on one display.
+Failure handling has fixture coverage. Native Linux and multiple displays
+remain open.
 
 ## Review gate
 
