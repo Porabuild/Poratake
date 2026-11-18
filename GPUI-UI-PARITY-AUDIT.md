@@ -7579,6 +7579,21 @@ strip were visible. The check sampled the native preview window with
 app-local frame delivery. Physical narrow and mixed-DPI displays remain
 outside this run.
 
+### 2026-11-18 macOS scroll controls during an auto-scroll reply
+
+The GPUI scroll toolbar now waits for Start and Stop Auto-scroll replies
+off the UI thread. It disables repeat toggles while the reply is pending.
+Cancel can still send its signal. After cancellation, a late error
+does not present an auto-scroll failure.
+
+Eight native runs used a simulated daemon and generated preview frames
+in light and dark. The preview settled on the newest frame in a burst.
+With either command reply held, app-local Cancel dispatched in
+0.07–0.18 ms. A frame submitted after cancellation left the preview
+unchanged. Rejected replies cleared the pending state and allowed a
+retry. These measurements end at the GPUI signal, before native scroll
+cancellation completes.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

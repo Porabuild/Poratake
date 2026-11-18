@@ -46,6 +46,7 @@ pub struct ScrollCaptureUi {
     decoding_preview: bool,
     cursor_outside: bool,
     auto_scrolling: bool,
+    auto_scroll_pending: bool,
     finish_state: FinishState,
     excluded_window_ids: Option<Vec<i64>>,
 }
@@ -60,24 +61,44 @@ impl ScrollCaptureUi {
         self.auto_scrolling && self.cursor_outside && self.finish_state == FinishState::Capturing
     }
 
-    fn toggle_auto_scroll(&mut self, cx: &mut App) {
-        if self.finish_state != FinishState::Capturing {
+    fn toggle_auto_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.finish_state != FinishState::Capturing || self.auto_scroll_pending {
             return;
         }
-        let client = self.daemon.scroll_capture();
-        let result = if self.auto_scrolling {
-            client.stop_auto_scroll()
+        let ids = if self.auto_scrolling {
+            None
+        } else if let Some(ids) = self.excluded_window_ids.as_deref() {
+            Some(ids)
         } else {
-            let Some(ids) = self.excluded_window_ids.as_deref() else {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Auto-scroll failed",
-                    "Could not identify the scroll capture controls",
-                );
-                return;
-            };
-            client.start_auto_scroll(ids)
+            crate::windows::toast::Toast::show(
+                cx,
+                "Auto-scroll failed",
+                "Could not identify the scroll capture controls",
+            );
+            return;
         };
+        let client = self.daemon.scroll_capture();
+        #[cfg(any(not(target_os = "macos"), test))]
+        let result = match ids {
+            Some(ids) => client.start_auto_scroll(ids),
+            None => client.stop_auto_scroll(),
+        };
+        #[cfg(all(target_os = "macos", not(test)))]
+        let result = client.begin_auto_scroll_change(ids).map(|wait| {
+            self.auto_scroll_pending = true;
+            cx.spawn(async move |entity, cx| {
+                let result = smol::unblock(wait).await;
+                let _ = entity.update(cx, |ui, cx| {
+                    ui.auto_scroll_pending = false;
+                    if let Some(error) = result.err().filter(|_| ui.finish_state == FinishState::Capturing) {
+                        crate::windows::toast::Toast::show(cx, "Auto-scroll failed", error.to_string());
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+        });
         if let Err(error) = result {
             crate::windows::toast::Toast::show(cx, "Auto-scroll failed", error.to_string());
         }
@@ -257,6 +278,7 @@ impl ScrollCaptureSession {
             decoding_preview: false,
             cursor_outside: false,
             auto_scrolling: false,
+            auto_scroll_pending: false,
             finish_state: FinishState::Capturing,
             excluded_window_ids: None,
         });
@@ -487,8 +509,13 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
             height: f32::from(work.size.height) as i32,
         },
     };
-    let (signal, _receiver) = smol::channel::bounded(1);
-    let ui = ScrollCaptureSession::open(cx, crate::state::state(cx).daemon, area, signal);
+    let (signal, signals) = smol::channel::bounded(1);
+    let daemon = crate::state::state(cx).daemon;
+    let fake_daemon = std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some();
+    if fake_daemon {
+        daemon.start().expect("scroll fixture daemon");
+    }
+    let ui = ScrollCaptureSession::open(cx, daemon, area, signal);
     if edge.is_none() && fixture_width.is_some() {
         cx.windows()
             .into_iter()
@@ -507,7 +534,9 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
         ui.preview = decode_preview(&encoded, ui.preview_width, ui.preview_max_height);
         cx.notify();
     });
-    apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+    if !fake_daemon || std::env::var_os("PORATAKE_NATIVE_SCROLL_FIXTURE_ACTIVE").is_some() {
+        apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+    }
     apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
     let ids = ui
         .read(cx)
@@ -527,23 +556,54 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
             f32::from(work.bottom()),
         );
     }
-    let (frames, requested) = smol::channel::bounded(1);
+    let (commands, requested) = smol::channel::bounded(1);
     std::thread::spawn(move || {
         use std::io::BufRead;
         for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-            let Some(height) = line
-                .strip_prefix("frame ")
-                .and_then(|height| height.parse::<u32>().ok())
-            else {
-                break;
-            };
-            if !(1..=1200).contains(&height) || frames.send_blocking(height).is_err() {
+            if line == "quit" || commands.send_blocking(line).is_err() {
                 break;
             }
         }
     });
     cx.spawn(async move |cx| {
-        while let Ok(height) = requested.recv().await {
+        while let Ok(command) = requested.recv().await {
+            if fake_daemon {
+                let handled = cx.update(|cx| {
+                    ui.update(cx, |ui, cx| match command.as_str() {
+                        "toggle" => {
+                            ui.toggle_auto_scroll(cx);
+                            println!("scroll fixture toggle dispatched");
+                            true
+                        }
+                        "status" => {
+                            println!(
+                                "scroll fixture status {} {:?} {}",
+                                ui.auto_scroll_pending,
+                                ui.finish_state,
+                                ui.preview.as_ref().map_or(0.0, |preview| preview.height),
+                            );
+                            true
+                        }
+                        "cancel" => {
+                            ui.request_cancel();
+                            assert!(matches!(signals.try_recv(), Ok(ScrollSessionSignal::Cancel)));
+                            println!("scroll fixture cancel dispatched");
+                            true
+                        }
+                        _ => false,
+                    })
+                });
+                if handled {
+                    continue;
+                }
+            }
+            let Some(height) = command
+                .strip_prefix("frame ")
+                .and_then(|height| height.parse::<u32>().ok())
+                .filter(|height| (1..=1200).contains(height))
+            else {
+                break;
+            };
             let encoded = smol::unblock(move || native_scroll_preview_fixture(height)).await;
             cx.update(|cx| {
                 apply_progress(
@@ -984,6 +1044,7 @@ impl Render for ScrollControlBar {
         let theme = active_theme(cx);
         let state = self.ui.read(cx);
         let auto_scrolling = state.auto_scrolling;
+        let auto_scroll_pending = state.auto_scroll_pending;
         let finish_state = state.finish_state;
         let finishing = finish_state == FinishState::Finishing;
         let retryable = finish_state == FinishState::Retry;
@@ -1017,7 +1078,7 @@ impl Render for ScrollControlBar {
                         "scroll-toggle-auto-scroll",
                         toggle_glyph,
                         toggle_tooltip,
-                        finishing || retryable || cancelling,
+                        finishing || retryable || cancelling || auto_scroll_pending,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, cx| ui.toggle_auto_scroll(cx));
                         },
@@ -1586,6 +1647,7 @@ mod tests {
                 decoding_preview: false,
                 cursor_outside: false,
                 auto_scrolling: false,
+                auto_scroll_pending: false,
                 finish_state: FinishState::Capturing,
                 excluded_window_ids: Some(Vec::new()),
             });

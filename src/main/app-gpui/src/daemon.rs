@@ -1065,7 +1065,22 @@ impl ScrollCaptureClient<'_> {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
+    #[cfg(all(target_os = "macos", not(test)))]
+    pub fn begin_auto_scroll_change(
+        &self,
+        excluded_window_ids: Option<&[i64]>,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        let (method, params) = match excluded_window_ids {
+            Some(ids) => (
+                ScrollCaptureMethod::StartAutoScroll,
+                (!ids.is_empty()).then(|| json!({"excludedWindowIds": ids})),
+            ),
+            None => (ScrollCaptureMethod::StopAutoScroll, None),
+        };
+        self.daemon.begin_timed_call(SCROLL_CAPTURE_MODULE, method.id(), params)
+    }
+
+    #[cfg(any(test, all(windows, feature = "parity")))]
     pub fn start_auto_scroll(&self, excluded_window_ids: &[i64]) -> Result<()> {
         #[cfg(test)]
         if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll, excluded_window_ids) {
@@ -1083,7 +1098,7 @@ impl ScrollCaptureClient<'_> {
             .map(|_| ())
     }
 
-    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
+    #[cfg(any(test, all(windows, feature = "parity")))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
         #[cfg(test)]
         if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll, &[]) {
