@@ -5622,6 +5622,30 @@ microphone regression. The fixtures used generated samples to check
 microphone timing and silence padding, system-audio continuity, static video
 and writer finalization. Physical Intel Macs still need runtime verification.
 
+### 2026-11-18 GPUI Metal rendering under Rosetta
+
+An `x86_64` development build ran the offscreen Metal profile on the same
+Apple Silicon Mac as the arm64 reference. At 720×520 points and 2× in light
+mode, all fixture assertions passed. Of 169 paired PNGs, 149 matched byte for
+byte. Six screenshot toolbar states differed by one 8-bit channel level in
+one or two pixels each. Fourteen loaded video editor states differed by at
+most one level per channel inside the generated video image. The arm64
+reference repeated byte for byte across two runs. Visual inspection of the
+translated video editor confirmed the focused Scrub Audio control and its
+focus ring fit inside the narrow viewport.
+
+The 1280×738-point dark profile at 1× completed on both builds. It exercised
+recording reopen and export, timer, OCR and QR analysis, scrolling, attachments,
+pin and screenshot save/reopen using generated media. Of 457 paired PNGs,
+442 matched byte for byte. The 12 loaded video editor states differed by no
+more than one channel level inside the video image. The three edited recording
+views differed in their generated timestamp titles, one pixel per view outside
+the title and preview, and up to two levels per channel inside the preview.
+The translated area, window and screen recording previews had mean channel
+errors of 1.533–1.535 against their decoded exports at the sampled times.
+This checks the translated build on Apple Silicon Metal. Physical Intel
+hardware, mixed-DPI display transitions and live input still need verification.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
