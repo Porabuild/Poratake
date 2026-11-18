@@ -4877,8 +4877,9 @@ images. In a control-free region the GPUI hover differed by about four RGB
 levels on average from [Electron](tests/native/evidence/macos-ui/video-thumbnail-hover-electron-ready-20261117.png),
 after a synthetic media-ready event removed an Electron fixture placeholder.
 Without that event the [placeholder covers the hovered video](tests/native/evidence/macos-ui/video-thumbnail-hover-electron-no-ready-20261117.png)
-in the fixture; the normal Electron app has not been checked for that behavior.
-Neither probe verifies a physical hover, live recording or desktop compositing.
+in the fixture. The media readiness follow-up near the end of this audit
+covers that race. Neither probe verifies a physical hover, live recording or
+desktop compositing.
 
 An ended GPUI audio preview stem could not be replayed: rodio had removed its
 source, and a later seek returned without restoring it. This could leave a
@@ -6721,6 +6722,40 @@ across the measured runs, and the saved PNGs were byte-identical. The
 held preview still owned its undrawn frames in this probe. The
 [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the measurements.
+
+### 2026-11-18 macOS recording preview media readiness at the branch head
+
+The Electron comparison reproduced a loading placeholder over a decoded
+recording in dark mode. The video was playing at ready state 4, and the
+fixture had received no `loadeddata` event. When the listener missed
+`loadeddata`, the renderer stayed in its loading state. While loading,
+the preview now accepts a playback time update once the video has
+current frame data. Normal `loadeddata` and media error events still
+work through their established handlers.
+
+The local Electron fixture deliberately suppressed `loadeddata`. Both
+appearances failed to replace the placeholder before the fix. Afterward,
+both appearances passed with normal and suppressed events, without
+injecting a synthetic ready event. Hover captures showed the recording
+under the controls. The GPUI offscreen renderer independently passed
+idle, hover and exit for the same generated clip in light and dark.
+
+The macOS Metal harness passed a full 1280-point light profile at
+1× with 217 PNGs and both 950-point profiles at 2× with 199 PNGs
+each. The focused dark 1280-point scroll, timer, recording, and
+recording-control workflows also passed. These runs use generated
+frames and a fixture daemon. The broader dark 1280-point run was
+stopped after its capture-preview checks in favor of the focused
+workflows. The macOS snapshot baseline comparison remains open.
+
+The repository checks passed with the renderer fix, with 2,414 tests
+passing and three skipped. Two unrelated licensing tests timed out
+during an earlier concurrent broad render and passed when the checks
+ran by themselves. The GPUI test suite at `86af4ee3` passed all
+1,169 runnable tests with 23 ignored. GitHub showed no pull request or
+hosted run for this branch at the time of the check. The local camera
+authorization probe reported undetermined, and System Information
+listed one built-in Retina display.
 
 ## Review gate
 

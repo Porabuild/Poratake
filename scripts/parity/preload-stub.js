@@ -4,7 +4,7 @@
 // Loaded by `vite.renderer.mts` before the renderer entrypoint.
 //
 const query = new URLSearchParams(location.search);
-if (query.has('traceMedia')) {
+if (query.has('traceMedia') || query.has('skipLoadedData')) {
   window.parityMediaEvents = [];
   for (const type of ['loadeddata', 'error']) {
     document.addEventListener(
@@ -15,6 +15,9 @@ if (query.has('traceMedia')) {
             type,
             readyState: event.target.readyState,
           });
+          if (type === 'loadeddata' && query.has('skipLoadedData')) {
+            event.stopImmediatePropagation();
+          }
         }
       },
       true

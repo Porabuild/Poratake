@@ -59,6 +59,21 @@ app
       requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); }));
     })`);
     }
+    if (process.env.PORATAKE_PREVIEW_EXPECT_READY === '1') {
+      await evaluate(`new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('decoded video did not replace the placeholder')), 2500);
+        const check = () => {
+          const video = document.querySelector('video');
+          if (!video || video.parentElement.querySelector('.bg-muted')) return;
+          clearTimeout(timer);
+          observer.disconnect();
+          resolve();
+        };
+        const observer = new MutationObserver(check);
+        observer.observe(document, { childList: true, subtree: true });
+        check();
+      })`);
+    }
     const save = async name => {
       const image = await window.webContents.capturePage();
       fs.writeFileSync(path.join(output, `${name}.png`), image.toPNG());
