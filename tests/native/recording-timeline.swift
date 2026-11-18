@@ -91,8 +91,9 @@ struct RecordingTimelineTests {
         at time: CMTime = .zero,
         frames: Int = 480,
         left: Float = 0.25,
-        right: Float = -0.5
+        right: Float? = -0.5
     ) -> CMSampleBuffer {
+        let channels = right.map { [left, $0] } ?? [left]
         var description = AudioStreamBasicDescription(
             mSampleRate: 48_000,
             mFormatID: kAudioFormatLinearPCM,
@@ -100,7 +101,7 @@ struct RecordingTimelineTests {
             mBytesPerPacket: 4,
             mFramesPerPacket: 1,
             mBytesPerFrame: 4,
-            mChannelsPerFrame: 2,
+            mChannelsPerFrame: UInt32(channels.count),
             mBitsPerChannel: 32,
             mReserved: 0
         )
@@ -115,27 +116,26 @@ struct RecordingTimelineTests {
             extensions: nil,
             formatDescriptionOut: &format
         ) == noErr)
-        let channelBytes = frames * MemoryLayout<Float>.size
+        let dataSize = frames * channels.count * MemoryLayout<Float>.size
         var block: CMBlockBuffer?
         precondition(CMBlockBufferCreateWithMemoryBlock(
             allocator: nil,
             memoryBlock: nil,
-            blockLength: channelBytes * 2,
+            blockLength: dataSize,
             blockAllocator: kCFAllocatorDefault,
             customBlockSource: nil,
             offsetToData: 0,
-            dataLength: channelBytes * 2,
+            dataLength: dataSize,
             flags: kCMBlockBufferAssureMemoryNowFlag,
             blockBufferOut: &block
         ) == noErr)
-        var planar = [Float](repeating: left, count: frames)
-        planar.append(contentsOf: repeatElement(right, count: frames))
+        let planar = channels.flatMap { Array(repeating: $0, count: frames) }
         precondition(planar.withUnsafeBytes { bytes in
             CMBlockBufferReplaceDataBytes(
                 with: bytes.baseAddress!,
                 blockBuffer: block!,
                 offsetIntoDestination: 0,
-                dataLength: channelBytes * 2
+                dataLength: dataSize
             )
         } == noErr)
         var timing = CMSampleTimingInfo(
@@ -172,7 +172,45 @@ struct RecordingTimelineTests {
         return buffer!
     }
 
+    static func verifyPlanarMicrophonePadding() {
+        let monoOutput = URL(fileURLWithPath: NSTemporaryDirectory() + "poratake-mono-mic-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: monoOutput) }
+        let monoWriter = try! AVAssetWriter(outputURL: monoOutput, fileType: .m4a)
+        let monoInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 2,
+            AVEncoderBitRateKey: 320_000,
+        ])
+        monoInput.expectsMediaDataInRealTime = true
+        precondition(monoWriter.canAdd(monoInput))
+        monoWriter.add(monoInput)
+        precondition(monoWriter.startWriting())
+        monoWriter.startSession(atSourceTime: .zero)
+        let monoRecorder = ScreenCaptureRecorder()
+        monoRecorder.testConfigureMicrophone(writer: monoWriter, input: monoInput)
+        monoRecorder.testWriteMicrophone(
+            nonInterleavedAudioSample(frames: 512, right: nil),
+            pendingStart: CMTime(value: 1005, timescale: 48_000)
+        )
+        finishMicrophone(monoRecorder)
+        let monoWrites = monoRecorder.testMicrophoneWrites
+        precondition(monoWrites.count == 3)
+        for (write, length) in zip(monoWrites, [512, 493, 512]) {
+            precondition(CMTimeCompare(write.1, CMTime(value: Int64(length), timescale: 48_000)) == 0)
+        }
+        let monoDone = DispatchSemaphore(value: 0)
+        monoWriter.finishWriting { monoDone.signal() }
+        precondition(monoDone.wait(timeout: .now() + 15) == .success)
+        precondition(monoWriter.status == .completed, "\(String(describing: monoWriter.error))")
+        print("Planar mono microphone capture completed with partial silence padding")
+    }
+
     static func main() async {
+        if CommandLine.arguments.contains("--planar-microphone-only") {
+            verifyPlanarMicrophonePadding()
+            return
+        }
         if let path = ProcessInfo.processInfo.environment["PORATAKE_TEST_MIC_STATIC_CLOCK"] {
             let pausedToggle = ProcessInfo.processInfo.environment["PORATAKE_TEST_MIC_PAUSED_TOGGLE"] != nil
             let firstPending = ProcessInfo.processInfo.environment["PORATAKE_TEST_MIC_FIRST_PENDING"] != nil
@@ -772,6 +810,8 @@ struct RecordingTimelineTests {
         precondition(done.wait(timeout: .now() + 15) == .success)
         precondition(writer.status == .completed, "\(String(describing: writer.error))")
         print("Microphone AAC writer completed without overlapping sample buffers")
+
+        verifyPlanarMicrophonePadding()
 
         let staticPath = ProcessInfo.processInfo.environment["PORATAKE_TEST_STATIC_AUDIO_OUTPUT"]
         let staticOutput = URL(fileURLWithPath: staticPath ?? NSTemporaryDirectory() + "poratake-static-audio-\(UUID().uuidString).m4a")

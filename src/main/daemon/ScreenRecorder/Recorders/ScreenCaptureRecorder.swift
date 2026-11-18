@@ -851,10 +851,14 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         writeMicAudioSample(sampleBuffer, clock: micCaptureSession?.synchronizationClock)
     }
 
-    private func writeMicAudioSample(_ sampleBuffer: CMSampleBuffer, clock: CMClock? = nil) {
-        guard micBufferQueue != nil else { return }
+    private func writeMicAudioSample(_ rawSampleBuffer: CMSampleBuffer, clock: CMClock? = nil) {
+        guard let micBufferQueue else { return }
         let screenTimeline = microphoneScreenTimeline
         guard screenTimeline.hasVideo else { return }
+        guard let sampleBuffer = interleavedAudioSampleBuffer(rawSampleBuffer) else {
+            micBufferQueue.reportFailure(RecorderError.capture("Could not normalize microphone audio"))
+            return
+        }
 
         let micTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         var sourceClock: AnyObject? = clock
@@ -908,7 +912,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         guard let adjustedBuffer = createAdjustedSampleBuffer(sampleBuffer, newTime: adjustedTime) else {
-            micBufferQueue?.reportFailure(RecorderError.capture("Could not time microphone audio"))
+            micBufferQueue.reportFailure(RecorderError.capture("Could not time microphone audio"))
             return
         }
         _ = appendMicBufferToWriter(adjustedBuffer)
