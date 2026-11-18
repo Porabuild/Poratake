@@ -6438,6 +6438,30 @@ production daemon remain unverified. The
 [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes both conditions and the measurement details.
 
+### 2026-11-18 macOS first frame during recording startup
+
+ScreenCaptureKit could deliver the only useful frame of a static scene
+before stream startup and the exclusion refresh had returned. The screen
+recorder discarded frames in that interval. It now accepts frames as
+soon as the stream with its initial exclusion filter is ready to start.
+The recorder still reports startup completion after the refresh. New
+protected panels continue to wait for their filter update before showing.
+
+The generated-frame regression failed with the previous sample gate.
+The fixed recorder decoded the first frame and held the static image to
+the requested stop position, including under simulated writer backpressure.
+The default timeline suite and all seven static timeline variants passed.
+
+In four paired native light and dark trials with the same static scene,
+the previous screen-only daemon wrote 0.438–0.725 seconds of video.
+With the startup change, it wrote 0.835–0.923 seconds. Stop was requested
+about 0.8 seconds after startup confirmation. All eight recordings
+decoded, and the 4.19-second startup outlier did not recur. The production
+Swift daemon typechecked. Live production audio and the origin of the
+earlier startup outlier remain open. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the per-run durations.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

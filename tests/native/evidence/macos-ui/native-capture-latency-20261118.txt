@@ -166,3 +166,30 @@ Start but returned CAPTURE_ERROR on Stop with the message "Asset
 writer error: The operation could not be completed". These runs used
 the prior screen-only fixture. They leave the cause and current
 production-daemon reproduction open.
+
+Retaining the first recording frame during startup
+
+The generated test submits its first video frame during the asynchronous
+startup interval while the public recorder state is idle. With the old
+sample gate, the test fails before finalization. The fixed recorder
+retains that frame and writes the requested static duration, including
+when the first frame is temporarily held by writer backpressure.
+
+Four live GPUI comparisons used fresh screen-only daemon processes and
+the same uniform blue panel. The driver requested Stop 800 ms after the
+Start reply. The reported duration below comes from the decoded video
+stream. All outputs decoded as 600x440 video-only, and each first frame
+was uniformly the expected backdrop.
+
+               Start RPC before / after, ms     Video before / after, sec
+Light pair 1                 498.7 / 349.1                 0.723 / 0.843
+Dark pair 1                  388.1 / 350.6                 0.438 / 0.835
+Light pair 2                 438.6 / 428.3                 0.722 / 0.923
+Dark pair 2                  459.6 / 449.8                 0.725 / 0.915
+
+The clip can start before the daemon acknowledgment. The fixed trials
+had 3–4 video frames and visible previews 77–99 ms after Stop. All runs
+confirmed startup. The earlier multi-second startup outlier and failed
+Stop did not recur in this sample. The paired probe used the previous
+screen-only Swift fixture and the same fixture with the startup gate
+change. It did not start microphone, system audio, camera, or key capture.

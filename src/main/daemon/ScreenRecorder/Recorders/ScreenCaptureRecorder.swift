@@ -33,6 +33,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var micPauseAnchor: CMTime = .zero
     private var lastMicWriteEndTime: CMTime?
 
+    private var acceptingStartupFrames = false
     private var sessionStarted = false
     private var firstFrameTime: CMTime?
     private var lastFrameTime: CMTime = .zero
@@ -451,10 +452,19 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         pendingVideoFrame = nil
         firstMicTime = nil
 
-        try await stream?.startCapture()
-        RecordingCaptureWindowRegistry.shared.finishCaptureStart()
-        try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
-        state = .recording
+        try await startScreenStream {
+            try await stream?.startCapture()
+            RecordingCaptureWindowRegistry.shared.finishCaptureStart()
+            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func startScreenStream(_ start: () async throws -> Void) async throws {
+        videoQueue.sync { acceptingStartupFrames = true }
+        defer { videoQueue.sync { acceptingStartupFrames = false } }
+        try await start()
+        videoQueue.sync { state = .recording }
     }
 
     @MainActor
@@ -843,9 +853,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard state == .recording else { return }
-        guard sessionStarted else { return }
-        guard micAudioSessionStarted else { return }
+        let acceptsSample = videoQueue.sync {
+            (state == .recording || acceptingStartupFrames) && sessionStarted && micAudioSessionStarted
+        }
+        guard acceptsSample else { return }
 
         micSampleCount += 1
         writeMicAudioSample(sampleBuffer, clock: micCaptureSession?.synchronizationClock)
@@ -1438,7 +1449,7 @@ extension ScreenCaptureRecorder: SCStreamOutput {
             return
         }
 
-        guard state == .recording else { return }
+        guard state == .recording || acceptingStartupFrames else { return }
 
         if !sessionStarted {
             guard ScreenCaptureFrame.canAnchorTimeline(sampleBuffer, type: type) else { return }
@@ -1746,7 +1757,11 @@ extension ScreenCaptureRecorder: SCStreamOutput {
         assetWriter = writer
         videoInput = input
         pixelBufferAdaptor = adaptor
-        state = .recording
+    }
+
+    @MainActor
+    func testStartScreenStream(_ start: () async throws -> Void) async throws {
+        try await startScreenStream(start)
     }
 
     func testConfigureCamera(writer: AVAssetWriter, input: AVAssetWriterInput, path: String) {

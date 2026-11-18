@@ -321,7 +321,11 @@ struct RecordingTimelineTests {
             recorder.testConfigureScreenWriter(writer: writer, input: input, adaptor: adaptor)
             let frame = sample(at: 100, size: 64, fill: 0x22)
             if droppedFirst { recorder.testSetVideoBackpressure(true) }
-            recorder.testProcessSample(frame, type: .screen)
+            try! await recorder.testStartScreenStream {
+                precondition(recorder.state == .idle, "The recorder must stay idle until startup completes")
+                recorder.testProcessSample(frame, type: .screen)
+                precondition(recorder.testTimeline.started, "Startup must retain the first screen frame")
+            }
             if droppedFirst { recorder.testSetVideoBackpressure(false) }
             recorder.testProcessSample(audioSample(at: 120), type: .audio)
             recorder.testSetCameraClockTime(CMTime(value: 125, timescale: 1))
