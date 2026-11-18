@@ -10682,6 +10682,27 @@ pub(super) fn video(
             red > 100 && blue > 100,
             "rendered preview lacks fixture colors: red={red}, blue={blue}"
         );
+        for (group, label_index) in [
+            ("video-timeline-video-label", 0),
+            ("video-timeline-audio-label", 2),
+        ] {
+            let label = super::measured(group, label_index);
+            let pixel = |position: gpui::Pixels| (f32::from(position) * scale).round() as u32;
+            let padding_x = pixel(super::measured(group, 0).left() - px(3.));
+            let mut visible = false;
+            for y in pixel(label.top())..pixel(label.bottom()) {
+                let background = screenshot.get_pixel(padding_x, y);
+                for x in pixel(label.left())..pixel(label.right()) {
+                    let foreground = screenshot.get_pixel(x, y);
+                    if foreground.0[..3].iter().all(|channel| *channel >= 245) {
+                        visible = true;
+                        let contrast = super::pixel_contrast(foreground, background);
+                        assert!(contrast >= 4.5, "{group} contrast was {contrast:.2}");
+                    }
+                }
+            }
+            assert!(visible, "{group} did not paint its duration");
+        }
     }
     if cfg!(target_os = "macos") && width == 720. {
         let stage_right = px(width

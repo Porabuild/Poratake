@@ -5646,6 +5646,22 @@ errors of 1.533–1.535 against their decoded exports at the sampled times.
 This checks the translated build on Apple Silicon Metal. Physical Intel
 hardware, mixed-DPI display transitions and live input still need verification.
 
+### 2026-11-18 macOS video timeline label contrast
+
+The rendered light Retina video editor showed minimum measured contrast of
+3.59:1 for the video duration, 2.72:1 for the rectangle label and 2.55:1 for the
+audio duration. GPUI painted that audio duration with translucent window
+foreground, which is dark in light mode. The isolated Electron fixture
+confirmed the orange clip gradient and white duration with a drop shadow.
+
+On macOS the GPUI labels now use white text over a compact, translucent dark
+backdrop. The clip gradients remain visible around each label and retain their
+existing roles. In the final 720×520 light profile at 2× and the 950×700 dark
+profile at 1×, the sampled video, drawing and audio labels measured 11.92:1 or
+higher. Visual inspection verified space above and below the label backdrops.
+Both Metal profiles passed the rendered contrast assertion for video and audio
+durations, and all 48 focused timeline tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -376,13 +376,19 @@ fn draw_preview(drag: &DrawDrag, pixels_per_second: f32) -> AnyElement {
 
 fn label_element(clip: &Clip, kind: TrackKind, width: f32, theme: &ThemeVars) -> AnyElement {
     let rule = kind.label_rule();
+    let macos = crate::ui::chrome::is_macos();
     let mut row = div()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(6.0))
         .px(px(6.0))
-        .overflow_hidden();
+        .overflow_hidden()
+        .when(macos, |row| {
+            row.line_height(px(18.0))
+                .rounded(px(4.0))
+                .bg(crate::ui::colors::black(0.64))
+        });
     if rule.icon_always || width < rule.text_at {
         row = row.child(icon_element(clip.icon, px(12.0)));
     }
@@ -393,7 +399,9 @@ fn label_element(clip: &Clip, kind: TrackKind, width: f32, theme: &ThemeVars) ->
         if rule.detail_at.is_some_and(|at| width >= at) {
             row = row.child(
                 div()
-                    .text_color(theme.foreground.opacity(0.7))
+                    .when(!macos, |detail| {
+                        detail.text_color(theme.foreground.opacity(0.7))
+                    })
                     .child(detail),
             );
         }
@@ -403,13 +411,23 @@ fn label_element(clip: &Clip, kind: TrackKind, width: f32, theme: &ThemeVars) ->
             row = row.child(
                 div()
                     .rounded(px(4.0))
-                    .bg(crate::ui::colors::white(0.2))
+                    .bg(crate::ui::colors::white(if macos { 0.12 } else { 0.2 }))
                     .px(px(6.0))
                     .text_size(px(11.0))
                     .child(badge),
             );
         }
     }
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    let row = match kind {
+        TrackKind::Video => row.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-timeline-video-label", bounds);
+        }),
+        TrackKind::Music => row.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-timeline-audio-label", bounds);
+        }),
+        _ => row,
+    };
     row.into_any_element()
 }
 

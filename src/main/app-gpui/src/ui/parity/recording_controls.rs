@@ -81,17 +81,6 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             let bounds = measured("microphone-icon", 0);
             let x = (f32::from(bounds.left()) * scale).round() as u32;
             let y = (f32::from(bounds.top()) * scale).round() as u32;
-            let luminance = |pixel: &image::Rgba<u8>| {
-                let linear = |value: u8| {
-                    let value = f32::from(value) / 255.;
-                    if value <= 0.04045 {
-                        value / 12.92
-                    } else {
-                        ((value + 0.055) / 1.055).powf(2.4)
-                    }
-                };
-                0.2126 * linear(pixel[0]) + 0.7152 * linear(pixel[1]) + 0.0722 * linear(pixel[2])
-            };
             for (name, index) in [
                 ("camera-icon", 2),
                 ("microphone-icon", 3),
@@ -104,18 +93,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 assert_eq!(icon.size.height, px(crate::ui::chrome::TOOL_BUTTON_ICON));
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
                 assert!(icon.top() >= button.top() && icon.bottom() <= button.bottom());
-                let background = luminance(image.get_pixel(
+                let background = image.get_pixel(
                     (f32::from(button.left()) * scale).round() as u32 + 2,
                     (f32::from(button.top()) * scale).round() as u32 + 2,
-                ));
+                );
                 let mut visible = 0;
                 let left = (f32::from(icon.left()) * scale).round() as u32;
                 let top = (f32::from(icon.top()) * scale).round() as u32;
                 for row in top..top + (f32::from(icon.size.height) * scale).round() as u32 {
                     for column in left..left + (f32::from(icon.size.width) * scale).round() as u32 {
-                        let foreground = luminance(image.get_pixel(column, row));
-                        let contrast = (foreground.max(background) + 0.05)
-                            / (foreground.min(background) + 0.05);
+                        let contrast =
+                            super::pixel_contrast(image.get_pixel(column, row), background);
                         if contrast >= 3. {
                             visible += 1;
                         }

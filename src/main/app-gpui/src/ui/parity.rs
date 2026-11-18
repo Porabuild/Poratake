@@ -74,6 +74,23 @@ fn measured(group: &str, index: usize) -> Bounds<Pixels> {
     GEOMETRY.with_borrow(|geometry| geometry[group][index])
 }
 
+fn pixel_contrast(first: &image::Rgba<u8>, second: &image::Rgba<u8>) -> f32 {
+    let luminance = |pixel: &image::Rgba<u8>| {
+        let linear = |channel: u8| {
+            let value = f32::from(channel) / 255.;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(pixel[0]) + 0.7152 * linear(pixel[1]) + 0.0722 * linear(pixel[2])
+    };
+    let first = luminance(first);
+    let second = luminance(second);
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
 fn reveal_measured(
     cx: &mut HeadlessAppContext,
     window: AnyWindowHandle,
