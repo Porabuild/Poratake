@@ -700,7 +700,7 @@ fn wait_for_recording_stop(cx: &mut HeadlessAppContext) {
 }
 
 #[cfg(target_os = "macos")]
-fn recording_outline_barrier(
+fn accept_fixture_barrier(
     listener: &std::net::TcpListener,
 ) -> std::sync::mpsc::Receiver<std::net::TcpStream> {
     use std::io::Read;
@@ -1382,13 +1382,13 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&serde_json::json!({
                     "freeze": "frozen",
-                    "recordingHoldFreezeRelease": true,
+                    "holdFreezeRelease": true,
                     "barrier": listener.local_addr().unwrap().to_string(),
                 }))
                 .unwrap(),
             )
             .unwrap();
-            recording_outline_barrier(&listener)
+            accept_fixture_barrier(&listener)
         });
         if target == "area" {
             select_area(cx, picker);
@@ -1539,7 +1539,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             let mut fixture = serde_json::json!({
                 "freeze": "frozen", "recordingAreaStartFails": true,
                 "recordingAreaStartWritesPartial": true,
-                "recordingHoldFreezeRelease": true,
+                "holdFreezeRelease": true,
                 "barrier": listener.local_addr().unwrap().to_string(),
             });
             let expected_duration = configure_recording_fixture(&mut fixture, "area");
@@ -1558,7 +1558,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             });
             let before = super::daemon_fixture::calls(output).len();
             take_notifications();
-            let release = recording_outline_barrier(&listener);
+            let release = accept_fixture_barrier(&listener);
             click_measured(cx, control, "recording-controls", 0);
             let mut release = release
                 .recv_timeout(std::time::Duration::from_secs(10))
@@ -1637,14 +1637,14 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 title == "Recording failed"
                     && body.contains(failed_recording.parent().unwrap().to_str().unwrap())
             }));
-            fixture["recordingHoldFreezeRelease"] = false.into();
+            fixture["holdFreezeRelease"] = false.into();
             fixture["recordingHoldOutlineShow"] = true.into();
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&fixture).unwrap(),
             )
             .unwrap();
-            let show = recording_outline_barrier(&listener);
+            let show = accept_fixture_barrier(&listener);
             click_measured(cx, control, "recording-controls", 0);
             let mut show = show
                 .recv_timeout(std::time::Duration::from_secs(10))
@@ -1691,7 +1691,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 serde_json::to_vec(&fixture).unwrap(),
             )
             .unwrap();
-            let hide = recording_outline_barrier(&listener);
+            let hide = accept_fixture_barrier(&listener);
             click_measured(cx, control, "recording-controls", 1);
             cx.run_until_parked();
             wait_for_recording_stop(cx);
@@ -3623,6 +3623,9 @@ fn open_verified_capture_editor(
 
 pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     #[cfg(target_os = "macos")]
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
     let work_area = cx.update(|cx| {
         let display = cx.primary_display().expect("timer fixture display");
         crate::capture::overlay::physical_rect(
@@ -3663,11 +3666,22 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
         let timer_position = [if name == "edge" { 0 } else { 260 }, 40];
         let captures = scratch.join(format!("timer-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
+        #[cfg(target_os = "macos")]
+        let listener =
+            (name == "completed").then(|| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+        #[cfg(target_os = "macos")]
+        let barrier = listener
+            .as_ref()
+            .map(|listener| listener.local_addr().unwrap().to_string());
+        #[cfg(not(target_os = "macos"))]
+        let barrier: Option<String> = None;
         std::fs::write(
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
                 "freeze": "frozen", "rect": rect, "windowId": null, "timer": if name == "edge" { "completed" } else { name },
                 "timerPosition": timer_position,
+                "holdFreezeRelease": barrier.is_some(),
+                "barrier": barrier,
                 "expectedExcludedWindowIds": cfg!(target_os = "macos")
                     .then_some(crate::capture::overlay::PARITY_OVERLAY_WINDOW_IDS),
             }))
@@ -3688,8 +3702,45 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
         });
         cx.run_until_parked();
         let picker = area_picker(cx);
+        #[cfg(target_os = "macos")]
+        let release = listener.as_ref().map(accept_fixture_barrier);
         select_area_rect(cx, picker, rect);
         cx.run_until_parked();
+        #[cfg(target_os = "macos")]
+        if let Some(release) = release {
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(cx.update(crate::capture::overlay::parity_is_active));
+            assert!(!crate::capture::timer::is_active());
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| { call["module"] == "timer-control" && call["method"] == "show" }));
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "timer selection must keep processing events while Release is held"
+            );
+            release.write_all(&[0]).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let started = std::time::Instant::now();
+            loop {
+                cx.run_until_parked();
+                let active = crate::capture::timer::is_active();
+                let settled = if name == "timeout" {
+                    active
+                } else {
+                    !active && !cx.update(crate::capture::overlay::parity_is_active)
+                };
+                if settled {
+                    break;
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            }
+        }
         if name == "timeout" {
             assert!(crate::capture::timer::is_active());
             cx.advance_clock(std::time::Duration::from_secs(10));

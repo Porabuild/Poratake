@@ -7174,6 +7174,20 @@ Each selected window recorded a 720×480 video and opened a preview.
 Cancelling during the hold left no controls, outline, or project.
 [Native window handoff evidence](tests/native/evidence/macos-ui/native-frozen-window-recording-release-20261118.txt)
 
+### 2026-11-18 macOS frozen timer selection handoff
+
+Confirming a frozen timer selection blocked the UI while the daemon
+released the frozen screen. With the successful Release reply held,
+the native baseline status command waited 652 ms. GPUI now releases
+off the UI thread while keeping the selector available for cancellation.
+The countdown waits for Release and for the current selection to
+still own the request.
+
+The revised native command answered in 0.10–21.94 ms during the hold.
+Both light and dark counted down normally and saved clean 600×320
+PNGs over a generated backdrop. Cancel and switching to a screenshot
+left no stale countdown or timer output. [Native timer evidence](tests/native/evidence/macos-ui/native-timer-freeze-release-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

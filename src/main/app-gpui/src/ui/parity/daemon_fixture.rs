@@ -181,7 +181,7 @@ pub fn run() {
                     )
                     .unwrap();
                 }
-                if fixture["recordingHoldFreezeRelease"] == true {
+                if fixture["holdFreezeRelease"] == true {
                     std::thread::spawn(move || {
                         wait_for_fixture_barrier(&fixture);
                         protocol::respond_success(&request.id, json!({"frozen": false}));

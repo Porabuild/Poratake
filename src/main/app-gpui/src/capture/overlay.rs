@@ -50,6 +50,8 @@ struct OverlaySession {
     revision: u64,
     pending_freeze: Option<u64>,
     timer_cancel: Option<smol::channel::Sender<bool>>,
+    #[cfg(target_os = "macos")]
+    timer_release_owner: Option<u64>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
@@ -440,6 +442,10 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
 
 fn take_all(cx: &mut App) -> (Vec<TrackedOverlay>, Option<u64>) {
     session(cx).revision = session(cx).revision.wrapping_add(1);
+    #[cfg(target_os = "macos")]
+    {
+        session(cx).timer_release_owner = None;
+    }
     if let Some(cancel) = session(cx).timer_cancel.take() {
         let _ = cancel.try_send(false);
     }
@@ -2155,11 +2161,79 @@ impl AreaOverlay {
         cx.notify();
     }
 
+    #[cfg(target_os = "macos")]
+    fn release_before_timer(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        confirm: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> bool {
+        use crate::capture::intent::CaptureIntent;
+
+        if self.intent != CaptureIntent::Timer {
+            return false;
+        }
+        let owner = revision(cx);
+        if session(cx).timer_release_owner == Some(owner) {
+            return true;
+        }
+        let frozen = frozen_selection_generation(cx);
+        if frozen == 0 {
+            return false;
+        }
+
+        session(cx).timer_release_owner = Some(owner);
+        let service = self.service.clone();
+        let handle = window
+            .window_handle()
+            .downcast::<Self>()
+            .expect("area overlay");
+        cx.spawn(async move |_, cx| {
+            #[cfg(not(test))]
+            let released = smol::unblock(move || service.release_screen(frozen)).await;
+            #[cfg(test)]
+            let released = cx
+                .background_executor()
+                .spawn(async move { service.release_screen(frozen) })
+                .await;
+            cx.update(|cx| {
+                if revision(cx) != owner || session(cx).timer_release_owner != Some(owner) {
+                    return;
+                }
+                session(cx).timer_release_owner = None;
+                if released {
+                    mark_frozen_selection_released(frozen, cx);
+                }
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    if overlay.intent != CaptureIntent::Timer {
+                        return;
+                    }
+                    if released {
+                        confirm(overlay, window, cx);
+                    } else {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Timer Capture Failed",
+                            "Could not release the frozen screen",
+                        );
+                        dismiss(window, cx);
+                    }
+                });
+            });
+        })
+        .detach();
+        true
+    }
+
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((origin, size)) = self.selection() else {
             return;
         };
         if size.width < px(4.0) || size.height < px(4.0) {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if self.release_before_timer(window, cx, Self::confirm) {
             return;
         }
 
@@ -2884,7 +2958,8 @@ impl AreaOverlay {
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "macos")]
-        if pending_recording_preparation(cx).is_some() {
+        if pending_recording_preparation(cx).is_some() || session(cx).timer_release_owner.is_some()
+        {
             return;
         }
         if self.handed_off {
@@ -2932,6 +3007,10 @@ impl AreaOverlay {
     }
 
     fn confirm_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if self.release_before_timer(window, cx, Self::confirm_screen) {
+            return;
+        }
         let scale = self.scale;
         let capture = display_capture(self.display_bounds, scale, self.display_id);
         let rect = capture.rect;
