@@ -27,7 +27,7 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
     ))
     .write_to(&mut encoded, image::ImageFormat::Png)
     .unwrap();
-    let preview = cx.update(|cx| {
+    let (preview, controls) = cx.update(|cx| {
         crate::windows::scroll_capture::preview_for_parity(
             cx,
             base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
@@ -57,7 +57,21 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
             "square preview corner at {x}, {y}: {corner:?}"
         );
     }
-    cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+    cx.update(|cx| {
+        use crate::capture::scroll::ScrollSessionSignal;
+        use crate::windows::scroll_capture::ScrollCaptureSession;
+        ScrollCaptureSession::finish_requested(cx);
+        ScrollCaptureSession::cancel_requested(cx);
+        assert!(matches!(
+            controls.try_recv(),
+            Ok(ScrollSessionSignal::Finish)
+        ));
+        assert!(matches!(
+            controls.try_recv(),
+            Ok(ScrollSessionSignal::Cancel)
+        ));
+        ScrollCaptureSession::close(cx);
+    });
 }
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {

@@ -42,6 +42,8 @@ pub struct ScrollCaptureUi {
     preview: Option<PreviewImage>,
     preview_width: f32,
     preview_max_height: f32,
+    pending_preview: Option<String>,
+    decoding_preview: bool,
     cursor_outside: bool,
     auto_scrolling: bool,
     finish_state: FinishState,
@@ -119,10 +121,42 @@ impl ScrollCaptureUi {
         }
     }
 
-    fn apply_frame(&mut self, image: Option<PreviewImage>) {
-        if image.is_some() {
-            self.preview = image;
+    fn queue_preview(&mut self, encoded: String, cx: &mut Context<Self>) {
+        if self.finish_state == FinishState::Cancelling {
+            return;
         }
+        self.pending_preview = Some(encoded);
+        if self.decoding_preview {
+            return;
+        }
+        self.decoding_preview = true;
+        let width = self.preview_width;
+        let max_height = self.preview_max_height;
+        cx.spawn(async move |entity, cx| {
+            while let Ok(Some(encoded)) = entity.update(cx, |view, _| {
+                let next = view.pending_preview.take();
+                if next.is_none() || view.finish_state == FinishState::Cancelling {
+                    view.decoding_preview = false;
+                    return None;
+                }
+                next
+            }) {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move { decode_preview(&encoded, width, max_height) })
+                    .await;
+                let _ = entity.update(cx, |view, cx| {
+                    let Some(image) =
+                        image.filter(|_| view.finish_state != FinishState::Cancelling)
+                    else {
+                        return;
+                    };
+                    view.preview = Some(image);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 }
 
@@ -219,6 +253,8 @@ impl ScrollCaptureSession {
             preview: None,
             preview_width,
             preview_max_height,
+            pending_preview: None,
+            decoding_preview: false,
             cursor_outside: false,
             auto_scrolling: false,
             finish_state: FinishState::Capturing,
@@ -328,6 +364,10 @@ impl ScrollCaptureSession {
 
     pub fn close(cx: &mut App) {
         set_session_shortcuts(false, cx);
+        Self::signal_from_bar(cx, |ui| {
+            ui.finish_state = FinishState::Cancelling;
+            ui.pending_preview = None;
+        });
         for window_handle in cx.windows() {
             if let Some(handle) = window_handle.downcast::<ScrollPreviewPanel>() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -459,13 +499,11 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
     ))
     .write_to(&mut png, image::ImageFormat::Png)
     .unwrap();
-    apply_progress(
-        &ui,
-        ScrollSessionSignal::Frame {
-            preview: Some(base64::engine::general_purpose::STANDARD.encode(png.into_inner())),
-        },
-        cx,
-    );
+    let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    ui.update(cx, |ui, cx| {
+        ui.preview = decode_preview(&encoded, ui.preview_width, ui.preview_max_height);
+        cx.notify();
+    });
     apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
     apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
     let ids = ui
@@ -634,15 +672,10 @@ fn set_session_shortcuts(enabled: bool, cx: &App) {
 
 pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal, cx: &mut App) {
     match signal {
-        ScrollSessionSignal::Frame { preview } => {
-            let state = ui.read(cx);
-            let image = preview.as_deref().and_then(|preview| {
-                decode_preview(preview, state.preview_width, state.preview_max_height)
-            });
-            ui.update(cx, |ui, cx| {
-                ui.apply_frame(image);
-                cx.notify();
-            });
+        ScrollSessionSignal::Frame {
+            preview: Some(encoded),
+        } => {
+            ui.update(cx, |ui, cx| ui.queue_preview(encoded, cx));
         }
         ScrollSessionSignal::AutoScrolling(scrolling) => {
             ui.update(cx, |ui, cx| {
@@ -659,14 +692,21 @@ pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal,
                 cx.notify();
             });
         }
-        ScrollSessionSignal::Finish
+        ScrollSessionSignal::Frame { preview: None }
+        | ScrollSessionSignal::Finish
         | ScrollSessionSignal::Cancel
         | ScrollSessionSignal::Stopped(_) => {}
     }
 }
 
 #[cfg(all(windows, feature = "parity"))]
-pub(crate) fn preview_for_parity(cx: &mut App, encoded: String) -> gpui::AnyWindowHandle {
+pub(crate) fn preview_for_parity(
+    cx: &mut App,
+    encoded: String,
+) -> (
+    gpui::AnyWindowHandle,
+    smol::channel::Receiver<ScrollSessionSignal>,
+) {
     let (signal, events) = smol::channel::bounded(2);
     let ui = ScrollCaptureSession::open_on_display(
         cx,
@@ -696,14 +736,13 @@ pub(crate) fn preview_for_parity(cx: &mut App, encoded: String) -> gpui::AnyWind
     apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
     assert!(ui.read(cx).auto_scrolling && ui.read(cx).cursor_outside);
     apply_progress(&ui, ScrollSessionSignal::CursorOutside(false), cx);
-    ScrollCaptureSession::finish_requested(cx);
-    ScrollCaptureSession::cancel_requested(cx);
-    assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
-    assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Cancel)));
-    cx.windows()
-        .into_iter()
-        .find(|handle| handle.downcast::<ScrollPreviewPanel>().is_some())
-        .unwrap()
+    (
+        cx.windows()
+            .into_iter()
+            .find(|handle| handle.downcast::<ScrollPreviewPanel>().is_some())
+            .unwrap(),
+        events,
+    )
 }
 
 struct ScrollPreviewPanel {
@@ -1493,6 +1532,8 @@ mod tests {
                 preview: None,
                 preview_width: 240.0,
                 preview_max_height: 360.0,
+                pending_preview: None,
+                decoding_preview: false,
                 cursor_outside: false,
                 auto_scrolling: false,
                 finish_state: FinishState::Capturing,
@@ -1524,6 +1565,109 @@ mod tests {
             assert_eq!(bounds.top(), px(top));
             assert_eq!(bounds.size.height, px(height));
         }
+    }
+
+    #[herogpui::test]
+    fn preview_decoding_coalesces_frames_and_preserves_the_last_image_on_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use base64::Engine;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let (signal, _) = smol::channel::bounded(1);
+        let ui = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let display = Bounds::new(gpui::point(px(0.), px(0.)), size(px(500.), px(600.)));
+            ScrollCaptureSession::open_on_display(
+                cx,
+                crate::state::state(cx).daemon,
+                ScreenRect {
+                    x: 20,
+                    y: 100,
+                    width: 240,
+                    height: 400,
+                },
+                signal,
+                display,
+                None,
+                false,
+            )
+        });
+        let encoded = |height, pixel| {
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                480,
+                height,
+                image::Rgba(pixel),
+            ))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+            base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+        };
+        let large = encoded(4096, [255, 0, 0, 255]);
+        let latest = encoded(64, [0, 0, 255, 255]);
+        cx.update(|cx| {
+            let start = std::time::Instant::now();
+            apply_progress(
+                &ui,
+                ScrollSessionSignal::Frame {
+                    preview: Some(large.clone()),
+                },
+                cx,
+            );
+            let dispatched = start.elapsed();
+            assert!(
+                ui.read(cx).preview.is_none(),
+                "thumbnail decoding ran inline"
+            );
+            let start = std::time::Instant::now();
+            assert!(decode_preview(&large, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT).is_some());
+            println!(
+                "large scroll preview dispatch {dispatched:?}, decode {:?}",
+                start.elapsed()
+            );
+            for preview in ["invalid".to_owned(), latest.clone()] {
+                apply_progress(
+                    &ui,
+                    ScrollSessionSignal::Frame {
+                        preview: Some(preview),
+                    },
+                    cx,
+                );
+            }
+            assert_eq!(
+                ui.read(cx).pending_preview.as_deref(),
+                Some(latest.as_str())
+            );
+        });
+        cx.run_until_parked();
+        let image = cx.read(|cx| {
+            let view = ui.read(cx);
+            assert!(!view.decoding_preview && view.pending_preview.is_none());
+            let image = view.preview.as_ref().unwrap().image.clone();
+            assert_eq!(&image.as_bytes(0).unwrap()[..4], &[255, 0, 0, 255]);
+            image
+        });
+        cx.update(|cx| {
+            apply_progress(
+                &ui,
+                ScrollSessionSignal::Frame {
+                    preview: Some(large),
+                },
+                cx,
+            );
+            ScrollCaptureSession::cancel_requested(cx);
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let view = ui.read(cx);
+            assert!(!view.decoding_preview && view.pending_preview.is_none());
+            assert!(Arc::ptr_eq(&image, &view.preview.as_ref().unwrap().image));
+        });
     }
 
     #[herogpui::test]
@@ -1595,6 +1739,9 @@ mod tests {
                 },
                 cx,
             );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
             apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
             apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
             let state = ui.read(cx);

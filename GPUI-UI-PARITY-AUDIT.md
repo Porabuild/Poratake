@@ -6290,6 +6290,23 @@ preview-to-editor workflow and the 2× Metal 17000-pixel texture tests
 passed, including panning across horizontal and vertical tile seams and
 reopening the saved images.
 
+### 2026-11-18 macOS scroll preview decoding latency
+
+GPUI decoded, color-converted, cropped and resized scroll preview PNGs
+inside its UI progress handler. The scroll session now uses one background
+decoder and keeps only the newest waiting frame. An invalid payload leaves
+the last displayed image intact, and cancellation discards stale results.
+The decoder uses the same image and color path as before.
+
+The focused regression sends a burst before the worker starts, verifies
+that the newest frame renders, and verifies that cancelling pending work
+preserves the already displayed image. The generated 480×4096 preview took
+2.54 ms to decode and resize in the test. Dispatching it took 0.07 ms.
+The full arm64 GPUI suite passed 1,163 tests with 23 ignored, and 14
+Electron preview tests passed. The native hidden-window probe and both
+light and dark Metal scroll workflows passed. Physical scroll motion
+and compositor timing remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
