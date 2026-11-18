@@ -4377,7 +4377,7 @@ appearance.
 | P1       | Unresponsive scroll stitch                               | Cancellation now cooperatively stops the stitch writer, and the shells wait for the finish and cancellation responses before discarding their temporary output. Windows and Linux worker tests cover joining and retryable startup failures; hosted macOS fixtures and GPUI parity cases also ran. A noninterruptible file write can still delay cancellation, and daemon shutdown can interrupt an in-flight stitch. Verify native UI handoffs and graceful shutdown on all three platforms.                                                                                                                                            |
 | P1       | macOS scroll preview with variable overlap               | The preview shares measured overlap with the saved stitch and coalesces background rendering. Hosted native fixtures compare variable-overlap pixels and cancellation; verify real scrolling surfaces.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | P1       | Native Windows clipboard formats                         | GPUI supplies CF_DIB alongside PNG; byte-level tests cover the bitmap and its headers. An isolated hosted Windows test verifies native format availability and PNG-only/DIB-only reads. Verify interactive app copy and paste into other applications, compare Electron, and profile large captures on slower hardware.                                                                                                                                                                                                                                                                                                                  |
-| P1       | Native attachment compositor coverage                    | Hosted Windows verified two freeze-off attachments, hide/show, exact saved pixels and cancellation in one editor. A frozen handoff also passed one native capture and save. Verify additional edges, DPI transitions and macOS native behavior.                                                                                                                                                                                                                                                                                                                                                                                          |
+| P1       | Native attachment compositor coverage                    | Hosted Windows verified live attachments and cancellation. Native macOS verified two frozen edges, editor restoration, exact base pixels and native save/reopen. Verify native macOS cancellation and physical DPI transitions.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | P1       | Cached Windows screenshot resources                      | Cached composition streams with 4 MiB scratch bands and rejects requests over 512 Mi pixels. Tests retain offscreen padding, gaps, alpha and the empty-cache fallback. Window alpha-mask capture and WIC internals can allocate separately; profile large native captures, encoding latency and slower hardware.                                                                                                                                                                                                                                                                                                                         |
 | P2       | QR photo robustness and latency                          | The native decoder matches 65/65 original corpus cases and 493/520 brightness/contrast variants without losing a prior match. The attributed photo fixture is also tested at 10°, 25° and 45° rotations, with perspective distortion and a combined 15° rotation plus perspective warp. Verify additional real photographs and interactive app clipboard delivery; further reduce low-contrast 4K no-code latency and test slower hardware across both desktop versions.                                                                                                                                                                 |
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -5476,6 +5476,29 @@ button opened the generated captures folder in Finder and selected the teal
 PNG. The test windows closed and the existing editor stayed open. A live
 History tooltip and multi-display placement remain to be verified. All seven
 History tests passed, including the new 2× grid gap assertion.
+
+### 2026-11-18 native macOS screenshot editor attachments
+
+An isolated GPUI editor started with a generated 600×420 PNG. The right
+and top attachment selectors each captured a 300×210-point area at 2× with
+Freeze Screen enabled. The window list showed the same editor hiding before
+both selections and returning after both freezes were released. The test
+used a different generated pattern for each edge. An earlier attempt with
+an overlapping system window was discarded before export. The successful
+run used an independently checked capture region.
+
+The native Save Screenshot sheet saved a 1200×840 PNG. The base pixels
+matched exactly and the unused quadrant was fully transparent. With the
+native references converted to sRGB, mean RGB channel differences were
+0.605 on the right and 0.566 on the top. Maximum differences were seven
+and five levels. Both attachment temporary files were removed. A fresh
+native editor opened the saved PNG. The file was decoded for pixel
+comparisons and the composition was inspected in the editor before saving.
+
+The third selector stayed open after the desktop helper attempted Escape.
+The helper could not target that temporary selector directly.
+Cancellation and a rendered comparison after reopening remain unverified.
+The isolated processes closed and the existing editor stayed open.
 
 ## Review gate
 
