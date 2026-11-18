@@ -336,7 +336,14 @@ class ScrollCaptureModule: NSObject, Module {
         case failed
     }
 
+    private struct FrameComparison {
+        let hash: Int
+        let isDuplicate: Bool
+    }
+
     let name = DaemonContract.ScrollCapture.module
+
+    private let frameComparisonQueue = DispatchQueue(label: "com.porabuild.poratake.scroll-frame-comparison", qos: .userInitiated)
 
     private var captureArea: NSRect = .zero
     private var displayId: CGDirectDisplayID = CGMainDisplayID()
@@ -361,6 +368,7 @@ class ScrollCaptureModule: NSObject, Module {
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
     private var testCursorInside: Bool?
     private var testCursorResponder: ((Bool) -> Void)?
+    private var testBeforeFrameComparison: (() -> Void)?
     private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
     private var testCoordinatedCaptureProvider: ((Set<CGWindowID>?, @escaping (CGImage?) -> Void) -> Void)?
     private var testScheduleAutoScroll: (() -> Void)?
@@ -975,12 +983,15 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func captureCurrentFrame(completion: @escaping (FrameCaptureResult) -> Void) {
+        let generation = captureGeneration
+        let receive: (CGImage?) -> Void = { [weak self] image in
+            self?.completeExcludedCapture(image, generation: generation) { result in
+                if let result { completion(result) }
+            }
+        }
 #if SCROLL_CAPTURE_TEST
         if let testCaptureProvider {
-            let generation = captureGeneration
-            testCaptureProvider { [weak self] image in
-                self?.completeExcludedCapture(image, generation: generation, completion: completion)
-            }
+            testCaptureProvider(receive)
             return
         }
 #endif
@@ -1004,22 +1015,18 @@ class ScrollCaptureModule: NSObject, Module {
                 }
                 ids.insert(id)
             }
-            let generation = captureGeneration
             let display = displayId
             let captureIDs = ids
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 let image = try? await captureAreaExcludingWindows(captureRect, displayID: display, excludedWindowIDs: captureIDs, requireAllWindows: true)
-                self?.completeExcludedCapture(image, generation: generation, completion: completion)
+                receive(image)
             }
             return
         }
 
-        let generation = captureGeneration
         let display = displayId
         Task { @MainActor [weak self] in
-            guard let self = self,
-                  generation == self.captureGeneration, self.isCapturing,
-                  self.isAutoScrolling, !self.finishRequested else { return }
+            guard let self, self.canAcceptFrame(generation: generation) else { return }
             let image: CGImage?
             do {
                 image = try await coordinateAreaCapture(
@@ -1068,29 +1075,55 @@ class ScrollCaptureModule: NSObject, Module {
             } catch {
                 image = nil
             }
-            self.completeExcludedCapture(image, generation: generation, completion: completion)
+            receive(image)
         }
+    }
+
+    private func canAcceptFrame(generation: UInt64) -> Bool {
+        generation == captureGeneration && isCapturing && isAutoScrolling && !finishRequested
     }
 
     private func completeExcludedCapture(
         _ image: CGImage?,
         generation: UInt64,
-        completion: (FrameCaptureResult) -> Void
+        completion: @escaping (FrameCaptureResult?) -> Void
     ) {
-        guard generation == captureGeneration, isCapturing, isAutoScrolling, !finishRequested else { return }
-        completion(consumeCapturedImage(image))
+        guard canAcceptFrame(generation: generation) else {
+            completion(nil)
+            return
+        }
+        guard let image else {
+            completion(.failed)
+            return
+        }
+        let previous = capturedFrames.last?.image
+        let previousHash = lastFrameHash
+#if SCROLL_CAPTURE_TEST
+        let beforeComparison = testBeforeFrameComparison
+#endif
+        frameComparisonQueue.async { [self] in
+#if SCROLL_CAPTURE_TEST
+            beforeComparison?()
+#endif
+            let comparison = compareFrame(image, previous: previous, previousHash: previousHash)
+            DispatchQueue.main.async { [self] in
+                guard canAcceptFrame(generation: generation) else {
+                    completion(nil)
+                    return
+                }
+                completion(appendCapturedFrame(image, comparison: comparison) == nil ? .duplicate : .captured)
+            }
+        }
     }
 
-    private func consumeCapturedImage(_ image: CGImage?) -> FrameCaptureResult {
-        guard let image = image else { return .failed }
-        return appendCapturedFrame(image) == nil ? .duplicate : .captured
+    private func compareFrame(_ image: CGImage, previous: CGImage?, previousHash: Int?) -> FrameComparison {
+        let hash = computeFrameHash(image)
+        let isDuplicate = hash == previousHash && previous.map { framesHaveSamePixels($0, image) } == true
+        return FrameComparison(hash: hash, isDuplicate: isDuplicate)
     }
 
-    private func appendCapturedFrame(_ cgImage: CGImage) -> Int? {
-        let frameHash = computeFrameHash(cgImage)
-
-        if frameHash == lastFrameHash, let previous = capturedFrames.last?.image,
-           framesHaveSamePixels(previous, cgImage) {
+    private func appendCapturedFrame(_ cgImage: CGImage, comparison: FrameComparison) -> Int? {
+        if comparison.isDuplicate {
             duplicateFrameCount += 1
             if duplicateFrameCount >= maxDuplicateFrames {
                 return nil
@@ -1099,7 +1132,7 @@ class ScrollCaptureModule: NSObject, Module {
         }
 
         duplicateFrameCount = 0
-        lastFrameHash = frameHash
+        lastFrameHash = comparison.hash
 
         let frame = CapturedFrame(
             image: cgImage,
@@ -2190,16 +2223,26 @@ class ScrollCaptureModule: NSObject, Module {
         isAutoScrolling = true
     }
 
-    func testCompleteExcludedCapture(_ image: CGImage?, generation: UInt64) -> Bool? {
-        var result: Bool?
-        completeExcludedCapture(image, generation: generation) {
-            result = continueAfterCapture($0)
+    func testSetBeforeFrameComparison(_ hook: @escaping () -> Void) {
+        testBeforeFrameComparison = hook
+    }
+
+    func testCompleteExcludedCapture(_ image: CGImage?, generation: UInt64) async -> Bool? {
+        await withCheckedContinuation { continuation in
+            completeExcludedCapture(image, generation: generation) {
+                continuation.resume(returning: $0.map { self.continueAfterCapture($0) })
+            }
         }
-        return result
     }
 
     func testConsumeCaptureImage(_ image: CGImage?) -> Bool {
-        continueAfterCapture(consumeCapturedImage(image))
+        guard let image else { return continueAfterCapture(.failed) }
+        return continueAfterCapture(appendTestFrame(image) == nil ? .duplicate : .captured)
+    }
+
+    private func appendTestFrame(_ image: CGImage) -> Int? {
+        let comparison = compareFrame(image, previous: capturedFrames.last?.image, previousHash: lastFrameHash)
+        return appendCapturedFrame(image, comparison: comparison)
     }
 
     func testFrameSequence(_ frames: [CGImage]) -> (Int, [Int?], Int, Int?, Bool) {
@@ -2210,11 +2253,11 @@ class ScrollCaptureModule: NSObject, Module {
         ]
         handleStart(params: params, requestId: "zero-hash-test")
         let hash = computeFrameHash(image)
-        let results = frames.map { appendCapturedFrame($0) }
+        let results = frames.map { appendTestFrame($0) }
         let count = capturedFrames.count
         cleanup()
         handleStart(params: params, requestId: "zero-hash-restart-test")
-        let restarted = appendCapturedFrame(image)
+        let restarted = appendTestFrame(image)
         cleanup()
         return (hash, results, count, restarted, lastFrameHash == nil)
     }

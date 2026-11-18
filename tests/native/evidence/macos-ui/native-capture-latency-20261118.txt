@@ -381,3 +381,29 @@ decoded 57.63 and 57.90 fps, compared with 57.96 and 57.87 fps in
 the bypassed phases. These counters locate the gap before the writer
 in this sample. The run leaves the precise cause of upstream variation
 open.
+
+Scroll duplicate-frame comparison on AppKit
+
+The native fixture compared two distinct CGImages with identical
+3400x2060 rendered pixels. The test capture provider supplied the second
+image through the post-scroll callback. It timed the initial AppKit
+callback and the later decision to schedule the next scroll step.
+Seven attempts per build. Warm statistics exclude the first attempt.
+
+                                    Previous          Background worker
+Main callback warm median           8.28 ms           0.004 ms
+Decision warm median                8.28 ms          13.61 ms
+Main callback first attempt        16.15 ms           0.005 ms
+Decision first attempt             16.15 ms          20.47 ms
+
+A second regression held the background comparison across Stop and
+restart. The UI acted while the worker was held, the stale comparison
+was discarded, and the saved PNG matched the accepted first frame.
+
+The native three-frame run used the same generated moving page and
+overlapping GPUI controls as the earlier strict exclusion test.
+Both builds saved a 1200x5200 Display P3 PNG in each theme. Decoded
+pixels matched between builds. Against the unobstructed P3 reference,
+54 of 6,240,000 pixels differed by one RGB level. This checks scheduled
+frame capture and output, with app-local movement and no physical
+pointer input.

@@ -453,6 +453,7 @@ struct ScrollCapturePreviewTest {
                 } else if tooltipPointerExit {
                     try await verifyTooltipPointerExit()
                 } else {
+                    await verifyAsyncScrollComparison()
                     try await runRecordingCoordinationChecks()
                 }
                 exit(EXIT_SUCCESS)
@@ -1663,6 +1664,126 @@ struct ScrollCapturePreviewTest {
         return blue > 150 && Int(blue) > Int(red) * 2 && Int(blue) > Int(green) * 2
     }
 
+    @MainActor
+    static func verifyAsyncScrollComparison() async {
+        let footerWidth = 640
+        let footerHeight = 160
+        let footerStep = 96
+        let frames = [0, footerStep].map { frame(start: $0, width: footerWidth, height: footerHeight) }
+
+        func finish(_ module: ScrollCaptureModule, output: URL) async -> [String: Any]? {
+            var result: [String: Any]?
+            module.testSetFinishResponder { _, value in result = value }
+            module.handle(
+                method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+                params: ["outputPath": AnyCodable(output.path)],
+                requestId: "async-frame-finish"
+            )
+            await waitUntil("The verified prefix did not save") { result != nil }
+            return result
+        }
+
+        let asyncCaptureModule = ScrollCaptureModule()
+        asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        let staleCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        asyncCaptureModule.testStopAutoScroll()
+        asyncCaptureModule.testResumeAutoScroll()
+        let currentCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        precondition(staleCaptureGeneration != currentCaptureGeneration)
+        let stale = await asyncCaptureModule.testCompleteExcludedCapture(frames[1], generation: staleCaptureGeneration)
+        precondition(stale == nil)
+        let current = await asyncCaptureModule.testCompleteExcludedCapture(frames[0], generation: currentCaptureGeneration)
+        precondition(current == true)
+        let asyncCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-async-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: asyncCaptureOutput) }
+        let asyncCaptureResult = await finish(asyncCaptureModule, output: asyncCaptureOutput)
+        precondition((asyncCaptureResult?["success"] as? Bool) == true)
+        precondition((asyncCaptureResult?["frameCount"] as? Int) == 1)
+        let finished = await asyncCaptureModule.testCompleteExcludedCapture(frames[1], generation: currentCaptureGeneration)
+        precondition(finished == nil)
+        let asyncCaptureSource = CGImageSourceCreateWithURL(asyncCaptureOutput as CFURL, nil)!
+        let asyncCaptureSaved = CGImageSourceCreateImageAtIndex(asyncCaptureSource, 0, nil)!
+        precondition(pixels(asyncCaptureSaved) == pixels(frames[0]))
+
+        let delayedCaptureModule = ScrollCaptureModule()
+        delayedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        delayedCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        var pendingCaptures: [(CGImage?) -> Void] = []
+        var scheduledScrollSteps = 0
+        var delayedCaptureEvents: [[String: Any]] = []
+        delayedCaptureModule.testSetCaptureProvider { pendingCaptures.append($0) }
+        delayedCaptureModule.testSetScheduleAutoScroll { scheduledScrollSteps += 1 }
+        delayedCaptureModule.testSetScrollEndedResponder { delayedCaptureEvents.append($0) }
+        let delayedOldGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        let delayedCurrentGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedOldGeneration)
+        precondition(pendingCaptures.isEmpty, "A delayed request from a stopped run must not capture after restart")
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedCurrentGeneration)
+        precondition(pendingCaptures.count == 1)
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        pendingCaptures[0](frames[1])
+        precondition(scheduledScrollSteps == 0, "A stale frame must not schedule a scroll timer")
+        let delayedNewGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 2)
+        pendingCaptures[1](frames[0])
+        await waitUntil("The compared frame did not resume scrolling") { scheduledScrollSteps == 1 }
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        pendingCaptures[2](nil)
+        precondition(!delayedCaptureModule.testIsAutoScrolling())
+        precondition(scheduledScrollSteps == 1)
+        precondition((delayedCaptureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((delayedCaptureEvents.first?["frameCount"] as? Int) == 1)
+        let delayedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-delayed-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: delayedCaptureOutput) }
+        let delayedCaptureResult = await finish(delayedCaptureModule, output: delayedCaptureOutput)
+        precondition((delayedCaptureResult?["success"] as? Bool) == true)
+        precondition((delayedCaptureResult?["frameCount"] as? Int) == 1)
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        let delayedCaptureSource = CGImageSourceCreateWithURL(delayedCaptureOutput as CFURL, nil)!
+        let delayedCaptureSaved = CGImageSourceCreateImageAtIndex(delayedCaptureSource, 0, nil)!
+        precondition(pixels(delayedCaptureSaved) == pixels(frames[0]))
+
+        let comparingModule = ScrollCaptureModule()
+        comparingModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        comparingModule.testSetPreviewEncoder { _ in "preview" }
+        precondition(comparingModule.testConsumeCaptureImage(frames[0]))
+        let comparisonGate = DispatchSemaphore(value: 0)
+        var comparisonStarted = false
+        comparingModule.testSetBeforeFrameComparison {
+            precondition(!Thread.isMainThread, "Scroll frame comparison must run off the AppKit thread")
+            DispatchQueue.main.async { comparisonStarted = true }
+            precondition(comparisonGate.wait(timeout: .now() + 10) == .success)
+        }
+        let comparingGeneration = comparingModule.testCaptureGeneration()
+        let pendingComparison = Task { @MainActor in
+            await comparingModule.testCompleteExcludedCapture(frames[1], generation: comparingGeneration)
+        }
+        await waitUntil("The main thread could not respond while a comparison was in flight") { comparisonStarted }
+        comparingModule.testStopAutoScroll()
+        comparingModule.testResumeAutoScroll()
+        comparisonGate.signal()
+        let discarded = await pendingComparison.value
+        precondition(discarded == nil, "A comparison from a stopped run must not publish after restart")
+        let comparisonOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-compare-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: comparisonOutput) }
+        let comparisonResult = await finish(comparingModule, output: comparisonOutput)
+        precondition((comparisonResult?["frameCount"] as? Int) == 1)
+        let comparisonSource = CGImageSourceCreateWithURL(comparisonOutput as CFURL, nil)!
+        let comparisonSaved = CGImageSourceCreateImageAtIndex(comparisonSource, 0, nil)!
+        precondition(pixels(comparisonSaved) == pixels(frames[0]))
+
+    }
+
     static func runExistingScrollChecks() {
         let width = 80
         let height = 160
@@ -2306,72 +2427,6 @@ struct ScrollCapturePreviewTest {
         let periodicFooterSource = CGImageSourceCreateWithURL(periodicFooterOutput as CFURL, nil)!
         let periodicFooterSaved = CGImageSourceCreateImageAtIndex(periodicFooterSource, 0, nil)!
         precondition(pixels(periodicFooterSaved) == pixels(periodicFooterFrames[0]), "Ambiguous alignment must save the previous accepted frame")
-
-        let asyncCaptureModule = ScrollCaptureModule()
-        asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
-        asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
-        let staleCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
-        asyncCaptureModule.testStopAutoScroll()
-        asyncCaptureModule.testResumeAutoScroll()
-        let currentCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
-        precondition(staleCaptureGeneration != currentCaptureGeneration)
-        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[1], generation: staleCaptureGeneration) == nil)
-        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[0], generation: currentCaptureGeneration) == true)
-        let asyncCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("poratake-scroll-async-capture-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: asyncCaptureOutput) }
-        let asyncCaptureResult = asyncCaptureModule.testFinishCurrentCapture(outputPath: asyncCaptureOutput.path)
-        precondition((asyncCaptureResult?["success"] as? Bool) == true)
-        precondition((asyncCaptureResult?["frameCount"] as? Int) == 1)
-        precondition(asyncCaptureModule.testCompleteExcludedCapture(periodicFooterFrames[1], generation: currentCaptureGeneration) == nil)
-        let asyncCaptureSource = CGImageSourceCreateWithURL(asyncCaptureOutput as CFURL, nil)!
-        let asyncCaptureSaved = CGImageSourceCreateImageAtIndex(asyncCaptureSource, 0, nil)!
-        precondition(pixels(asyncCaptureSaved) == pixels(periodicFooterFrames[0]))
-
-        let delayedCaptureModule = ScrollCaptureModule()
-        delayedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
-        delayedCaptureModule.testSetPreviewEncoder { _ in "preview" }
-        var pendingCaptures: [(CGImage?) -> Void] = []
-        var scheduledScrollSteps = 0
-        var delayedCaptureEvents: [[String: Any]] = []
-        delayedCaptureModule.testSetCaptureProvider { pendingCaptures.append($0) }
-        delayedCaptureModule.testSetScheduleAutoScroll { scheduledScrollSteps += 1 }
-        delayedCaptureModule.testSetScrollEndedResponder { delayedCaptureEvents.append($0) }
-        let delayedOldGeneration = delayedCaptureModule.testCaptureGeneration()
-        delayedCaptureModule.testStopAutoScroll()
-        delayedCaptureModule.testResumeAutoScroll()
-        let delayedCurrentGeneration = delayedCaptureModule.testCaptureGeneration()
-        delayedCaptureModule.testCaptureAfterScroll(generation: delayedOldGeneration)
-        precondition(pendingCaptures.isEmpty, "A delayed request from a stopped run must not capture after restart")
-        delayedCaptureModule.testCaptureAfterScroll(generation: delayedCurrentGeneration)
-        precondition(pendingCaptures.count == 1)
-        delayedCaptureModule.testStopAutoScroll()
-        delayedCaptureModule.testResumeAutoScroll()
-        pendingCaptures[0](periodicFooterFrames[1])
-        precondition(scheduledScrollSteps == 0, "A stale frame must not schedule a scroll timer")
-        let delayedNewGeneration = delayedCaptureModule.testCaptureGeneration()
-        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
-        precondition(pendingCaptures.count == 2)
-        pendingCaptures[1](periodicFooterFrames[0])
-        precondition(scheduledScrollSteps == 1)
-        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
-        precondition(pendingCaptures.count == 3)
-        pendingCaptures[2](nil)
-        precondition(!delayedCaptureModule.testIsAutoScrolling())
-        precondition(scheduledScrollSteps == 1)
-        precondition((delayedCaptureEvents.first?["reason"] as? String) == "capture-error")
-        precondition((delayedCaptureEvents.first?["frameCount"] as? Int) == 1)
-        let delayedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("poratake-scroll-delayed-capture-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: delayedCaptureOutput) }
-        let delayedCaptureResult = delayedCaptureModule.testFinishCurrentCapture(outputPath: delayedCaptureOutput.path)
-        precondition((delayedCaptureResult?["success"] as? Bool) == true)
-        precondition((delayedCaptureResult?["frameCount"] as? Int) == 1)
-        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
-        precondition(pendingCaptures.count == 3)
-        let delayedCaptureSource = CGImageSourceCreateWithURL(delayedCaptureOutput as CFURL, nil)!
-        let delayedCaptureSaved = CGImageSourceCreateImageAtIndex(delayedCaptureSource, 0, nil)!
-        precondition(pixels(delayedCaptureSaved) == pixels(periodicFooterFrames[0]))
 
         let staleStartModule = ScrollCaptureModule()
         staleStartModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)

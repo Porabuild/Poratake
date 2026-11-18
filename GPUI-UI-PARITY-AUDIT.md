@@ -6602,6 +6602,29 @@ remain open. The
 [measurement record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the individual results.
 
+### 2026-11-18 macOS scroll duplicate comparison responsiveness
+
+The scroll daemon now computes the frame fingerprint and verifies
+matching fingerprints on a background queue. AppKit still owns frame
+acceptance and checks the capture generation at delivery. Stop and
+restart can proceed while a comparison is running, and a late result
+cannot change the verified prefix or schedule another scroll step.
+
+A generated 3400 × 2060 duplicate-frame probe measured a warm median
+of 8.28 ms in the AppKit callback before the change and under 0.01 ms
+afterward. The total time to the decision increased from 8.28 to
+13.61 ms in that probe. The focused test held the worker, stopped and
+restarted on the main thread, and verified the saved prefix.
+
+The native light and dark overlapping-control runs saved three frames
+and produced pixel-identical output to the previous build at
+1200 × 5200. Each stayed within one RGB channel level of the
+unobstructed Display P3 reference. The arm64 and Rosetta fixtures
+passed, and the production Swift daemon typechecked. Actual scroll
+displacement is still unavailable. The matcher and duplicate
+criteria are unchanged. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the endpoints and scope.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
