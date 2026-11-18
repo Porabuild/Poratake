@@ -202,6 +202,7 @@ fn start_request(config: &RecordingConfig) -> ScreenRecorderStartRequest {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn pause(daemon: &DaemonHandle) {
     if state() != RecorderState::Recording {
         return;
@@ -212,6 +213,7 @@ pub fn pause(daemon: &DaemonHandle) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn resume(daemon: &DaemonHandle) {
     if state() != RecorderState::Paused {
         return;
@@ -219,6 +221,15 @@ pub fn resume(daemon: &DaemonHandle) {
     match daemon.screen_recorder().resume() {
         Ok(()) => store_state(RecorderState::Recording),
         Err(error) => eprintln!("[recorder] resume failed: {error}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn confirm_pause_change(confirmed: RecorderState) {
+    match (state(), confirmed) {
+        (RecorderState::Recording, RecorderState::Paused)
+        | (RecorderState::Paused, RecorderState::Recording) => store_state(confirmed),
+        _ => {}
     }
 }
 

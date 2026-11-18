@@ -390,12 +390,22 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         super::workflows::wait_for_recording_start(cx);
         assert_eq!(recorder::state(), RecorderState::Recording);
         capture(cx, window, output, "record-control-active");
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 2);
+        #[cfg(target_os = "macos")]
+        check_held_setting(cx, window, output, "pause", |cx| {
+            click_measured(cx, window, "recording-controls", 2);
+        });
         assert_eq!(recorder::state(), RecorderState::Paused);
         capture(cx, window, output, "record-control-paused");
         escape(cx, window);
         assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 2);
+        #[cfg(target_os = "macos")]
+        check_held_setting(cx, window, output, "resume", |cx| {
+            click_measured(cx, window, "recording-controls", 2);
+        });
         assert_eq!(recorder::state(), RecorderState::Recording);
         cx.update(|cx| {
             let daemon = crate::state::state(cx).daemon;
@@ -741,6 +751,7 @@ fn check_held_setting(
     use std::time::{Duration, Instant};
 
     let index = match method {
+        "pause" | "resume" => 2,
         "show" => 4,
         "setCamera" => 6,
         "setMicrophone" => 7,
@@ -765,6 +776,10 @@ fn check_held_setting(
             let view = root.downcast::<RecordingControl>().unwrap();
             let control = view.read(cx);
             match method {
+                "pause" | "resume" => {
+                    use crate::video::recorder::{self, RecorderState};
+                    recorder::state() == RecorderState::Paused
+                }
                 "show" | "setCamera" => control.parity_camera_status().0,
                 "setMicrophone" => control.parity_microphone(),
                 "setSystemAudio" => control.parity_system_audio(),
@@ -776,7 +791,7 @@ fn check_held_setting(
     let before = setting_is_on(cx);
     change(cx);
     let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(setting_is_on(cx), before, "camera or audio state must await the daemon reply");
+    assert_eq!(setting_is_on(cx), before, "control state must await the daemon reply");
     if method == "show" {
         assert!(!cx.update_window(window, |root, _, cx| {
             root.downcast::<RecordingControl>().unwrap().read(cx).start_enabled(cx)

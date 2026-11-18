@@ -7450,6 +7450,21 @@ sent no Start request. The Metal toolbar workflow also checks that
 Start is disabled during a pending Show. The fixture simulated camera
 replies with no device access.
 
+### 2026-11-18 macOS recording Pause and Resume responsiveness
+
+The GPUI toolbar waits for Pause and Resume acknowledgements off the UI
+thread. It holds its confirmed state and disables duplicate commands
+during the wait. Stop can proceed, and a late reply leaves a successful
+Stop in effect. If Stop fails, the toolbar uses the most recent confirmed
+pause state regardless of which reply arrives first.
+
+Ten native runs with simulated replies covered light and dark, accepted
+Pause and Resume, a rejected Pause and retry, and Stop with a held Pause.
+Stop reached the fixture in 1.35–8.07 ms. Both reply orders recovered to
+the confirmed paused state after a failed Stop. The Metal toolbar
+workflow also checked the rendered Pause and Resume controls with both
+replies held. The native probes used app-local input and a fixture daemon.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

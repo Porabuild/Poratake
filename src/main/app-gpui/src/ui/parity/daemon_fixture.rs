@@ -902,7 +902,7 @@ pub fn run() {
                 );
                 json!({})
             }
-            ("screen-recorder", method @ ("setSystemAudio" | "setMicrophone" | "setCamera")) => {
+            ("screen-recorder", method @ ("pause" | "resume" | "setSystemAudio" | "setMicrophone" | "setCamera")) => {
                 if let Some(fixture) = optional_capture_fixture(&output)
                     .filter(|fixture| fixture["recordingSettingBarrier"] == method)
                 {
@@ -936,11 +936,7 @@ pub fn run() {
                 }
                 json!({"visible": true})
             }
-            ("camera-preview", "hide" | "update" | "setContentProtection")
-            | (
-                "screen-recorder",
-                "pause" | "resume",
-            ) => json!({}),
+            ("camera-preview", "hide" | "update" | "setContentProtection") => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");
             }

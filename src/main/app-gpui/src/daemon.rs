@@ -848,10 +848,12 @@ impl ScreenRecorderClient<'_> {
             .map(|_| ScreenRecordingStart::Started)
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn pause(&self) -> Result<()> {
         self.call(ScreenRecorderMethod::Pause, None)
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn resume(&self) -> Result<()> {
         self.call(ScreenRecorderMethod::Resume, None)
     }
@@ -900,13 +902,26 @@ impl ScreenRecorderClient<'_> {
     }
 
     #[cfg(target_os = "macos")]
+    pub fn begin_pause_change(
+        &self,
+        paused: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let method = if paused {
+            ScreenRecorderMethod::Pause
+        } else {
+            ScreenRecorderMethod::Resume
+        };
+        self.begin_setting(method, None)
+    }
+
+    #[cfg(target_os = "macos")]
     pub fn begin_system_audio(
         &self,
         enabled: bool,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
         self.begin_setting(
             ScreenRecorderMethod::SetSystemAudio,
-            serde_json::to_value(ScreenRecorderToggleRequest { enabled })?,
+            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
         )
     }
 
@@ -915,18 +930,21 @@ impl ScreenRecorderClient<'_> {
         &self,
         request: ScreenRecorderMicrophoneRequest,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
-        self.begin_setting(ScreenRecorderMethod::SetMicrophone, serde_json::to_value(request)?)
+        self.begin_setting(
+            ScreenRecorderMethod::SetMicrophone,
+            Some(serde_json::to_value(request)?),
+        )
     }
 
     #[cfg(target_os = "macos")]
     fn begin_setting(
         &self,
         method: ScreenRecorderMethod,
-        params: Value,
+        params: Option<Value>,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
         let wait = self
             .daemon
-            .begin_timed_call(SCREEN_RECORDER_MODULE, method.id(), Some(params))?;
+            .begin_timed_call(SCREEN_RECORDER_MODULE, method.id(), params)?;
         Ok(move || wait().map(|_| ()))
     }
 
@@ -934,7 +952,7 @@ impl ScreenRecorderClient<'_> {
     pub fn begin_camera(&self, enabled: bool) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
         self.begin_setting(
             ScreenRecorderMethod::SetCamera,
-            serde_json::to_value(ScreenRecorderToggleRequest { enabled })?,
+            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
         )
     }
 

@@ -1650,6 +1650,26 @@ pub fn open(cx: &mut App) {
                     return false;
                 };
                 if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() {
+                    if command == "pause-ready" {
+                        return matches!(
+                            recorder::state(),
+                            recorder::RecorderState::Recording | recorder::RecorderState::Paused
+                        );
+                    }
+                    if command == "paused" {
+                        return recorder::state() == recorder::RecorderState::Paused;
+                    }
+                    if matches!(command.as_str(), "pause-toggle" | "pause-pending") {
+                        return handle
+                            .update(cx, |control, _, cx| {
+                                if command == "pause-pending" {
+                                    control.parity_pause_pending()
+                                } else {
+                                    control.request_pause_change(cx)
+                                }
+                            })
+                            .unwrap_or(false);
+                    }
                     if let Some(id) = command.strip_prefix("camera-select ") {
                         return handle
                             .update(cx, |control, _, cx| {

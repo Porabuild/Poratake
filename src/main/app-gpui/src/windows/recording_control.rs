@@ -88,6 +88,8 @@ pub struct RecordingControl {
     microphone_pending: bool,
     #[cfg(target_os = "macos")]
     camera_pending: bool,
+    #[cfg(target_os = "macos")]
+    pause_pending: bool,
     microphone: bool,
     camera: bool,
     camera_locked: bool,
@@ -162,6 +164,11 @@ impl RecordingControl {
     #[cfg(all(feature = "parity", target_os = "macos"))]
     pub(crate) fn parity_camera_status(&self) -> (bool, bool) {
         (self.camera, self.camera_pending)
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_pause_pending(&self) -> bool {
+        self.pause_pending
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
@@ -258,6 +265,8 @@ impl RecordingControl {
                         microphone_pending: false,
                         #[cfg(target_os = "macos")]
                         camera_pending: false,
+                        #[cfg(target_os = "macos")]
+                        pause_pending: false,
                         microphone: toggles.mic_enabled,
                         camera: toggles.camera_enabled,
                         camera_locked: false,
@@ -2024,7 +2033,61 @@ impl RecordingControl {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn request_pause_change(&mut self, cx: &mut Context<Self>) -> bool {
+        use recorder::RecorderState::{Paused, Recording, Stopping};
+
+        if self.pause_pending {
+            return false;
+        }
+        let paused = match recorder::state() {
+            Recording => true,
+            Paused => false,
+            _ => return false,
+        };
+        let daemon = crate::state::state(cx).daemon;
+        let wait = match daemon.screen_recorder().begin_pause_change(paused) {
+            Ok(wait) => wait,
+            Err(error) => {
+                report_toggle_failure(cx, &error);
+                return false;
+            }
+        };
+        self.pause_pending = true;
+        self.await_recording_setting(
+            wait,
+            move |this, accepted, cx| {
+                this.pause_pending = false;
+                if !accepted {
+                    return;
+                }
+                let confirmed = if paused { Paused } else { Recording };
+                if recorder::state() == Stopping {
+                    this.stop_previous_state = Some(confirmed);
+                } else {
+                    recorder::confirm_pause_change(confirmed);
+                }
+                let now = cx.background_executor().now();
+                if paused {
+                    this.paused_at = Some(now);
+                } else if let Some(paused_at) = this.paused_at.take() {
+                    this.paused_total += now.saturating_duration_since(paused_at);
+                }
+            },
+            cx,
+        );
+        true
+    }
+
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        self.request_pause_change(cx);
+        #[cfg(not(target_os = "macos"))]
+        self.toggle_pause_sync(cx);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn toggle_pause_sync(&mut self, cx: &mut Context<Self>) {
         let daemon = crate::state::state(cx).daemon;
         match recorder::state() {
             recorder::RecorderState::Recording => {
@@ -2938,6 +3001,9 @@ impl Render for RecordingControl {
             );
         }
 
+        let pause_disabled = starting || stopping;
+        #[cfg(target_os = "macos")]
+        let pause_disabled = pause_disabled || self.pause_pending;
         let stop_name = "Stop recording";
         recording_shell(
             self,
@@ -2950,7 +3016,7 @@ impl Render for RecordingControl {
                 } else {
                     "Pause recording"
                 },
-                starting || stopping,
+                pause_disabled,
                 |this, _window, cx| this.toggle_pause(cx),
                 cx,
             ))
@@ -4139,6 +4205,8 @@ mod tests {
                 microphone_pending: false,
                 #[cfg(target_os = "macos")]
                 camera_pending: false,
+                #[cfg(target_os = "macos")]
+                pause_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
@@ -4314,6 +4382,8 @@ mod tests {
                 microphone_pending: false,
                 #[cfg(target_os = "macos")]
                 camera_pending: false,
+                #[cfg(target_os = "macos")]
+                pause_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
