@@ -6665,6 +6665,26 @@ within one RGB level. The native fixtures passed on arm64 and under
 Rosetta. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes the sample sizes and thumbnail comparison.
 
+### 2026-11-18 macOS scroll save releases source frames as it stitches
+
+The finish job takes ownership of the captured images and releases the
+preview session's source references after taking its alignment snapshot.
+The compositor discards unaccepted frames and releases each accepted
+image after drawing its strip. The full-resolution canvas still goes
+through ImageIO for PNG encoding.
+
+In two pairs of generated 3400 × 13740 saves, peak process footprint fell
+from 365.6–365.8 MiB to 232.4–232.8 MiB. The inputs and saved PNG bytes
+matched. Save times varied across the runs. The comparison began after
+all preview work completed, so it leaves the simultaneous-preview peak
+open. An earlier direct-provider probe showed ImageIO requesting all
+186,864,000 bytes at once and offered no peak-memory improvement.
+
+The native regression verifies that the captured images are released
+after a successful finish. Cancellation and verified-prefix tests still
+pass. The [measurement record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the sample timings and the live light and dark verification.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -460,3 +460,29 @@ synthetic fractional-boundary test also verified exact opaque rows
 across the two bands. In the live light and dark runs, all three
 captured frames saved and the output stayed within one RGB level of
 unobstructed references.
+
+Releasing input frames during the final scroll save
+
+The native fixture used nine distinct 3400x2060 Display P3 frames
+with a 600-pixel overlap. After all previews finished, it sent Finish
+through the normal daemon handler and saved a 3400x13740 PNG. Peak
+process footprint is the lifetime high-water mark reported by vmmap
+after Finish completed.
+
+Sample                  Finish time       Peak memory
+Previous 1                348.1 ms          365.8 MiB
+Fixed 1                   307.2 ms          232.4 MiB
+Fixed 2                   323.5 ms          232.8 MiB
+Previous 2                240.7 ms          365.6 MiB
+
+The compared PNGs were byte-identical. ImageIO encoded the full-size
+output canvas in both builds. The difference is ownership of the source
+frames during composition. Saving while a preview is still rendering
+was outside the memory measurement. An independent synthetic
+direct-provider probe requested all 186,864,000 image bytes in one
+ImageIO callback, so that approach was dropped.
+
+The live light and dark captures each saved three filtered frames
+with overlapping GPUI controls. Each 1200x5200 Display P3 PNG matched
+6,239,946 of 6,240,000 unobstructed reference pixels exactly. The
+other 54 pixels differed by at most one RGB level.

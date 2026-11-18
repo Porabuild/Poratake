@@ -2097,6 +2097,26 @@ struct ScrollCapturePreviewTest {
         precondition(encodedComposedPreview, "The encoder must receive the stitched bitmap")
         precondition(composedPreview == nil, "The published scroll preview must release its full-size bitmap")
 
+        let finishMemoryModule = ScrollCaptureModule()
+        finishMemoryModule.testPreparePreview(step: step, width: width, height: height)
+        finishMemoryModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        finishMemoryModule.testSetPreviewEncoder { _ in "preview" }
+        weak var inputFrame: CGImage?
+        autoreleasepool {
+            let first = frame(start: 0, width: width, height: height)
+            inputFrame = first
+            finishMemoryModule.testAppendPreviewFrame(first)
+            finishMemoryModule.testAppendPreviewFrame(frame(start: step, width: width, height: height))
+        }
+        finishMemoryModule.testWaitForPreviewWork()
+        precondition(inputFrame != nil, "The source must stay available until stitching")
+        let finishMemoryOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-finish-memory-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: finishMemoryOutput) }
+        let finishedMemory = finishMemoryModule.testFinishCurrentCapture(outputPath: finishMemoryOutput.path)
+        precondition(finishedMemory?["frameCount"] as? Int == 2)
+        precondition(inputFrame == nil, "The finish worker must release captured images")
+
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
         let releaseFirstEncode = DispatchSemaphore(value: 0)

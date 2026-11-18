@@ -9,6 +9,11 @@ private final class ScrollFinishJob {
     private let lock = NSLock()
     private var cancellationRequested = false
     private var completed = false
+    var frames: [CGImage?]
+
+    init(frames: [CGImage?] = []) {
+        self.frames = frames
+    }
 
     func requestCancellation() -> Bool {
         lock.lock()
@@ -146,15 +151,17 @@ private final class ScrollPreviewSession {
         }
     }
 
-    func alignmentSnapshot() -> ScrollAlignmentSnapshot {
+    func alignmentSnapshot(releaseFrames: Bool = false) -> ScrollAlignmentSnapshot {
         alignmentQueue.sync {
             lock.lock()
             defer { lock.unlock() }
-            return ScrollAlignmentSnapshot(
+            let snapshot = ScrollAlignmentSnapshot(
                 alignments: alignments,
                 acceptedFrameCount: frames.count,
                 stoppedForNoOverlap: alignmentStopped
             )
+            if releaseFrames { frames.removeAll() }
+            return snapshot
         }
     }
 
@@ -648,11 +655,11 @@ class ScrollCaptureModule: NSObject, Module {
         previewSession?.stopPreviewRendering()
         updateFinishingControls(cancelled: cancelBeforeFinish)
         let frameCount = capturedFrames.count
-        let frames = capturedFrames
         let captureAreaHeight = captureArea.height
         let scrollStepPoints = self.scrollStepPoints
         let previewSession = self.previewSession
-        let job = ScrollFinishJob()
+        let job = ScrollFinishJob(frames: capturedFrames.map { $0.image })
+        capturedFrames.removeAll()
         if cancelBeforeFinish {
             _ = job.requestCancellation()
         }
@@ -668,7 +675,7 @@ class ScrollCaptureModule: NSObject, Module {
 #if SCROLL_CAPTURE_TEST
             let alignmentSnapshot = self.finishAlignedOverlaps(session: previewSession, job: job)
             let result = testFinishWorker?() ?? self.stitchFrames(
-                frames: frames,
+                frames: &job.frames,
                 captureAreaHeight: captureAreaHeight,
                 scrollStepPoints: scrollStepPoints,
                 alignmentSnapshot: alignmentSnapshot,
@@ -678,7 +685,7 @@ class ScrollCaptureModule: NSObject, Module {
 #else
             let alignmentSnapshot = self.finishAlignedOverlaps(session: previewSession, job: job)
             let result = self.stitchFrames(
-                frames: frames,
+                frames: &job.frames,
                 captureAreaHeight: captureAreaHeight,
                 scrollStepPoints: scrollStepPoints,
                 alignmentSnapshot: alignmentSnapshot,
@@ -709,7 +716,7 @@ class ScrollCaptureModule: NSObject, Module {
 #if SCROLL_CAPTURE_TEST
         testFinishAlignmentWaitStarted?.signal()
 #endif
-        return session?.alignmentSnapshot()
+        return session?.alignmentSnapshot(releaseFrames: true)
     }
 
     private func handleCancel(requestId: String) {
@@ -1200,25 +1207,15 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func stitchFrames(
-        frames: [CapturedFrame],
+        frames: inout [CGImage?],
         captureAreaHeight: CGFloat,
         scrollStepPoints: Int,
         alignmentSnapshot: ScrollAlignmentSnapshot?,
         outputPath: String,
         isCancelled: () -> Bool
     ) -> (width: Int, height: Int, frameCount: Int, stoppedForNoOverlap: Bool)? {
-        guard !frames.isEmpty, !isCancelled() else { return nil }
-
-        if frames.count == 1 {
-            guard let result = saveSingleFrame(
-                frame: frames[0].image,
-                outputPath: outputPath,
-                isCancelled: isCancelled
-            ) else { return nil }
-            return (result.width, result.height, 1, false)
-        }
-
-        let frameHeight = frames[0].image.height
+        defer { frames.removeAll() }
+        guard !isCancelled(), let frameHeight = frames.first.flatMap({ $0?.height }) else { return nil }
 
         let scale = CGFloat(frameHeight) / captureAreaHeight
         let scrollStepPixels = Int(CGFloat(scrollStepPoints) * scale)
@@ -1228,80 +1225,45 @@ class ScrollCaptureModule: NSObject, Module {
             ? max(1, min(alignmentSnapshot?.acceptedFrameCount ?? 1, frames.count))
             : frames.count
 
-        var acceptedFrames = [frames[0]]
         var alignments = [ScrollFrameAlignment]()
         for index in 1..<frameLimit {
-            guard !isCancelled() else { return nil }
+            guard !isCancelled(), let top = frames[index - 1], let bottom = frames[index] else { return nil }
             let alignment: ScrollFrameAlignment?
-            if let alignmentSnapshot,
-               index - 1 < alignmentSnapshot.alignments.count {
-                let stored = alignmentSnapshot.alignments[index - 1]
-                alignment = stored
+            if let alignmentSnapshot, index - 1 < alignmentSnapshot.alignments.count {
+                alignment = alignmentSnapshot.alignments[index - 1]
             } else {
                 alignment = findOverlap(
-                    topFrame: frames[index - 1].image,
-                    bottomFrame: frames[index].image,
-                    expectedOverlap: expectedOverlapPixels,
-                    isCancelled: isCancelled
+                    topFrame: top, bottomFrame: bottom,
+                    expectedOverlap: expectedOverlapPixels, isCancelled: isCancelled
                 )
             }
-            guard let alignment else {
-                break
-            }
-            acceptedFrames.append(frames[index])
+            guard let alignment else { break }
             alignments.append(alignment)
         }
-        guard !isCancelled() else { return nil }
-        let stoppedForNoOverlap = acceptedFrames.count < frames.count
-            || alignmentSnapshot?.stoppedForNoOverlap == true
 
-        if acceptedFrames.count == 1 {
-            guard let result = saveSingleFrame(
-                frame: acceptedFrames[0].image,
-                outputPath: outputPath,
-                isCancelled: isCancelled
-            ) else { return nil }
-            return (result.width, result.height, acceptedFrames.count, stoppedForNoOverlap)
-        }
-
+        let acceptedCount = alignments.count + 1
+        let stoppedForNoOverlap = acceptedCount < frames.count || alignmentSnapshot?.stoppedForNoOverlap == true
+        frames.removeLast(frames.count - acceptedCount)
         guard let outputImage = composeFrames(
-            frames: acceptedFrames.map(\.image),
-            alignments: alignments,
-            isCancelled: isCancelled
-        )?.image else { return nil }
-
-        let url = URL(fileURLWithPath: outputPath)
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-            return nil
-        }
-
-        CGImageDestinationAddImage(destination, outputImage, nil)
-
-        guard !isCancelled() else { return nil }
-        if CGImageDestinationFinalize(destination) {
-            guard !isCancelled() else { return nil }
-            return (
-                width: outputImage.width,
-                height: outputImage.height,
-                frameCount: acceptedFrames.count,
-                stoppedForNoOverlap: stoppedForNoOverlap
-            )
-        }
-
-        return nil
+            frames: &frames, alignments: alignments, isCancelled: isCancelled
+        )?.image, let result = savePNG(
+            frame: outputImage, outputPath: outputPath, isCancelled: isCancelled
+        ) else { return nil }
+        return (result.width, result.height, acceptedCount, stoppedForNoOverlap)
     }
 
     private func composeFrames(
-        frames: [CGImage],
+        frames: inout [CGImage?],
         alignments: [ScrollFrameAlignment],
         maximumWidth: Int? = nil,
         isCancelled: () -> Bool
     ) -> ScrollComposition? {
-        guard let firstFrame = frames.first, !isCancelled(),
+        guard let firstFrame = frames.first ?? nil, !isCancelled(),
               alignments.count == frames.count - 1 else { return nil }
         let width = firstFrame.width
         let targetWidth = min(width, maximumWidth ?? width)
         if frames.count == 1 && targetWidth == width {
+            frames[0] = nil
             return ScrollComposition(image: firstFrame, width: width, height: firstFrame.height)
         }
 
@@ -1310,8 +1272,8 @@ class ScrollCaptureModule: NSObject, Module {
         var contentHeights: [Int] = []
         var height = 0
         for index in frames.indices {
-            guard !isCancelled() else { return nil }
-            let contentHeight = frames[index].height - trimTop[index] - trimBottom[index]
+            guard !isCancelled(), let frame = frames[index] else { return nil }
+            let contentHeight = frame.height - trimTop[index] - trimBottom[index]
             guard contentHeight > 0 else { return nil }
             contentHeights.append(contentHeight)
             height += contentHeight
@@ -1327,8 +1289,8 @@ class ScrollCaptureModule: NSObject, Module {
         var remainingRows = height
         var top = targetHeight
         for index in frames.indices {
-            guard !isCancelled() else { return nil }
-            let frame = frames[index]
+            guard !isCancelled(), let frame = frames[index] else { return nil }
+            frames[index] = nil
             let contentHeight = contentHeights[index]
             remainingRows -= contentHeight
             let bottom = Int((CGFloat(remainingRows) * scaleY).rounded())
@@ -1344,7 +1306,7 @@ class ScrollCaptureModule: NSObject, Module {
         return ScrollComposition(image: image, width: width, height: height)
     }
 
-    private func saveSingleFrame(
+    private func savePNG(
         frame: CGImage,
         outputPath: String,
         isCancelled: () -> Bool
@@ -2068,7 +2030,8 @@ class ScrollCaptureModule: NSObject, Module {
                 self.emitScrollEnded(reason: "no-overlap", frameCount: acceptedFrameCount)
             },
             compose: { [weak self] frames, alignments, isCancelled in
-                self?.composeFrames(frames: frames, alignments: alignments, maximumWidth: previewWidth, isCancelled: isCancelled)
+                var images = frames.map(Optional.some)
+                return self?.composeFrames(frames: &images, alignments: alignments, maximumWidth: previewWidth, isCancelled: isCancelled)
             },
             encode: { [weak self] image in
 #if SCROLL_CAPTURE_TEST
@@ -2275,12 +2238,14 @@ class ScrollCaptureModule: NSObject, Module {
         }
         let alignmentSnapshot = session.alignmentSnapshot()
         let overlaps = alignmentSnapshot.alignments.map(\.overlap)
+        var previewFrames = frames.prefix(snapshot.frameCount).map(Optional.some)
+        var finalFrames: [CGImage?] = capturedFrames.map { $0.image }
         guard let unscaled = composeFrames(
-            frames: Array(frames.prefix(snapshot.frameCount)),
+            frames: &previewFrames,
             alignments: Array(alignmentSnapshot.alignments.prefix(snapshot.frameCount - 1)),
             isCancelled: { false }
         ), stitchFrames(
-            frames: capturedFrames,
+            frames: &finalFrames,
             captureAreaHeight: captureArea.height,
             scrollStepPoints: step,
             alignmentSnapshot: alignmentSnapshot,
@@ -2534,9 +2499,9 @@ class ScrollCaptureModule: NSObject, Module {
         } catch {
             return false
         }
-        let frame = testFrame(width: 80, height: 160, seed: 0)
+        var frames: [CGImage?] = [testFrame(width: 80, height: 160, seed: 0)]
         let result = stitchFrames(
-            frames: [CapturedFrame(image: frame, index: 0)],
+            frames: &frames,
             captureAreaHeight: 160,
             scrollStepPoints: 112,
             alignmentSnapshot: nil,
