@@ -5060,7 +5060,7 @@ pub(super) fn simple_inset_preview(
             (
                 false,
                 false,
-                Some("ordered-shape"),
+                Some("ordered-blur"),
                 vec![shape.clone(), blur],
             ),
             (
@@ -5075,12 +5075,7 @@ pub(super) fn simple_inset_preview(
                 Some("ordered-shape"),
                 vec![blackout, shape.clone()],
             ),
-            (
-                false,
-                false,
-                Some("ordered-highlight"),
-                vec![highlight, shape],
-            ),
+            (false, false, Some("ordered-shape"), vec![highlight, shape]),
             (true, false, None, annotations),
         ] {
             let unannotated_baseline = current.is_empty() && !draft_check;
