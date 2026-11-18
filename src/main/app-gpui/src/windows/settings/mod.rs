@@ -1287,6 +1287,37 @@ mod render_tests {
     }
 
     #[herogpui::test]
+    fn history_limit_slider_moves_by_one_setting_step(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        store.update(|config| {
+            config.history.enabled = true;
+            config.history.max_items = 100.;
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (settings, cx) =
+            cx.add_window_view(|_, cx| SettingsWindow::new(store.clone(), Category::General, cx));
+        cx.update(|_, cx| {
+            settings.update(cx, |settings, cx| {
+                settings.search.update(cx, |search, cx| {
+                    search.set_value("Maximum items");
+                    cx.notify();
+                });
+            });
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let track = cx.debug_bounds("general.historyMaxItems").unwrap();
+        cx.simulate_click(track.center(), gpui::Modifiers::none());
+        let start = store.get().history.max_items;
+
+        cx.simulate_keystrokes("right");
+        assert_eq!(store.get().history.max_items, start + 10.);
+        cx.simulate_keystrokes("left");
+        assert_eq!(store.get().history.max_items, start);
+    }
+
+    #[herogpui::test]
     fn settings_heading_reserves_native_window_controls(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store =
