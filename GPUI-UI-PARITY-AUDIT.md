@@ -6676,14 +6676,31 @@ through ImageIO for PNG encoding.
 In two pairs of generated 3400 × 13740 saves, peak process footprint fell
 from 365.6–365.8 MiB to 232.4–232.8 MiB. The inputs and saved PNG bytes
 matched. Save times varied across the runs. The comparison began after
-all preview work completed, so it leaves the simultaneous-preview peak
-open. An earlier direct-provider probe showed ImageIO requesting all
+all preview work completed. The follow-up below measures Finish with
+preview encoding held. An earlier direct-provider probe showed ImageIO requesting all
 186,864,000 bytes at once and offered no peak-memory improvement.
 
 The native regression verifies that the captured images are released
 after a successful finish. Cancellation and verified-prefix tests still
 pass. The [measurement record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the sample timings and the live light and dark verification.
+
+### 2026-11-18 macOS scroll save while a preview is encoding
+
+A composed preview previously held all its input images while encoding
+its thumbnail. Its worker now releases those references before encoding.
+The save worker can release the input frames as it uses them, even when
+the preview encoder is busy.
+
+The native regression held the thumbnail encoder and finished a capture
+during that hold. The input image was released, and the saved result
+contained both frames. Preview cancellation and publication tests passed.
+
+In two paired 3400 × 13740 saves, with the encoder held after composing
+the last preview, peak process footprint fell from 363.4–364.5 MiB to
+230.4–230.8 MiB. The saved PNGs were byte-identical. The measurement
+covers overlap with the encoding stage. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains individual results.
 
 ## Review gate
 

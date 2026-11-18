@@ -2100,7 +2100,15 @@ struct ScrollCapturePreviewTest {
         let finishMemoryModule = ScrollCaptureModule()
         finishMemoryModule.testPreparePreview(step: step, width: width, height: height)
         finishMemoryModule.testSetPreviewAlignment { _, _, expected, _ in expected }
-        finishMemoryModule.testSetPreviewEncoder { _ in "preview" }
+        let finishMemoryEncoderStarted = DispatchSemaphore(value: 0)
+        let resumeFinishMemoryEncoder = DispatchSemaphore(value: 0)
+        finishMemoryModule.testSetPreviewEncoder { image in
+            if image.height > height {
+                finishMemoryEncoderStarted.signal()
+                precondition(resumeFinishMemoryEncoder.wait(timeout: .now() + 10) == .success)
+            }
+            return "preview"
+        }
         weak var inputFrame: CGImage?
         autoreleasepool {
             let first = frame(start: 0, width: width, height: height)
@@ -2108,14 +2116,16 @@ struct ScrollCapturePreviewTest {
             finishMemoryModule.testAppendPreviewFrame(first)
             finishMemoryModule.testAppendPreviewFrame(frame(start: step, width: width, height: height))
         }
-        finishMemoryModule.testWaitForPreviewWork()
+        precondition(finishMemoryEncoderStarted.wait(timeout: .now() + 5) == .success)
         precondition(inputFrame != nil, "The source must stay available until stitching")
         let finishMemoryOutput = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("poratake-scroll-finish-memory-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: finishMemoryOutput) }
         let finishedMemory = finishMemoryModule.testFinishCurrentCapture(outputPath: finishMemoryOutput.path)
         precondition(finishedMemory?["frameCount"] as? Int == 2)
-        precondition(inputFrame == nil, "The finish worker must release captured images")
+        precondition(inputFrame == nil, "The finish worker must release captured images while a preview is encoding")
+        resumeFinishMemoryEncoder.signal()
+        finishMemoryModule.testWaitForRetiredPreviewWork()
 
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)

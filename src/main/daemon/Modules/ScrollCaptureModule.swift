@@ -69,7 +69,7 @@ private final class ScrollPreviewSession {
     }
 
     private struct PreviewRequest {
-        let frames: [CGImage]
+        var frames: [CGImage]
         let alignments: [ScrollFrameAlignment]
         let frameCount: Int
         let pointsPerPixel: CGFloat
@@ -247,7 +247,7 @@ private final class ScrollPreviewSession {
                 lock.unlock()
                 return
             }
-            guard let request = pendingPreview else {
+            guard var request = pendingPreview else {
                 previewWorkerScheduled = false
                 lock.unlock()
                 return
@@ -256,8 +256,11 @@ private final class ScrollPreviewSession {
             lock.unlock()
 
             let isStale = { [weak self] in self?.shouldStopPreview() ?? true }
-            guard let composition = request.compose(request.frames, request.alignments, isStale), !isStale(),
-                  let encodedImage = request.encode(composition.image), !isStale() else {
+            guard let composition = request.compose(request.frames, request.alignments, isStale), !isStale() else {
+                continue
+            }
+            request.frames.removeAll()
+            guard let encodedImage = request.encode(composition.image), !isStale() else {
                 continue
             }
 

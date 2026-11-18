@@ -486,3 +486,23 @@ The live light and dark captures each saved three filtered frames
 with overlapping GPUI controls. Each 1200x5200 Display P3 PNG matched
 6,239,946 of 6,240,000 unobstructed reference pixels exactly. The
 other 54 pixels differed by at most one RGB level.
+
+Finishing while a scroll preview is encoding
+
+The same nine-frame native memory fixture held the final preview at
+the encoder boundary after composing its thumbnail. Finish ran through
+the normal daemon handler and completed before the encoder was released.
+VMMap sampled whole-process peak physical footprint from fresh processes.
+The saved output was 3400x13740.
+
+Sample                  Finish time       Peak memory
+Previous 1                259.1 ms          364.5 MiB
+Fixed 1                   239.9 ms          230.8 MiB
+Fixed 2                   241.5 ms          230.4 MiB
+Previous 2                232.8 ms          363.4 MiB
+
+The saved PNGs were byte-identical. The regression held a weak reference
+to a capture source, verified its release after saving, and released
+the encoder only after that assertion. These samples exercise the hold
+at encoding. Composition that is still drawing at the moment of Finish
+was outside the memory probe.
