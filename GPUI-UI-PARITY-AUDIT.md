@@ -6203,6 +6203,27 @@ The generated fixture passed on arm64 and x86_64 under Rosetta. It checked
 duplicate names, a stale name paired with a working ID, and saved browser
 IDs that need name fallback. Live multi-camera hardware remains unverified.
 
+### 2026-11-18 macOS selector and capture handoff latency
+
+The native timing probe ran six cycles per profile over a generated backdrop
+on the Apple M5 Pro Retina display. It checked when WindowServer saw selectors,
+previews and editors appear or disappear. The first action in each process is
+reported separately from the five warm samples. The probe drove the app
+directly and used the previously authorized screen-only daemon.
+
+GPUI now disables AppKit's automatic selector animation and hides the selector
+before deferred teardown. Warm median cancel-to-hidden fell from 164–168 ms
+to 12–15 ms across small live, large live and large frozen captures. Warm
+area-to-window switching fell from 167–183 ms to 26–79 ms. Confirm-to-hidden
+fell from 164–171 ms to 15–17 ms. The isolated dark repeat measured 20 ms for
+a warm live area selector and 44 ms for a warm frozen selector.
+
+One large frozen run still reached 884 ms from confirmation to a ready
+thumbnail with the selector gone. In the dark repeat the warm median was
+94 ms and the maximum was 111 ms. The probe records window visibility and
+thumbnail readiness. Physical input latency and time to the first composited
+editor frame remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

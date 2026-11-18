@@ -1004,7 +1004,8 @@ pub fn open(cx: &mut App) {
         config.screenshot.capture_to_clipboard = false;
         config.screenshot.auto_copy_to_clipboard = false;
         config.screenshot.hide_desktop_icons = false;
-        config.screenshot.freeze_screen = false;
+        config.screenshot.freeze_screen =
+            std::env::var("PORATAKE_NATIVE_SMOKE_FREEZE").as_deref() == Ok("1");
         config.screenshot.show_preview = true;
         config.screenshot.format = "png".into();
         config.recording.start_delay = 0.;
@@ -1097,6 +1098,60 @@ pub fn open(cx: &mut App) {
                     };
                     RecordingControl::cancel_pre_recording(cx);
                     crate::intents::dispatch(intent, None, cx);
+                    return true;
+                }
+                if command == "cancel overlay" {
+                    let Some(handle) = crate::capture::overlay::parity_active_overlay(cx) else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |_, window, cx| {
+                            crate::capture::overlay::dismiss(window, cx)
+                        })
+                        .is_ok();
+                }
+                if command == "preview ready" {
+                    let Some(handle) =
+                        registry::handle(WindowKind::CapturePreview, cx).and_then(|handle| {
+                            handle
+                                .downcast::<crate::windows::capture_preview::CapturePreviewWindow>()
+                        })
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |preview, _, _| preview.thumbnails_ready_for_parity())
+                        .unwrap_or(false);
+                }
+                if command == "preview editor" {
+                    let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) else {
+                        return false;
+                    };
+                    let event = PlatformInput::MouseDown(MouseDownEvent {
+                        position: point(px(100.), px(60.)),
+                        button: MouseButton::Left,
+                        click_count: 2,
+                        modifiers: Modifiers::none(),
+                        first_mouse: false,
+                    });
+                    return cx
+                        .update_window(handle, |_, window, cx| window.dispatch_event(event, cx))
+                        .is_ok();
+                }
+                if command == "close editor" {
+                    let Some(handle) = cx
+                        .windows()
+                        .into_iter()
+                        .find(|handle| handle.downcast::<crate::editor::EditorWindow>().is_some())
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |_, window, _| window.remove_window())
+                        .is_ok();
+                }
+                if command == "quit" {
+                    cx.quit();
                     return true;
                 }
                 if let Some(input) = command.strip_prefix("pointer ") {

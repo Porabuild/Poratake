@@ -434,9 +434,11 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                 continue;
             }
         }
-        let _ = tracked
-            .handle
-            .update(cx, |_, window, _| window.remove_window());
+        let _ = tracked.handle.update(cx, |_, window, _| {
+            #[cfg(target_os = "macos")]
+            crate::system::window_visibility::hide(window);
+            window.remove_window();
+        });
     }
 }
 
@@ -993,6 +995,22 @@ fn take_pooled_overlay(
 fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
     window.set_window_title("Poratake capture overlay");
     crate::windows::remove_popup_frame(window);
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        use cocoa::base::id;
+        use objc::{msg_send, sel, sel_impl};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        const NS_WINDOW_ANIMATION_BEHAVIOR_NONE: isize = 2;
+        if let Ok(handle) = HasWindowHandle::window_handle(window) {
+            if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+                let native: id = unsafe { msg_send![appkit.ns_view.as_ptr() as id, window] };
+                let _: () = unsafe {
+                    msg_send![native, setAnimationBehavior: NS_WINDOW_ANIMATION_BEHAVIOR_NONE]
+                };
+            }
+        }
+    }
     #[cfg(all(windows, not(test)))]
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         crate::system::window_composition::configure_transparent_surface(hwnd);
