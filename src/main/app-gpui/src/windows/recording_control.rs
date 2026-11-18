@@ -169,6 +169,11 @@ impl RecordingControl {
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_camera_position(&self) -> Option<(i32, i32)> {
+        *self.camera_preview_position.lock()
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
     pub(crate) fn parity_pause_pending(&self) -> bool {
         self.pause_pending
     }
@@ -1679,14 +1684,21 @@ impl RecordingControl {
             y: Some(y),
             ..Default::default()
         };
-        if let Err(error) = crate::state::state(cx)
-            .daemon
-            .camera_preview()
-            .update(&request)
-        {
-            eprintln!("[recorder] camera-preview update failed: {error}");
-        } else {
-            *self.camera_preview_position.lock() = Some((x, y));
+        let daemon = crate::state::state(cx).daemon;
+        #[cfg(target_os = "macos")]
+        match daemon.camera_preview().begin_update(&request) {
+            Ok(wait) => smol::spawn(async move {
+                if let Err(error) = smol::unblock(wait).await {
+                    eprintln!("[recorder] camera-preview update failed: {error}");
+                }
+            })
+            .detach(),
+            Err(error) => eprintln!("[recorder] camera-preview update failed: {error}"),
+        }
+        #[cfg(not(target_os = "macos"))]
+        match daemon.camera_preview().update(&request) {
+            Ok(()) => *self.camera_preview_position.lock() = Some((x, y)),
+            Err(error) => eprintln!("[recorder] camera-preview update failed: {error}"),
         }
     }
 

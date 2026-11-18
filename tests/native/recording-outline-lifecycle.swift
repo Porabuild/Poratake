@@ -327,12 +327,23 @@ struct RecordingOutlineLifecycleTest {
             onScreenAlpha(previewID) == 1
         }
         let visible = screen.visibleFrame
-        cameraPreview.testUpdatePanelPosition(
-            x: Int(visible.maxX) - 1,
-            y: Int(screen.frame.height - visible.minY) - 1
+        cameraPreview.handle(
+            method: "update",
+            params: ["x": AnyCodable(Int(visible.minX) + 24), "y": AnyCodable(120)],
+            requestId: "camera-first-position"
         )
+        cameraPreview.handle(
+            method: "update",
+            params: [
+                "x": AnyCodable(Int(visible.maxX) - 1),
+                "y": AnyCodable(Int(screen.frame.height - visible.minY) - 1),
+            ],
+            requestId: "camera-final-position"
+        )
+        try await waitFor("the latest camera position did not apply") {
+            preview.frame.origin == NSPoint(x: visible.maxX - preview.frame.width, y: visible.minY)
+        }
         precondition(visible.contains(preview.frame), "camera preview extended beyond the display work area")
-        precondition(preview.frame.origin == NSPoint(x: visible.maxX - preview.frame.width, y: visible.minY))
         try await waitFor("the camera panel did not report its fitted position") {
             cameraPreview.testReportedPositions.last == NSPoint(
                 x: Int(preview.frame.minX), y: Int(screen.frame.height - preview.frame.maxY)

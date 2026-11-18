@@ -7609,6 +7609,20 @@ switch kept it closed. The Metal recording-controls workflow also
 holds Hide and asserts that the toolbar has closed before the
 new selector opens. These tests used no live camera feed.
 
+### 2026-11-18 macOS camera preview repositioning during recording setup
+
+Retargeting the pre-recording toolbar now sends the camera preview
+position and waits for the reply off the UI thread. GPUI keeps the
+position reported by AppKit, including any work-area clamping. The
+daemon applies updates in request order on the main queue.
+
+In four native runs with simulated replies, a second reposition reached
+the daemon in 5.49–9.69 ms while the first reply was held. Releasing the
+replies in reverse did not change the last reported position. Close
+reached Hide in 16–20 ms while both replies were pending. The AppKit
+lifecycle fixture also sent two position requests and checked the
+last clamped position on its generated panel. No camera feed was used.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

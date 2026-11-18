@@ -622,6 +622,19 @@ impl CameraPreviewClient<'_> {
         Ok(move || wait().map(|_| ()))
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn begin_update(
+        &self,
+        request: &CameraPreviewUpdateRequest,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Update.id(),
+            Some(serde_json::to_value(request)?),
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn update(&self, request: &CameraPreviewUpdateRequest) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(

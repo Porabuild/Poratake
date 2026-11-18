@@ -100,28 +100,26 @@ class CameraPreviewModule: Module {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            Task { @MainActor in
-                if hasDeviceId {
-                    self.source.deviceId = deviceId
-                }
-                if hasDeviceName {
-                    self.source.deviceName = deviceName
-                }
-                if let resolution {
-                    self.source.resolution = resolution
-                }
-                if let flipped {
-                    self.flipped = flipped
-                    self.contentView?.updateFlipped(flipped)
-                }
-                if let x, let y {
-                    self.updatePosition(x: x, y: y)
-                }
-                if self.panel?.alphaValue == 1 && (hasDeviceId || hasDeviceName || hasResolution) {
-                    self.contentView?.updateCamera(self.source)
-                }
-                self.respond(id: requestId, result: ["updated": true])
+            if hasDeviceId {
+                self.source.deviceId = deviceId
             }
+            if hasDeviceName {
+                self.source.deviceName = deviceName
+            }
+            if let resolution {
+                self.source.resolution = resolution
+            }
+            if let flipped {
+                self.flipped = flipped
+                self.contentView?.updateFlipped(flipped)
+            }
+            if let x, let y {
+                self.updatePosition(x: x, y: y)
+            }
+            if self.panel?.alphaValue == 1 && (hasDeviceId || hasDeviceName || hasResolution) {
+                self.contentView?.updateCamera(self.source)
+            }
+            self.respond(id: requestId, result: ["updated": true])
         }
     }
     
@@ -385,9 +383,6 @@ class CameraPreviewModule: Module {
         setupMoveTracking(for: panel)
         return true
     }
-
-    @MainActor
-    func testUpdatePanelPosition(x: Int, y: Int) { updatePosition(x: x, y: y) }
 
     @MainActor
     func testHidePanel() async {

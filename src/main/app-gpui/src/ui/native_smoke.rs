@@ -1670,6 +1670,31 @@ pub fn open(cx: &mut App) {
                         .unwrap_or(false);
                 }
                 if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() {
+                    if let Some(x) = command
+                        .strip_prefix("camera-retarget ")
+                        .and_then(|value| value.parse::<i32>().ok())
+                    {
+                        RecordingControl::open(
+                            cx,
+                            target,
+                            ScreenRect { x, y: rect[1], width: rect[2], height: rect[3] },
+                            None,
+                            window_id,
+                            window_id.map(|_| "Native smoke window".to_string()),
+                            PreferenceScope::Global,
+                        );
+                        return true;
+                    }
+                    if let Some(position) = command.strip_prefix("camera-position ") {
+                        let expected = position.split_once(' ').and_then(|(x, y)| {
+                            Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?))
+                        });
+                        return handle
+                            .update(cx, |control, _, _| {
+                                expected.is_some() && control.parity_camera_position() == expected
+                            })
+                            .unwrap_or(false);
+                    }
                     if let Some(id) = command.strip_prefix("camera-select ") {
                         return handle
                             .update(cx, |control, _, cx| {
