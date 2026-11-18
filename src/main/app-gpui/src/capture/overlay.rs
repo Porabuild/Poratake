@@ -1597,15 +1597,15 @@ impl AreaOverlay {
             return;
         };
         if self.intent == crate::capture::intent::CaptureIntent::Recording {
-            let all_in_one = self.all_in_one.is_some();
-            let rect = ScreenRect {
-                x: picked.bounds.x as i32,
-                y: picked.bounds.y as i32,
-                width: picked.bounds.width as i32,
-                height: picked.bounds.height as i32,
-            };
-            let label = picked.label();
-            let window_id = picked.window_id;
+            #[cfg(target_os = "macos")]
+            {
+                let frozen = frozen_selection_generation(cx);
+                if frozen != 0 {
+                    self.release_before_window_recording(frozen, picked, window, cx);
+                    return;
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
             if !release_frozen_screen_in_place(cx) {
                 crate::windows::toast::Toast::show(
                     cx,
@@ -1614,39 +1614,7 @@ impl AreaOverlay {
                 );
                 return;
             }
-            self.all_in_one = None;
-            self.picking_windows = false;
-            self.hovered_window = None;
-            self.interaction = None;
-            self.pointer = None;
-            self.handed_off = true;
-            conceal_recording_selector(window);
-            sync_window_recording_handoff(cx);
-            begin_recording_after_icon_restore(
-                cx,
-                all_in_one,
-                crate::video::recorder::RecordingTarget::Window,
-                rect,
-                self.display_id,
-                Some(window_id),
-                Some(label),
-                self.recording_preference_scope,
-                move |cx| {
-                    for window_handle in cx.windows() {
-                        let Some(handle) = window_handle
-                            .downcast::<crate::windows::recording_control::RecordingControl>(
-                        ) else {
-                            continue;
-                        };
-                        let _ = handle.update(cx, |_, window, _| window.activate_window());
-                        break;
-                    }
-                    if !show_window_recording_outline(window_id, cx) {
-                        eprintln!("[recording-overlay] failed to outline window {window_id}");
-                    }
-                },
-            );
-            cx.notify();
+            self.handoff_window_recording(picked, window, cx);
             return;
         }
         let mut capture = display_capture(self.display_bounds, self.scale, self.display_id);
@@ -1676,6 +1644,112 @@ impl AreaOverlay {
                 cx,
             );
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_before_window_recording(
+        &self,
+        frozen: u64,
+        picked: crate::capture::windows_list::WindowListItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = revision(cx);
+        let list_generation = self.window_list_generation;
+        let handle = window
+            .window_handle()
+            .downcast::<Self>()
+            .expect("area overlay");
+        let finished = begin_recording_preparation(cx);
+        let service = self.service.clone();
+        cx.spawn(async move |_, cx| {
+            #[cfg(not(test))]
+            let released = smol::unblock(move || service.release_screen(frozen)).await;
+            #[cfg(test)]
+            let released = cx
+                .background_executor()
+                .spawn(async move { service.release_screen(frozen) })
+                .await;
+            cx.update(|cx| {
+                finish_recording_preparation(cx);
+                if revision(cx) != owner {
+                    crate::windows::recording_control::RecordingControl::refresh_after_outline_cleanup(cx);
+                    return;
+                }
+                if released {
+                    mark_frozen_selection_released(frozen, cx);
+                }
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    if overlay.window_list_generation != list_generation
+                        || overlay.intent != crate::capture::intent::CaptureIntent::Recording
+                        || !overlay.is_picking_windows()
+                    {
+                        return;
+                    }
+                    if released {
+                        overlay.handoff_window_recording(picked, window, cx);
+                    } else {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Recording failed",
+                            "Could not release the frozen screen",
+                        );
+                    }
+                });
+            });
+            drop(finished);
+        })
+        .detach();
+    }
+
+    fn handoff_window_recording(
+        &mut self,
+        picked: crate::capture::windows_list::WindowListItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let all_in_one = self.all_in_one.is_some();
+        let rect = ScreenRect {
+            x: picked.bounds.x as i32,
+            y: picked.bounds.y as i32,
+            width: picked.bounds.width as i32,
+            height: picked.bounds.height as i32,
+        };
+        let label = picked.label();
+        let window_id = picked.window_id;
+        self.all_in_one = None;
+        self.picking_windows = false;
+        self.hovered_window = None;
+        self.interaction = None;
+        self.pointer = None;
+        self.handed_off = true;
+        conceal_recording_selector(window);
+        sync_window_recording_handoff(cx);
+        begin_recording_after_icon_restore(
+            cx,
+            all_in_one,
+            crate::video::recorder::RecordingTarget::Window,
+            rect,
+            self.display_id,
+            Some(window_id),
+            Some(label),
+            self.recording_preference_scope,
+            move |cx| {
+                for window_handle in cx.windows() {
+                    let Some(handle) = window_handle
+                        .downcast::<crate::windows::recording_control::RecordingControl>(
+                    ) else {
+                        continue;
+                    };
+                    let _ = handle.update(cx, |_, window, _| window.activate_window());
+                    break;
+                }
+                if !show_window_recording_outline(window_id, cx) {
+                    eprintln!("[recording-overlay] failed to outline window {window_id}");
+                }
+            },
+        );
+        cx.notify();
     }
 
     /// Opens the overlay covering one display.
@@ -2809,6 +2883,10 @@ impl AreaOverlay {
     /// `startDrag`: a press on a handle resizes, inside the box moves, and
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if pending_recording_preparation(cx).is_some() {
+            return;
+        }
         if self.handed_off {
             return;
         }

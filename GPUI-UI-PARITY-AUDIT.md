@@ -7159,6 +7159,21 @@ the toolbar and selector without a project. Switching to a screenshot
 opened a new selector after release, with no stale recorder request.
 [Native evidence](tests/native/evidence/macos-ui/native-frozen-recording-release-20261118.txt)
 
+### 2026-11-18 macOS All-in-One frozen window recording selection
+
+Choosing a window from a frozen All-in-One recording selector blocked
+the UI on Release before it could show the window outline and toolbar.
+A held reply timed out in the baseline parity fixture. The release
+now runs off the UI thread. The selected window is handed off only
+if the selector and its window list still own the pick. Escape can
+dismiss the selector during the wait.
+
+In native light and dark runs the app answered in under 1 ms during
+a held 650 ms release. The outline and controls opened after release.
+Each selected window recorded a 720×480 video and opened a preview.
+Cancelling during the hold left no controls, outline, or project.
+[Native window handoff evidence](tests/native/evidence/macos-ui/native-frozen-window-recording-release-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

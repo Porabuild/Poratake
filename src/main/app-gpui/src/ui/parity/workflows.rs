@@ -1375,6 +1375,21 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         });
         cx.run_until_parked();
         let picker = area_picker(cx);
+        #[cfg(target_os = "macos")]
+        let release = (target == "window").then(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "freeze": "frozen",
+                    "recordingHoldFreezeRelease": true,
+                    "barrier": listener.local_addr().unwrap().to_string(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            recording_outline_barrier(&listener)
+        });
         if target == "area" {
             select_area(cx, picker);
         } else {
@@ -1391,6 +1406,35 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
         }
         cx.run_until_parked();
+        #[cfg(target_os = "macos")]
+        if let Some(release) = release {
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| {
+                    call["module"] == "recording-overlay" && call["method"] == "showWindow"
+                }));
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "window selection must keep processing events while Release is held"
+            );
+            release.write_all(&[0]).unwrap();
+            let started = std::time::Instant::now();
+            while !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+                cx.run_until_parked();
+                assert!(started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            }
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+            )
+            .unwrap();
+        }
         #[cfg(windows)]
         wait_for_icon_restoration(cx);
         #[cfg(windows)]

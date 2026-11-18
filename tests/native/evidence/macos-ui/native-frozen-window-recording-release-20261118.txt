@@ -1,0 +1,35 @@
+macOS frozen All-in-One window recording selection, 2026-11-18
+
+The baseline d4d64183 parity fixture timed out while the app synchronously
+waited for a held freeze-screen Release reply after a window pick. The
+revised light and dark workflows reached the held reply while the app
+could process events. The recording toolbar and showWindow request
+waited for release. The selection unit test runs its fake Release on the deterministic GPUI
+test executor before checking selector removal and outline state.
+
+Native GPUI development probe on one built-in Retina display, with an
+isolated profile, generated backdrop and disposable AppKit window. A
+previously authorized screen-only daemon supplied the real window list,
+freeze and outline. The bridge selected only the disposable target from
+that list and held the successful Release reply for 650 ms. The
+generated window was repainted during recording to supply changing
+frames. Audio, camera and key tracking were disabled.
+
+Scenario                 App-local status response during hold
+Light normal             0.07 ms
+Dark normal              0.11 ms
+Dark cancel              0.10 ms
+
+Both successful runs opened the toolbar and single outline after
+Release and then recorded the selected window. The 720×480 files
+contained one video stream and at least four frames and opened in
+preview. Cancel dismissed the selector during the hold. After release
+there was no toolbar, outline, recorder request or project.
+
+An earlier recording attempt using a static target did not meet the
+fixture frame-count assertion. The final moving-target runs used the
+previously verified screen-only window-recording daemon. App-local
+status timings do not measure physical input or compositor scan-out.
+
+All 1,173 runnable GPUI tests and 92 Electron recording and freeze
+reference tests passed.
