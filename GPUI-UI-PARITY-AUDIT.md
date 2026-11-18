@@ -6115,6 +6115,27 @@ describes the test. Pointer-driven movement with deliberately overlapping
 controls, ambiguous repeated content and physical mixed-DPI displays
 remain open.
 
+### 2026-11-18 macOS scroll capture wide-gamut color
+
+The old multi-frame stitch and its resized preview used a DeviceRGB bitmap
+context and encoded Display P3 input as sRGB. Converting an old stitched
+PNG back to Display P3 with ColorSync changed 121,280 of 130,560 pixels in
+the generated gamut fixture. One source sample (231, 0, 249) came back as
+(232, 51, 247). Scroll capture now uses the first source frame's RGB
+color space for the stitch and keeps that profile when resizing its preview.
+Frame alignment uses the same matching path as before.
+
+Generated Display P3 and sRGB fixtures passed on arm64 and x86_64 under
+Rosetta. Both checked the profiles of the stitched and scaled preview
+PNGs and exact stitched pixels in their source color spaces. The default
+native Swift fixture passed. Real three-frame ScreenCaptureKit runs with
+overlapping controls also retained Display P3 in light and dark. Direct
+RGB comparisons against the corresponding Display P3 references matched
+6,239,946 of 6,240,000 pixels. The remaining 54 differed by one channel
+level away from the seams. Four GPUI image color tests and 12 Electron
+preview and daemon contract tests passed. Mixed physical displays remain
+unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

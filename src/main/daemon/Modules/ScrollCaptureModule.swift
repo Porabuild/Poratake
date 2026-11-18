@@ -1271,14 +1271,10 @@ class ScrollCaptureModule: NSObject, Module {
         }
         guard !isCancelled() else { return nil }
 
-        guard let context = CGContext(
-            data: nil,
+        guard let context = scrollBitmapContext(
             width: firstFrame.width,
             height: totalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: firstFrame.width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            matching: firstFrame
         ) else { return nil }
 
         var currentY = totalHeight - firstContentHeight
@@ -2079,14 +2075,10 @@ class ScrollCaptureModule: NSObject, Module {
         let scale = CGFloat(targetWidth) / CGFloat(image.width)
         let targetHeight = max(1, Int(CGFloat(image.height) * scale))
 
-        guard let context = CGContext(
-            data: nil,
+        guard let context = scrollBitmapContext(
             width: targetWidth,
             height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetWidth * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            matching: image
         ) else {
             return nil
         }
@@ -2096,6 +2088,25 @@ class ScrollCaptureModule: NSObject, Module {
 
         guard let scaled = context.makeImage() else { return nil }
         return base64PNG(for: scaled)
+    }
+
+    private func scrollBitmapContext(width: Int, height: Int, matching image: CGImage) -> CGContext? {
+        func makeContext(colorSpace: CGColorSpace) -> CGContext? {
+            CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        }
+
+        if let space = image.colorSpace, space.model == .rgb, let context = makeContext(colorSpace: space) {
+            return context
+        }
+        return makeContext(colorSpace: CGColorSpaceCreateDeviceRGB())
     }
 
     private func base64PNG(for image: CGImage) -> String? {

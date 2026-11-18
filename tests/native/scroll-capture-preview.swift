@@ -98,7 +98,7 @@ private enum CaptureFrameError: Error {
 
 @main
 struct ScrollCapturePreviewTest {
-    static func frame(start: Int, width: Int, height: Int) -> CGImage {
+    static func frame(start: Int, width: Int, height: Int, colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()) -> CGImage {
         var pixels = [UInt8]()
         pixels.reserveCapacity(width * height * 4)
         for y in start..<(start + height) {
@@ -116,7 +116,7 @@ struct ScrollCapturePreviewTest {
             bitsPerComponent: 8,
             bitsPerPixel: 32,
             bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
             provider: provider,
             decode: nil,
@@ -294,14 +294,14 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
-    static func pixels(_ image: CGImage) -> Data {
+    static func pixels(_ image: CGImage, colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()) -> Data {
         let context = CGContext(
             data: nil,
             width: image.width,
             height: image.height,
             bitsPerComponent: 8,
             bytesPerRow: image.width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
@@ -393,10 +393,15 @@ struct ScrollCapturePreviewTest {
             verifyTallTooltipPlacement()
             return
         }
+        if CommandLine.arguments.contains("--scroll-color-profile") {
+            verifyScrollColorProfiles()
+            return
+        }
         let strictFrame = CommandLine.arguments.dropFirst().first == "--strict-scroll-frame"
         if !strictFrame {
             FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
             runExistingScrollChecks()
+            verifyScrollColorProfiles()
             FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
         }
         let application = NSApplication.shared
@@ -415,6 +420,33 @@ struct ScrollCapturePreviewTest {
             }
         }
         application.run()
+    }
+
+    static func verifyScrollColorProfiles() {
+        let width = 480
+        let height = 160
+        let step = 112
+        for name in [CGColorSpace.displayP3, CGColorSpace.sRGB] {
+            let space = CGColorSpace(name: name)!
+            let frames = [0, step].map { frame(start: $0, width: width, height: height, colorSpace: space) }
+            let expected = frame(start: 0, width: width, height: height + step, colorSpace: space)
+            let output = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-color-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let (preview, saved, encoded, overlaps, count, _) = ScrollCaptureModule()
+                .testPreviewAndSave(frames: frames, step: step, outputPath: output.path)
+            let source = CGImageSourceCreateWithData(Data(base64Encoded: encoded)! as CFData, nil)!
+            let emitted = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+            precondition(count == 2 && overlaps == [height - step])
+            precondition(saved.width == width && saved.height == height + step)
+            precondition(emitted.width < width)
+            precondition(saved.colorSpace?.name == name,
+                         "Stitched PNG changed profile from \(name) to \(String(describing: saved.colorSpace?.name))")
+            precondition(preview.colorSpace?.name == name && emitted.colorSpace?.name == name)
+            precondition(pixels(saved, colorSpace: space) == pixels(expected, colorSpace: space))
+            precondition(pixels(preview, colorSpace: space) == pixels(expected, colorSpace: space))
+            print("scroll profile \(name): stitched and scaled preview profiles preserved")
+        }
     }
 
     @MainActor
