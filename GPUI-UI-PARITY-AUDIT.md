@@ -6779,6 +6779,21 @@ matched before and after byte for byte. The probe verified AppKit
 windows and GPUI dispatch with generated input. Physical pointer
 delivery and physical mixed-display focus remain open.
 
+### 2026-11-18 macOS scroll toolbar keyboard and pointer handoff
+
+The native AppKit probe checked Tab and Shift-Tab on the isolated
+scroll toolbar in both appearances. Hover displayed Start auto-scroll.
+Tab cleared the label. A further app-local pointer move displayed it
+again, Shift-Tab cleared it, and pointer exit left it cleared. The
+headless regression now checks the Tab-to-hover transition alongside
+the existing auto-scroll state and pointer-exit checks. The current
+toolbar handled the transition with its existing tooltip code.
+
+The capture-preview follow-up did not establish an inline keyboard
+label in its headless fixture. That result leaves the capture-preview
+keyboard and pointer handoff unverified. Physical input, a second
+display, and camera authorization remain outside this comparison.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

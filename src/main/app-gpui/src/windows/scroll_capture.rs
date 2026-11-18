@@ -1851,6 +1851,23 @@ mod tests {
         );
         #[cfg(target_os = "macos")]
         {
+            visual.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("tab").unwrap(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            visual.settle();
+            assert_eq!(TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone), None);
+            visual.simulate_mouse_move(
+                gpui::point(px(51.0), px(26.0)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            visual.settle();
+            assert_eq!(
+                TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone),
+                Some("Start auto-scroll".into())
+            );
             visual.simulate_event(gpui::MouseExitEvent {
                 position: gpui::point(px(169.0), px(26.0)),
                 pressed_button: None,

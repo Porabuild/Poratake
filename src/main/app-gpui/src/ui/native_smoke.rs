@@ -616,15 +616,22 @@ pub fn native_ui_probe() {
                             });
                             return;
                         }
-                        if let Some(key) = command.strip_prefix("record-key ") {
+                        if let Some((surface, key)) = command.split_once("-key ")
+                            .filter(|(surface, _)| matches!(*surface, "record" | "scroll"))
+                        {
                             use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
                             let key = match key {
                                 "tab" => "tab",
                                 "shift-tab" => "shift-tab",
-                                _ => panic!("unsupported recording probe keystroke"),
+                                _ => panic!("unsupported probe keystroke"),
                             };
-                            let keystroke = Keystroke::parse(key).expect("recording probe keystroke");
-                            if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+                            let keystroke = Keystroke::parse(key).expect("probe keystroke");
+                            let handle = if surface == "scroll" {
+                                crate::windows::scroll_capture::native_control_for_probe(cx)
+                            } else {
+                                registry::handle(WindowKind::RecordingControl, cx)
+                            };
+                            if let Some(handle) = handle {
                                 let _ = cx.update_window(handle, |_, window, cx| {
                                     window.dispatch_event(PlatformInput::KeyDown(KeyDownEvent {
                                         keystroke: keystroke.clone(),
@@ -638,7 +645,7 @@ pub fn native_ui_probe() {
                                     });
                                 }
                             }
-                            println!("record key dispatched: {key}");
+                            println!("{surface} key dispatched: {key}");
                             return;
                         }
                         if let Some(index) = command.strip_prefix("record-hover-control ") {
