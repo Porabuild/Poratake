@@ -940,7 +940,10 @@ impl VideoEditorWindow {
         let initial_playhead = self.playhead;
 
         cx.spawn(async move |entity, cx| loop {
-            cx.background_executor().timer(tick).await;
+            let executor = cx.background_executor();
+            let elapsed = executor.now().saturating_duration_since(started);
+            let elapsed_in_tick = Duration::from_nanos_u128(elapsed.as_nanos() % tick.as_nanos());
+            executor.timer(tick - elapsed_in_tick).await;
             let advanced = entity.update(cx, |this, cx| {
                 if !this.is_playing || this.playback_generation != generation {
                     return false;
@@ -7135,6 +7138,55 @@ mod keyboard_demo_tests {
         assert_eq!(playback_tick(60.0), Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(playback_tick(120.0), Duration::from_secs_f64(1.0 / 120.0));
         assert_eq!(playback_tick(f64::NAN), playback_tick(60.0));
+    }
+
+    #[test]
+    fn a_late_playback_tick_recovers_at_the_next_source_frame_boundary() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let clock = scheduler.clock();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        test_state(&mut cx, directory.path());
+        let editor = cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(4.);
+                editor.state.segments = vec![model::Segment::spanning(4.)];
+                editor.source_frame_rate = 30.;
+                editor.is_playing = true;
+                editor.drive_playback(cx);
+                editor
+            })
+        });
+        cx.run_until_parked();
+
+        let period = playback_tick(30.);
+        let late_by = Duration::from_millis(9);
+        let assert_playhead = |cx: &mut gpui::TestAppContext, expected: Duration| {
+            cx.update(|cx| {
+                let actual = editor.read(cx).playhead;
+                assert!(
+                    (actual - expected.as_secs_f64()).abs() < 1e-9,
+                    "playhead was {actual}, expected {expected:?}"
+                );
+            });
+        };
+        clock.advance(period + late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period + late_by);
+
+        clock.advance(period - late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 2);
+
+        clock.advance(period * 3 + late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 5 + late_by);
+        clock.advance(period - late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 6);
+        scheduler.drain_tasks();
     }
 
     #[test]
