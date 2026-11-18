@@ -312,6 +312,10 @@ pub struct CapturePreviewWindow {
     #[cfg(target_os = "macos")]
     pointer_inside: bool,
     #[cfg(target_os = "macos")]
+    keyboard_controls: bool,
+    #[cfg(target_os = "macos")]
+    pending_keyboard_tab: Option<bool>,
+    #[cfg(target_os = "macos")]
     viewport_scroll: Option<(PreviewCorner, gpui::ScrollHandle)>,
     display_menu: crate::ui::menu::MenuHandle,
     native_tooltip_status: NativeTooltipStatus,
@@ -748,6 +752,10 @@ impl CapturePreviewWindow {
                     #[cfg(target_os = "macos")]
                     pointer_inside: false,
                     #[cfg(target_os = "macos")]
+                    keyboard_controls: false,
+                    #[cfg(target_os = "macos")]
+                    pending_keyboard_tab: None,
+                    #[cfg(target_os = "macos")]
                     viewport_scroll: None,
                     display_menu: crate::ui::menu::MenuHandle::new(),
                     native_tooltip_status: NativeTooltipStatus::default(),
@@ -1015,7 +1023,8 @@ fn dismiss_verdict(
                 generation,
                 preview.hovered,
                 view.preview_window_hovered(window),
-                preview.thumbnail_loading
+                view.keyboard_controls_visible(window)
+                    || preview.thumbnail_loading
                     || preview.busy
                     || preview.completed.is_some()
                     || view
@@ -1972,6 +1981,7 @@ impl CapturePreviewWindow {
         preview: &mut CapturePreview,
         window_hovered: bool,
         menu_open: bool,
+        keyboard_controls: bool,
         now: Instant,
     ) -> (bool, f32, bool) {
         if let Some(progress) = preview
@@ -1981,10 +1991,10 @@ impl CapturePreviewWindow {
             preview.last_frame = None;
             return (true, progress, false);
         }
-        let hovered = preview.hovered && window_hovered || menu_open;
-        let (progress, animating) = Self::advance_hover(preview, hovered, now);
+        let controls_active = preview.hovered && window_hovered || menu_open || keyboard_controls;
+        let (progress, animating) = Self::advance_hover(preview, controls_active, now);
         (
-            Self::show_controls(hovered, preview.busy, preview.completed.is_some()),
+            Self::show_controls(controls_active, preview.busy, preview.completed.is_some()),
             progress,
             animating,
         )
@@ -2013,6 +2023,7 @@ impl CapturePreviewWindow {
         if menu_open {
             self.clear_native_tooltip(window);
         }
+        let keyboard_controls = self.keyboard_controls_visible(window);
         let preview = &mut self.previews[index];
         let is_video = preview.kind == PreviewKind::Video;
         let polish = if is_video { None } else { polish };
@@ -2023,7 +2034,7 @@ impl CapturePreviewWindow {
         let export_progress = preview.export_progress.clone();
         let gated = busy || finished.is_some();
         let (show_controls, progress, animating) =
-            Self::control_frame(preview, window_hovered, menu_open, now);
+            Self::control_frame(preview, window_hovered, menu_open, keyboard_controls, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
         let (opacity, opacity_animating) = preview_opacity(preview, now);
         *needs_frame |= animating || layout_animating || opacity_animating;
@@ -2701,6 +2712,13 @@ impl CapturePreviewWindow {
             || left + px(PREVIEW_WIDTH) <= px(0.)
     }
 
+    fn keyboard_controls_visible(&self, _window: &Window) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.keyboard_controls && _window.is_window_active();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
     fn preview_window_hovered(&self, window: &Window) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -2858,8 +2876,48 @@ impl CapturePreviewWindow {
         } else {
             root.into_any_element()
         };
-        crate::ui::window_root::focus_root(root, window, cx)
-            .capture_key_down(cx.listener(|this, _, window, _| this.clear_native_tooltip(window)))
+        #[cfg(target_os = "macos")]
+        if let Some(backward) = self.pending_keyboard_tab.take() {
+            let owner = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                if !owner
+                    .upgrade()
+                    .is_some_and(|view| view.read(cx).keyboard_controls_visible(window))
+                {
+                    return;
+                }
+                if backward {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            });
+        }
+        let root = crate::ui::window_root::focus_root(root, window, cx).capture_key_down(
+            cx.listener(|this, _event: &gpui::KeyDownEvent, window, _cx| {
+                this.clear_native_tooltip(window);
+                #[cfg(target_os = "macos")]
+                if _event.keystroke.key == "tab"
+                    && !this.keyboard_controls
+                    && window.is_window_active()
+                    && !this.display_menu.is_open(_cx)
+                {
+                    this.keyboard_controls = true;
+                    this.pending_keyboard_tab = Some(_event.keystroke.modifiers.shift);
+                    herogpui::extend::set_focus_visible(true, _cx);
+                    _cx.stop_propagation();
+                    _cx.notify();
+                }
+            }),
+        );
+        #[cfg(target_os = "macos")]
+        let root = root.capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+            if std::mem::take(&mut this.keyboard_controls) {
+                this.pending_keyboard_tab = None;
+                cx.notify();
+            }
+        }));
+        root
     }
 }
 
@@ -2880,7 +2938,7 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
         cx: &mut Context<Self>,
     ) {
         #[cfg(target_os = "macos")]
-        if hovered && !self.pointer_inside {
+        if hovered && (!self.pointer_inside || self.keyboard_controls_visible(window)) {
             return;
         }
         if !hovered {
@@ -3054,6 +3112,10 @@ mod tests {
                 layout_generation: 0,
                 #[cfg(target_os = "macos")]
                 pointer_inside: false,
+                #[cfg(target_os = "macos")]
+                keyboard_controls: false,
+                #[cfg(target_os = "macos")]
+                pending_keyboard_tab: None,
                 #[cfg(target_os = "macos")]
                 viewport_scroll: None,
                 display_menu: crate::ui::menu::MenuHandle::new(),
@@ -3493,6 +3555,72 @@ mod tests {
             self.preview
                 .update(cx, |preview, cx| preview.surface(true, window, cx))
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn keyboard_reveals_preview_controls_without_pointer_hover(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        config.update(|settings| settings.preview.auto_dismiss = false);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        let stack = stack_handle(cx).unwrap();
+        let control = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let (id, generation) = control
+            .update(&mut visual, |view, _, _| {
+                let preview = &view.previews[0];
+                (preview.id, preview.dismiss_token.load(Ordering::Relaxed))
+            })
+            .unwrap();
+        let selector: &'static str =
+            Box::leak(format!("preview-delete-{id}-tooltip-trigger").into_boxed_str());
+        let initial_focus = visual.update(|window, cx| {
+            assert!(window.is_window_active());
+            window.focused(cx)
+        });
+        assert!(visual.debug_bounds(selector).is_none());
+
+        visual.press("tab");
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        assert!(visual.debug_bounds(selector).is_some());
+        let first_focus = visual.update(|window, cx| window.focused(cx));
+        assert!(first_focus.is_some() && first_focus != initial_focus);
+        visual.press("tab");
+        assert_ne!(visual.update(|window, cx| window.focused(cx)), first_focus);
+        visual.cx.update(|cx| {
+            assert_eq!(
+                dismiss_verdict(stack, id, generation, cx),
+                DismissVerdict::Blocked
+            );
+        });
+
+        let button = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_move(button, None, gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(200));
+        visual.settle();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+        visual.click_at(gpui::point(px(100.), px(15.)));
+        visual.settle();
+        assert!(!control
+            .update(&mut visual, |view, _, _| view.keyboard_controls)
+            .unwrap());
     }
 
     #[cfg(target_os = "macos")]
@@ -4627,6 +4755,10 @@ mod tests {
             #[cfg(target_os = "macos")]
             pointer_inside: false,
             #[cfg(target_os = "macos")]
+            keyboard_controls: false,
+            #[cfg(target_os = "macos")]
+            pending_keyboard_tab: None,
+            #[cfg(target_os = "macos")]
             viewport_scroll: None,
             display_menu: crate::ui::menu::MenuHandle::new(),
             native_tooltip_status: NativeTooltipStatus::default(),
@@ -4931,7 +5063,7 @@ mod tests {
         ));
 
         assert_eq!(
-            CapturePreviewWindow::control_frame(&mut preview, false, false, now),
+            CapturePreviewWindow::control_frame(&mut preview, false, false, false, now),
             (true, 0.75, false)
         );
     }

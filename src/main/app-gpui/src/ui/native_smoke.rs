@@ -617,7 +617,7 @@ pub fn native_ui_probe() {
                             return;
                         }
                         if let Some((surface, key)) = command.split_once("-key ")
-                            .filter(|(surface, _)| matches!(*surface, "record" | "scroll"))
+                            .filter(|(surface, _)| matches!(*surface, "record" | "scroll" | "preview"))
                         {
                             use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
                             let key = match key {
@@ -626,10 +626,10 @@ pub fn native_ui_probe() {
                                 _ => panic!("unsupported probe keystroke"),
                             };
                             let keystroke = Keystroke::parse(key).expect("probe keystroke");
-                            let handle = if surface == "scroll" {
-                                crate::windows::scroll_capture::native_control_for_probe(cx)
-                            } else {
-                                registry::handle(WindowKind::RecordingControl, cx)
+                            let handle = match surface {
+                                "scroll" => crate::windows::scroll_capture::native_control_for_probe(cx),
+                                "preview" => registry::handle(WindowKind::CapturePreview, cx),
+                                _ => registry::handle(WindowKind::RecordingControl, cx),
                             };
                             if let Some(handle) = handle {
                                 let _ = cx.update_window(handle, |_, window, cx| {
@@ -663,8 +663,17 @@ pub fn native_ui_probe() {
                             println!("record hover dispatched: {index}");
                             return;
                         }
-                        if command == "record-focus-status" {
-                            if let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) {
+                        if command == "preview-activate" {
+                            cx.activate(true);
+                            if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
+                                let _ = cx.update_window(handle, |_, window, _| window.activate_window());
+                            }
+                            println!("preview activation requested");
+                            return;
+                        }
+                        if matches!(command.as_str(), "record-focus-status" | "preview-focus-status") {
+                            let kind = if command == "record-focus-status" { WindowKind::RecordingControl } else { WindowKind::CapturePreview };
+                            if let Some(handle) = registry::handle(kind, cx) {
                                 let _ = cx.update_window(handle, |_, window, cx| {
                                     let background = gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
                                     let scale = window.scale_factor();
@@ -673,7 +682,11 @@ pub fn native_ui_probe() {
                                             && (31. ..=35.).contains(&(quad.bounds.size.height.0 / scale))
                                             && quad.bounds.size.width.0 / scale > 35.
                                     }).count();
-                                    println!("record focus status: visible={} inline={tips} native={}", herogpui::extend::focus_visible(cx), probe_tooltip(window).as_deref().unwrap_or("none"));
+                                    if kind == WindowKind::CapturePreview {
+                                        println!("preview focus status: active={} inline={tips} focus={:?}", window.is_window_active(), window.focused(cx));
+                                    } else {
+                                        println!("record focus status: visible={} inline={tips} native={}", herogpui::extend::focus_visible(cx), probe_tooltip(window).as_deref().unwrap_or("none"));
+                                    }
                                 });
                             }
                             return;

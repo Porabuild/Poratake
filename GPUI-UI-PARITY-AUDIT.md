@@ -6789,10 +6789,31 @@ headless regression now checks the Tab-to-hover transition alongside
 the existing auto-scroll state and pointer-exit checks. The current
 toolbar handled the transition with its existing tooltip code.
 
-The capture-preview follow-up did not establish an inline keyboard
-label in its headless fixture. That result leaves the capture-preview
-keyboard and pointer handoff unverified. Physical input, a second
-display, and camera authorization remain outside this comparison.
+The first capture-preview probe did not establish an inline keyboard
+label in its headless fixture. The follow-up below verifies that
+keyboard path. Physical input, a second display, and camera authorization
+remain outside this comparison.
+
+### 2026-11-18 macOS capture preview keyboard access without hover
+
+Capture preview actions were absent from the focus order while the
+pointer was away. The first Tab now reveals the controls and moves focus
+to an action after the control layout updates. Auto-dismiss waits while
+the active preview is in keyboard navigation. The keyboard label keeps
+priority during pointer movement. A pointer press returns the preview to
+pointer interaction.
+
+The native fixture activated its own preview and dispatched input directly
+to that window. In light and dark, the initial idle preview painted no
+tooltip. The first Tab focused an action and painted one inline label,
+the next Tab focused another action, and Shift-Tab returned to the first.
+The automated regression verifies pointer-free Tab navigation, the
+auto-dismiss gate, label priority, and the return to pointer interaction.
+
+All 1,170 runnable GPUI tests passed. The dark and light offscreen video
+fixtures also passed idle, hover, and exit at 2×. The native keyboard
+probe used generated input on the built-in display. Physical input and
+mixed-display focus remain open.
 
 ## Review gate
 
