@@ -7495,6 +7495,23 @@ runs verified that Start followed a successful protection reply. The
 Metal recording workflow holds both startup and cleanup protection
 replies to check the start gate and editor handoff.
 
+### 2026-11-18 macOS resumed recording of a static scene
+
+When the scene changed during Pause and stayed static after Resume,
+ScreenCaptureKit supplied no new image and the movie held the pre-pause
+frame. The recorder now keeps the latest paused screen frame in memory
+and writes it at the resume boundary. Stopping while paused releases it
+without writing it.
+
+Live light and dark area takes used a generated panel that was red before
+Pause, green during it, and static blue on Resume. Both previously decoded
+as red only. The revised clips decoded red followed by blue, with no green.
+The clips were 0.803 and 0.860 seconds after 1.641 and 1.657 seconds had
+elapsed. Stopping while paused retained only the red segment. All four
+takes decoded in the preview and editor. The tests used the existing
+Screen Recording grant with audio, camera and keystroke capture disabled.
+[Timing and frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

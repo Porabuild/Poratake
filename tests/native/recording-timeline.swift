@@ -331,6 +331,7 @@ struct RecordingTimelineTests {
             }
             if pausedStop {
                 try! recorder.pause()
+                recorder.testProcessSample(sample(at: 128, size: 64, fill: 0x55), type: .screen)
                 precondition(CMTimeGetSeconds(recorder.testTimeline.pause!) == 125)
                 recorder.testSetCameraClockTime(CMTime(value: 130, timescale: 1))
             }
@@ -338,7 +339,8 @@ struct RecordingTimelineTests {
                 recorder.testProcessSample(sample(at: 120, size: 64, fill: 0x22), type: .screen)
                 recorder.testSetCameraClockTime(nil)
             }
-            if ProcessInfo.processInfo.environment["PORATAKE_TEST_STATIC_PAUSE"] != nil {
+            let resumedStatic = ProcessInfo.processInfo.environment["PORATAKE_TEST_STATIC_PAUSE"] != nil
+            if resumedStatic {
                 try! recorder.pause()
                 print("static pause: start=\(CMTimeGetSeconds(recorder.testTimeline.pause!))")
                 precondition(CMTimeGetSeconds(recorder.testTimeline.pause!) == 125)
@@ -346,6 +348,8 @@ struct RecordingTimelineTests {
                 recorder.testSetCameraClockTime(CMTime(value: 127, timescale: 1))
                 recorder.testCloseCameraRange()
                 precondition(recorder.testCameraRanges[0].start == 25 && recorder.testCameraRanges[0].end == 25)
+                recorder.testProcessSample(sample(at: 127, size: 64, fill: 0x44), type: .screen)
+                recorder.testProcessSample(sample(at: 128, size: 64, fill: 0x55), type: .screen)
                 recorder.testSetCameraClockTime(CMTime(value: 130, timescale: 1))
                 try! recorder.resume()
                 precondition(recorder.testTimeline.pause == nil)
@@ -379,6 +383,7 @@ struct RecordingTimelineTests {
             var lastValue: UInt8 = 0
             var frames = 0
             var changedFrameTime: Double?
+            var resumedFrameTime: Double?
             while let buffer = output.copyNextSampleBuffer() {
                 lastTime = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer))
                 let image = CMSampleBufferGetImageBuffer(buffer)!
@@ -386,12 +391,22 @@ struct RecordingTimelineTests {
                 lastValue = CVPixelBufferGetBaseAddress(image)!.assumingMemoryBound(to: UInt8.self).pointee
                 CVPixelBufferUnlockBaseAddress(image, .readOnly)
                 if abs(Int(lastValue) - 0x77) <= 5, changedFrameTime == nil { changedFrameTime = lastTime }
+                if abs(Int(lastValue) - 0x55) <= 5, resumedFrameTime == nil { resumedFrameTime = lastTime }
+                if resumedStatic {
+                    precondition(abs(Int(lastValue) - 0x44) > 5, "A frame replaced during pause was written")
+                }
                 frames += 1
             }
             precondition(reader.status == .completed && frames >= 2 && lastTime >= expected - 0.1 && lastTime < expected,
                          "Missing held final frame: count=\(frames), time=\(lastTime)")
             let expectedValue = recoveredChange ? 0xbb : (ProcessInfo.processInfo.environment["PORATAKE_TEST_STATIC_PAUSE"] != nil || droppedChange ? 0x77 : 0x22)
             precondition(abs(Int(lastValue) - expectedValue) <= 5, "Final frame has the wrong content: \(lastValue)")
+            if resumedStatic {
+                precondition(resumedFrameTime.map { abs($0 - 25) < 0.001 } == true,
+                             "The current frame must enter the movie at the resume boundary")
+            } else if pausedStop {
+                precondition(resumedFrameTime == nil, "Stopping while paused wrote a paused frame")
+            }
             if droppedChange || recoveredChange {
                 precondition(changedFrameTime.map { abs($0 - 10) < 0.001 } == true,
                              "Busy-writer screen change has the wrong timestamp: \(String(describing: changedFrameTime))")

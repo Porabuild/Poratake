@@ -776,3 +776,25 @@ trial returned a screen preflight denial before capture; its retry passed
 with no privacy settings changes. A separate static-area trial kept the
 AAC writer enabled while withholding all audio buffers. It also saved a
 two-frame, video-only file with no system-audio sidecar.
+
+Resume on a scene that changed only while paused
+
+A 320 × 240-point generated AppKit panel covered a 300 × 220-point
+recording area on the built-in Retina display. The real ScreenCaptureKit
+stream received red before Pause, green during Pause, and static blue
+before Resume. The GPUI probe sent app-local toolbar commands and used
+the existing Screen Recording grant. The daemon fixture disabled audio,
+camera and keystroke capture. Video decoded at 600 × 440.
+
+Case          Theme  Elapsed (s) Clip (s) Active estimate (s) Frames Colors
+Resume        Light       1.641    0.803               0.803      3 Red, blue
+Resume        Dark        1.657    0.860               0.861      3 Red, blue
+Stop paused   Light       1.063    0.413               0.412      2 Red
+Stop paused   Dark        1.124    0.420               0.420      2 Red
+
+Both baseline Resume trials produced red-only video. One baseline
+stop-while-paused trial stopped at the screen permission preflight.
+No privacy settings changed. All four revised takes reached the
+decoded recording preview in 114.1–126.4 ms from Stop, and the
+editor decoded a frame in 76.2–91.5 ms after opening from preview.
+Pause RPCs took 0.2 ms, and Resume RPCs took 0.5 and 0.6 ms.

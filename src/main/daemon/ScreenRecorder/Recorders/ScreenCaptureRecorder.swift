@@ -40,6 +40,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var firstFrameTime: CMTime?
     private var lastFrameTime: CMTime = .zero
     private var pauseStartTime: CMTime?
+    private var pausedScreenFrame: CMSampleBuffer?
     private var totalPauseDuration: CMTime = .zero
 
     private let videoQueue = DispatchQueue(label: "com.porabuild.poratake.screen-recorder.video")
@@ -1202,12 +1203,17 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         videoQueue.sync {
+            defer { pausedScreenFrame = nil }
             if let start = pauseStartTime, let time = screenClockTime,
                time.isNumeric, CMTimeCompare(time, start) >= 0 {
                 totalPauseDuration = CMTimeAdd(totalPauseDuration, CMTimeSubtract(time, start))
                 pauseStartTime = nil
                 if cameraEnabled {
                     cameraRecorder.resumeWithScreenPause(totalPauseDuration)
+                }
+                if let frame = pausedScreenFrame, let origin = firstFrameTime {
+                    let position = CMTimeSubtract(CMTimeSubtract(time, origin), totalPauseDuration)
+                    writeScreenFrame(frame, at: position)
                 }
             }
             state = .recording
@@ -1232,6 +1238,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let stoppedPosition = videoQueue.sync {
             let position = screenClockTime.map { cameraTimelinePosition(at: $0) } ?? recordingDuration
+            pausedScreenFrame = nil
             state = .idle
             return max(position, recordingDuration)
         }
@@ -1471,6 +1478,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         sessionStarted = false
         firstFrameTime = nil
         pauseStartTime = nil
+        pausedScreenFrame = nil
         totalPauseDuration = .zero
         recordingDuration = 0
         activeSessionID = nil
@@ -1503,6 +1511,9 @@ extension ScreenCaptureRecorder: SCStreamOutput {
             if type == .screen {
                 if pauseStartTime == nil {
                     pauseStartTime = currentTime
+                }
+                if CMSampleBufferGetImageBuffer(sampleBuffer) != nil {
+                    pausedScreenFrame = sampleBuffer
                 }
             }
             return
@@ -1591,53 +1602,7 @@ extension ScreenCaptureRecorder: SCStreamOutput {
             lastFrameTime = currentTime
             recordingDuration = CMTimeGetSeconds(presentationTime)
 
-            guard let videoInput = videoInput,
-                let pixelBufferAdaptor = pixelBufferAdaptor
-            else { return }
-
-            if videoFrameCount > 0 && CMTimeCompare(presentationTime, lastVideoTime) <= 0 {
-                return
-            }
-
-            if let pendingVideoFrame, CMTimeCompare(presentationTime, pendingVideoFrame.time) <= 0 {
-                return
-            }
-
-            guard let capturedImage = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-            let time = presentationTime
-            writerQueue.sync {
-                let imageBuffer = config?.windowID == nil ? capturedImage : windowFrame.centered(
-                    capturedImage, sample: sampleBuffer, pool: pixelBufferAdaptor.pixelBufferPool
-                )
-                #if RECORDING_TIMELINE_TEST
-                if testVideoBackpressure {
-                    pendingVideoFrame = (imageBuffer, time)
-                    return
-                }
-                #endif
-                if let pending = pendingVideoFrame {
-                    guard appendVideoFrame(pending.frame, at: pending.time, input: videoInput, adaptor: pixelBufferAdaptor) else {
-                        pendingVideoFrame = (imageBuffer, time)
-                        return
-                    }
-                    pendingVideoFrame = nil
-                }
-                if !appendVideoFrame(imageBuffer, at: time, input: videoInput, adaptor: pixelBufferAdaptor) {
-                    pendingVideoFrame = (imageBuffer, time)
-                }
-            }
-            if let startupFrame {
-                if let writer = assetWriter, writer.status == .failed {
-                    startupFrame.finish(throwing: RecorderError.capture(
-                        writer.error?.localizedDescription ?? "Failed to write the first screen frame"
-                    ))
-                } else {
-                    startupFrame.yield(())
-                    startupFrame.finish()
-                }
-                self.startupFrame = nil
-            }
+            writeScreenFrame(sampleBuffer, at: presentationTime)
         } else if #available(macOS 13.0, *), type == .audio {
             if systemAudioActive {
                 appendSystemAudioBuffer(timedSampleBuffer, at: presentationTime)
@@ -1646,6 +1611,57 @@ extension ScreenCaptureRecorder: SCStreamOutput {
             } else {
                 systemAudioBufferQueue?.reportFailure(RecorderError.capture("Could not create system audio silence"))
             }
+        }
+    }
+
+    private func writeScreenFrame(_ sampleBuffer: CMSampleBuffer, at presentationTime: CMTime) {
+        guard presentationTime.isNumeric, CMTimeCompare(presentationTime, .zero) >= 0 else { return }
+        guard let videoInput = videoInput,
+            let pixelBufferAdaptor = pixelBufferAdaptor
+        else { return }
+
+        if videoFrameCount > 0 && CMTimeCompare(presentationTime, lastVideoTime) <= 0 {
+            return
+        }
+
+        if let pendingVideoFrame, CMTimeCompare(presentationTime, pendingVideoFrame.time) <= 0 {
+            return
+        }
+
+        guard let capturedImage = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let time = presentationTime
+        writerQueue.sync {
+            let imageBuffer = config?.windowID == nil ? capturedImage : windowFrame.centered(
+                capturedImage, sample: sampleBuffer, pool: pixelBufferAdaptor.pixelBufferPool
+            )
+            #if RECORDING_TIMELINE_TEST
+            if testVideoBackpressure {
+                pendingVideoFrame = (imageBuffer, time)
+                return
+            }
+            #endif
+            if let pending = pendingVideoFrame {
+                guard appendVideoFrame(pending.frame, at: pending.time, input: videoInput, adaptor: pixelBufferAdaptor) else {
+                    pendingVideoFrame = (imageBuffer, time)
+                    return
+                }
+                pendingVideoFrame = nil
+            }
+            if !appendVideoFrame(imageBuffer, at: time, input: videoInput, adaptor: pixelBufferAdaptor) {
+                pendingVideoFrame = (imageBuffer, time)
+            }
+        }
+        if let startupFrame {
+            if let writer = assetWriter, writer.status == .failed {
+                startupFrame.finish(throwing: RecorderError.capture(
+                    writer.error?.localizedDescription ?? "Failed to write the first screen frame"
+                ))
+            } else {
+                startupFrame.yield(())
+                startupFrame.finish()
+            }
+            self.startupFrame = nil
         }
     }
 
