@@ -254,3 +254,26 @@ its own preview and editor windows. Both windows showed the clip.
 The preview and editor could briefly retain a placeholder after their
 image was ready. Sampling window captures confirmed the rendered
 result and left the exact time of the first composited pixels open.
+
+Recording preview playback memory
+
+One fresh light-mode GPUI app per build used the same authorized
+screen-only daemon and generated changing backdrop. Each take was
+600x440, decoded to ten video frames, and looped in a single preview
+card. The backdrop was dismissed before sampling. WindowServer
+confirmed the preview remained visible. vmmap reported total process
+physical footprint and ps reported resident memory.
+
+Seconds after initial thumbnail    Physical MiB        RSS KiB
+                                 Previous   Fixed  Previous   Fixed
+ 2                                  144.6   146.1    114160  114560
+12                                  161.9   153.8    134000  125472
+22                                  174.2   154.8    144144  127488
+32                                  188.4   154.7    156192  127456
+42                                  202.6   155.2    168496  110736
+
+The atlas regression used a painted sharp frame and a replacement
+blurred frame. The old atlas held the sharp frame after it had been
+replaced. The updated atlas released it and also removed the blurred
+frame when its card was dismissed while a second card kept the same
+window alive. The native sample measures process memory as a whole.

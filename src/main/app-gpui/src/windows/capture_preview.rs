@@ -223,6 +223,19 @@ fn cancel_thumbnail_load(preview: &mut CapturePreview) {
     preview.thumbnail_loading = false;
 }
 
+fn release_preview_images(
+    preview: &mut CapturePreview,
+    cx: &mut App,
+    mut window: Option<&mut Window>,
+) {
+    for image in [preview.image.take(), preview.blurred.take()]
+        .into_iter()
+        .flatten()
+    {
+        cx.drop_image(image, window.as_deref_mut());
+    }
+}
+
 fn thumbnail_preview_matches(
     preview: &CapturePreview,
     id: u64,
@@ -1150,6 +1163,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 playback.in_flight = false;
                             }
                             if let Some((image, blurred)) = frame {
+                                release_preview_images(preview, cx, None);
                                 preview.image = Some(image);
                                 preview.blurred = blurred;
                             }
@@ -1870,6 +1884,7 @@ fn remove_preview_now(
 ) {
     if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
         cancel_thumbnail_load(preview);
+        release_preview_images(preview, cx, Some(window));
     }
     view.previews.retain(|preview| preview.id != id);
     if view.previews.is_empty() {
@@ -4835,17 +4850,50 @@ mod tests {
         let stack = stack_handle(cx)
             .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
             .unwrap();
-        let thumbnail = |cx: &mut gpui::TestAppContext| {
-            stack
-                .update(cx, |view, _, _| view.previews[0].image.clone())
-                .unwrap()
-                .expect("the video thumbnail should be ready")
+        let redraw = |cx: &mut gpui::TestAppContext,
+                      current: &gpui::RenderImage,
+                      retired: Option<&gpui::RenderImage>| {
+            cx.update(|cx| {
+                cx.update_window(stack.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    assert!(window.has_image_atlas_entry(current));
+                    if let Some(retired) = retired {
+                        assert!(!window.has_image_atlas_entry(retired));
+                    }
+                })
+                .unwrap();
+            });
         };
-        let first = thumbnail(cx);
+        let first = stack
+            .update(cx, |view, _, _| view.previews[0].image.clone())
+            .unwrap()
+            .expect("the video thumbnail should be ready");
+        redraw(cx, &first, None);
+        stack
+            .update(cx, |view, _, _| view.previews[0].busy = true)
+            .unwrap();
 
         cx.executor().advance_clock(super::VIDEO_PLAYBACK_TICK);
         cx.run_until_parked();
-        assert!(!Arc::ptr_eq(&first, &thumbnail(cx)));
+        let (id, blurred) = stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                (
+                    preview.id,
+                    preview.blurred.clone().expect("blurred playback frame"),
+                )
+            })
+            .unwrap();
+        redraw(cx, &blurred, Some(&first));
+
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, dir.path().join("Other.poratake")));
+        stack
+            .update(cx, |view, window, cx| {
+                super::remove_preview_now(view, id, window, cx);
+                assert_eq!(view.previews.len(), 1);
+                assert!(!window.has_image_atlas_entry(&blurred));
+            })
+            .unwrap();
     }
 
     #[test]

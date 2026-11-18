@@ -6507,6 +6507,27 @@ recording pixels in both the thumbnail and the editor. The
 [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes the scope and timing endpoints.
 
+### 2026-11-18 macOS recording preview texture retention
+
+The looping preview generated a new GPUI image for each frame. Replacing
+the image dropped its CPU reference and left its texture in the atlas.
+The preview now releases displaced sharp and blurred textures through
+GPUI. Dismissing a card releases its textures even if another card
+keeps the preview window open.
+
+The regression verified that the first and blurred frames were actually
+painted into the atlas. The old build failed when the test checked
+whether the first frame had been removed. The fixed build removed the
+old frame after the next tick and the last blurred frame after dismissal.
+All 1,169 runnable GPUI tests passed.
+
+A matched light-mode native run used a looping 600 × 440 screen-only
+recording. From the second to the forty-second second, the temporary app's
+physical footprint grew from 145 to 203 MiB in the previous build and
+from 146 to 155 MiB with the fix. This compares the whole process.
+The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the sampled values.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
