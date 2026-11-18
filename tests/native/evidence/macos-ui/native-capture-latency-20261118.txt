@@ -277,3 +277,37 @@ blurred frame. The old atlas held the sharp frame after it had been
 replaced. The updated atlas released it and also removed the blurred
 frame when its card was dismissed while a second card kept the same
 window alive. The native sample measures process memory as a whole.
+
+Live recorded-window movement, hiding and closure
+
+GPUI development build 385887f7 with the authorized screen-only Swift
+fixture on the same one-display Mac. A dedicated AppKit process supplied
+an isolated borderless window. The app-local driver chose that window ID
+and confirmed the recorder received it. Red marked the original 360x240
+point window, green marked movement to a different location, and blue
+marked its resize to 220x315 points. The source window was hidden, shown
+again and then closed and released while its owning app stayed running.
+
+                                     Light            Dark
+Close to automatic Stop request      284.7 ms         290.6 ms
+Target-closed events                 1                1
+Decoded output                       720x480          720x480
+Decoded frames                       9                9
+Blue content extent                  x=0..335         x=0..335
+                                     y=0..479         y=0..479
+
+The outline kept the same WindowServer number through movement, resize
+and restoration. It became transparent while the target was hidden.
+Both runs ended with the outline and toolbar gone, a recording preview
+ready, and a composed frame in the reopened video editor. Decoding in
+source-frame order verified the red, green and blue stages. The resized
+content preserved its aspect ratio and sat flush against the left edge.
+Native cross-display movement, physical input and export during this
+specific closure sequence were outside this probe.
+
+A separate screen-only diagnostic logged the source frame attachments
+at the writer boundary. Both sizes arrived as 720x480 pixel buffers
+with a scale factor of 2. The original content rect was (0, 0, 360, 240)
+points. The resized content rect was approximately (0, 0, 167.62, 240)
+points at content scale 0.762. The left alignment was present before
+the video writer received the frame.

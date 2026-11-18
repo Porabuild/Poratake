@@ -6528,6 +6528,36 @@ from 146 to 155 MiB with the fix. This compares the whole process.
 The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the sampled values.
 
+### 2026-11-18 live macOS recorded-window movement and closure
+
+GPUI recorded a disposable AppKit window through the authorized screen-only
+daemon in light and dark mode. The target changed color as it moved and
+resized. The same outline followed it, disappeared while it was hidden,
+and returned at the same bounds when it was shown again. WindowServer
+and ScreenCaptureKit still listed the hidden target. Recording continued.
+
+Closing and releasing the target window while its app remained running
+produced one `TARGET_CLOSED` event in each run. GPUI requested Stop after
+285 ms and 291 ms, cleared the toolbar and outline, and produced a
+preview that opened in the video editor. Both video-only takes decoded
+at the initial 720 × 480 resolution and contained the three expected
+color stages. These runs used an app-local window selection fixture and
+one physical display.
+
+An initial closure attempt retained the target's AppKit object and tested
+a hidden window instead. A visible-window lookup reported it missing,
+and a complete WindowServer lookup still contained the target. The
+current recorder handled actual closure once the fixture released the
+window. No polling change was kept.
+
+**Open visual issue.** After the target changed from 360 × 240 points to
+220 × 315 points, the decoded blue image filled columns 0–335 of the
+720-pixel frame. Black padding occupied the right side. The ScreenCaptureKit
+frame attachments reported the same origin before encoding. The expected
+centered fit leaves padding on both sides. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes both native sample results.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
