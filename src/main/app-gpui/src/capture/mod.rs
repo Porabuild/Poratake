@@ -203,6 +203,7 @@ struct FreezeProgress {
     next_generation: u64,
     completed_generation: u64,
     frozen_generation: Option<u64>,
+    releasing_generation: Option<u64>,
 }
 
 pub(crate) struct CachedCaptureReservation {
@@ -228,7 +229,9 @@ impl Drop for CachedCaptureReservation {
 impl CachedCaptureReservation {
     pub(crate) fn wait_for_freeze(&self) -> bool {
         let mut state = self.freeze.state.lock();
-        while state.completed_generation < self.generation {
+        while state.completed_generation < self.generation
+            || state.releasing_generation == Some(self.generation)
+        {
             self.freeze.settled.wait(&mut state);
         }
         state.frozen_generation == Some(self.generation)
@@ -409,6 +412,10 @@ impl CaptureService {
 
     /// `releaseScreen()`. Safe to call when nothing is frozen.
     pub fn release_screen(&self, generation: u64) -> bool {
+        self.release_screen_with(generation, || self.release_screen_started())
+    }
+
+    fn release_screen_with(&self, generation: u64, release: impl FnOnce() -> bool) -> bool {
         if generation == 0 {
             return true;
         }
@@ -417,21 +424,22 @@ impl CaptureService {
                 return true;
             }
             let _operation = self.freeze.operation.lock();
-            let state = self.freeze.state.lock();
+            let mut state = self.freeze.state.lock();
             if state.next_generation > generation {
                 return true;
             }
             if state.captures.range(..=generation).next().is_some() {
                 continue;
             }
+            state.releasing_generation = Some(generation);
             drop(state);
-            let released = self.release_screen_started();
-            if released {
-                let mut state = self.freeze.state.lock();
-                if state.frozen_generation == Some(generation) {
-                    state.frozen_generation = None;
-                }
+            let released = release();
+            let mut state = self.freeze.state.lock();
+            if released && state.frozen_generation == Some(generation) {
+                state.frozen_generation = None;
             }
+            state.releasing_generation = None;
+            self.freeze.settled.notify_all();
             return released;
         }
     }
@@ -2822,6 +2830,52 @@ mod tests {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(service.release_screen(generation));
         assert_eq!(service.freeze.state.lock().frozen_generation, None);
+    }
+
+    #[test]
+    fn a_reservation_during_release_waits_for_the_result_before_choosing_pixels() {
+        for released in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let config =
+                Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+            let service = CaptureService::new(DaemonHandle::new(), config);
+            let generation = service.begin_freeze();
+            service.finish_freeze(generation, Ok(())).unwrap();
+
+            let (started, release_started) = std::sync::mpsc::sync_channel(1);
+            let (finish, finish_release) = std::sync::mpsc::sync_channel(1);
+            let releasing = service.clone();
+            let release = std::thread::spawn(move || {
+                releasing.release_screen_with(generation, || {
+                    started.send(()).unwrap();
+                    finish_release.recv().unwrap();
+                    released
+                })
+            });
+            release_started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+
+            let reservation = service.reserve_cached_capture();
+            let (started, capture_started) = std::sync::mpsc::sync_channel(1);
+            let (choice, result) = std::sync::mpsc::sync_channel(1);
+            let capture = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                choice.send(reservation.wait_for_freeze()).unwrap();
+            });
+            capture_started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let early = result.recv_timeout(Duration::from_millis(50));
+            finish.send(()).unwrap();
+            assert_eq!(release.join().unwrap(), released);
+            capture.join().unwrap();
+            assert!(matches!(
+                early,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(result.recv().unwrap(), !released);
+        }
     }
 
     #[test]

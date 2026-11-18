@@ -1997,9 +1997,6 @@ impl AreaOverlay {
                 let frame = cx
                     .background_executor()
                     .spawn(async move {
-                        if let Some(reservation) = reservation.as_ref() {
-                            reservation.wait_for_freeze();
-                        }
                         let path = std::env::temp_dir().join(format!(
                             "poratake-color-frame-{}-{}-{}-{}.png",
                             std::process::id(),
@@ -2008,10 +2005,11 @@ impl AreaOverlay {
                             generation
                         ));
                         let frame = service
-                            .capture_area_to_file_with_options(
+                            .capture_area_cached(
                                 capture,
                                 &path,
-                                freeze,
+                                reservation,
+                                None,
                                 excluded_window_ids,
                             )
                             .ok()

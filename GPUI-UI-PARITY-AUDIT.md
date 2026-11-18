@@ -2415,10 +2415,10 @@ Bugs fixed in this pass:
   in [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43679096462).
   That run failed its baseline state-list check because the test emitted an
   unintended extra image; the diagnostic is now written outside that list.
-  A successful release also clears the matching cached-generation state. A
-  reservation racing the release RPC can still observe the old generation;
-  the daemon falls back to live pixels if its cache is empty, and no incorrect
-  output has been reproduced for that race.
+  A successful release clears the matching cached generation. A capture that
+  reserves that generation while Release is in flight now waits for its reply
+  before choosing pixels. A successful reply sends the capture down the live
+  path. A failed reply leaves the existing frozen generation available for retry.
 - Direct Record Area now uses a live selector even when screenshot freezing is
   enabled, matching Electron. A headless test also checks that All-in-one Record
   retains its configured freeze. The native Windows workflow in [hosted CI](https://github.com/Porabuild/Poratake/actions/runs/43667610426)
@@ -7187,6 +7187,16 @@ The revised native command answered in 0.10–21.94 ms during the hold.
 Both light and dark counted down normally and saved clean 600×320
 PNGs over a generated backdrop. Cancel and switching to a screenshot
 left no stale countdown or timer output. [Native timer evidence](tests/native/evidence/macos-ui/native-timer-freeze-release-20261118.txt)
+
+### 2026-11-18 capture reservations during freeze release
+
+A deterministic test held Release and then reserved a capture against
+the same generation. The old code chose frozen pixels immediately.
+The revised capture waits for the release result, uses live pixels
+after success, and can still use the retained freeze after failure.
+The color picker now uses the same cached-or-live decision as the
+screenshot paths. The regression isolates the cache decision from
+native pixel output.
 
 ## Review gate
 
