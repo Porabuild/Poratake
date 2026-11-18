@@ -250,7 +250,7 @@ pub const OVERLAY_DIM: f32 = 0.5;
 pub const OVERLAY_PROMPT_TOP: f32 = 32.0;
 pub const OVERLAY_PROMPT_TOP_MAC: f32 = 48.0;
 pub const OVERLAY_PROMPT_TOOLBAR_TOP: f32 = 96.0;
-pub const OVERLAY_PROMPT_TOOLBAR_TOP_MAC: f32 = 112.0;
+pub const OVERLAY_PROMPT_TOOLBAR_TOP_MAC: f32 = 128.0;
 
 pub fn overlay_prompt_top(toolbar: bool) -> f32 {
     if toolbar {
@@ -615,7 +615,7 @@ mod tests {
             assert_eq!(overlay_toolbar_top(), OVERLAY_TOOLBAR_TOP);
         }
         assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP, 96.0);
-        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 112.0);
+        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 128.0);
         if is_macos() {
             assert_eq!(overlay_prompt_top(true), 112.0);
             assert_eq!(overlay_prompt_top(false), 48.0);

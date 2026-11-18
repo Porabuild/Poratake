@@ -7781,6 +7781,27 @@ A resize-only benchmark cut the median from 25.59 to 22.55 ms for a
 These timings measure the thumbnail conversion stage.
 [Per-size measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS all-in-one toolbar and instruction spacing
+
+The Capture text tooltip overlapped the selection instruction pill in
+both GPUI and the Electron reference. Both macOS shells now place the
+pill at 128 points from the top, below the toolbar tooltips. The
+Electron pill also uses the width of its contents up to the viewport
+width. At 400×300 it fits the instruction on one line. The capture
+target icon now uses the appearance's foreground color, restoring
+contrast on the light toolbar.
+
+At 400×300 the Electron keyboard tooltip bottom was 121 points and
+the instruction began at 128 points in both appearances. The GPUI
+Metal fixture requires at least four points of clearance for Capture
+text, Pick color and Close, including the narrow layout and the
+selected Capture text toolbar. Both 950×520 editor profiles completed
+at 2× in light and dark, with 200 rendered PNGs each. The five
+Electron capture and all-in-one test files passed 130 tests. These
+runs use generated surfaces and app-local input.
+[GPUI dark capture](tests/native/evidence/macos-ui/all-in-one-tooltip-clearance-gpui-dark-20261119.png)
+[Electron light capture](tests/native/evidence/macos-ui/all-in-one-tooltip-clearance-electron-light-20261119.png)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

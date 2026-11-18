@@ -14,7 +14,7 @@ const CAPTURE_TARGETS: readonly {
 ];
 
 const TRIGGER_CLASSES =
-  'inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap text-white/85 outline-none [--button-fg:rgb(255_255_255/0.85)] hover:bg-white/15 hover:text-white hover:[--button-fg:white] disabled:pointer-events-none disabled:opacity-35';
+  'inline-flex h-8 w-12 min-w-12 flex-row items-center justify-center gap-1 rounded-3xl px-1.5 whitespace-nowrap text-foreground/85 outline-none hover:bg-foreground/15 hover:text-foreground disabled:pointer-events-none disabled:opacity-35';
 
 export default function CaptureTargetMenu({
   target,

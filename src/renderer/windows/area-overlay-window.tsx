@@ -233,10 +233,10 @@ function AreaOverlaySession({ params }: { params: AreaOverlayParams }) {
       !visibleRect &&
       !handedOff ? (
         <div
-          className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white shadow-lg ${
+          className={`pointer-events-none absolute left-1/2 w-max max-w-full -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-center text-sm text-white shadow-lg ${
             toolbar
               ? isMacPlatform()
-                ? 'top-28'
+                ? 'top-32'
                 : 'top-24'
               : isMacPlatform()
                 ? 'top-12'
