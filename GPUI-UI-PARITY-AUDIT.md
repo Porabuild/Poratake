@@ -37,7 +37,7 @@ release verification; routine PR checks do not run the matrix.
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Live area, window, and timer screenshots passed with one test daemon at a time on the Retina display. The screen, area, and window recordings were edited, saved, reopened, and compared with decoded exports. System audio survived recording and export. Fixed-header scroll stitching, ordinary pointer hover, microphone and camera authorization, and additional displays remain open. |
+| macOS critical capture and recording | Open   | Live area, window, and timer screenshots passed with one test daemon at a time on the Retina display. The screen, area, and window recordings were edited, saved, reopened, and compared with decoded exports. System audio survived recording and export. Fixed-header scroll stitching, within-window hovering, camera access and mic export checks, and additional displays remain open. |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
@@ -4387,7 +4387,7 @@ appearance.
 | P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                                                                                          |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Fixed-header scrolling, unpressed tooltip hover, microphone/camera authorization, and multi-display workflows remain unverified; Windows evidence does not certify those platform paths.                                                                                                                                                                                                                                                                               |
+| P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Ambiguous scroll stitching, within-window hovering, camera access, mic export, and multi-display workflows remain open; Windows evidence does not certify those platform paths.                                                                                                                                                                                                                                                                                        |
 | P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History, onboarding and broader native interaction remain outstanding; see [the Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt).                                                                                                                                                                                                                                            |
 
 GPUI now attempts to restore history after returned write errors and reports when a
@@ -5251,6 +5251,57 @@ can render its reference directly to a PNG given an output path.
 
 Alignment rules are still the same. Cases where distinct scroll histories
 produce the same visible frames remain open.
+
+### 2026-11-18 unpressed pointer entry and exit on macOS
+
+The isolated native GPUI probe used its normal floating windows at layer 101
+and the screen-only development daemon. Zero-delta foreground scroll actions
+moved the system pointer between generated test backdrops and the controls.
+AppKit reported zero pressed buttons. A desktop window above the first test
+point caused a missed entry. The successful check used (748, 91), below that
+window, where Core Graphics listed the recording bar as the top window.
+
+In dark mode, separately entering the recording bar over Start recording and
+Close displayed the named native tooltip four points below the bar. Each exit
+cleared the GPUI status and removed the tooltip from the window list. Entering
+the unfocused preview over Close preview and Delete screenshot displayed their
+tooltips four points above the card. Its pointer flag cleared on exit and the
+daemon's window list was empty.
+
+In light mode, moving directly from Start recording to Close preview cleared
+the first owner and left one native tooltip above the preview. The daemon
+received the light appearance for both panels. Leaving the preview removed
+the remaining panel. The helper was disabled and the isolated windows closed.
+The existing editor stayed open.
+
+The helper also moved the pointer between buttons inside the recording bar.
+The Start recording tooltip stayed visible during that move. Native entry and
+exit are verified with the helper, and within-window mouse movement remains
+unverified.
+
+### 2026-11-18 macOS microphone format and live toggles
+
+A read-only preflight inside the test daemon reported microphone access granted
+and camera access undetermined. The live test used a generated area backdrop,
+disabled camera and system audio, and left privacy settings unchanged. Enabling
+the microphone during recording initially caused the recorder to stop. The
+48 kHz float32 mono input was non-interleaved, and the AAC writer rejected a
+493-frame trimmed silence buffer with `AVFoundationErrorDomain -11800` and
+underlying `NSOSStatusErrorDomain -16122`.
+
+The focused native regression reproduces that error with 512-frame planar
+mono samples and partial leading silence. The microphone path now reuses the
+system audio interleaving step before timing and silence padding. The focused
+regression and existing static microphone timing fixture both pass. The full
+timeline fixture still stops at a camera-range assertion on macOS 27.2. The
+same assertion failed with the unchanged branch source and fixture.
+
+After the fix, GPUI started and stopped a 4.41-second area recording and
+opened its preview. RPCs sent to the same daemon enabled and disabled the
+microphone twice. The saved 48 kHz stereo AAC track had active samples in both
+intervals, with 1.25 seconds of leading silence and a 0.88-second silent gap.
+The audio was decoded to check timing and then removed with the temporary test
+project. Camera capture and microphone editor export remain open.
 
 ## Review gate
 
