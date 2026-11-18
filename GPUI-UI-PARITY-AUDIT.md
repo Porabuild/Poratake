@@ -6396,6 +6396,25 @@ start a recording. All 1,164 GPUI tests passed with 23 ignored, and all
 36 light and dark Metal toolbar images matched their baselines. Live
 switching across physical displays remains open.
 
+### 2026-11-18 macOS recording countdown after a stalled UI
+
+The GPUI recording countdown previously subtracted one second for each
+timer wake. When a native fixture held the toolbar's foreground thread for
+2.25 seconds, the old five-second countdown still displayed five after
+resuming. The countdown now computes the remaining seconds from its
+monotonic deadline and schedules updates on the number boundaries.
+Existing cancellation and target-generation checks still apply.
+
+Both light and dark native runs displayed three seconds after the stall.
+With a warmed stub daemon, the old dark run attempted recording setup
+after 7.49 seconds. The fixed light and dark runs attempted setup after
+5.05 seconds. The stub declined the overlay request before an actual
+recording could start. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the measurements. All 1,165 GPUI tests and 76 Electron reference
+tests passed, and all 36 light and dark Metal toolbar images matched the
+baseline. Actual ScreenCaptureKit startup after the deadline remains
+unverified in this stall case.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

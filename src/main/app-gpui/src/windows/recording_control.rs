@@ -153,6 +153,11 @@ impl RecordingControl {
         self.menu.is_present(cx)
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_countdown_remaining(&self) -> Option<u32> {
+        self.countdown_remaining
+    }
+
     #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
     pub(crate) fn parity_hovered_tooltip(&self) -> Option<SharedString> {
         self.hovered_tooltip.as_ref().map(|(_, text)| text.clone())
@@ -607,33 +612,40 @@ impl RecordingControl {
         }
         self.countdown_generation += 1;
         let generation = self.countdown_generation;
+        let deadline = cx.background_executor().now() + Duration::from_secs(u64::from(delay));
         self.countdown_active = true;
         self.countdown_remaining = Some(delay);
         window.focus(&self.focus_handle, cx);
         self.sync_window_bounds(window, cx, false);
         cx.notify();
         cx.spawn_in(window, async move |entity, cx| loop {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let Ok(done) = entity.update_in(cx, |this, window, cx| {
+            let Ok(Some(remaining)) = entity.update_in(cx, |this, window, cx| {
                 if !this.countdown_active || this.countdown_generation != generation {
-                    return true;
+                    return None;
                 }
-                let remaining = this.countdown_remaining.unwrap_or(1);
-                if remaining > 1 {
-                    this.countdown_remaining = Some(remaining - 1);
+                let remaining = deadline.saturating_duration_since(cx.background_executor().now());
+                if remaining.is_zero() {
+                    this.countdown_active = false;
+                    this.countdown_remaining = None;
+                    this.begin_recording(window, cx);
+                    return None;
+                }
+                let seconds = remaining.as_secs_f64().ceil() as u32;
+                if this.countdown_remaining != Some(seconds) {
+                    this.countdown_remaining = Some(seconds);
                     cx.notify();
-                    return false;
                 }
-                this.countdown_active = false;
-                this.countdown_remaining = None;
-                this.begin_recording(window, cx);
-                true
+                Some(remaining)
             }) else {
                 break;
             };
-            if done {
-                break;
-            }
+            let fraction = remaining.subsec_nanos();
+            let until_tick = if fraction == 0 {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_nanos(u64::from(fraction))
+            };
+            cx.background_executor().timer(until_tick).await;
         })
         .detach();
     }
@@ -3093,6 +3105,56 @@ mod tests {
                 "the input title must remain unchanged"
             );
         }
+    }
+
+    #[herogpui::test]
+    fn recording_countdown_displays_remaining_seconds(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        config.update(|config| config.recording.start_delay = 5.);
+        let toolbar = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Area,
+                ScreenRect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                None,
+                None,
+                PreferenceScope::Global,
+            );
+            let toolbar = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            toolbar
+                .update(cx, |control, window, cx| control.start(window, cx))
+                .unwrap();
+            toolbar
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(2_250));
+        cx.run_until_parked();
+        let remaining = |cx: &mut gpui::TestAppContext| {
+            toolbar
+                .update(cx, |control, _, _| control.countdown_remaining)
+                .unwrap()
+        };
+        assert_eq!(remaining(cx), Some(3));
+        cx.executor().advance_clock(Duration::from_millis(750));
+        cx.run_until_parked();
+        assert_eq!(remaining(cx), Some(2));
+        cx.update(|cx| {
+            assert!(RecordingControl::cancel_pre_recording(cx));
+        });
     }
 
     #[cfg(target_os = "macos")]

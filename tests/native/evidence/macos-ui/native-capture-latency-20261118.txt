@@ -99,3 +99,20 @@ Native window ID reused    0 of 14     14 of 14     0 of 14     14 of 14
 The test uses app-local target changes and generated device state.
 It verifies toolbar continuity on one display. Real target movement
 between displays and compositor paint latency remain open.
+
+Recording countdown stall follow-up
+
+The native UI probe started a five-second countdown and held its own
+foreground thread for 2250 ms. A generated microphone menu warmed the stub
+daemon before the measured attempt. The stub measured the first
+recording-overlay show request and declined it, so no recording began.
+
+                         Foreground held   Seconds on resume   Setup request
+Dark before                  2251.5 ms             5            7489.2 ms
+Light after                  2251.6 ms             3            5049.2 ms
+Dark after                   2257.7 ms             3            5046.7 ms
+
+The pre-fix light and dark runs without the warmed daemon also showed
+five seconds after resuming. The setup request is measured from the
+app-local countdown command. This verifies countdown scheduling with
+generated device data and leaves actual recorder startup open.

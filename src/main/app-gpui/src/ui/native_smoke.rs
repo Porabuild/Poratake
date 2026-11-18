@@ -346,6 +346,7 @@ pub fn native_ui_probe() {
                 config.preview.auto_dismiss = auto_dismiss;
                 config.preview.auto_dismiss_seconds = 4.0;
                 config.save_locations.screenshot = screenshots_path.clone();
+                config.storage.recordings_path = screenshots_path.clone();
                 config.storage.screenshots_path = screenshots_path;
                 config.screenshot.format = "png".into();
                 config.screenshot.close_on_save = false;
@@ -751,6 +752,24 @@ pub fn native_ui_probe() {
                         if command == "record-dismiss-menu" {
                             let dismissed = RecordingControl::cancel_pre_recording(cx);
                             println!("recording menu dismissed; control closed={dismissed}");
+                            return;
+                        }
+                        if matches!(command.as_str(), "record-countdown-stall" | "record-countdown-status") {
+                            let Some(handle) = registry::handle(WindowKind::RecordingControl, cx)
+                                .and_then(|handle| handle.downcast::<RecordingControl>()) else {
+                                return;
+                            };
+                            if command == "record-countdown-stall" {
+                                assert!(std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some());
+                                crate::state::state(cx).config.update(|config| config.recording.start_delay = 5.);
+                                handle.update(cx, |control, window, cx| control.start(window, cx)).unwrap();
+                                std::thread::sleep(std::time::Duration::from_millis(2250));
+                                println!("recording countdown probe resumed");
+                            } else {
+                                handle.update(cx, |control, _, _| {
+                                    println!("recording countdown {:?}", control.parity_countdown_remaining());
+                                }).unwrap();
+                            }
                             return;
                         }
                         if command == "record-reopen" {
