@@ -198,8 +198,12 @@ fn attachment_cancel_probe(path: &std::path::Path, cx: &mut App) {
         visible == YES
     };
     let service = crate::state::state(cx);
+    let freeze = std::env::var_os("PORATAKE_NATIVE_UI_ATTACHMENT_FREEZE").is_some();
+    if freeze {
+        assert!(std::env::var_os("PORATAKE_DAEMON_PATH").is_some());
+    }
     service.config.update(|config| {
-        config.screenshot.freeze_screen = false;
+        config.screenshot.freeze_screen = freeze;
         config.screenshot.hide_desktop_icons = false;
         config.history.enabled = false;
     });
@@ -221,18 +225,25 @@ fn attachment_cancel_probe(path: &std::path::Path, cx: &mut App) {
         .unwrap();
     let path = path.to_owned();
     cx.spawn(async move |cx| {
-        let (selector, view, number) = cx.update(|cx| {
+        let wait_step = std::time::Duration::from_millis(20);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        let selector = loop {
+            if let Some(selector) = cx.update(crate::capture::overlay::parity_active_overlay) {
+                break selector;
+            }
+            assert!(std::time::Instant::now() < deadline, "attachment selector did not open");
+            cx.background_executor().timer(wait_step).await;
+        };
+        let (view, number) = cx.update(|cx| {
             assert!(crate::state::coordinator(cx).read(cx).has_pending_editor_attach());
-            let selector = crate::capture::overlay::parity_active_overlay(cx).expect("attachment selector");
-            let (view, number) = selector.update(cx, |_, window, cx| {
+            selector.update(cx, |_, window, cx| {
                 assert!(visible(window));
                 window.draw(cx).clear(cx);
                 let view = native_view(window);
                 let native: id = unsafe { msg_send![view, window] };
                 let number: isize = unsafe { msg_send![native, windowNumber] };
                 (view, number)
-            }).unwrap();
-            (selector, view, number)
+            }).unwrap()
         });
         unsafe {
             let escape = NSString::alloc(nil).init_str("\u{1b}");
@@ -253,7 +264,20 @@ fn attachment_cancel_probe(path: &std::path::Path, cx: &mut App) {
                 assert_eq!(editor.export_png().expect("restored composition"), before);
             }).unwrap();
             assert!(path.is_file());
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while cx.update(crate::capture::overlay::parity_has_pending_freeze) {
+            assert!(std::time::Instant::now() < deadline, "attachment freeze was not released");
+            cx.background_executor().timer(wait_step).await;
+        }
+        if freeze {
+            cx.background_executor().spawn(async move { service.daemon.stop() }).await;
+        }
+        cx.update(|cx| {
             println!("attachment cancel: AppKit Escape restored the editor and preserved the composition");
+            if freeze {
+                println!("attachment cancel: pending freeze release settled");
+            }
             cx.quit();
         });
     }).detach();

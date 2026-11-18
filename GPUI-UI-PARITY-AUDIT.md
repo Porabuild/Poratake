@@ -6033,10 +6033,29 @@ remained on disk.
 The light and dark runs passed on arm64, and dark also passed on x86_64 under
 Rosetta. The focused GPUI Escape test and 38 Electron overlay tests passed.
 The native runs used Freeze Screen off and disabled the capture daemon.
-The event was delivered in process, so physical Escape delivery
-and native freeze release during cancellation remain unverified. Reproduce
-with the parity development binary using `--native-ui-probe --attachment-cancel`
+The event was delivered in process. The follow-up below checks native freeze
+release during cancellation. Reproduce with the parity development binary
+using `--native-ui-probe --attachment-cancel`
 and `PORATAKE_DAEMON_PATH=/usr/bin/false`.
+
+### 2026-11-18 native macOS attachment cancellation with Freeze Screen
+
+The same attachment probe also passed in light and dark with Freeze Screen
+enabled on the 1728×1117-point Retina display. The authorized screen-only
+daemon froze a generated backdrop. A temporary bridge observed one successful
+freeze and one successful release in each run. WindowServer showed a native
+frozen window after the freeze and confirmed it was gone before daemon
+shutdown. The selector and attachment state cleared, and the restored
+editor exported the same PNG byte for byte. The bridge forwarded no
+screenshot, audio or camera requests. All 30 focused GPUI overlay tests
+passed, and the isolated Freeze Screen off probe passed again.
+
+The [run record](tests/native/evidence/macos-ui/native-attachment-freeze-cancel-20261118.txt)
+covers Apple Silicon and an AppKit Escape event delivered to the isolated
+selector. Physical Escape delivery, translated execution with Freeze Screen
+enabled, and additional displays remain unverified. The development probe
+enables this path with `PORATAKE_NATIVE_UI_ATTACHMENT_FREEZE=1` and an authorized
+`PORATAKE_DAEMON_PATH`.
 
 ## Review gate
 

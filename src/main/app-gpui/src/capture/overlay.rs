@@ -198,6 +198,11 @@ pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
 }
 
+#[cfg(all(target_os = "macos", feature = "parity", not(test)))]
+pub(crate) fn parity_has_pending_freeze(cx: &mut App) -> bool {
+    session(cx).pending_freeze.is_some()
+}
+
 #[cfg(feature = "parity")]
 pub(crate) fn parity_selection(cx: &mut App) -> Option<selection::Rect> {
     let handle = parity_active_overlay(cx)?.downcast::<AreaOverlay>()?;
