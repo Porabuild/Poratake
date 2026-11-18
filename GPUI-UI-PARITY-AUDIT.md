@@ -6882,6 +6882,27 @@ includes the individual samples. The light and dark recording workflows
 and all 1,170 runnable GPUI tests passed. The native measurements use
 app-local interactions on one Retina display.
 
+### 2026-11-18 macOS responsiveness while switching from a window outline
+
+Switching capture mode from a pre-recording window now closes the old
+toolbar immediately and waits for the daemon's outline removal on a
+background task. The new selector opens after the Hide acknowledgement.
+Escape cancels the queued capture while cleanup finishes. A different
+capture intent received during the wait replaces the queued intent.
+If Hide fails, the selector stays closed and a later capture retries.
+
+The previous build could not answer an independent app-local status command
+during a 650 ms hold on the Hide reply. The revised build answered within
+0.1 ms in light and dark. WindowServer showed the outgoing toolbar gone
+within 30 ms, and it reported the destination selector only after the
+acknowledgement. The same native probe covered cancellation, replacement
+with timer capture, and retry after an injected acknowledgement error.
+With the reply delivered normally, five of six switches took 58.5–69.7 ms
+to show the selector. One dark trial took 372.7 ms.
+The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the raw samples from the built-in Retina display. The light and
+dark recording workflows and all 1,171 runnable GPUI tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

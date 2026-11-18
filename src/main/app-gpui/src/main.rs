@@ -43,6 +43,10 @@ fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
             windows::tray_menu::TrayMenuWindow::toggle(tray_rect, cx)
         }
         NativeEvent::CancelPreRecording => {
+            #[cfg(target_os = "macos")]
+            if intents::cancel_recording_capture_switch(cx) {
+                return;
+            }
             windows::recording_control::RecordingControl::cancel_pre_recording(cx);
         }
         #[cfg(target_os = "macos")]

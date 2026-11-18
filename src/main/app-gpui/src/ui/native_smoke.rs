@@ -1252,9 +1252,15 @@ pub fn open(cx: &mut App) {
                         "timer" => Intent::TimerCapture,
                         _ => return false,
                     };
-                    RecordingControl::cancel_pre_recording(cx);
                     crate::intents::dispatch(intent, None, cx);
                     return true;
+                }
+                if command == "cancel capture switch" {
+                    return crate::intents::cancel_recording_capture_switch(cx);
+                }
+                if command == "timer selector" {
+                    return crate::capture::overlay::active_intents_for_test(cx)
+                        == [crate::capture::intent::CaptureIntent::Timer];
                 }
                 if command == "cancel overlay" {
                     let Some(handle) = crate::capture::overlay::parity_active_overlay(cx) else {

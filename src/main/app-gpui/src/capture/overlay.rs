@@ -300,12 +300,26 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
     }
 }
 
-pub fn end_recording_handoff(cx: &mut App) {
+#[cfg(target_os = "macos")]
+pub(crate) fn recording_overlay_needs_hide(cx: &mut App) -> bool {
+    session(cx).native_recording_overlay_requested
+}
+
+pub(crate) fn clear_recording_handoff(cx: &mut App) {
     session(cx).outlined_window_id = None;
+    close_all(cx);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mark_recording_overlay_hidden(cx: &mut App) {
+    session(cx).native_recording_overlay_requested = false;
+}
+
+pub fn end_recording_handoff(cx: &mut App) {
     #[cfg(not(test))]
     {
         #[cfg(target_os = "macos")]
-        let should_hide = session(cx).native_recording_overlay_requested;
+        let should_hide = recording_overlay_needs_hide(cx);
         #[cfg(not(target_os = "macos"))]
         let should_hide = true;
         if should_hide {
@@ -313,15 +327,13 @@ pub fn end_recording_handoff(cx: &mut App) {
             let _hidden = daemon.recording_overlay().hide().is_ok();
             #[cfg(target_os = "macos")]
             if _hidden {
-                session(cx).native_recording_overlay_requested = false;
+                mark_recording_overlay_hidden(cx);
             }
         }
     }
     #[cfg(all(target_os = "macos", test))]
-    {
-        session(cx).native_recording_overlay_requested = false;
-    }
-    close_all(cx);
+    mark_recording_overlay_hidden(cx);
+    clear_recording_handoff(cx);
 }
 
 #[cfg(target_os = "macos")]

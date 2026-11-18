@@ -62,7 +62,7 @@ fn can_cancel_with_escape(mode: Mode) -> bool {
     mode == Mode::PreRecording
 }
 
-fn set_pre_recording_escape(enabled: bool, cx: &App) {
+pub(crate) fn set_pre_recording_escape(enabled: bool, cx: &App) {
     let Some(native) = crate::state::try_native(cx) else {
         return;
     };
@@ -322,13 +322,22 @@ impl RecordingControl {
     }
 
     pub fn cancel_pre_recording(cx: &mut App) -> bool {
+        if !Self::dismiss_pre_recording(false, cx) {
+            return false;
+        }
+        set_pre_recording_escape(false, cx);
+        crate::capture::overlay::end_recording_handoff(cx);
+        true
+    }
+
+    pub(crate) fn dismiss_pre_recording(switching_capture: bool, cx: &mut App) -> bool {
         for window_handle in cx.windows() {
             let Some(handle) = window_handle.downcast::<Self>() else {
                 continue;
             };
             let cancelled = handle
                 .update(cx, |this, window, cx| {
-                    if this.dismiss_device_menu(window, cx) {
+                    if this.dismiss_device_menu(window, cx) && !switching_capture {
                         return false;
                     }
                     if !can_cancel_with_escape(this.mode) {
@@ -343,9 +352,7 @@ impl RecordingControl {
                 })
                 .unwrap_or(false);
             if cancelled {
-                set_pre_recording_escape(false, cx);
                 registry::forget(RegistryKind::RecordingControl, cx);
-                crate::capture::overlay::end_recording_handoff(cx);
                 return true;
             }
         }

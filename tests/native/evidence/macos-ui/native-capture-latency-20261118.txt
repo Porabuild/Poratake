@@ -568,3 +568,35 @@ The outline was present before both fixed outline runs and gone
 at the selector handoff. All selectors closed on cancellation.
 The deliberate hold isolates the round-trip dependency. These are
 single-run observations per case with generated app-local input.
+
+Responsive handoff from an active window recording outline
+
+The native GPUI window recording fixture started with an outline
+around a disposable 360x240 AppKit window on the built-in Retina
+display. It switched to area screenshot through the shared capture
+intent dispatcher using an isolated app-local command. The authorized
+screen-only daemon removed the outline first. A bridge held the
+successful Hide reply for 650 ms while the driver asked the app for
+its recording status and sampled visibility through WindowServer.
+
+Scenario                     Status while held   Toolbar gone   Selector visible
+Previous light (168903a8)    Blocked             Not timed        731.9 ms
+Revised light                <=0.1 ms             21.9 ms         733.2 ms
+Revised dark                 <=0.1 ms             29.8 ms         726.2 ms
+Revised light, cancelled     <=0.1 ms             28.0 ms         No selector
+Revised dark, timer instead  <=0.1 ms             20.6 ms         734.6 ms (timer)
+
+No selector was visible during a held acknowledgement. Cancelling the
+queued capture left no selector and a subsequent timer request opened
+normally. A timer requested during the hold replaced the queued area
+capture. An injected Hide error kept the selector closed; a new capture
+request retried Hide and opened after a successful response. No capture
+was produced. The idle dark control issued no Hide (292.5 ms to show
+the selector in this cold sample).
+
+Active outline, no injected hold. Time from request to visible selector:
+Light: 68.3, 69.7, 59.1 ms
+Dark:  372.7, 58.5, 64.2 ms
+
+These are individual app-local observations. Sampling includes dispatch
+and WindowServer polling, and does not measure physical input or paint.

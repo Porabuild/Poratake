@@ -32,6 +32,10 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         );
         return;
     }
+    #[cfg(target_os = "macos")]
+    if switch_pre_recording_capture(intent, cx) {
+        return;
+    }
     match intent {
         Intent::AllInOne => {
             if is_supported(Feature::AllInOne) {
@@ -74,6 +78,101 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         Intent::ToggleDesktopIcons => toggle_desktop_icons(cx),
         Intent::Quit => quit(cx),
     }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct RecordingCaptureSwitch {
+    hiding_outline: bool,
+    next: Option<Intent>,
+}
+
+#[cfg(target_os = "macos")]
+impl gpui::Global for RecordingCaptureSwitch {}
+
+#[cfg(target_os = "macos")]
+fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
+    use crate::capture::overlay;
+    use crate::windows::recording_control::{set_pre_recording_escape, RecordingControl};
+
+    if !matches!(
+        intent,
+        Intent::AllInOne
+            | Intent::CaptureArea
+            | Intent::CaptureScreen
+            | Intent::CaptureWindow
+            | Intent::CaptureText
+            | Intent::ScanQrCode
+            | Intent::TimerCapture
+            | Intent::ScrollCapture
+            | Intent::RecordArea
+            | Intent::RecordScreen
+            | Intent::RecordWindow
+    ) {
+        return false;
+    }
+    let switch = cx.default_global::<RecordingCaptureSwitch>();
+    if switch.hiding_outline {
+        switch.next = Some(intent);
+        return true;
+    }
+    if crate::video::recorder::is_recording() {
+        return false;
+    }
+    let dismissed = RecordingControl::dismiss_pre_recording(true, cx);
+    if dismissed {
+        overlay::clear_recording_handoff(cx);
+    }
+    if !overlay::recording_overlay_needs_hide(cx) {
+        if dismissed {
+            set_pre_recording_escape(false, cx);
+        }
+        return false;
+    }
+
+    let switch = cx.global_mut::<RecordingCaptureSwitch>();
+    switch.hiding_outline = true;
+    switch.next = Some(intent);
+    set_pre_recording_escape(true, cx);
+    let daemon = crate::state::state(cx).daemon;
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { daemon.recording_overlay().hide() })
+            .await;
+        cx.update(|cx| {
+            let switch = cx.global_mut::<RecordingCaptureSwitch>();
+            switch.hiding_outline = false;
+            let next = switch.next.take();
+            set_pre_recording_escape(false, cx);
+            match result {
+                Ok(()) => {
+                    overlay::mark_recording_overlay_hidden(cx);
+                    if let Some(intent) = next {
+                        dispatch(intent, None, cx);
+                    }
+                }
+                Err(error) if next.is_some() => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Capture failed",
+                        format!("Could not close the recording outline: {error}"),
+                    );
+                }
+                Err(_) => {}
+            }
+        });
+    })
+    .detach();
+    true
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cancel_recording_capture_switch(cx: &mut App) -> bool {
+    cx.default_global::<RecordingCaptureSwitch>()
+        .next
+        .take()
+        .is_some()
 }
 
 use crate::video::recorder::RecordingTarget as Recording;
@@ -144,6 +243,8 @@ fn quit(cx: &mut App) {
     if !desktop_icons::begin_shutdown() {
         return;
     }
+    #[cfg(target_os = "macos")]
+    cancel_recording_capture_switch(cx);
     crate::capture::overlay::close_all(cx);
     cx.spawn(async move |cx| {
         cx.background_executor()
@@ -306,4 +407,33 @@ fn hide_tray_icon(cx: &mut App) {
     let config = crate::state::state(cx).config;
     config.update(|settings| settings.general.hide_menu_bar_icon = true);
     crate::state::native(cx).send(crate::system::native::NativeCommand::SetTrayVisible(false));
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn capture_switch_keeps_only_the_latest_intent_and_escape_clears_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.default_global::<RecordingCaptureSwitch>().hiding_outline = true;
+            assert!(switch_pre_recording_capture(Intent::CaptureArea, cx));
+            assert!(switch_pre_recording_capture(Intent::TimerCapture, cx));
+            assert_eq!(
+                cx.global::<RecordingCaptureSwitch>().next,
+                Some(Intent::TimerCapture)
+            );
+            assert!(!switch_pre_recording_capture(Intent::History, cx));
+            assert!(cancel_recording_capture_switch(cx));
+            assert!(!cancel_recording_capture_switch(cx));
+            assert!(cx.global::<RecordingCaptureSwitch>().hiding_outline);
+            assert!(switch_pre_recording_capture(Intent::CaptureWindow, cx));
+            assert_eq!(
+                cx.global_mut::<RecordingCaptureSwitch>().next.take(),
+                Some(Intent::CaptureWindow)
+            );
+        });
+    }
 }
