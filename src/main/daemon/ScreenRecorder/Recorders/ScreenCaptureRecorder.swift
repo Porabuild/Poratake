@@ -249,50 +249,18 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
         }
 
         let outputURL = URL(fileURLWithPath: config.outputPath)
-        if fileManager.fileExists(atPath: config.outputPath) {
-            try fileManager.removeItem(at: outputURL)
-        }
-        assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-
-        let pixelCount = videoWidth * videoHeight
-        let bitsPerPixel = 12.0
-        let rawBitrate = Int(Double(pixelCount) * bitsPerPixel * Double(frameRate))
-        let bitrate = min(max(rawBitrate, 50_000_000), 200_000_000)
-
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: videoWidth,
-            AVVideoHeightKey: videoHeight,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: bitrate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: frameRate,
-                AVVideoAllowFrameReorderingKey: false,
-            ],
-        ]
-
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput?.expectsMediaDataInRealTime = true
-
-        var sourcePixelBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: videoWidth,
-            kCVPixelBufferHeightKey as String: videoHeight,
-        ]
-
-        if capturedWindow != nil {
-            sourcePixelBufferAttributes[kCVPixelBufferIOSurfacePropertiesKey as String] = [:]
-            sourcePixelBufferAttributes[kCVPixelBufferMetalCompatibilityKey as String] = true
-        }
-
-        pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: videoInput!,
-            sourcePixelBufferAttributes: sourcePixelBufferAttributes
+        let width = videoWidth
+        let height = videoHeight
+        let isWindow = capturedWindow != nil
+        async let preparedWriter = Self.prepareVideoWriter(
+            outputURL: outputURL,
+            videoWidth: width,
+            videoHeight: height,
+            frameRate: frameRate,
+            isWindow: isWindow
         )
-
-        if let videoInput = videoInput, assetWriter?.canAdd(videoInput) == true {
-            assetWriter?.add(videoInput)
-        }
+        let preparedStream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
+        (assetWriter, videoInput, pixelBufferAdaptor) = try await preparedWriter
 
         let audioSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -420,7 +388,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             keyboardTracker.start(videoPath: config.outputPath)
         }
 
-        stream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
+        stream = preparedStream
         if let stream { streamFailures.activate(ObjectIdentifier(stream)) }
 
         if capturedWindow == nil {
@@ -463,6 +431,62 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             RecordingCaptureWindowRegistry.shared.finishCaptureStart()
             try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
         }
+    }
+
+    private nonisolated static func prepareVideoWriter(
+        outputURL: URL,
+        videoWidth: Int,
+        videoHeight: Int,
+        frameRate: Int,
+        isWindow: Bool
+    ) async throws -> sending (AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor) {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: outputURL.path) {
+            try fileManager.removeItem(at: outputURL)
+        }
+        let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+
+        let pixelCount = videoWidth * videoHeight
+        let bitsPerPixel = 12.0
+        let rawBitrate = Int(Double(pixelCount) * bitsPerPixel * Double(frameRate))
+        let bitrate = min(max(rawBitrate, 50_000_000), 200_000_000)
+
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: videoWidth,
+            AVVideoHeightKey: videoHeight,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitrate,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalKey: frameRate,
+                AVVideoAllowFrameReorderingKey: false,
+            ],
+        ]
+
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoInput.expectsMediaDataInRealTime = true
+
+        var sourcePixelBufferAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: videoWidth,
+            kCVPixelBufferHeightKey as String: videoHeight,
+        ]
+
+        if isWindow {
+            sourcePixelBufferAttributes[kCVPixelBufferIOSurfacePropertiesKey as String] = [:]
+            sourcePixelBufferAttributes[kCVPixelBufferMetalCompatibilityKey as String] = true
+        }
+
+        let pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: sourcePixelBufferAttributes
+        )
+
+        guard assetWriter.canAdd(videoInput) else {
+            throw RecorderError.configuration("Cannot configure video input for recording")
+        }
+        assetWriter.add(videoInput)
+        return (assetWriter, videoInput, pixelBufferAdaptor)
     }
 
     @MainActor
@@ -1762,10 +1786,16 @@ extension ScreenCaptureRecorder: SCStreamOutput {
         state = .recording
     }
 
-    func testConfigureScreenWriter(writer: AVAssetWriter, input: AVAssetWriterInput, adaptor: AVAssetWriterInputPixelBufferAdaptor) {
-        assetWriter = writer
-        videoInput = input
-        pixelBufferAdaptor = adaptor
+    @MainActor
+    func testConfigureScreenWriter(outputURL: URL, size: Int) async throws {
+        (assetWriter, videoInput, pixelBufferAdaptor) = try await Self.prepareVideoWriter(
+            outputURL: outputURL,
+            videoWidth: size,
+            videoHeight: size,
+            frameRate: 30,
+            isWindow: false
+        )
+        precondition(assetWriter?.startWriting() == true)
     }
 
     @MainActor

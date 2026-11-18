@@ -724,3 +724,26 @@ Trial  Create AVAssetWriter  Configure and add video input  Cursor  Create SCStr
 The follow-up filter check took 0.026–0.057 ms. The longest start
 round trip was 262.9 ms. The prior 4.19-second observation was not
 reproduced in this screen-only run, and its cause remains open.
+
+Overlapping video writer and ScreenCaptureKit stream preparation
+
+Six paired trials used fresh GPUI profiles and screen-only daemons
+on the built-in Retina display. Pair order alternated. The area crop
+was 300 × 220 points, and the independently captured window was
+320 × 240 points. The static panel held steady, and the moving panel
+changed color while recording. Source panels and app-local input were
+isolated. The RPC confirmation includes stream start and the filter check.
+
+Scene            Theme  Before (ms)  After (ms)  Improvement (ms)
+Static area      Light        313.5       266.6              46.9
+Static area      Dark         320.6       283.4              37.2
+Changing area    Light        357.2       254.4             102.8
+Changing area    Dark         323.5       282.4              41.1
+Changing window  Light        267.0       248.4              18.6
+Changing window  Dark         303.4       233.1              70.3
+
+Median paired improvement was 44.0 ms. All twelve clips decoded at
+600 × 440 for areas and 640 × 480 for windows. The first frame in each
+clip contained only the generated panel color. The moving takes opened
+in the video editor. Stop to visible preview ranged from 62 to 119 ms
+across both builds. The fixtures excluded live audio and camera.

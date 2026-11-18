@@ -7346,6 +7346,23 @@ the video input, 50–57 ms to creating the ScreenCaptureKit stream, and
 screen grant. Live audio, camera and the cause of the earlier outlier
 remain open. [Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-18 macOS video writer and stream startup overlap
+
+The daemon now configures the video writer in a child task while the
+main actor constructs the ScreenCaptureKit stream. It joins the task
+and takes ownership of the writer before starting capture. The existing
+protected-window filter and first-frame tests still exercise startup ordering.
+The generated static timeline cases now use the production writer setup.
+
+Daemon Start confirmation was faster in all six paired native runs, with
+a median paired improvement of 44 ms. All twelve video-only clips decoded
+at the expected area or window size, and the moving takes opened in the
+editor. The tests used generated AppKit panels on one Retina display and
+the preflight-gated screen-only daemon. The arm64 recording timeline suite,
+two static timeline cases under Rosetta, and all 53 Electron reference
+tests passed. Live system audio, microphone and camera were outside this
+comparison. [Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

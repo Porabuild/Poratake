@@ -301,24 +301,8 @@ struct RecordingTimelineTests {
             let droppedFirst = ProcessInfo.processInfo.environment["PORATAKE_TEST_VIDEO_DROPPED_FIRST"] != nil
             let recoveredChange = ProcessInfo.processInfo.environment["PORATAKE_TEST_VIDEO_RECOVERED_CHANGE"] != nil
             let url = URL(fileURLWithPath: path)
-            try? FileManager.default.removeItem(at: url)
-            let writer = try! AVAssetWriter(outputURL: url, fileType: .mov)
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: 64,
-                AVVideoHeightKey: 64,
-            ])
-            input.expectsMediaDataInRealTime = true
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: 64,
-                kCVPixelBufferHeightKey as String: 64,
-            ])
-            precondition(writer.canAdd(input))
-            writer.add(input)
-            precondition(writer.startWriting())
             let recorder = ScreenCaptureRecorder()
-            recorder.testConfigureScreenWriter(writer: writer, input: input, adaptor: adaptor)
+            try! await recorder.testConfigureScreenWriter(outputURL: url, size: 64)
             let frame = sample(at: 100, size: 64, fill: 0x22)
             if droppedFirst { recorder.testSetVideoBackpressure(true) }
             try! await recorder.testStartScreenStream {
