@@ -911,6 +911,8 @@ const DISMISS_RETRY: Duration = Duration::from_millis(250);
 enum DismissVerdict {
     Ready,
     Blocked,
+    #[cfg(target_os = "macos")]
+    Clipped,
     Gone,
 }
 
@@ -926,12 +928,30 @@ fn schedule_auto_dismiss(
     }
     let timeout = Duration::from_secs_f64(preview.auto_dismiss_seconds);
     let generation = dismiss_token.fetch_add(1, Ordering::Relaxed) + 1;
+    let start = cx.background_executor().now();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(timeout).await;
+        let mut elapsed = false;
+        let mut started = Some(start);
         loop {
             let verdict = cx.update(|cx| dismiss_verdict(handle, id, generation, cx));
             match verdict {
                 DismissVerdict::Gone => return,
+                #[cfg(target_os = "macos")]
+                DismissVerdict::Clipped => {
+                    elapsed = false;
+                    started = None;
+                    cx.background_executor().timer(DISMISS_RETRY).await;
+                }
+                _ if !elapsed => {
+                    let executor = cx.background_executor();
+                    let remaining = started
+                        .map(|started| timeout.saturating_sub(executor.now() - started))
+                        .unwrap_or(timeout);
+                    if !remaining.is_zero() {
+                        executor.timer(remaining).await;
+                    }
+                    elapsed = true;
+                }
                 DismissVerdict::Ready => {
                     let removed = cx.update(|cx| {
                         handle
@@ -977,7 +997,7 @@ fn dismiss_verdict(
             let Some(preview) = view.previews.iter().find(|preview| preview.id == id) else {
                 return DismissVerdict::Gone;
             };
-            dismiss_state(
+            let verdict = dismiss_state(
                 preview.dismiss_token.load(Ordering::Relaxed),
                 generation,
                 preview.hovered,
@@ -988,7 +1008,12 @@ fn dismiss_verdict(
                     || view
                         .display_menu
                         .is_open_for(&format!("preview-display-menu-{id}"), cx),
-            )
+            );
+            #[cfg(target_os = "macos")]
+            if verdict != DismissVerdict::Gone && view.preview_is_clipped(preview, window) {
+                return DismissVerdict::Clipped;
+            }
+            verdict
         })
         .unwrap_or(DismissVerdict::Gone)
 }
@@ -1317,6 +1342,15 @@ fn preview_stack_size(count: usize) -> Size<Pixels> {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn preview_stack_top_inset(height: Pixels, bottom_aligned: bool) -> Pixels {
+    if bottom_aligned {
+        (px(preview_stack_height(PREVIEW_MAX_STACK)) - height).max(px(0.))
+    } else {
+        px(0.)
+    }
+}
+
 fn preview_bottom_aligned(cx: &mut App) -> bool {
     matches!(
         PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner),
@@ -1426,6 +1460,8 @@ fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
     }
     #[cfg(test)]
     window.resize(bounds.size);
+    #[cfg(all(test, target_os = "macos"))]
+    window.bounds_changed(cx);
     #[cfg(not(windows))]
     let _ = (window, count, bounds, display_id);
 }
@@ -2633,6 +2669,29 @@ impl CapturePreviewWindow {
 }
 
 impl CapturePreviewWindow {
+    #[cfg(target_os = "macos")]
+    fn preview_is_clipped(&self, preview: &CapturePreview, window: &Window) -> bool {
+        let Some((corner, scroll)) = &self.viewport_scroll else {
+            return false;
+        };
+        let Some(y) = preview.layout_y else {
+            return true;
+        };
+        let bottom_aligned = matches!(
+            corner,
+            PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+        );
+        let height = px(preview_stack_height(self.window_preview_count()));
+        let offset = scroll.offset();
+        let top = px(y) - preview_stack_top_inset(height, bottom_aligned) + offset.y;
+        let left = px(PREVIEW_SHADOW_PADDING) + offset.x;
+        let viewport = window.viewport_size();
+        top >= viewport.height
+            || top + px(PREVIEW_HEIGHT) <= px(0.)
+            || left >= viewport.width
+            || left + px(PREVIEW_WIDTH) <= px(0.)
+    }
+
     fn preview_window_hovered(&self, window: &Window) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -2723,12 +2782,8 @@ impl CapturePreviewWindow {
             } else {
                 viewport.height
             };
-            let offset = if bottom_aligned {
-                (full_height - f32::from(content_height)).max(0.0)
-            } else {
-                0.0
-            };
-            root = root.h(px(full_height)).top(px(-offset));
+            let offset = preview_stack_top_inset(content_height, bottom_aligned);
+            root = root.h(px(full_height)).top(-offset);
             content
         };
         let mut active_index = 0;
@@ -4285,6 +4340,85 @@ mod tests {
                 assert!(view.previews.iter().all(|preview| preview.id != newest));
             })
             .unwrap();
+        assert!(path.is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn clipped_capture_preview_gets_its_full_dismiss_delay_after_scrolling_into_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+            config.preview.auto_dismiss_seconds = 2.;
+        });
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store.clone());
+            for _ in 0..PREVIEW_MAX_STACK {
+                CapturePreviewWindow::open(cx, path.clone());
+            }
+        });
+        cx.run_until_parked();
+        let stack = stack_handle(cx).unwrap();
+        let handle = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.simulate_resize(size(px(208.), px(300.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let (id, token) = handle
+            .update(&mut visual, |view, _, _| {
+                let newest = view.previews.last().unwrap();
+                (newest.id, newest.dismiss_token.clone())
+            })
+            .unwrap();
+        store.update(|config| config.preview.auto_dismiss = true);
+        visual.update(|_, cx| schedule_auto_dismiss(stack, id, cx, token));
+        visual.settle();
+        let pending = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.previews
+                        .iter()
+                        .any(|preview| preview.id == id && preview.dismiss_animation.is_none())
+                })
+                .unwrap()
+        };
+        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.settle();
+        assert!(
+            pending(&mut visual),
+            "a completely clipped card must stay available"
+        );
+
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(400.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(1_500));
+        visual.settle();
+        assert!(pending(&mut visual), "the revealed card gets a full delay");
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(1_500));
+        visual.settle();
+        assert!(!pending(&mut visual));
         assert!(path.is_file());
     }
 

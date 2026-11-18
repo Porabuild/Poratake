@@ -5764,8 +5764,8 @@ All 1,154 arm64 GPUI tests passed with 23 marked ignored.
 The 480-point Metal viewport passed at 1× dark and 2× light. After scrolling,
 the entire revealed card matched the full-height reference pixel for pixel.
 Across both profiles, all 363 existing PNGs matched byte for byte. Physical
-short displays and Electron placement remain open. A newly added card can
-still start its auto-dismiss timer while outside an already-scrolling viewport.
+short displays and Electron placement remain open. The follow-up below
+checks the auto-dismiss delay for cards outside an already-scrolling viewport.
 
 ### 2026-11-18 macOS recording outline tracking updates
 
@@ -6000,6 +6000,25 @@ The light single-line and dark long-label panels fit on opposite sides
 after the fix on arm64 and x86_64 under Rosetta. The fixture checks the
 native frame and gap and runs as part of the scroll preview fixture.
 Live hover on a tall preview stack and across displays remains unverified.
+
+### 2026-11-18 macOS auto-dismiss for clipped capture previews
+
+A generated four-card stack with a 300-point viewport reproduced a newly
+clipped preview starting to dismiss before the user scrolled to it. The
+macOS timer now checks the card's position in the scroll viewport. A fully
+clipped card waits until it is visible and then gets the full delay. The
+regression scrolls the card into view, verifies it survives the initial
+delay, and confirms the later dismissal preserves the capture file.
+
+The GPUI test backend changes window bounds silently on resize. Updating
+the test viewport after resizing made the existing normal-stack and
+hidden-window reveal tests exercise the same drawable area as production.
+The arm64 GPUI suite passed 1,161 tests with 23 ignored. All 52 Electron
+capture preview tests passed. Light and dark Metal profiles matched all
+367 baseline PNGs byte for byte, including 56 capture preview images.
+Partially visible cards still count as visible. The delay restarts after
+the timer observes complete clipping. Physical short displays remain
+unverified.
 
 ## Review gate
 
