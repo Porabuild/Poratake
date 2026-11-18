@@ -35,6 +35,42 @@ final class Fixture {
     var passed = false
     var positions: [(Int, Int)] = []
     var panelID: CGWindowID = 0
+#if TIMER_CONTROL_TEST
+    var timingCase: String?
+    var resumedAt: ContinuousClock.Instant?
+
+    func startTimingCase(_ name: String) {
+        timingCase = name
+        module.testKeepPanelHidden = true
+        if name == "--queued" {
+            show(0, duration: 30, requestId: "first")
+        }
+        show(1, duration: 2, requestId: "last")
+    }
+
+    func timingResponse(_ id: String, _ result: Any?) {
+        guard let payload = result as? [String: Bool], payload["visible"] == true,
+              let timer = module.testTimerButton, timer.window?.isVisible == false else {
+            fail("missing hidden timer after \(id)")
+            return
+        }
+        let expected = id == "first" ? 30 : 2
+        guard timer.remainingSeconds == expected else {
+            fail("\(id) displayed \(timer.remainingSeconds), expected \(expected)")
+            return
+        }
+        guard id == "last" else { return }
+        if timingCase == "--queued" {
+            print("queued shows display their own duration")
+            finish(true)
+        }
+        Thread.sleep(forTimeInterval: 2.2)
+        resumedAt = .now
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.fail("countdown did not finish after the overdue main-loop callback")
+        }
+    }
+#endif
 
     func checkDismissed(_ label: String) {
         guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
@@ -76,6 +112,12 @@ final class Fixture {
     }
 
     func response(_ id: String, _ result: Any?) {
+#if TIMER_CONTROL_TEST
+        if timingCase != nil {
+            timingResponse(id, result)
+            return
+        }
+#endif
         if id == "hidden" {
             guard let payload = result as? [String: Bool], payload["visible"] == false,
                   !NSApp.windows.contains(where: { $0.isVisible && $0.contentView is TimerButton }) else {
@@ -117,6 +159,20 @@ final class Fixture {
     }
 
     func event(_ name: String) {
+#if TIMER_CONTROL_TEST
+        if timingCase != nil {
+            guard name == "completed", module.testTimerButton == nil, let resumedAt else {
+                fail("unexpected event during hidden countdown: \(name)")
+                return
+            }
+            guard resumedAt.duration(to: .now) < .milliseconds(500) else {
+                fail("overdue countdown completed after another tick")
+                return
+            }
+            print("overdue countdown completed after the main loop resumed")
+            finish(true)
+        }
+#endif
         guard !NSApp.windows.contains(where: { $0.isVisible && $0.contentView is TimerButton }) else {
             fail("timer remained visible after \(name)")
             return
@@ -144,7 +200,15 @@ struct TimerControlLifecycleTest {
         }
         let fixture = Fixture.shared
         fixture.positions = [(numbers[0], numbers[1]), (numbers[2], numbers[3])]
-        DispatchQueue.main.async { fixture.show(0, duration: 30) }
+        DispatchQueue.main.async {
+#if TIMER_CONTROL_TEST
+            if let name = CommandLine.arguments.last, ["--late", "--queued"].contains(name) {
+                fixture.startTimingCase(name)
+                return
+            }
+#endif
+            fixture.show(0, duration: 30)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
             if !fixture.passed { fixture.fail("countdown timed out") }
         }

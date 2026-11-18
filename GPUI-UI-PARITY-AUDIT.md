@@ -5955,6 +5955,22 @@ completion, cancellation, timeout, failure and retry. All six workflow
 PNGs matched the preceding runs byte for byte. Placement next to a
 visible Dock and on a second physical display remains unverified.
 
+### 2026-11-18 macOS screenshot countdown timing
+
+The native screenshot countdown previously subtracted one second for every
+AppKit timer callback. A two-second countdown stayed open after a 2.2-second
+main-loop stall. Two queued show requests could also display the second request's
+duration in the first panel. GPUI and Electron both use this native timer.
+
+Each show now supplies its own duration on the main queue. The AppKit timer
+reads the remaining time from a monotonic deadline, runs in common run-loop
+modes and dismisses an overdue panel before emitting completion. With real
+AppKit timers and hidden panels, both cases failed before the fix and passed
+after it on arm64 and on x86_64 under Rosetta. The macOS CI fixture now covers
+both cases alongside the existing window lifecycle checks. The full production
+Swift daemon typechecked on arm64, and 27 Electron timer and daemon contract
+tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

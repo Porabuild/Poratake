@@ -8,7 +8,10 @@ class TimerControlModule: Module {
     private var panel: FloatingPanel?
     private var timerButton: TimerButton?
     private var timer: Timer?
-    private var remainingSeconds: Int = 5
+#if TIMER_CONTROL_TEST
+    var testKeepPanelHidden = false
+    var testTimerButton: TimerButton? { timerButton }
+#endif
     
     func handle(method: String, params: [String: AnyCodable]?, requestId: String) {
         guard let method = DaemonContract.TimerControl.Method(rawValue: method) else {
@@ -35,17 +38,18 @@ class TimerControlModule: Module {
             return
         }
         
-        remainingSeconds = max(duration, 1)
-        
+        let seconds = max(duration, 1)
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.showPanel(
                 x: x,
                 y: y,
+                seconds: seconds,
                 accentColor: accentColor,
                 foregroundColor: foregroundColor
             )
-            self.startCountdown()
+            self.startCountdown(seconds: seconds)
             self.respond(id: requestId, result: ["visible": true])
         }
     }
@@ -62,17 +66,18 @@ class TimerControlModule: Module {
     private func showPanel(
         x: Int,
         y: Int,
+        seconds: Int,
         accentColor: NSColor,
         foregroundColor: NSColor
     ) {
         if panel != nil {
             updatePosition(x: x, y: y)
-            timerButton?.remainingSeconds = remainingSeconds
+            timerButton?.remainingSeconds = seconds
             timerButton?.setTheme(
                 accentColor: accentColor,
                 foregroundColor: foregroundColor
             )
-            panel?.makeKeyAndOrderFront(nil)
+            presentPanel(activate: false)
             return
         }
         
@@ -98,7 +103,7 @@ class TimerControlModule: Module {
         )
         
         timerButton = TimerButton(
-            seconds: remainingSeconds,
+            seconds: seconds,
             accentColor: accentColor,
             foregroundColor: foregroundColor
         )
@@ -108,9 +113,15 @@ class TimerControlModule: Module {
         }
         
         panel?.contentView = timerButton
+        presentPanel(activate: true)
+    }
+
+    private func presentPanel(activate: Bool) {
+#if TIMER_CONTROL_TEST
+        guard !testKeepPanelHidden else { return }
+#endif
         panel?.makeKeyAndOrderFront(nil)
-        
-        NSApp.activate(ignoringOtherApps: true)
+        if activate { NSApp.activate(ignoringOtherApps: true) }
     }
     
     private func hidePanel() {
@@ -125,21 +136,25 @@ class TimerControlModule: Module {
         panel?.setPosition(x: x, y: y)
     }
     
-    private func startCountdown() {
+    private func startCountdown(seconds: Int) {
         stopCountdown()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
 
-            self.remainingSeconds -= 1
+            let remaining = ContinuousClock.now.duration(to: deadline)
 
-            if self.remainingSeconds > 0 {
-                self.timerButton?.remainingSeconds = self.remainingSeconds
+            if remaining > .zero {
+                let parts = remaining.components
+                self.timerButton?.remainingSeconds = Int(parts.seconds) + (parts.attoseconds > 0 ? 1 : 0)
             } else {
                 self.stopCountdown()
                 self.hidePanel()
                 self.emit(event: "completed")
             }
         }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
     
     private func stopCountdown() {

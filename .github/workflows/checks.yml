@@ -193,7 +193,7 @@ jobs:
       - name: Test macOS timer control lifecycle
         timeout-minutes: 5
         run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" \
+          swiftc -target "$(uname -m)-apple-macosx13.0" -D TIMER_CONTROL_TEST \
             src/main/daemon/UI/Theme.swift \
             src/main/daemon/UI/FloatingPanel.swift \
             src/main/daemon/UI/TimerButton.swift \
@@ -202,6 +202,8 @@ jobs:
             tests/native/timer-control-lifecycle.swift \
             -o "$RUNNER_TEMP/timer-control-lifecycle-test"
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128
+          "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --queued
+          "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --late
 
       - name: Test macOS recording timeline
         run: |
