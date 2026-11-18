@@ -105,6 +105,13 @@ struct RecordingOutlineLifecycleTest {
         precondition(highlight.frame.equalTo(expectedFrame(target: initialBounds)))
         print("visible target: outline matches bounds")
 
+        guard let updates = module.testHighlightUpdates else { fatalError("outline updates missing") }
+        module.testFollowHighlight()
+        guard let stationaryUpdates = module.testHighlightUpdates else { fatalError("outline updates missing") }
+        precondition(stationaryUpdates.frames == updates.frames && stationaryUpdates.orders == updates.orders,
+                     "stationary target reset the outline frame or order")
+        print("stationary target: no frame or ordering update")
+
         try await waitFor("outline was not visible to the window server") { onScreenAlpha(outlineID) == 1 }
         await module.testHideOverlay()
         precondition(onScreenAlpha(outlineID).map { $0 == 0 } ?? true,
@@ -123,6 +130,16 @@ struct RecordingOutlineLifecycleTest {
         }
         print("moved target: outline follows")
 
+        target.setFrame(NSRect(x: 420, y: 220, width: 310, height: 186), display: true)
+        try await waitFor("outline did not follow target resize") {
+            guard let current = bounds(windowID), current.width == 310, current.height == 186 else { return false }
+            return movedHighlight.frame.equalTo(expectedFrame(target: current))
+                && movedHighlight.contentView?.frame.size == movedHighlight.frame.size
+        }
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [movedOutlineID])
+        print("resized target: outline follows with the same exclusion ID")
+
+        let frameBeforeRestore = movedHighlight.frame
         target.orderOut(nil)
         try await waitFor("outline did not hide with target") {
             bounds(windowID) == nil && movedHighlight.alphaValue == 0
@@ -131,6 +148,17 @@ struct RecordingOutlineLifecycleTest {
                      "temporarily hidden target lost its outline tracker")
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [movedOutlineID])
         print("hidden target: outline hidden, tracker retained")
+
+        target.orderFrontRegardless()
+        try await waitFor("outline did not restore at an unchanged frame") {
+            movedHighlight.alphaValue == 1 && movedHighlight.frame == frameBeforeRestore
+        }
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [movedOutlineID])
+        print("restored stationary target: same frame and exclusion ID")
+        target.orderOut(nil)
+        try await waitFor("outline did not hide before the second restore") {
+            bounds(windowID) == nil && movedHighlight.alphaValue == 0
+        }
 
         target.setFrameOrigin(NSPoint(x: 620, y: 320))
         target.orderFrontRegardless()

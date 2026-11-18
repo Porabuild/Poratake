@@ -5767,6 +5767,21 @@ Across both profiles, all 363 existing PNGs matched byte for byte. Physical
 short displays and Electron placement remain open. A newly added card can
 still start its auto-dismiss timer while outside an already-scrolling viewport.
 
+### 2026-11-18 macOS recording outline tracking updates
+
+The window outline sampled its target at 30 Hz and reset its AppKit frame and
+front order even when the target was stationary. The native fixture measured
+those calls directly and failed on the previous build. The outline now updates
+its frame when geometry changes and brings itself forward when it is revealed
+or restored. A temporarily hidden target retains the same capture-exclusion ID.
+
+The isolated generated-window runs passed on arm64 and under Rosetta with
+identical output. They checked stationary updates, movement, resize, hiding,
+restoration at the same and at a new position, target closure, and explicit
+cleanup. The full fixture and production Swift daemon also type-checked. The
+runs used window-server metadata with a generated target. Live captured pixels
+and physical multi-display movement remain outside this check.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

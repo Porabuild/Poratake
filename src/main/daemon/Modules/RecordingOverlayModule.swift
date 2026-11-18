@@ -159,7 +159,6 @@ class RecordingOverlayModule: Module {
             }
             return false
         }
-        window.alphaValue = 1
         followHighlight()
 
         // AppKit has no cross-application window-move notification without the
@@ -181,7 +180,9 @@ class RecordingOverlayModule: Module {
         guard let window = highlightWindow, let windowID = highlightWindowID else { return }
 
         guard let bounds = windowBounds(of: windowID) else {
-            window.alphaValue = 0
+            if window.alphaValue != 0 {
+                window.alphaValue = 0
+            }
             return
         }
 
@@ -194,11 +195,15 @@ class RecordingOverlayModule: Module {
             height: bounds.height + inset * 2
         )
 
-        window.setFrame(frame, display: true)
-        window.contentView?.frame = NSRect(origin: .zero, size: frame.size)
-        window.contentView?.needsDisplay = true
-        window.alphaValue = 1
-        window.orderFrontRegardless()
+        if window.frame != frame {
+            window.setFrame(frame, display: true)
+            window.contentView?.frame = NSRect(origin: .zero, size: frame.size)
+            window.contentView?.needsDisplay = true
+        }
+        if window.alphaValue != 1 || !window.isVisible {
+            window.alphaValue = 1
+            window.orderFrontRegardless()
+        }
     }
 
     @MainActor
@@ -341,12 +346,20 @@ class RecordingOverlayModule: Module {
     var testHighlightWindow: NSWindow? { highlightWindow }
 
     @MainActor
+    var testHighlightUpdates: (frames: Int, orders: Int)? {
+        highlightWindow.map { ($0.testFrameUpdates, $0.testFrontOrders) }
+    }
+
+    @MainActor
     var testOverlayWindows: [NSWindow] { windows }
 
     @MainActor
     func testShowWindow(_ windowID: CGWindowID) async throws -> Bool {
         try await showWindowHighlight(windowID: windowID, color: .systemPurple)
     }
+
+    @MainActor
+    func testFollowHighlight() { followHighlight() }
 
     @MainActor
     func testShowArea(x: Int, y: Int, width: Int, height: Int) async throws -> Bool {
@@ -361,6 +374,21 @@ class RecordingOverlayModule: Module {
 private class RecordingOverlayWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    #if RECORDING_OUTLINE_TEST
+    private(set) var testFrameUpdates = 0
+    private(set) var testFrontOrders = 0
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        testFrameUpdates += 1
+        super.setFrame(frameRect, display: flag)
+    }
+
+    override func orderFrontRegardless() {
+        testFrontOrders += 1
+        super.orderFrontRegardless()
+    }
+    #endif
 }
 
 private class RecordingHighlightView: NSView {
