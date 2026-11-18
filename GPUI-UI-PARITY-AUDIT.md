@@ -7260,6 +7260,22 @@ lifecycle with a synthetic daemon. The fixture supplied screenshot
 pixels, and the probe used app-local events on one Retina display.
 All 48 Electron freeze and capture reference tests passed.
 
+### 2026-11-18 macOS window recording outline acknowledgement
+
+After a window was picked, GPUI blocked the toolbar on the daemon's
+ShowWindow reply. Holding that reply for 650 ms blocked an app-local
+status request for the duration. The outline request now runs off the
+UI thread. The existing preparation gate keeps Start disabled until
+the reply and orders Hide after Show for a cancelled or replaced pick.
+
+Revised native runs answered status in 0.05–4.89 ms during the hold.
+Both appearances recorded 720×480 video and opened the preview.
+Cancellation and switching to a screenshot waited for Show and Hide
+without starting a recording. Each run issued one window-outline
+request. The light and dark parity workflows also hold ShowWindow
+and verify that Start is disabled and the recorder idle. [Native outline
+evidence](tests/native/evidence/macos-ui/native-window-outline-acknowledgement-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -635,7 +635,7 @@ pub fn run() {
             }
             ("recording-control", "listIOSDevices") => json!({"devices": []}),
             ("recording-control", "setTooltip") => json!({"visible": false}),
-            ("recording-overlay", "show") => {
+            ("recording-overlay", "show" | "showWindow") => {
                 if let Some(fixture) = optional_capture_fixture(&output)
                     .filter(|fixture| fixture["recordingHoldOutlineShow"] == true)
                 {
@@ -647,7 +647,6 @@ pub fn run() {
                 }
                 json!({"visible": true})
             }
-            ("recording-overlay", "showWindow") => json!({"visible": true}),
             ("screen-recorder", "start") => {
                 recording_stop_was_held = false;
                 if optional_capture_fixture(&output)

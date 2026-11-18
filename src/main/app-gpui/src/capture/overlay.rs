@@ -369,12 +369,20 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
 
     #[cfg(target_os = "macos")]
     {
+        if pending_recording_preparation(cx).is_some()
+            || crate::intents::recording_outline_is_hiding(cx)
+        {
+            return false;
+        }
         session(cx).native_recording_overlay_requested = true;
     }
     #[cfg(test)]
-    let visible = true;
+    {
+        session(cx).outlined_window_id = Some(window_id);
+        true
+    }
     #[cfg(not(test))]
-    let visible = {
+    {
         let service = crate::state::state(cx);
         let appearance = service.config.get().appearance;
         let preset = crate::theme::presets::get_theme_preset(&appearance.theme);
@@ -387,17 +395,43 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
             color: Some(color.to_string()),
             below_window_id: recording_control_window_id(cx),
         };
-        service
-            .daemon
-            .recording_overlay()
-            .show_window(request)
-            .unwrap_or(false)
-    };
-
-    if visible {
-        session(cx).outlined_window_id = Some(window_id);
+        #[cfg(target_os = "macos")]
+        {
+            let owner = revision(cx);
+            let finished = begin_recording_preparation(cx);
+            cx.spawn(async move |cx| {
+                let visible = smol::unblock(move || service.daemon.recording_overlay().show_window(request))
+                    .await
+                    .unwrap_or(false);
+                cx.update(|cx| {
+                    finish_recording_preparation(cx);
+                    if revision(cx) != owner {
+                        crate::intents::hide_recording_outline(None, cx);
+                    } else if visible {
+                        session(cx).outlined_window_id = Some(window_id);
+                    } else {
+                        eprintln!("[recording-overlay] failed to outline window {window_id}");
+                    }
+                    crate::windows::recording_control::RecordingControl::refresh_after_outline_cleanup(cx);
+                });
+                drop(finished);
+            })
+            .detach();
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let visible = service
+                .daemon
+                .recording_overlay()
+                .show_window(request)
+                .unwrap_or(false);
+            if visible {
+                session(cx).outlined_window_id = Some(window_id);
+            }
+            visible
+        }
     }
-    visible
 }
 
 #[cfg(all(windows, not(test)))]

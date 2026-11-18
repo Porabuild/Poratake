@@ -1383,12 +1383,14 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 serde_json::to_vec(&serde_json::json!({
                     "freeze": "frozen",
                     "holdFreezeRelease": true,
+                    "recordingHoldOutlineShow": true,
                     "barrier": listener.local_addr().unwrap().to_string(),
                 }))
                 .unwrap(),
             )
             .unwrap();
-            accept_fixture_barrier(&listener)
+            let release = accept_fixture_barrier(&listener);
+            (listener, release)
         });
         if target == "area" {
             select_area(cx, picker);
@@ -1407,7 +1409,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         }
         cx.run_until_parked();
         #[cfg(target_os = "macos")]
-        if let Some(release) = release {
+        if let Some((listener, release)) = release {
             let mut release = release
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
@@ -1422,13 +1424,36 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
                 "window selection must keep processing events while Release is held"
             );
+            let show = accept_fixture_barrier(&listener);
             release.write_all(&[0]).unwrap();
             let started = std::time::Instant::now();
-            while !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+            let mut show = loop {
                 cx.run_until_parked();
+                if let Ok(stream) = show.try_recv() {
+                    break stream;
+                }
                 assert!(started.elapsed() < std::time::Duration::from_secs(10));
                 std::thread::yield_now();
-            }
+            };
+            cx.update(|cx| {
+                let control = registry::handle(WindowKind::RecordingControl, cx)
+                    .unwrap()
+                    .downcast::<crate::windows::recording_control::RecordingControl>()
+                    .unwrap();
+                assert!(!control
+                    .update(cx, |control, _, cx| control.start_enabled(cx))
+                    .unwrap());
+            });
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+            show.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(show.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the window toolbar must respond before ShowWindow is acknowledged"
+            );
+            show.write_all(&[0]).unwrap();
+            wait_for_recording_start(cx);
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
