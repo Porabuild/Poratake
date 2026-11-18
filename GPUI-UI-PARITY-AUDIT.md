@@ -4384,7 +4384,7 @@ appearance.
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
 | P1       | Video redaction crop and rounded camera                  | Crops include intersecting camera clips and local rectangle corners. A 4,096-case generated comparison still has 17 channels above one level, up to two. Verify actual editor preview against decoded export and investigate the remaining cases and 4K playback cost.                                                                                                                                                                                                                                                                                                                                                                   |
-| P1       | Native accessibility action delivery                     | An isolated GPUI platform verifies Select Expand/Collapse and Slider SetValue/Increment/Decrement dispatch after fixing their HeroGPUI handlers. Verify the operating system accessibility adapters and screen readers on each target platform; the isolated platform does not exercise them.                                                                                                                                                                                                                                                                                                                                            |
+| P1       | Native accessibility action delivery                     | Native macOS Settings verified dropdown opening and selection, switch toggling, and slider setting and stepping at 880×700. Isolated tests exercise HeroGPUI actions. Verify screen readers and other operating system adapters.                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                                                                                          |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -5407,6 +5407,27 @@ The test used a generated full-screen backdrop and a temporary profile. The
 test windows closed, the existing editor stayed open, and no captures were
 saved. The native run covers successful freeze and release on one display.
 Failure handling has fixture coverage. Native Linux and multiple displays
+remain open.
+
+### 2026-11-18 macOS Settings accessibility at minimum size
+
+The native Settings window measured 880×700 points. The original accessibility
+tree exposed the toggle, dropdown and slider controls without names. The
+history slider advertised increment and decrement, but both left its value at
+100 because the component's continuous increment was smaller than the setting's
+10-item step. Electron already passes that step to its slider.
+
+GPUI now names the standard controls from their visible Settings labels and
+uses the configured step for Settings sliders. Native AXPress opened and closed
+the named Appearance dropdown. Keyboard selection changed Dark to Light, and
+AXPress on the Dark option switched it back. The named Enable history switch
+hid and restored the Maximum items slider. Native increment and decrement moved
+it from 100 to 110 and back. Setting the numeric AX value to 137 snapped it to
+140 and persisted that setting. The GPUI render tests also passed, including
+both keyboard directions on the history slider.
+
+These checks used a temporary profile and the native macOS accessibility
+adapter. A screen reader pass and equivalent checks on other operating systems
 remain open.
 
 ## Review gate
