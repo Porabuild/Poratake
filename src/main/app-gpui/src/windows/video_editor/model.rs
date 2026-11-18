@@ -464,9 +464,11 @@ pub fn music_display_end(tracks: &[MusicTrack]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-pub fn music_groups(tracks: &[MusicTrack]) -> Vec<Vec<&MusicTrack>> {
+pub fn music_groups<'a>(
+    tracks: impl IntoIterator<Item = &'a MusicTrack>,
+) -> Vec<Vec<&'a MusicTrack>> {
     let mut groups: Vec<Vec<&MusicTrack>> = Vec::new();
-    for track in tracks.iter().filter(|track| track.enabled) {
+    for track in tracks {
         let key = group_key(track);
         match groups
             .iter_mut()
@@ -597,15 +599,16 @@ mod music_tests {
     }
 
     #[test]
-    fn a_disabled_group_has_no_lane_and_no_reach() {
+    fn a_disabled_group_does_not_extend_timeline_reach() {
         let tracks = vec![
             track("a", "g1", true, 4.0),
             track("b", "g1", true, 8.0),
             track("c", "g2", false, 30.0),
         ];
         let groups = music_groups(&tracks);
-        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].len(), 2);
+        assert!(!groups[1][0].enabled);
         assert_eq!(music_display_end(&tracks), 8.0);
     }
 

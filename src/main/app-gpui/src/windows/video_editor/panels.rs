@@ -9,7 +9,7 @@ use crate::ui::menu::MenuHandle;
 use crate::ui::toolbar;
 use crate::windows::video_editor::data_editor;
 use crate::windows::video_editor::drawing_overlay;
-use crate::windows::video_editor::model::{FocusPoint, VideoEditorState};
+use crate::windows::video_editor::model::{self, FocusPoint, MusicTrack, VideoEditorState};
 use crate::windows::video_editor::panel_kit as kit;
 use crate::windows::video_editor::sidebar::SidebarTab;
 use crate::windows::video_editor::styles::{
@@ -1330,12 +1330,13 @@ fn audio_panel(
         })
         .into_any_element()];
 
-    let groups = music_groups(&state.music_tracks);
+    let groups = model::music_groups(&state.music_tracks);
     if groups.is_empty() {
         children.push(kit::hint("No audio tracks.", theme));
     }
-    for track in groups {
-        children.push(music_row(track, theme, cx));
+    for group in groups {
+        let enabled = group.iter().any(|track| track.enabled);
+        children.push(music_row(group[0], enabled, theme, cx));
     }
 
     if has_keyboard {
@@ -1436,34 +1437,17 @@ fn audio_panel(
     kit::panel(&view.panel_scroll, children)
 }
 
-fn music_groups(
-    tracks: &[crate::windows::video_editor::model::MusicTrack],
-) -> Vec<&crate::windows::video_editor::model::MusicTrack> {
-    let mut seen = Vec::new();
-    let mut groups = Vec::new();
-    for track in tracks {
-        let key = if track.group_id.is_empty() {
-            track.id.as_str()
-        } else {
-            track.group_id.as_str()
-        };
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        groups.push(track);
-    }
-    groups
-}
-
 /// One music track: its name, an enable toggle, a volume slider and a remove
 /// button, mirroring the rows in `audio-settings-panel.tsx`.
 fn music_row(
-    track: &crate::windows::video_editor::model::MusicTrack,
+    track: &MusicTrack,
+    enabled: bool,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let id = SharedString::from(track.id.clone());
+    let group_id = SharedString::from(model::group_key(track).to_owned());
+    let switch_id = SharedString::from(format!("music-enabled-{group_id}"));
     let volume = track.volume;
     let speed = track.speed;
     let removable = track.source == "music";
@@ -1515,18 +1499,30 @@ fn music_row(
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            crate::ui::rows::switch(
-                                SharedString::from(format!("music-enabled-{id}")),
-                                track.enabled,
-                                cx,
-                                {
-                                    let id = id.clone();
-                                    move |this, enabled, cx| {
-                                        this.set_music_enabled(id.clone(), enabled, cx)
-                                    }
-                                },
-                            )
-                            .size(herogpui::components::Size::Sm),
+                            div()
+                                .debug_selector({
+                                    let switch_id = switch_id.clone();
+                                    move || switch_id.to_string()
+                                })
+                                .child(
+                                    crate::ui::rows::switch(
+                                        switch_id,
+                                        enabled,
+                                        cx,
+                                        move |this, enabled, cx| {
+                                            this.set_music_group_enabled(
+                                                group_id.clone(),
+                                                enabled,
+                                                cx,
+                                            )
+                                        },
+                                    )
+                                    .aria_label(SharedString::from(format!(
+                                        "Enable {}",
+                                        track.name
+                                    )))
+                                    .size(herogpui::components::Size::Sm),
+                                ),
                         )
                         .when(removable, |el| {
                             el.child(

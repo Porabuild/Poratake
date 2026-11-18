@@ -2140,12 +2140,17 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn set_music_enabled(&mut self, id: SharedString, enabled: bool, cx: &mut Context<Self>) {
+    pub fn set_music_group_enabled(
+        &mut self,
+        group: SharedString,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.commit(cx, move |state| {
-            if let Some(track) = state
+            for track in state
                 .music_tracks
                 .iter_mut()
-                .find(|track| track.id.as_str() == id.as_ref())
+                .filter(|track| model::group_key(track) == group.as_ref())
             {
                 track.enabled = enabled;
             }
@@ -3513,7 +3518,9 @@ impl VideoEditorWindow {
             );
         }
 
-        for group in model::music_groups(&self.state.music_tracks) {
+        for group in
+            model::music_groups(self.state.music_tracks.iter().filter(|track| track.enabled))
+        {
             let Some(first) = group.first() else {
                 continue;
             };
@@ -4314,6 +4321,102 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn the_audio_panel_mutes_and_restores_every_clip_in_the_group(cx: &mut gpui::TestAppContext) {
+        use crate::video::audio_tracks::{stems, Sources, MIC_SOURCE, SYSTEM_SOURCE};
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Split audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            music_tracks: vec![
+                model::MusicTrack {
+                    id: "first".into(),
+                    group_id: "split".into(),
+                    name: "Split track".into(),
+                    source: SYSTEM_SOURCE.into(),
+                    enabled: false,
+                    end_time: 2.0,
+                    ..Default::default()
+                },
+                model::MusicTrack {
+                    id: "second".into(),
+                    group_id: "split".into(),
+                    name: "Split track".into(),
+                    source: SYSTEM_SOURCE.into(),
+                    start_time: 2.0,
+                    end_time: 4.0,
+                    ..Default::default()
+                },
+                model::MusicTrack {
+                    id: "independent".into(),
+                    name: "Independent track".into(),
+                    source: MIC_SOURCE.into(),
+                    end_time: 1.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        state.ui.sidebar_open = true;
+        state.ui.sidebar_tab = SidebarTab::Audio.id().into();
+        model::save_state(&project, &state);
+        let (editor, cx) =
+            cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-clip-first").is_none());
+        cx.expect("timeline-clip-second");
+        let switch = cx.expect("music-enabled-split").center();
+
+        cx.simulate_click(switch, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let tracks = &editor.read(cx).state.music_tracks;
+            assert!(!tracks[0].enabled && !tracks[1].enabled);
+            assert!(tracks[2].enabled);
+        });
+        assert!(cx.debug_bounds("timeline-lane-split").is_none());
+        cx.expect("timeline-clip-independent");
+
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.undo(cx)));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-clip-first").is_none());
+        cx.expect("timeline-clip-second");
+
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.redo(cx)));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-lane-split").is_none());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, _| assert!(editor.flush_pending_state()));
+        });
+        let saved = model::load_state(&project);
+        assert!(!saved.music_tracks[0].enabled && !saved.music_tracks[1].enabled);
+        assert!(saved.music_tracks[2].enabled);
+        let sources = Sources {
+            system: Some(project.join("system.m4a")),
+            mic: Some(project.join("mic.m4a")),
+            ..Default::default()
+        };
+        let muted = stems(&sources, &saved, 4.0);
+        assert_eq!(muted.len(), 1);
+        assert_eq!(muted[0].id, "independent");
+
+        let switch = cx.expect("music-enabled-split").center();
+        cx.simulate_click(switch, gpui::Modifiers::none());
+        cx.settle();
+        cx.expect("timeline-clip-first");
+        cx.expect("timeline-clip-second");
+        cx.update(|_, cx| {
+            let state = &editor.read(cx).state;
+            assert!(state.music_tracks.iter().all(|track| track.enabled));
+            assert_eq!(stems(&sources, state, 4.0).len(), 3);
+        });
     }
 
     #[herogpui::test]

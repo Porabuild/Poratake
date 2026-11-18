@@ -5662,6 +5662,29 @@ higher. Visual inspection verified space above and below the label backdrops.
 Both Metal profiles passed the rendered contrast assertion for video and audio
 durations, and all 48 focused timeline tests passed.
 
+### 2026-11-18 GPUI split audio track mute on macOS
+
+The Audio Tracks panel showed one switch for each group but its handler
+changed only the first clip. Muting a split track could leave later clips on
+the timeline and in the audio mix. The pointer regression reproduced the issue
+with a saved project where the first clip was already disabled. Electron's
+switch updates every clip in the group and its timeline shows enabled clips.
+
+The GPUI switch now reflects whether any clip in the saved group is enabled
+and changes the entire group in one undoable edit. Fully muted lanes disappear
+and the other tracks keep their current state. The regression verifies pointer
+toggles, undo, redo, the persisted mute state, and the shared audio stem plan
+used by preview and export. A clip without a group ID uses its own ID as before.
+The arm64 GPUI suite passed 1,151 tests with 23 marked ignored. A separate
+macOS development-FFmpeg run passed the generated sidecar mute comparison
+between preview audio and decoded export.
+
+The 950×700 dark Metal profile at 1× passed. All 194 PNGs matched the prior
+profile byte for byte, including the Audio Tracks panel with one enabled track.
+The grouped pointer regression covers the state change that this visual profile
+does not exercise. Audio-panel volume and speed parity for split groups remains
+open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
