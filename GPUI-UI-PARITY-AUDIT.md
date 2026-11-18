@@ -4385,7 +4385,7 @@ appearance.
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
 | P1       | Video redaction crop and rounded camera                  | Crops include intersecting camera clips and local rectangle corners. A 4,096-case generated comparison still has 17 channels above one level, up to two. Verify actual editor preview against decoded export and investigate the remaining cases and 4K playback cost.                                                                                                                                                                                                                                                                                                                                                                   |
 | P1       | Native accessibility action delivery                     | Native macOS Settings verified dropdown opening and selection, switch toggling, and slider setting and stepping at 880×700. Isolated tests exercise HeroGPUI actions. Verify screen readers and other operating system adapters.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| P2       | History visual and native verification                   | Verify native reveal, tooltip interaction and multi-monitor placement at high DPI. Mock geometry tests cover first-row grid and compact-list tooltips as well as widths down to 140px; smaller layouts and other item states need verification.                                                                                                                                                                                                                                                                                                                                                                                          |
+| P2       | History visual and native verification                   | Verified native macOS contrast, 2× grid spacing, compact list at 140pt, opening and Finder reveal on one display. Mock tests cover grid and list tooltip boundaries. Verify live tooltips and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Ambiguous scroll seams, physical pointer movement between controls, live camera capture, and multi-display workflows remain open.                                                                                                                                                                                                                                                                                                                                      |
@@ -5429,6 +5429,28 @@ both keyboard directions on the history slider.
 These checks used a temporary profile and the native macOS accessibility
 adapter. A screen reader pass and equivalent checks on other operating systems
 remain open.
+
+### 2026-11-18 native macOS History contrast and spacing
+
+The 400×500-point History window was captured on the Retina display with
+three generated screenshots. In dark mode over a white test backdrop, the
+original control surface measured RGB (255, 255, 255), making the light heading
+and filter text barely visible. The three-item grid also stretched its
+second row to leave a 65.5-point gap. Electron's grid specifies 12 points.
+
+The window now paints a tint from the active theme over the blurred surface
+and keeps grid rows at the top of the scroll area. The same native screenshot
+measured RGB (8, 8, 10) in the dark surface and a 12-point row gap. A temporary
+test forced the native popover to 140×500 points. Its light compact list
+wrapped the toolbar and kept the thumbnails and labels inside the window
+over a dark backdrop. The opaque fallback for reduced transparency was
+retained and the operating system setting stayed unchanged.
+
+Clicking the first teal capture opened that image in the editor. Its folder
+button opened the generated captures folder in Finder and selected the teal
+PNG. The test windows closed and the existing editor stayed open. A live
+History tooltip and multi-display placement remain to be verified. All seven
+History tests passed, including the new 2× grid gap assertion.
 
 ## Review gate
 
