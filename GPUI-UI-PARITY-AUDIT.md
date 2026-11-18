@@ -7479,6 +7479,22 @@ simulated daemon. The Metal recording workflow checks direct editor
 opening while the same reply is held. The AppKit lifecycle fixture
 checks protection request order and the panel's final sharing state.
 
+### 2026-11-18 macOS camera protection before recording
+
+GPUI now waits for camera protection off the UI thread before reserving
+a project or sending Start. The toolbar prevents duplicate starts while
+the request is pending. Escape and capture switches release protection
+and invalidate the waiting start. A rejection keeps the toolbar available
+for a retry.
+
+Eight native runs used a simulated daemon in light and dark. With the
+protection reply held, cancellation took 14–29 ms, and switching to an
+active area selector took 50–53 ms. Neither path sent Start or reserved
+a project when the late reply arrived. The acceptance and rejection
+runs verified that Start followed a successful protection reply. The
+Metal recording workflow holds both startup and cleanup protection
+replies to check the start gate and editor handoff.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

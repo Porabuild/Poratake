@@ -645,6 +645,20 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         let before = super::daemon_fixture::calls(output).len();
         click_measured(cx, window, "recording-controls", 2);
         settle(cx, window);
+        #[cfg(target_os = "macos")]
+        {
+            super::workflows::wait_for_recording_start(cx);
+            let started = std::time::Instant::now();
+            while !super::daemon_fixture::calls(output)[before..].iter().any(|call| {
+                call["module"] == "camera-preview"
+                    && call["method"] == "setContentProtection"
+                    && call["params"]["enabled"] == false
+            }) {
+                cx.run_until_parked();
+                assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::yield_now();
+            }
+        }
         let calls = super::daemon_fixture::calls(output);
         let calls = &calls[before..];
         let protection: Vec<_> = calls

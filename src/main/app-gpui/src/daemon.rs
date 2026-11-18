@@ -630,6 +630,7 @@ impl CameraPreviewClient<'_> {
         )
     }
 
+    #[cfg(any(not(target_os = "macos"), feature = "parity"))]
     pub fn set_content_protection(&self, enabled: bool) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(
@@ -983,6 +984,7 @@ impl ScreenRecorderClient<'_> {
         )
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn call(&self, method: ScreenRecorderMethod, params: Option<Value>) -> Result<()> {
         self.daemon
             .call(SCREEN_RECORDER_MODULE, method.id(), params)

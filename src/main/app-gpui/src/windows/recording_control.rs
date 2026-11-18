@@ -90,6 +90,8 @@ pub struct RecordingControl {
     camera_pending: bool,
     #[cfg(target_os = "macos")]
     pause_pending: bool,
+    #[cfg(target_os = "macos")]
+    camera_protection_pending: bool,
     microphone: bool,
     camera: bool,
     camera_locked: bool,
@@ -169,6 +171,11 @@ impl RecordingControl {
     #[cfg(all(feature = "parity", target_os = "macos"))]
     pub(crate) fn parity_pause_pending(&self) -> bool {
         self.pause_pending
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_protection_pending(&self) -> bool {
+        self.camera_protection_pending
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
@@ -267,6 +274,8 @@ impl RecordingControl {
                         camera_pending: false,
                         #[cfg(target_os = "macos")]
                         pause_pending: false,
+                        #[cfg(target_os = "macos")]
+                        camera_protection_pending: false,
                         microphone: toggles.mic_enabled,
                         camera: toggles.camera_enabled,
                         camera_locked: false,
@@ -635,6 +644,7 @@ impl RecordingControl {
                             this.measured_width = None;
                         }
                         if moved || this.target != target || this.window_id != window_id {
+                            this.cancel_camera_protection(cx);
                             this.pending_device_menu = None;
                             this.menu.close(window, cx);
                             this.device_request = this.device_request.wrapping_add(1);
@@ -690,6 +700,7 @@ impl RecordingControl {
     pub(crate) fn start_enabled(&self, cx: &App) -> bool {
         #[cfg(target_os = "macos")]
         if self.camera_pending
+            || self.camera_protection_pending
             || crate::intents::recording_outline_is_hiding(cx)
             || crate::capture::overlay::pending_recording_preparation(cx).is_some()
         {
@@ -772,11 +783,7 @@ impl RecordingControl {
         }
         let removed = remove_empty_failed_start_project(project, &error);
         #[cfg(target_os = "macos")]
-        if self.selected_ios_id.is_some() {
-            crate::capture::overlay::end_recording_handoff(cx);
-        } else {
-            crate::capture::overlay::rollback_recording_handoff(cx);
-        }
+        self.rollback_start_handoff(cx);
         self.project = None;
         self.mode = Mode::PreRecording;
         self.started_at = None;
@@ -925,7 +932,7 @@ impl RecordingControl {
                                 cx.notify();
                                 if shown {
                                     crate::capture::overlay::close_all(cx);
-                                    this.start_after_handoff(excluded_window_ids, window, cx);
+                                    this.request_recording_start(excluded_window_ids, window, cx);
                                 } else {
                                     crate::intents::hide_recording_outline(None, cx);
                                     set_pre_recording_escape(true, cx);
@@ -948,7 +955,75 @@ impl RecordingControl {
                 return;
             }
         }
+        self.request_recording_start(excluded_window_ids, window, cx);
+    }
+
+    fn request_recording_start(
+        &mut self,
+        excluded_window_ids: Vec<i64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(target_os = "macos"))]
         self.start_after_handoff(excluded_window_ids, window, cx);
+
+        #[cfg(target_os = "macos")]
+        {
+            let daemon = crate::state::state(cx).daemon;
+            let wait = match daemon.camera_preview().begin_content_protection(true) {
+                Ok(wait) => wait,
+                Err(error) => {
+                    self.camera_protection_failed(error, cx);
+                    return;
+                }
+            };
+            self.camera_protection_pending = true;
+            let generation = self.countdown_generation;
+            cx.spawn_in(window, async move |entity, cx| {
+                let result = smol::unblock(wait).await;
+                let _ = entity.update_in(cx, |this, window, cx| {
+                    if !this.camera_protection_pending || this.countdown_generation != generation {
+                        return;
+                    }
+                    this.camera_protection_pending = false;
+                    match result {
+                        Ok(_) => this.start_after_handoff(excluded_window_ids, window, cx),
+                        Err(error) => this.camera_protection_failed(error, cx),
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn camera_protection_failed(&self, error: anyhow::Error, cx: &mut Context<Self>) {
+        recorder::release_camera_protection(&crate::state::state(cx).daemon);
+        self.rollback_start_handoff(cx);
+        set_pre_recording_escape(true, cx);
+        crate::windows::toast::Toast::show(
+            cx,
+            "Recording failed",
+            format!("Camera preview protection failed: {error}"),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rollback_start_handoff(&self, cx: &mut App) {
+        if self.selected_ios_id.is_some() {
+            crate::capture::overlay::end_recording_handoff(cx);
+        } else {
+            crate::capture::overlay::rollback_recording_handoff(cx);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn cancel_camera_protection(&mut self, cx: &mut App) {
+        if std::mem::take(&mut self.camera_protection_pending) {
+            recorder::release_camera_protection(&crate::state::state(cx).daemon);
+        }
     }
 
     fn start_after_handoff(
@@ -964,7 +1039,10 @@ impl RecordingControl {
             Err(error) => {
                 eprintln!("[recorder] failed to create project: {error}");
                 #[cfg(target_os = "macos")]
-                crate::capture::overlay::rollback_recording_handoff(cx);
+                {
+                    recorder::release_camera_protection(&service.daemon);
+                    crate::capture::overlay::rollback_recording_handoff(cx);
+                }
                 return;
             }
         };
@@ -1088,13 +1166,7 @@ impl RecordingControl {
                         }
                         Err(error) => {
                             if error.code != "DAEMON_UNAVAILABLE" {
-                                if let Err(error) = crate::state::state(cx)
-                                    .daemon
-                                    .camera_preview()
-                                    .set_content_protection(false)
-                                {
-                                    eprintln!("[recorder] camera content protection rollback failed: {error}");
-                                }
+                                recorder::release_camera_protection(&crate::state::state(cx).daemon);
                             }
                             if error.code != "DAEMON_UNAVAILABLE" && this.stop_previous_state.is_none() && this.start_stop_requested.is_none() {
                                 if let Some(project) = this.project.take() {
@@ -1171,6 +1243,10 @@ impl RecordingControl {
     /// stay live while a recording runs, so they are applied through the
     /// recorder's setters instead of being frozen at start.
     pub(crate) fn set_system_audio(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.camera_protection_pending {
+            return false;
+        }
         if self.mode == Mode::Recording {
             #[cfg(target_os = "macos")]
             return self.request_system_audio(enabled, cx);
@@ -1249,7 +1325,7 @@ impl RecordingControl {
         cx: &mut Context<Self>,
     ) -> bool {
         #[cfg(target_os = "macos")]
-        if self.microphone_pending {
+        if self.microphone_pending || self.camera_protection_pending {
             return false;
         }
         if enabled
@@ -1306,7 +1382,7 @@ impl RecordingControl {
 
     pub(crate) fn set_camera(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
         #[cfg(target_os = "macos")]
-        if self.camera_pending {
+        if self.camera_pending || self.camera_protection_pending {
             return false;
         }
         if enabled
@@ -1358,7 +1434,7 @@ impl RecordingControl {
         selection: Option<(Option<String>, Option<String>)>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.camera_pending {
+        if self.camera_pending || self.camera_protection_pending {
             return false;
         }
         let had_preview = self.camera_preview_visible;
@@ -1612,6 +1688,8 @@ impl RecordingControl {
             recorder::state(),
             recorder::RecorderState::Starting | recorder::RecorderState::Stopping
         );
+        #[cfg(target_os = "macos")]
+        let starting = starting || self.camera_protection_pending;
         if self.mode == Mode::PreRecording || self.camera_locked {
             toggles.push(self.device_dropdown(
                 "camera",
@@ -1698,6 +1776,7 @@ impl RecordingControl {
             );
         #[cfg(target_os = "macos")]
         let disabled = disabled
+            || self.camera_protection_pending
             || (self.microphone_pending
                 && kind == DeviceMenuKind::Media(crate::system::devices::DeviceKind::Microphone));
         #[cfg(target_os = "macos")]
@@ -2504,6 +2583,8 @@ impl RecordingControl {
         self.countdown_generation += 1;
         self.countdown_active = false;
         self.countdown_remaining = None;
+        #[cfg(target_os = "macos")]
+        self.cancel_camera_protection(cx);
         self.hide_camera_preview(cx);
         close_toolbar(window);
     }
@@ -4207,6 +4288,8 @@ mod tests {
                 camera_pending: false,
                 #[cfg(target_os = "macos")]
                 pause_pending: false,
+                #[cfg(target_os = "macos")]
+                camera_protection_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
@@ -4384,6 +4467,8 @@ mod tests {
                 camera_pending: false,
                 #[cfg(target_os = "macos")]
                 pause_pending: false,
+                #[cfg(target_os = "macos")]
+                camera_protection_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,

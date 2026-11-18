@@ -679,9 +679,18 @@ fn recorded_editor_and_export(
 
 #[cfg(target_os = "macos")]
 pub(super) fn wait_for_recording_start(cx: &mut HeadlessAppContext) {
+    use crate::windows::recording_control::RecordingControl;
+    use crate::windows::registry::{self, WindowKind};
+
     let started = std::time::Instant::now();
     while crate::video::recorder::state() == crate::video::recorder::RecorderState::Starting
-        || cx.update(|cx| crate::capture::overlay::pending_recording_preparation(cx).is_some())
+        || cx.update(|cx| {
+            crate::capture::overlay::pending_recording_preparation(cx).is_some()
+                || registry::handle(WindowKind::RecordingControl, cx)
+                    .and_then(|handle| handle.downcast::<RecordingControl>())
+                    .and_then(|handle| handle.read(cx).ok())
+                    .is_some_and(RecordingControl::parity_protection_pending)
+        })
     {
         cx.run_until_parked();
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
@@ -741,6 +750,7 @@ fn recorded_screen_handoff(
     let mut fixture = serde_json::json!({"freeze": "live"});
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let protection = accept_fixture_barrier(&listener);
+    fixture["recordingProtectionStartBarrier"] = true.into();
     fixture["recordingProtectionBarrier"] = true.into();
     fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
     let duration = configure_recording_fixture(&mut fixture, "screen");
@@ -760,6 +770,18 @@ fn recorded_screen_handoff(
     let before = super::daemon_fixture::calls(output).len();
     click_measured(cx, control, "recording-controls", 0);
     settle(cx, control);
+    let mut enabling = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        crate::video::recorder::state(),
+        crate::video::recorder::RecorderState::Idle
+    );
+    assert!(super::daemon_fixture::calls(output)[before..].iter().all(|call| {
+        call["module"] != "screen-recorder" || call["method"] != "start"
+    }));
+    enabling.write_all(&[1]).unwrap();
+    let protection = accept_fixture_barrier(&listener);
     wait_for_recording_start(cx);
     assert_eq!(
         crate::video::recorder::state(),

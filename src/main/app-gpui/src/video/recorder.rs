@@ -147,7 +147,7 @@ pub fn start(
         anyhow::bail!("a recording is already active");
     }
     let request = start_request(config);
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(windows)]
     if let Err(error) = set_camera_content_protection(daemon, true) {
         if let Err(rollback_error) = set_camera_content_protection(daemon, false) {
             eprintln!("[recorder] camera content protection rollback failed: {rollback_error}");
@@ -157,7 +157,9 @@ pub fn start(
     let result = match daemon.screen_recorder().start(&request) {
         Ok(result) => result,
         Err(error) => {
-            #[cfg(any(windows, target_os = "macos"))]
+            #[cfg(target_os = "macos")]
+            release_camera_protection(daemon);
+            #[cfg(windows)]
             if let Err(error) = set_camera_content_protection(daemon, false) {
                 eprintln!("[recorder] camera content protection rollback failed: {error}");
             }
@@ -266,6 +268,16 @@ pub fn stop(daemon: &DaemonHandle) -> anyhow::Result<RecordingStop> {
 
 pub fn complete_stop(daemon: &DaemonHandle) {
     #[cfg(target_os = "macos")]
+    release_camera_protection(daemon);
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = set_camera_content_protection(daemon, false) {
+        eprintln!("[recorder] camera content protection failed: {error}");
+    }
+    store_state(RecorderState::Idle);
+}
+
+#[cfg(target_os = "macos")]
+pub fn release_camera_protection(daemon: &DaemonHandle) {
     match daemon.camera_preview().begin_content_protection(false) {
         Ok(wait) => smol::spawn(async move {
             if let Err(error) = smol::unblock(wait).await {
@@ -275,11 +287,6 @@ pub fn complete_stop(daemon: &DaemonHandle) {
         .detach(),
         Err(error) => eprintln!("[recorder] camera content protection failed: {error}"),
     }
-    #[cfg(not(target_os = "macos"))]
-    if let Err(error) = set_camera_content_protection(daemon, false) {
-        eprintln!("[recorder] camera content protection failed: {error}");
-    }
-    store_state(RecorderState::Idle);
 }
 
 #[cfg(target_os = "macos")]
@@ -321,6 +328,7 @@ pub fn set_camera(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
     daemon.screen_recorder().set_camera(enabled)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn set_camera_content_protection(daemon: &DaemonHandle, enabled: bool) -> anyhow::Result<()> {
     daemon.camera_preview().set_content_protection(enabled)
 }

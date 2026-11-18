@@ -892,19 +892,22 @@ pub fn run() {
                 );
                 continue;
             }
-            ("camera-preview", "setContentProtection")
-                if request.params.as_ref().is_some_and(|params| params["enabled"] == false) =>
-            {
-                if let Some(fixture) = optional_capture_fixture(&output)
-                    .filter(|fixture| fixture["recordingProtectionBarrier"] == true)
+            ("camera-preview", "setContentProtection") => {
+                let enabled = request.params.as_ref().and_then(|params| params["enabled"].as_bool());
+                let barrier = match enabled {
+                    Some(true) => "recordingProtectionStartBarrier",
+                    _ => "recordingProtectionBarrier",
+                };
+                if let Some(fixture) =
+                    optional_capture_fixture(&output).filter(|fixture| fixture[barrier] == true)
                 {
                     std::thread::spawn(move || {
                         wait_for_fixture_barrier(&fixture);
-                        protocol::respond_success(&request.id, json!({"protected": false}));
+                        protocol::respond_success(&request.id, json!({"protected": enabled}));
                     });
                     continue;
                 }
-                json!({"protected": false})
+                json!({"protected": enabled})
             }
             ("screen-recorder", "setSystemAudio")
                 if optional_capture_fixture(&output)
@@ -950,7 +953,7 @@ pub fn run() {
                 }
                 json!({"visible": true})
             }
-            ("camera-preview", "hide" | "update" | "setContentProtection") => json!({}),
+            ("camera-preview", "hide" | "update") => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");
             }
