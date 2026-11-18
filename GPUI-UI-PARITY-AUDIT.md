@@ -4351,7 +4351,7 @@ appearance.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | A Windows probe verified tooltip placement, dismissal and WGC exclusion. On macOS, [physical drags](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) reached recording and preview controls; tooltip windows had a four-point gap. A [GPUI area recording](tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.txt) excluded the tooltip and bar while capturing an ordinary window at the same location. Unpressed hover, screenshots, other targets and mixed-DPI remain unverified.                                                                                                |
+| P1       | Native compact-window tooltips                           | A Windows probe verified tooltip placement, dismissal and WGC exclusion. On macOS, [physical drags](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) reached recording and preview controls; tooltip windows had a four-point gap. A [GPUI area recording](tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.txt) excluded the tooltip and bar while capturing an ordinary window at the same location. The screenshot filter and native AppKit dispatch passed isolated checks. Physical movement between controls, other recording targets and mixed-DPI behavior remain open.    |
 | P2       | Linux recording tooltips                                 | [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43362521397/job/131679275651) passed hover and keyboard-focus tooltip geometry tests, including unbroken and Unicode titles at simulated 100% and 200%. Very long titles remain shortened. Verify real Linux, macOS focus and native screen-reader behavior. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                                                                                             |
 | P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                                                                                       |
 | P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.                                                                                |
@@ -5684,6 +5684,23 @@ profile byte for byte, including the Audio Tracks panel with one enabled track.
 The grouped pointer regression covers the state change that this visual profile
 does not exercise. Audio-panel volume and speed parity for split groups remains
 open.
+
+### 2026-11-18 macOS popup mouse-move delivery
+
+An isolated hidden AppKit panel used a tracking area with MouseMoved and
+ActiveAlways. Adding that area and removing the window frame left the native
+window's acceptsMouseMovedEvents setting disabled. A dispatch probe sent two
+unpressed moves through NSApplication. The panel received neither with the
+setting disabled and received both with it enabled. The probe observed
+window-level dispatch without moving the system pointer. [AppKit event guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingMouseEvents/HandlingMouseEvents.html)
+
+The GPUI popup probe measured the same disabled flag after removing the frame
+on the old build. GPUI now enables the native setting in its shared popup
+constructor and asserts it in the hidden probe. The arm64 and translated x86_64
+probes produced identical results and passed the frame, click-through, scroll
+window exclusion-ID and selector lease checks. The arm64 suite passed 1,151
+GPUI tests with 23 marked ignored. Physical mouse or trackpad movement between
+the floating controls remains open.
 
 ## Review gate
 

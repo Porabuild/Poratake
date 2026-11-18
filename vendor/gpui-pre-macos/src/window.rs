@@ -1259,6 +1259,7 @@ impl MacWindow {
                 WindowKind::PopUp | WindowKind::AnchoredPopup(_) => {
                     add_mouse_tracking_area(tracking_view);
 
+                    let _: () = msg_send![native_window, setAcceptsMouseMovedEvents: Bool::YES];
                     let _: () = msg_send![native_window, setLevel: NSPopUpWindowLevel];
                     let _: () = msg_send![
                         native_window,

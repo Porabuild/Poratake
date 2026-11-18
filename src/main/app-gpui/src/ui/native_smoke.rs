@@ -93,6 +93,12 @@ pub fn popup_frame_probe() {
             assert_eq!(before_view.origin.y, after_view.origin.y);
             assert_eq!(before_view.size.width, after_view.size.width);
             assert_eq!(before_view.size.height, after_view.size.height);
+            let accepts_motion: BOOL = unsafe { msg_send![native_window, acceptsMouseMovedEvents] };
+            assert_eq!(
+                accepts_motion, YES,
+                "frameless popup must accept unpressed mouse movement"
+            );
+            println!("frameless popup accepts unpressed mouse movement: true");
             let ignores_before: BOOL = unsafe { msg_send![native_window, ignoresMouseEvents] };
             crate::system::click_through::enable(window);
             let ignores_after: BOOL = unsafe { msg_send![native_window, ignoresMouseEvents] };
