@@ -798,3 +798,28 @@ No privacy settings changed. All four revised takes reached the
 decoded recording preview in 114.1–126.4 ms from Stop, and the
 editor decoded a frame in 76.2–91.5 ms after opening from preview.
 Pause RPCs took 0.2 ms, and Resume RPCs took 0.5 and 0.6 ms.
+
+Editing and exporting live area takes after Pause and Resume
+
+The live area recorder used the existing Screen Recording grant. A
+small generated panel had fixed shapes over the changing background.
+Audio, camera and keystroke capture were disabled. Each 600 × 440
+source had five frames and decoded red then blue, with no green.
+
+Theme  Wall clock  Source     Export    Source/export frames
+Light     3.091 s  2.2500 s   2.2667 s      5 / 68
+Dark      3.101 s  2.2517 s   2.2667 s      5 / 68
+
+The GPUI Metal workflow loaded each live source via
+PORATAKE_PARITY_AREA_RECORDING. It drew a zoom segment and a filled
+rectangle, saved and reopened the project, then exported it. The
+zoom changed 53,491 preview pixels by at least 16 channel levels.
+The saved drawing affected 11,404 pixels in the export comparison.
+
+Both exports decoded as video-only at 600 × 440 and preserved the
+red-to-blue order. Mean preview/export channel error was 0.869,
+0.869 and 1.099 at 0.5, 1.0 and 1.5 seconds in both appearances.
+Rendered preview/export mean RGB error at 1.0 second was 1.186
+in both, including 416 channels more than 32 levels from the
+decoded frame. Export duration differed by less than one frame at
+30 fps. Editor input used the parity fixture's app-local gestures.
