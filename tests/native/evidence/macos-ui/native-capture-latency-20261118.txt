@@ -600,3 +600,37 @@ Dark:  372.7, 58.5, 64.2 ms
 
 These are individual app-local observations. Sampling includes dispatch
 and WindowServer polling, and does not measure physical input or paint.
+
+Unheld active-outline follow-up, dark appearance, separate fresh apps
+
+The daemon round trip is measured from the request received at the
+bridge to the reply from the daemon at the bridge. Selector times are
+from the capture request to the first WindowServer sample showing it.
+
+                      168903a8                       85143e18
+Daemon round trip     1.4, 1.5, 1.5, 1.5 ms         1.7, 1.4, 10.0, 6.3 ms
+Selector visible      66.7, 69.5, 62.5, 60.9 ms     77.5, 70.0, 75.9, 75.7 ms
+
+The follow-up did not reproduce the earlier 372.7 ms sample. The revised
+unheld samples were slower in this group, while the held-reply probe
+above verifies the responsiveness gain during the wait.
+
+Screenshot timing after the outline handoff fix (85143e18)
+
+Six consecutive cycles in each fresh profile with the same generated
+backdrop. Warm medians and maxima cover the final five cycles. These
+timings use app-local input and WindowServer sampling on one display.
+
+                                    Small live light    Large live dark    Large frozen dark
+                                    first / med (max)   first / med (max)  first / med (max)
+Area selector visible               74.8 / 20.0 (21.9)   75.1 / 20.8 (21.8) 127.4 / 33.5 (36.3)
+Area-to-window switch               28.9 / 13.4 (17.7)   29.9 / 19.1 (19.7)  54.6 / 34.4 (38.1)
+Cancel to selector hidden           13.0 / 13.1 (19.4)   23.9 /  6.7 (14.2)  19.2 / 13.2 (19.4)
+Confirm to selector hidden          12.3 / 15.6 (19.5)   12.5 / 13.1 (14.0)  17.8 / 17.8 (18.1)
+Confirm to preview window          140.5 / 72.4 (78.7)  154.5 /100.8(106.8)  55.7 / 55.2 (57.6)
+Confirm to ready thumbnail         146.5 / 78.5 (84.9)  166.6 /109.4(119.0)  66.7 / 63.7 (67.7)
+Preview to editor window            40.8 / 20.3 (21.0)   50.1 / 40.1 (40.9)  39.1 / 26.4 (32.4)
+
+All times are milliseconds. The small capture was 600x440 physical
+pixels, and both large captures were 3000x1800. All 18 cycles saved
+their fixture PNG, opened the preview in the editor and closed cleanly.

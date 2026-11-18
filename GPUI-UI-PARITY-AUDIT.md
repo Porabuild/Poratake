@@ -6903,6 +6903,16 @@ The [timing record](tests/native/evidence/macos-ui/native-capture-latency-202611
 includes the raw samples from the built-in Retina display. The light and
 dark recording workflows and all 1,171 runnable GPUI tests passed.
 
+On the pushed build, six screenshot cycles per profile also covered
+area-to-window switching, cancellation, preview and editor opening.
+Warm median selector appearance was 20.0–33.5 ms, switching was
+13.4–34.4 ms, and cancel-to-hidden was 6.7–13.2 ms. Warm median
+confirm-to-visible-preview was 55.2–100.8 ms and preview-to-visible-editor
+was 20.3–40.1 ms. The first large live screenshot preview took 154.5 ms.
+The timing record includes cold and warm samples and a follow-up
+unheld recording-outline comparison. The four follow-up trials did not
+reproduce the 372.7 ms observation.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
