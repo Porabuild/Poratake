@@ -17,6 +17,9 @@ use crate::capture::{
 pub struct Coordinator {
     pub service: CaptureService,
     pending_attach: Option<PendingEditorAttach>,
+    analysis_generation: u64,
+    #[cfg(feature = "parity")]
+    pending_analyses: usize,
 }
 
 struct PendingEditorAttach {
@@ -70,6 +73,9 @@ impl Coordinator {
         Self {
             service,
             pending_attach: None,
+            analysis_generation: 0,
+            #[cfg(feature = "parity")]
+            pending_analyses: 0,
         }
     }
 
@@ -1103,7 +1109,14 @@ impl Coordinator {
         hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
+        self.analysis_generation = self.analysis_generation.wrapping_add(1);
+        let generation = self.analysis_generation;
+        #[cfg(feature = "parity")]
+        {
+            self.pending_analyses += 1;
+        }
         let service = self.service.clone();
+        let daemon = service.daemon.clone();
         let path =
             std::env::temp_dir().join(format!("{}-{}.png", intent.temp_prefix(), uuid_simple()));
         let transition = hide
@@ -1143,44 +1156,52 @@ impl Coordinator {
                         CaptureIntent::Ocr => "OCR Failed",
                         _ => "Scan Failed",
                     };
-                    show_capture_error(cx, title, "Failed to capture the selected area");
+                    let _ = entity.update(cx, |coordinator, cx| {
+                        if coordinator.complete_analysis(generation) {
+                            crate::windows::toast::Toast::show(cx, title, "Failed to capture the selected area");
+                        }
+                    });
                     return;
                 }
             };
 
-            let daemon = entity
-                .read_with(cx, |coordinator, _| coordinator.service.daemon.clone())
-                .ok();
-            let Some(daemon) = daemon else {
-                return;
-            };
+            let outcome = smol::unblock(move || {
+                let outcome = match intent {
+                    CaptureIntent::Ocr => crate::capture::analysis::recognize_text(&daemon, &captured),
+                    _ => crate::capture::analysis::scan_qr_code(&daemon, &captured),
+                };
+                let _ = std::fs::remove_file(&captured);
+                outcome
+            })
+            .await;
 
-            let analysis = cx.background_executor().spawn({
-                let captured = captured.clone();
-                async move {
-                    let outcome = match intent {
-                        CaptureIntent::Ocr => {
-                            crate::capture::analysis::recognize_text(&daemon, &captured)
-                        }
-                        _ => crate::capture::analysis::scan_qr_code(&daemon, &captured),
-                    };
-                    let _ = std::fs::remove_file(&captured);
-                    outcome
+            let _ = entity.update(cx, |coordinator, cx| {
+                if !coordinator.complete_analysis(generation) {
+                    return;
                 }
-            });
-            let outcome = analysis.await;
-
-            cx.update(|cx| match outcome.clipboard {
-                Some(text) => {
-                    crate::system::clipboard::ClipboardService::write_text(cx, text);
-                    crate::windows::toast::Toast::show_transient(cx, outcome.title, outcome.body);
-                }
-                None => {
-                    crate::windows::toast::Toast::show(cx, outcome.title, outcome.body);
+                match outcome.clipboard {
+                    Some(text) => {
+                        crate::system::clipboard::ClipboardService::write_text(cx, text);
+                        crate::windows::toast::Toast::show_transient(cx, outcome.title, outcome.body);
+                    }
+                    None => crate::windows::toast::Toast::show(cx, outcome.title, outcome.body),
                 }
             });
         })
         .detach();
+    }
+
+    fn complete_analysis(&mut self, generation: u64) -> bool {
+        #[cfg(feature = "parity")]
+        {
+            self.pending_analyses -= 1;
+        }
+        self.analysis_generation == generation
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn pending_analyses_for_parity(&self) -> usize {
+        self.pending_analyses
     }
 }
 

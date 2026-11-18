@@ -587,6 +587,13 @@ pub fn run() {
                 } else {
                     assert_eq!((source.width(), source.height()), (640, 360));
                 }
+                if fixture["holdAnalysis"] == true {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"text": "Older OCR result"}));
+                    });
+                    continue;
+                }
                 match fixture["outcome"].as_str().unwrap() {
                     "error" => {
                         protocol::respond_error(

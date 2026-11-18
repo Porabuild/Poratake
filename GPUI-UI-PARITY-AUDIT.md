@@ -7660,6 +7660,20 @@ folder stayed empty. Clipboard delivery remains unverified.
 The probe used the existing screen grant and app-local input, and
 all 34 Electron reference tests passed.
 
+### 2026-11-18 OCR and QR completion order on macOS
+
+Only the newest confirmed OCR or QR selection can publish a clipboard
+result or completion notification. Recognition and temporary-file
+cleanup still finish for an older request. The newer selection can
+complete while the older daemon reply is pending.
+
+The light and dark Metal analysis workflows hold the OCR reply, confirm
+a later QR selection and verify that the QR result survives release
+of the older reply. Both temporary capture files are removed and the
+older reply posts no notification. The workflow uses GPUI's isolated
+clipboard. Live system clipboard delivery and the cause of the
+intermittent OCR delay remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

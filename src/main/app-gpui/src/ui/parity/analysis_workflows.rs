@@ -92,6 +92,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 select_area(cx, picker);
             }
             cx.run_until_parked();
+            wait_for_pending_analyses(cx, 0);
             assert!(
                 !cx.update(crate::capture::overlay::parity_is_active),
                 "{module}-{name}: selector must close"
@@ -234,6 +235,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    latest_analysis_wins(cx, output);
     config.update(|settings| {
         settings.storage.screenshots_path = original_config.storage.screenshots_path.clone();
         settings.screenshot.freeze_screen = original_config.screenshot.freeze_screen;
@@ -243,6 +246,83 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "OCR/QR capture, clipboard, temporary-file cleanup, errors, cancellation and retry passed"
     );
     color_picker_failure(cx, output);
+}
+
+fn wait_for_pending_analyses(cx: &mut HeadlessAppContext, expected: usize) {
+    use crate::capture::coordinator::CoordinatorHandle;
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if cx.update(|cx| cx.global::<CoordinatorHandle>().0.read(cx).pending_analyses_for_parity())
+            == expected
+        {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn latest_analysis_wins(cx: &mut HeadlessAppContext, output: &Path) {
+    use std::io::Write;
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ready = super::workflows::accept_fixture_barrier(&listener);
+    let fixture = output.join("capture-fixture.json");
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = false;
+        });
+    });
+    take_notifications();
+    let before = calls(output).len();
+    let mut older = None;
+    for (intent, module, hold) in [
+        (CaptureIntent::Ocr, "ocr", true),
+        (CaptureIntent::QrCode, "qrcode", false),
+    ] {
+        std::fs::write(
+            &fixture,
+            serde_json::to_vec(&serde_json::json!({
+                "freeze": "live",
+                "rect": SELECTED_RECT,
+                "windowId": null,
+                "analysis": module,
+                "outcome": "success",
+                "holdAnalysis": hold,
+                "barrier": listener.local_addr().unwrap().to_string(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update(|cx| crate::capture::start_area_selection(intent, cx));
+        cx.run_until_parked();
+        let picker = area_picker(cx);
+        select_area(cx, picker);
+        cx.run_until_parked();
+        if hold {
+            older = Some(ready.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+    }
+    wait_for_pending_analyses(cx, 1);
+    let clipboard = |cx: &mut HeadlessAppContext| {
+        cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    };
+    let newest = Some("poratake://visual-fixture".to_string());
+    assert_eq!(clipboard(cx), newest);
+    assert_eq!(take_notifications().len(), 1);
+    older.unwrap().write_all(&[1]).unwrap();
+    wait_for_pending_analyses(cx, 0);
+    assert_eq!(clipboard(cx), newest, "a late OCR result overwrote the newer QR result");
+    assert!(take_notifications().is_empty());
+    for call in &calls(output)[before..] {
+        if let Some(path) = call["params"]["path"].as_str() {
+            assert!(!Path::new(path).exists());
+        }
+    }
 }
 
 fn color_picker_failure(cx: &mut HeadlessAppContext, output: &Path) {
