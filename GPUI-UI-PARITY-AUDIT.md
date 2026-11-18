@@ -7331,6 +7331,21 @@ window above occluding windows and routed clicks inside that window.
 Permission request and Settings actions were outside the run. All 15
 Electron onboarding reference tests passed.
 
+### 2026-11-18 macOS recording startup phase timings
+
+Sixteen fresh GPUI area takes on the built-in Retina display recorded
+generated static or changing pixels through a preflight-gated screen-only
+daemon built from the current Swift sources. All sixteen decoded at
+600 × 440, and the daemon confirmed Start in 195–263 ms. The previous
+4.19-second outlier did not recur. Stop to visible preview took 56–136 ms.
+
+Four detailed trials attributed 76–78 ms to configuring and attaching
+the video input, 50–57 ms to creating the ScreenCaptureKit stream, and
+69–75 ms to starting it. The protected-window filter check took under
+0.06 ms across all sixteen takes. The measurements used the existing
+screen grant. Live audio, camera and the cause of the earlier outlier
+remain open. [Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

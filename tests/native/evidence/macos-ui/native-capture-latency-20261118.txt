@@ -681,3 +681,46 @@ files decoded as 600x440 video-only clips with nine frames. First-frame
 RGB ranges were uniform and matched the generated backdrop, with the
 toolbar and overlay excluded. These are individual observations on
 one Retina display with app-local input and WindowServer sampling.
+
+Area recording startup phases from 1de459f9
+
+The screen-only Swift fixture used the current recorder and filter registry
+with timing markers and disabled audio capture. Each run opened a new
+daemon and GPUI profile, and covered the selected crop with a generated
+320 × 240-point AppKit panel. No physical pointer events were sent.
+All clips contained only the expected video stream and uniform backdrop
+pixels. The moving-panel runs also opened the video editor.
+
+All timings are milliseconds. Lookup is the SCShareableContent call.
+Start stream measures the awaited SCStream.startCapture call. Reply is
+the start RPC round trip. Preview is Stop to WindowServer visibility.
+
+Scene   Theme  Trial  Lookup  Start stream  Reply  Preview  Decoded frames
+static  light     1    23.0          69.7  246.0     66.0               3
+static  dark      2    23.9          68.9  248.0    107.9               3
+static  light     3    23.7          82.1  261.2     61.4               3
+static  dark      4    18.9          60.5  206.2     62.5               3
+static  light     5    18.2          56.0  200.6     82.5               3
+static  dark      6    18.3          55.9  195.6     76.8               3
+moving  light     1    18.1          56.0  199.5     88.4               9
+moving  dark      2    20.7          57.9  204.4     79.0               9
+moving  light     3    18.4          53.5  195.3    136.0               9
+moving  dark      4    18.1          54.1  194.6    132.5               9
+moving  light     5    19.7          54.8  197.4     84.9               9
+moving  dark      6    18.4          56.4  198.8     91.5               9
+static  light    F1    31.0          68.8  252.0     58.7               3
+static  dark     F2    23.5          75.3  262.9     73.2               3
+moving  light    F3    23.2          70.2  248.2     67.1               9
+moving  dark     F4    22.4          69.8  248.8     56.1               9
+
+Detailed trials, milliseconds
+
+Trial  Create AVAssetWriter  Configure and add video input  Cursor  Create SCStream
+ F1            1.0                        76.0                 0.9         49.8
+ F2            1.0                        78.2                 3.6         57.3
+ F3            0.9                        76.6                 1.0         52.4
+ F4            0.9                        75.9                 3.3         52.5
+
+The follow-up filter check took 0.026–0.057 ms. The longest start
+round trip was 262.9 ms. The prior 4.19-second observation was not
+reproduced in this screen-only run, and its cause remains open.
