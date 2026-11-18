@@ -284,6 +284,24 @@ fn attachment_cancel_probe(path: &std::path::Path, cx: &mut App) {
 }
 
 #[cfg(not(test))]
+fn open_recording_probe_toolbar(cx: &mut App) {
+    RecordingControl::open(
+        cx,
+        RecordingTarget::Area,
+        ScreenRect {
+            x: 200,
+            y: 200,
+            width: 640,
+            height: 360,
+        },
+        None,
+        None,
+        None,
+        PreferenceScope::Global,
+    );
+}
+
+#[cfg(not(test))]
 pub fn native_ui_probe() {
     let directory =
         std::env::temp_dir().join(format!("poratake-native-ui-probe-{}", std::process::id()));
@@ -339,20 +357,7 @@ pub fn native_ui_probe() {
                 crate::windows::scroll_capture::native_scroll_exclusion_probe(cx);
                 return;
             }
-            RecordingControl::open(
-                cx,
-                RecordingTarget::Area,
-                ScreenRect {
-                    x: 200,
-                    y: 200,
-                    width: 640,
-                    height: 360,
-                },
-                None,
-                None,
-                None,
-                PreferenceScope::Global,
-            );
+            open_recording_probe_toolbar(cx);
             crate::windows::capture_preview::CapturePreviewWindow::open(cx, image_path);
         for (kind, name) in [
             (WindowKind::RecordingControl, "recording control"),
@@ -742,6 +747,11 @@ pub fn native_ui_probe() {
                         if command == "record-dismiss-menu" {
                             let dismissed = RecordingControl::cancel_pre_recording(cx);
                             println!("recording menu dismissed; control closed={dismissed}");
+                            return;
+                        }
+                        if command == "record-reopen" {
+                            open_recording_probe_toolbar(cx);
+                            println!("recording control reopened");
                             return;
                         }
                         if command == "record-audio-status" {

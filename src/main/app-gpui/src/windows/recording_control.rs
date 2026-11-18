@@ -333,7 +333,7 @@ impl RecordingControl {
                     this.countdown_active = false;
                     this.countdown_remaining = None;
                     this.hide_camera_preview(cx);
-                    window.remove_window();
+                    close_toolbar(window);
                     true
                 })
                 .unwrap_or(false);
@@ -541,12 +541,12 @@ impl RecordingControl {
                     }
                     if this.preference_scope != preference_scope {
                         this.hide_camera_preview(cx);
-                        window.remove_window();
+                        close_toolbar(window);
                         return false;
                     }
                     #[cfg(not(windows))]
                     if super::desktop_window_bounds(window).origin != bounds.origin {
-                        window.remove_window();
+                        close_toolbar(window);
                         return false;
                     }
                     this.target = target;
@@ -1645,7 +1645,7 @@ impl RecordingControl {
         self.paused_at = None;
         self.paused_total = Duration::ZERO;
 
-        window.remove_window();
+        close_toolbar(window);
         registry::close(RegistryKind::RecordingControl, cx);
         crate::capture::overlay::end_recording_handoff(cx);
         crate::intents::refresh_shell(cx);
@@ -1800,7 +1800,7 @@ impl RecordingControl {
         self.paused_at = None;
         self.paused_total = Duration::ZERO;
 
-        window.remove_window();
+        close_toolbar(window);
         registry::close(RegistryKind::RecordingControl, cx);
         crate::capture::overlay::end_recording_handoff(cx);
         crate::intents::refresh_shell(cx);
@@ -1905,7 +1905,7 @@ impl RecordingControl {
         self.countdown_remaining = None;
         self.hide_camera_preview(cx);
         set_pre_recording_escape(false, cx);
-        window.remove_window();
+        close_toolbar(window);
         registry::close(RegistryKind::RecordingControl, cx);
         crate::capture::overlay::end_recording_handoff(cx);
     }
@@ -2100,6 +2100,8 @@ fn recording_control_exclusion_ids(
 
 fn configure_toolbar_window(window: &Window) {
     super::remove_popup_frame(window);
+    #[cfg(all(target_os = "macos", not(test)))]
+    crate::system::window_visibility::disable_macos_transitions(window);
     #[cfg(all(windows, not(test)))]
     {
         let Some(hwnd) = crate::windows::window_hwnd(window) else {
@@ -2124,6 +2126,12 @@ fn configure_toolbar_window(window: &Window) {
             eprintln!("[recording-control] failed to exclude toolbar from capture");
         }
     }
+}
+
+fn close_toolbar(window: &mut Window) {
+    #[cfg(target_os = "macos")]
+    crate::system::window_visibility::hide(window);
+    window.remove_window();
 }
 
 fn bar_bounds(

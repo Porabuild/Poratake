@@ -6340,6 +6340,25 @@ fixtures passed on arm64 and x86_64 under Rosetta. The production daemon
 typechecked and 79 Electron and daemon contract tests passed. The fixture
 used generated camera sources. Live camera switching remains unverified.
 
+### 2026-11-18 macOS recording toolbar cancellation latency
+
+The native probe observed the cancelled recording toolbar lingering for a
+warm median of 161.5 ms in light and 164.1 ms in dark. The toolbar now shares
+the selector's AppKit transition policy and orders out before deferred
+GPUI removal. The warm cancel-to-hidden medians fell to 11.7 and 13.3 ms.
+
+The updated bar reopened in 16.5–18.6 ms in the warm runs. Microphone menu
+expansion stayed near 17 ms. Collapse measured 26.1–27.5 ms after the
+change, compared with 12.9–21.1 ms before. The probe measures native window
+geometry with generated device data. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the sample counts and tails.
+
+All 1,163 arm64 GPUI tests passed with 23 ignored. The hidden AppKit
+probe passed. All 36 light and dark Metal toolbar images matched the
+baseline byte for byte. Physical clicks and time to the first composited
+menu pixels remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

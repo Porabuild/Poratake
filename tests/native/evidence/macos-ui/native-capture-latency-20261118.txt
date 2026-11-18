@@ -46,3 +46,23 @@ One earlier frozen trial took 884.1 ms to a ready thumbnail, with a 509.2 ms
 screenshot RPC observed in that timing group. The repeated frozen groups
 did not reproduce that tail. These samples give observed ranges and do not
 establish a latency bound.
+
+Recording toolbar follow-up
+
+Same Retina Apple M5 Pro. The native UI probe used a stub daemon with
+generated microphone data. Seven cycles per theme and build. The driver
+measured AppKit expansion and collapse in WindowServer, then waited for the
+menu animation to settle before timing toolbar cancellation. The first cycle
+was excluded from the warm figures. No physical input was posted.
+
+Warm median (warm maximum), milliseconds
+                  Light before  Light after  Dark before   Dark after
+Expand menu        17.7 (20.2)   17.0 (24.0)   16.4 (21.2)   17.1 (21.9)
+Collapse menu      12.9 (26.5)   27.5 (32.3)   21.1 (33.7)   26.1 (33.2)
+Cancel toolbar    161.5 (166.2)  11.7 (15.1)  164.1 (166.5)  13.3 (14.9)
+Reopen toolbar     12.8 (19.4)   16.5 (20.7)   16.2 (25.3)   18.6 (20.7)
+
+All 18 light and 18 dark Metal toolbar images matched their baseline byte
+for byte. The separate native popup fixture also passed. The menu timings
+are frame expansion and collapse, while the toolbar timings are visible
+window transitions. Physical input and compositor paint remain open.
