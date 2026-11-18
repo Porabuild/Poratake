@@ -6244,6 +6244,28 @@ includes the final selector, preview and editor numbers and the observed
 tails. It measures one Apple Silicon system with generated images.
 Performance across hardware, mixed displays and physical input remains open.
 
+### 2026-11-18 macOS screenshot editor handoff during image decode
+
+The preview's Edit and double-click actions previously held the UI thread
+while decoding the screenshot. They now share one guarded handoff that
+starts dismissal and decodes on the background executor. Capture directly
+to the editor uses the same background path. The decoded image still goes
+through the same color-managed editor constructor, and an error still
+shows the existing toast.
+
+In six native dark-mode cycles per mode on the Apple M5 Pro, the warm
+median acknowledgment of the preview editor command fell from 25.3 to
+0.1 ms for a 3000×1800 live screenshot and from 19.2 to 0.1 ms for a frozen
+screenshot. Native window visibility moved from 40.4 to 44.9 ms live and
+from 33.0 to 41.8 ms frozen in these runs. This moved work off the UI
+thread while retaining the cost of preparing the editor.
+
+The Metal workflow sends repeated edit requests in one UI turn and checks
+that no editor opens inline, exactly one opens after decoding, and its
+export matches the selected screenshot. It passed in light at 2× and
+dark at 1×. The arm64 suite passed 1,162 tests with 23 ignored. Physical
+input and final compositor paint timing remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

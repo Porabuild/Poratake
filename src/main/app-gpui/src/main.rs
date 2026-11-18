@@ -67,7 +67,28 @@ pub(crate) fn open_editor_with_state(
     path: &str,
     editor_state: Option<editor::window::PersistedEditorState>,
 ) -> bool {
-    let image = match crate::render::images::open(path) {
+    open_editor_with_image(cx, path, editor_state, crate::render::images::open(path))
+}
+
+pub(crate) fn open_editor_async(cx: &mut App, path: String) {
+    cx.spawn(async move |cx| {
+        let source = path.clone();
+        let image = cx
+            .background_executor()
+            .spawn(async move { crate::render::images::open(source) })
+            .await;
+        cx.update(|cx| open_editor_with_image(cx, &path, None, image));
+    })
+    .detach();
+}
+
+fn open_editor_with_image(
+    cx: &mut App,
+    path: &str,
+    editor_state: Option<editor::window::PersistedEditorState>,
+    image: image::ImageResult<image::DynamicImage>,
+) -> bool {
+    let image = match image {
         Ok(image) => image,
         Err(error) => {
             windows::toast::Toast::show(

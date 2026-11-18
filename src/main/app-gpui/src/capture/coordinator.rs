@@ -381,7 +381,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
         if open_preview {
             crate::windows::capture_preview::CapturePreviewWindow::open(cx, path.clone());
         } else {
-            crate::open_editor_for(cx, path.to_string_lossy().as_ref());
+            crate::open_editor_async(cx, path.to_string_lossy().into_owned());
         }
     });
 }

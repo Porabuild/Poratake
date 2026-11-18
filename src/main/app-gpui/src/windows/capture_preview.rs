@@ -1732,6 +1732,30 @@ fn report_copy_failure(cx: &mut App, message: &str) {
     crate::windows::toast::Toast::show(cx, "Copy failed", message.to_string());
 }
 
+fn edit_preview(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let edited = preview_entity.update(cx, |view, cx| {
+        let preview = view.previews.iter().find(|preview| preview.id == id)?;
+        if preview.dismiss_animation.is_some() || preview.busy || preview.completed.is_some() {
+            return None;
+        }
+        let source = (preview.kind, preview.path.to_string_lossy().into_owned());
+        begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
+        Some(source)
+    });
+    let Ok(Some((kind, path))) = edited else {
+        return;
+    };
+    match kind {
+        PreviewKind::Screenshot => crate::open_editor_async(cx, path),
+        PreviewKind::Video => crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path)),
+    }
+}
+
 fn begin_remove_preview(
     view: &mut CapturePreviewWindow,
     id: u64,
@@ -2026,25 +2050,9 @@ impl CapturePreviewWindow {
             })
             .on_mouse_down(MouseButton::Left, {
                 let preview_entity = preview_entity.clone();
-                let path = path.clone();
                 move |event: &gpui::MouseDownEvent, window, cx| {
-                    if event.click_count < 2 || gated {
-                        return;
-                    }
-                    let path = path.to_string_lossy().into_owned();
-                    let _ = preview_entity.update(cx, |view, cx| {
-                        begin_remove_preview(
-                            view,
-                            id,
-                            DismissBehavior::PreserveControls,
-                            window,
-                            cx,
-                        )
-                    });
-                    if is_video {
-                        crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
-                    } else {
-                        crate::open_editor_for(cx, &path);
+                    if event.click_count >= 2 {
+                        edit_preview(&preview_entity, id, window, cx);
                     }
                 }
             });
@@ -2319,27 +2327,9 @@ impl CapturePreviewWindow {
                                 TooltipPlacement::Top,
                                 theme,
                                 {
-                                    let path = path.clone();
                                     let preview_entity = preview_entity.clone();
                                     move |window, cx| {
-                                        let path = path.to_string_lossy().into_owned();
-                                        let _ = preview_entity.update(cx, |view, cx| {
-                                            begin_remove_preview(
-                                                view,
-                                                id,
-                                                DismissBehavior::PreserveControls,
-                                                window,
-                                                cx,
-                                            )
-                                        });
-                                        if is_video {
-                                            crate::windows::video_editor::VideoEditorWindow::open(
-                                                cx,
-                                                Some(path),
-                                            );
-                                        } else {
-                                            crate::open_editor_for(cx, &path);
-                                        }
+                                        edit_preview(&preview_entity, id, window, cx);
                                     }
                                 },
                             ))

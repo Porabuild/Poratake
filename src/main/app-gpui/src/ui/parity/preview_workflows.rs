@@ -571,17 +571,25 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         }
         let before = cx.update(|cx| cx.windows());
         let position = measured("capture-previews", 3).center();
-        event(
-            cx,
-            preview,
-            PlatformInput::MouseDown(MouseDownEvent {
+        cx.update_window(preview, |_, window, cx| {
+            let press = MouseDownEvent {
                 position,
                 button: MouseButton::Left,
                 click_count: 2,
                 modifiers: Modifiers::none(),
                 first_mouse: false,
-            }),
-        );
+            };
+            window.dispatch_event(PlatformInput::MouseDown(press.clone()), cx);
+            window.dispatch_event(PlatformInput::MouseDown(press), cx);
+            assert!(
+                cx.windows()
+                    .iter()
+                    .all(|handle| before.contains(handle)
+                        || handle.downcast::<EditorWindow>().is_none()),
+                "preview clicks must return before decoding and opening the editor"
+            );
+        })
+        .unwrap();
         event(
             cx,
             preview,
@@ -595,12 +603,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         settle(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 3));
         let editor = cx.update(|cx| {
-            cx.windows()
-                .into_iter()
-                .find(|handle| {
-                    !before.contains(handle) && handle.downcast::<EditorWindow>().is_some()
-                })
-                .expect("double-click must open the selected capture in the editor")
+            let mut opened = cx.windows().into_iter().filter(|handle| {
+                !before.contains(handle) && handle.downcast::<EditorWindow>().is_some()
+            });
+            let editor = opened
+                .next()
+                .expect("double-click must open the selected capture in the editor");
+            assert!(
+                opened.next().is_none(),
+                "repeated edit requests opened duplicate editors"
+            );
+            editor
         });
         let saved = cx
             .update_window(editor, |view, _, cx| {
