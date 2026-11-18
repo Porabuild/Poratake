@@ -165,10 +165,12 @@ pub struct VideoEditorWindow {
     /// flight replaces the queued position rather than piling up.
     compose_in_flight: bool,
     queued_frame: Option<f64>,
+    preview_frame_generation: u64,
     preview_quality: usize,
     preview_fast_frames: u16,
     preview_state_in_flight: bool,
     preview_state_queued: bool,
+    preview_commit_pending: bool,
     playback_generation: u64,
     preview_audio: crate::video::preview_audio::PreviewAudio,
     audio_generation: u64,
@@ -393,10 +395,12 @@ impl VideoEditorWindow {
             preview_image: None,
             compose_in_flight: false,
             queued_frame: None,
+            preview_frame_generation: 0,
             preview_quality: INITIAL_PREVIEW_QUALITY,
             preview_fast_frames: 0,
             preview_state_in_flight: false,
             preview_state_queued: false,
+            preview_commit_pending: false,
             playback_generation: 0,
             preview_audio: crate::video::preview_audio::PreviewAudio::new(),
             audio_generation: 0,
@@ -777,6 +781,7 @@ impl VideoEditorWindow {
             return;
         };
         let state = self.state.clone();
+        self.invalidate_preview_frames();
         self.preview_status = PreviewStatus::Loading;
         self.refresh_subtitle_count();
         cx.notify();
@@ -840,6 +845,10 @@ impl VideoEditorWindow {
         .detach();
     }
 
+    fn invalidate_preview_frames(&mut self) {
+        self.preview_frame_generation = self.preview_frame_generation.wrapping_add(1);
+    }
+
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else {
@@ -849,11 +858,13 @@ impl VideoEditorWindow {
         let max_dimensions =
             (self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some())
                 .then_some(ACTIVE_PREVIEW_SIZES[self.preview_quality]);
-        if self.compose_in_flight {
+        if self.compose_in_flight || self.preview_commit_pending {
             self.queued_frame = Some(time);
             return;
         }
         self.compose_in_flight = true;
+        self.queued_frame = None;
+        let generation = self.preview_frame_generation;
 
         cx.spawn(async move |entity, cx| {
             let (composed, elapsed) = cx
@@ -871,22 +882,24 @@ impl VideoEditorWindow {
 
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
-                if max_dimensions.is_some() {
-                    (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
-                        this.preview_quality,
-                        this.preview_fast_frames,
-                        elapsed,
-                        active_preview_budget(this.source_frame_rate),
-                    );
-                }
-                if let Some(image) = composed {
-                    // Every composed frame is a new texture, so the previous
-                    // one has to leave the sprite atlas with it.
-                    if let Some(previous) = this.preview_image.replace(image) {
-                        cx.drop_image(previous, None);
+                if this.preview_frame_generation == generation {
+                    if max_dimensions.is_some() {
+                        (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
+                            this.preview_quality,
+                            this.preview_fast_frames,
+                            elapsed,
+                            active_preview_budget(this.source_frame_rate),
+                        );
                     }
+                    if let Some(image) = composed {
+                        // Every composed frame is a new texture, so the previous
+                        // one has to leave the sprite atlas with it.
+                        if let Some(previous) = this.preview_image.replace(image) {
+                            cx.drop_image(previous, None);
+                        }
+                    }
+                    cx.notify();
                 }
-                cx.notify();
                 // A position queued while this compose ran is already the
                 // playhead's, so the follow-up only has to be scheduled.
                 if this.queued_frame.take().is_some() {
@@ -902,6 +915,10 @@ impl VideoEditorWindow {
         let Some(source) = self.source.clone() else {
             return;
         };
+        if self.gesture_snapshot.is_none() {
+            self.invalidate_preview_frames();
+            self.preview_commit_pending = true;
+        }
         if self.preview_state_in_flight {
             self.preview_state_queued = true;
             return;
@@ -924,6 +941,7 @@ impl VideoEditorWindow {
                     this.sync_preview_state(cx);
                     return;
                 }
+                this.preview_commit_pending = false;
                 this.request_frame(cx);
             });
         })
@@ -958,6 +976,7 @@ impl VideoEditorWindow {
                     this.playhead = total;
                     this.is_playing = false;
                     this.preview_audio.pause_all();
+                    this.invalidate_preview_frames();
                     this.request_frame(cx);
                     cx.notify();
                     return false;
@@ -1304,6 +1323,7 @@ impl VideoEditorWindow {
     }
 
     pub fn toggle_playback(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_preview_frames();
         self.is_playing = !self.is_playing;
         if self.is_playing {
             if self.playhead >= self.total_duration() {
@@ -1355,7 +1375,11 @@ impl VideoEditorWindow {
     /// scrub path.
     pub fn set_playhead(&mut self, time: f64, cx: &mut Context<Self>) {
         let total = self.total_duration();
-        self.playhead = time.clamp(0.0, total);
+        let time = time.clamp(0.0, total);
+        if !self.is_scrubbing && (self.playhead != time || self.preview_playhead.is_some()) {
+            self.invalidate_preview_frames();
+        }
+        self.playhead = time;
         self.preview_playhead = None;
         self.autoscroll_timeline();
         self.request_frame(cx);
@@ -1371,13 +1395,16 @@ impl VideoEditorWindow {
     }
 
     pub fn begin_scrub(&mut self) {
-        self.is_scrubbing = true;
+        if !std::mem::replace(&mut self.is_scrubbing, true) {
+            self.invalidate_preview_frames();
+        }
     }
 
     fn end_scrub(&mut self, cx: &mut Context<Self>) {
         if !std::mem::take(&mut self.is_scrubbing) {
             return;
         }
+        self.invalidate_preview_frames();
         self.request_frame(cx);
     }
 
@@ -2530,6 +2557,9 @@ impl VideoEditorWindow {
         let time = time.map(|time| time.clamp(0.0, self.total_duration()));
         if self.preview_playhead == time {
             return;
+        }
+        if time.is_none() {
+            self.invalidate_preview_frames();
         }
         self.preview_playhead = time;
         self.request_frame(cx);
@@ -7138,6 +7168,102 @@ mod keyboard_demo_tests {
         assert_eq!(playback_tick(60.0), Duration::from_secs_f64(1.0 / 60.0));
         assert_eq!(playback_tick(120.0), Duration::from_secs_f64(1.0 / 120.0));
         assert_eq!(playback_tick(f64::NAN), playback_tick(60.0));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn editor_with_preview_source(
+        cx: &mut gpui::TestAppContext,
+        directory: &std::path::Path,
+    ) -> gpui::Entity<VideoEditorWindow> {
+        test_state(cx, directory);
+        let project = directory.join("Preview.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(2.);
+                editor.state.segments = vec![model::Segment::spanning(2.)];
+                editor.state.wallpaper.enabled = false;
+                let source = preview::Source::open(&project, editor.state.clone()).unwrap();
+                editor.source = Some(Arc::new(parking_lot::Mutex::new(source)));
+                editor
+            })
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn an_in_flight_preview_frame_is_discarded_after_a_seek(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let editor = editor_with_preview_source(cx, directory.path());
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.request_frame(cx);
+                editor.set_playhead(1., cx);
+            });
+        });
+        while cx.update(|cx| editor.read(cx).queued_frame.is_some()) {
+            assert!(cx.executor().tick());
+        }
+        assert!(
+            cx.update(|cx| editor.read(cx).preview_image().is_none()),
+            "the old frame was published ahead of the requested seek"
+        );
+        cx.run_until_parked();
+        let after_seek = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.begin_scrub();
+                editor.set_playhead(0.5, cx);
+                editor.set_playhead(0.75, cx);
+            });
+        });
+        while cx.update(|cx| editor.read(cx).queued_frame.is_some()) {
+            assert!(cx.executor().tick());
+        }
+        let while_scrubbing = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        assert!(!Arc::ptr_eq(&after_seek, &while_scrubbing));
+        cx.run_until_parked();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_first_preview_after_a_committed_edit_uses_the_applied_state() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        let editor = editor_with_preview_source(&mut cx, directory.path());
+        cx.update(|cx| editor.update(cx, |editor, cx| editor.request_frame(cx)));
+        while !scheduler.tick_background_only() {
+            assert!(scheduler.tick());
+        }
+        while scheduler.tick_background_only() {}
+
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.update_wallpaper(cx, |wallpaper| {
+                    wallpaper.enabled = true;
+                    wallpaper.aspect_ratio = Some(serde_json::json!({ "width": 1, "height": 1 }));
+                });
+            });
+        });
+        while cx.update(|cx| editor.read(cx).preview_image().is_none()) {
+            assert!(scheduler.tick());
+        }
+        let size = cx.update(|cx| editor.read(cx).preview_image().unwrap().size(0));
+        assert_eq!(
+            size.width, size.height,
+            "first preview must reflect the square wallpaper"
+        );
+        cx.run_until_parked();
+        scheduler.drain_tasks();
     }
 
     #[test]

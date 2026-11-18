@@ -5866,6 +5866,23 @@ profiles at 720×520 light and 2×, and 950×700 dark and 1× passed, with all
 and static rendering. Interactive 4K presentation and frame pacing on a
 physical display remain open.
 
+### 2026-11-18 GPUI preview frames after discrete changes
+
+With an earlier frame in flight, the editor used to publish that frame after a
+seek and then start work on the requested position. The generated-movie
+regression reproduced the old frame appearing first. Discrete playhead and
+transport changes now invalidate older frame requests. Commits outside an edit
+gesture also defer the next frame until the composition has applied the state.
+
+The macOS tests verified that a seek discards the earlier frame, that scrubbing
+still publishes intermediate feedback, and that the first frame after a
+wallpaper commit has the edited square dimensions. Continuous playback, hover
+and drag updates can show intermediate frames while the latest one is queued.
+The arm64 suite passed 1,157 tests with 23 marked ignored. The light 720×520
+Metal profile at 2× and the dark 950×700 profile at 1× both passed. All 367
+PNGs matched the reference captures byte for byte. Interactive 4K latency on a
+physical display remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
