@@ -248,7 +248,7 @@ fn thumbnail_preview_mut<'a>(
         .find(|preview| thumbnail_preview_matches(preview, id, path, generation))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn restart_screenshot_thumbnail_loads(
     previews: &mut [CapturePreview],
 ) -> Vec<(
@@ -595,10 +595,6 @@ impl CapturePreviewWindow {
         Self::open_stack_window(cx, vec![preview]);
     }
 
-    /// Port of the `capture-preview:reposition` IPC: moves the live stack to
-    /// the newly configured corner. Windows moves the window in place; other
-    /// platforms rebuild it, the way the recording bar reopens when its
-    /// anchor moves, because GPUI cannot move a live window there.
     pub fn reposition(cx: &mut App) {
         let Some(stack) = registry::handle(WindowKind::CapturePreview, cx) else {
             return;
@@ -607,11 +603,17 @@ impl CapturePreviewWindow {
             registry::forget(WindowKind::CapturePreview, cx);
             return;
         };
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let moved = handle
                 .update(cx, |view, window, cx| {
-                    configure_stack_window(window, cx, view.active_preview_count());
+                    #[cfg(target_os = "macos")]
+                    {
+                        view.display_menu.close(window, cx);
+                        view.pointer_inside = false;
+                        view.clear_native_tooltip(window);
+                    }
+                    configure_stack_window(window, cx, view.window_preview_count());
                     cx.notify();
                 })
                 .is_ok();
@@ -619,7 +621,7 @@ impl CapturePreviewWindow {
                 registry::forget(WindowKind::CapturePreview, cx);
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let previews =
                 handle.update(cx, |view, _window, _cx| std::mem::take(&mut view.previews));
@@ -2559,7 +2561,7 @@ impl CapturePreviewWindow {
                                                 config.update(|settings| {
                                                     settings.preview.display_id = Some(id);
                                                 });
-                                                CapturePreviewWindow::reposition(app);
+                                                app.defer(CapturePreviewWindow::reposition);
                                             }),
                                     );
                                 }
@@ -3683,11 +3685,12 @@ mod tests {
                 window.resize(size(px(32.), px(32.)));
             })
             .unwrap();
-        #[cfg(not(windows))]
         let previous_stack: AnyWindowHandle = stack.into();
         visual.simulate_display_removed(gpui::DisplayId::new(10));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        #[cfg(any(windows, target_os = "macos"))]
+        assert_eq!(stack_handle(visual), Some(previous_stack));
         #[cfg(windows)]
         assert_eq!(
             stack
@@ -3698,7 +3701,7 @@ mod tests {
                 .unwrap(),
             size(px(208.), px(604.))
         );
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             (stack, check) = bind_stack(visual, &wrapper);
             assert_ne!(AnyWindowHandle::from(stack), previous_stack);
@@ -3740,7 +3743,7 @@ mod tests {
         visual.simulate_display_removed(gpui::DisplayId::new(11));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             check = bind_stack(visual, &wrapper).1;
         }
@@ -3794,7 +3797,7 @@ mod tests {
         for id in 11..13 {
             visual.simulate_display_added(gpui::DisplayId::new(id), None);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             (stack, check) = bind_stack(visual, &wrapper);
         }
@@ -4131,6 +4134,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn moving_the_preview_to_another_display_keeps_pending_work(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        let display = gpui::DisplayId::new(42);
+        cx.simulate_display_added(display, None);
+        store.update(|config| {
+            config.preview.auto_dismiss = false;
+            config.preview.display_id = Some(42);
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+
+        cx.update(|cx| {
+            assert_eq!(selected_display(cx).unwrap().1, display);
+            CapturePreviewWindow::open(cx, path.clone());
+            CapturePreviewWindow::open(cx, path.clone());
+        });
+        cx.run_until_parked();
+        let original = stack_handle(cx).unwrap();
+        let (survivor, pending_owner) = original
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(cx, |view, window, cx| {
+                let dismissed = view.previews[0].id;
+                begin_remove_preview(view, dismissed, DismissBehavior::Automatic, window, cx);
+                view.previews[1].busy = true;
+                (view.previews[1].id, cx.entity().downgrade())
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_display_removed(display);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let _ = pending_owner.update(cx, |view, _| {
+                if let Some(preview) = view
+                    .previews
+                    .iter_mut()
+                    .find(|preview| preview.id == survivor)
+                {
+                    preview.busy = false;
+                }
+            });
+        });
+        cx.executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS + 1));
+        cx.run_until_parked();
+
+        let current = stack_handle(cx).unwrap();
+        current
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(cx, |view, _, cx| {
+                assert_eq!(view.previews.len(), 1);
+                assert_eq!(view.previews[0].id, survivor);
+                assert!(
+                    !view.previews[0].busy,
+                    "the pending preview action must finish"
+                );
+                assert_eq!(
+                    selected_display(cx).unwrap().1,
+                    cx.primary_display().unwrap().id()
+                );
+            })
+            .unwrap();
+        assert_eq!(current, original);
+        assert_eq!(store.get().preview.display_id, Some(42));
+        assert!(path.is_file());
     }
 
     #[cfg(target_os = "macos")]

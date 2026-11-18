@@ -5722,6 +5722,29 @@ preceding captures byte for byte. The arm64 suite passed 1,151 tests, including
 the simulated cross-display selection cases. Actual placement and reattachment
 on mixed-DPI physical displays remain open.
 
+### 2026-11-18 macOS capture preview display changes
+
+GPUI recreated the capture preview window when the corner or display changed.
+Pending operations still held the previous window or view, including animated
+dismissal and video export completion. A simulated display disconnect reproduced
+a stale dismissing card. The macOS preview now moves the existing window using
+its native frame setter. Moving the stack closes its display menu and clears the
+old hover and tooltip state. Selecting a display defers the move until the menu
+callback releases the window.
+
+The regression disconnects the preferred display while a card is dismissing
+and another has a pending action. It verifies the same window falls back to the
+primary display, the dismissal and pending completion finish, the capture file
+remains, and the saved display preference is retained. The arm64 suite passed
+1,152 tests, including the display menu and fallback cases. The 720×520 light
+Metal profile at 2× passed and matched all 169 reference PNGs byte for byte,
+including 26 capture preview states. The hidden native popup probe also passed.
+
+Both GPUI and Electron currently use fixed card dimensions and margins. With
+four previews and a 600-point working height, their position calculations can
+put 20 points of a card outside the working area. That short-display geometry
+and physical mixed-DPI transitions remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
