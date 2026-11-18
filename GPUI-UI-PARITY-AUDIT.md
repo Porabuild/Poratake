@@ -5702,6 +5702,26 @@ window exclusion-ID and selector lease checks. The arm64 suite passed 1,151
 GPUI tests with 23 marked ignored. Physical mouse or trackpad movement between
 the floating controls remains open.
 
+### 2026-11-18 macOS recording toolbar desktop coordinates
+
+GPUI's native macOS window bounds are relative to the window's display. The
+recording toolbar compared them with the desktop bounds it calculates for a
+selection when deciding whether to reuse or resize its window. Those origins
+differ on a display offset from the primary display. The hidden popup probe
+also reproduced the fallback when a window has no assigned display. AppKit
+retained a 168×52-point frame at desktop position (−384, −144), while GPUI's
+old bounds getter reported its default origin and size. The raw AppKit origin
+was (−384, 1209) with a 1117-point primary display. A separate AppKit panel
+confirmed the conversion using its native frame's top edge.
+
+The macOS comparisons now read the actual AppKit frame using the same primary
+screen conversion as the setter. The hidden probe round-tripped positive and
+negative desktop positions on arm64 and under Rosetta. Both recording-control
+Metal fixtures passed at 1× dark and 2× light, and all 36 PNGs matched the
+preceding captures byte for byte. The arm64 suite passed 1,151 tests, including
+the simulated cross-display selection cases. Actual placement and reattachment
+on mixed-DPI physical displays remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

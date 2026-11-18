@@ -104,6 +104,14 @@ pub fn popup_frame_probe() {
             let ignores_after: BOOL = unsafe { msg_send![native_window, ignoresMouseEvents] };
             assert_ne!(ignores_before, YES);
             assert_eq!(ignores_after, YES);
+            for origin in [point(px(100.), px(100.)), point(px(-384.), px(-144.))] {
+                let desktop_bounds = Bounds::new(origin, gpui::size(px(168.), px(52.)));
+                assert!(crate::windows::set_macos_window_bounds(window, desktop_bounds));
+                assert_eq!(crate::windows::desktop_window_bounds(window), desktop_bounds);
+            }
+            let visible: BOOL = unsafe { msg_send![native_window, isVisible] };
+            assert_ne!(visible, YES);
+            println!("hidden popup round-trips positive and negative desktop coordinates");
             println!(
                 "popup titled before={} after={}, native shadow before={} after={}, frame unchanged, click-through enabled",
                 before.contains(NSWindowStyleMask::NSTitledWindowMask),

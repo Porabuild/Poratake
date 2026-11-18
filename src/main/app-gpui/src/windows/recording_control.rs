@@ -545,7 +545,7 @@ impl RecordingControl {
                         return false;
                     }
                     #[cfg(not(windows))]
-                    if window.bounds().origin != bounds.origin {
+                    if super::desktop_window_bounds(window).origin != bounds.origin {
                         window.remove_window();
                         return false;
                     }
@@ -1933,7 +1933,7 @@ impl RecordingControl {
             self.countdown_active,
             keyboard_tooltip,
         );
-        if window.bounds() == bounds {
+        if super::desktop_window_bounds(window) == bounds {
             #[cfg(all(target_os = "macos", not(test)))]
             self.pending_native_bounds.set(None);
             return;

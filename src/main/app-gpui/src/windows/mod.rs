@@ -130,33 +130,61 @@ pub(crate) fn remove_popup_frame(window: &gpui::Window) {
 pub(crate) fn remove_popup_frame(_window: &gpui::Window) {}
 
 #[cfg(all(target_os = "macos", not(test)))]
-pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<gpui::Pixels>) -> bool {
+fn macos_window_and_primary_height(window: &gpui::Window) -> Option<(cocoa::base::id, f64)> {
     use cocoa::appkit::NSScreen;
     use cocoa::base::nil;
-    use cocoa::foundation::{NSArray, NSPoint, NSRect, NSSize};
+    use cocoa::foundation::{NSArray, NSRect};
     use objc::{msg_send, sel, sel_impl};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
-        return false;
-    };
+    let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return false;
+        return None;
     };
     unsafe {
         let view = appkit.ns_view.as_ptr() as cocoa::base::id;
         let native_window: cocoa::base::id = msg_send![view, window];
         let screens = NSScreen::screens(nil);
         if native_window == nil || NSArray::count(screens) == 0 {
-            return false;
+            return None;
         }
         let primary = screens.objectAtIndex(0);
         let primary_frame: NSRect = msg_send![primary, frame];
+        Some((native_window, primary_frame.size.height))
+    }
+}
+
+pub(crate) fn desktop_window_bounds(window: &gpui::Window) -> Bounds<Pixels> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    if let Some((native_window, primary_height)) = macos_window_and_primary_height(window) {
+        use cocoa::foundation::NSRect;
+        use objc::{msg_send, sel, sel_impl};
+
+        let frame: NSRect = unsafe { msg_send![native_window, frame] };
+        return Bounds::new(
+            point(
+                px(frame.origin.x as f32),
+                px((primary_height - frame.origin.y - frame.size.height) as f32),
+            ),
+            gpui::size(px(frame.size.width as f32), px(frame.size.height as f32)),
+        );
+    }
+    window.bounds()
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixels>) -> bool {
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    use objc::{msg_send, sel, sel_impl};
+
+    let Some((native_window, primary_height)) = macos_window_and_primary_height(window) else {
+        return false;
+    };
+    unsafe {
         let frame = NSRect::new(
             NSPoint::new(
                 f64::from(f32::from(bounds.origin.x)),
-                primary_frame.size.height
-                    - f64::from(f32::from(bounds.origin.y + bounds.size.height)),
+                primary_height - f64::from(f32::from(bounds.origin.y + bounds.size.height)),
             ),
             NSSize::new(
                 f64::from(f32::from(bounds.size.width)),
