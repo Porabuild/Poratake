@@ -634,3 +634,27 @@ Preview to editor window            40.8 / 20.3 (21.0)   50.1 / 40.1 (40.9)  39.
 All times are milliseconds. The small capture was 600x440 physical
 pixels, and both large captures were 3000x1800. All 18 cycles saved
 their fixture PNG, opened the preview in the editor and closed cleanly.
+
+Pre-recording cancellation while the native outline Hide reply is held
+
+The same generated AppKit window and screen-only Swift daemon were
+used on the built-in Retina display. Each trial started with the
+toolbar and a visible outline. The driver either invoked the app's
+native Escape handler path or dispatched a GPUI Escape key event
+inside the toolbar. The bridge let the daemon remove the outline,
+then held its successful acknowledgement for 650 ms.
+
+Build / entry                 Status during hold   Toolbar gone   Outline gone
+2078a2c0, native Escape       Blocked               Not timed       Not timed
+2078a2c0, toolbar Escape      Blocked               Not timed       Not timed
+Revised, native Escape/light  4.11 ms                65.3 ms         70.4 ms
+Revised, toolbar Escape/dark  0.95 ms                44.9 ms         46.7 ms
+Revised, native Escape/dark   0.56 ms                32.4 ms         34.6 ms
+Revised, toolbar Escape/light 0.98 ms                33.8 ms         35.8 ms
+
+The third revised run queued a timer while the reply was held. The
+timer selector appeared only after acknowledgement and then closed on
+cancellation. The fourth run cancelled that queued timer during the
+hold and observed no selector afterward. Output stayed empty. Times
+are single observations that include app-local input and WindowServer
+polling overhead.

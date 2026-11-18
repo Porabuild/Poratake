@@ -6913,6 +6913,23 @@ The timing record includes cold and warm samples and a follow-up
 unheld recording-outline comparison. The four follow-up trials did not
 reproduce the 372.7 ms observation.
 
+### 2026-11-18 macOS pre-recording cancellation responsiveness
+
+The native Escape event and the toolbar's own Escape action now share
+the background outline cleanup used when switching capture modes.
+With a 650 ms delay injected into the successful Hide reply, both
+baseline paths blocked the app for the duration of the hold. The
+revised build answered an independent status command within 4.2 ms
+in all four trials. WindowServer showed the toolbar and outline gone
+within 71 ms, while the acknowledgement was still held.
+
+A timer requested during that wait became visible after the reply.
+Cancelling the queued timer kept the overlay closed. The same probe
+also verified that direct cancellation left no selector and captured
+no pixels. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+covers both appearances and both cancellation entry points on one
+Retina display.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

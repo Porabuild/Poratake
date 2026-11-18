@@ -1255,6 +1255,22 @@ pub fn open(cx: &mut App) {
                     crate::intents::dispatch(intent, None, cx);
                     return true;
                 }
+                if command == "cancel pre-recording" {
+                    return RecordingControl::cancel_pre_recording(cx);
+                }
+                if command == "toolbar escape" {
+                    let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) else {
+                        return false;
+                    };
+                    let event = PlatformInput::KeyDown(herogpui::gpui::KeyDownEvent {
+                        keystroke: herogpui::gpui::Keystroke::parse("escape").unwrap(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    });
+                    return cx
+                        .update_window(handle, |_, window, cx| window.dispatch_event(event, cx))
+                        .is_ok();
+                }
                 if command == "cancel capture switch" {
                     return crate::intents::cancel_recording_capture_switch(cx);
                 }

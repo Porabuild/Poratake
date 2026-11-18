@@ -4113,10 +4113,16 @@ mod tests {
                 assert!(
                     crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx)
                 );
-                assert!(!super::session(cx).native_recording_overlay_requested);
                 assert_eq!(super::session(cx).outlined_window_id, None);
             }
         });
+        #[cfg(target_os = "macos")]
+        {
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert!(!super::session(cx).native_recording_overlay_requested);
+            });
+        }
     }
 
     #[herogpui::test]

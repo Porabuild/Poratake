@@ -325,9 +325,23 @@ impl RecordingControl {
         if !Self::dismiss_pre_recording(false, cx) {
             return false;
         }
-        set_pre_recording_escape(false, cx);
-        crate::capture::overlay::end_recording_handoff(cx);
+        Self::finish_pre_recording_cancel(cx);
         true
+    }
+
+    fn finish_pre_recording_cancel(cx: &mut App) {
+        #[cfg(target_os = "macos")]
+        {
+            crate::capture::overlay::clear_recording_handoff(cx);
+            if !crate::intents::hide_pre_recording_outline(None, cx) {
+                set_pre_recording_escape(false, cx);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            set_pre_recording_escape(false, cx);
+            crate::capture::overlay::end_recording_handoff(cx);
+        }
     }
 
     pub(crate) fn dismiss_pre_recording(switching_capture: bool, cx: &mut App) -> bool {
@@ -343,11 +357,7 @@ impl RecordingControl {
                     if !can_cancel_with_escape(this.mode) {
                         return false;
                     }
-                    this.countdown_generation += 1;
-                    this.countdown_active = false;
-                    this.countdown_remaining = None;
-                    this.hide_camera_preview(cx);
-                    close_toolbar(window);
+                    this.close_pre_recording_toolbar(window, cx);
                     true
                 })
                 .unwrap_or(false);
@@ -1964,14 +1974,17 @@ impl RecordingControl {
             self.finish(true, window, cx);
             return;
         }
+        self.close_pre_recording_toolbar(window, cx);
+        registry::forget(RegistryKind::RecordingControl, cx);
+        Self::finish_pre_recording_cancel(cx);
+    }
+
+    fn close_pre_recording_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.countdown_generation += 1;
         self.countdown_active = false;
         self.countdown_remaining = None;
         self.hide_camera_preview(cx);
-        set_pre_recording_escape(false, cx);
         close_toolbar(window);
-        registry::close(RegistryKind::RecordingControl, cx);
-        crate::capture::overlay::end_recording_handoff(cx);
     }
 
     fn sync_window_bounds(

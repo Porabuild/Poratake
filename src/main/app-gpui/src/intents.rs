@@ -114,6 +114,7 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
     let switch = cx.default_global::<RecordingCaptureSwitch>();
     if switch.hiding_outline {
         switch.next = Some(intent);
+        set_pre_recording_escape(true, cx);
         return true;
     }
     if crate::video::recorder::is_recording() {
@@ -123,23 +124,35 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
     if dismissed {
         overlay::clear_recording_handoff(cx);
     }
+    let waiting = hide_pre_recording_outline(Some(intent), cx);
+    if dismissed && !waiting {
+        set_pre_recording_escape(false, cx);
+    }
+    waiting
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn hide_pre_recording_outline(next: Option<Intent>, cx: &mut App) -> bool {
+    use crate::capture::overlay;
+    use crate::windows::recording_control::set_pre_recording_escape;
+
     if !overlay::recording_overlay_needs_hide(cx) {
-        if dismissed {
-            set_pre_recording_escape(false, cx);
-        }
         return false;
     }
 
-    let switch = cx.global_mut::<RecordingCaptureSwitch>();
+    let switch = cx.default_global::<RecordingCaptureSwitch>();
+    if switch.hiding_outline {
+        return true;
+    }
     switch.hiding_outline = true;
-    switch.next = Some(intent);
-    set_pre_recording_escape(true, cx);
+    switch.next = next;
+    set_pre_recording_escape(next.is_some(), cx);
     let daemon = crate::state::state(cx).daemon;
+    let hide = cx
+        .background_executor()
+        .spawn(async move { daemon.recording_overlay().hide() });
     cx.spawn(async move |cx| {
-        let result = cx
-            .background_executor()
-            .spawn(async move { daemon.recording_overlay().hide() })
-            .await;
+        let result = hide.await;
         cx.update(|cx| {
             let switch = cx.global_mut::<RecordingCaptureSwitch>();
             switch.hiding_outline = false;
@@ -169,10 +182,15 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn cancel_recording_capture_switch(cx: &mut App) -> bool {
-    cx.default_global::<RecordingCaptureSwitch>()
+    let cancelled = cx
+        .default_global::<RecordingCaptureSwitch>()
         .next
         .take()
-        .is_some()
+        .is_some();
+    if cancelled {
+        crate::windows::recording_control::set_pre_recording_escape(false, cx);
+    }
+    cancelled
 }
 
 use crate::video::recorder::RecordingTarget as Recording;
