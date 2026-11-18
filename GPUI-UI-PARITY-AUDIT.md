@@ -6968,6 +6968,26 @@ the toolbar. [Native tooltip handoff evidence](tests/native/evidence/macos-ui/na
 records the cases. Physical unpressed pointer delivery and mixed-DPI
 placement remain open.
 
+### 2026-11-18 native macOS single-display screenshots
+
+The real GPUI screen capture saved 3456×2234 PNGs on the built-in
+Retina display in both appearances. The single-display command opened
+the preview without a picker, and the editor opened each saved image.
+Replaying the Electron display capture request against the same
+authorized daemon produced the same dimensions and matched
+7,720,464 of 7,720,704 GPUI pixels exactly after ColorSync conversion.
+
+Switching from a real frozen area selector closed the selector and
+native freeze window. The app answered a status command during an
+injected 650 ms release hold and sent its capture request only after
+the acknowledgement. The PNG contained the newer backdrop color.
+A timer requested during the same hold replaced the pending display
+capture, and cancelling that timer left no output files. The 32
+focused GPUI tests and 53 Electron reference tests passed. [Native
+display evidence](tests/native/evidence/macos-ui/native-full-display-capture-20261118.txt)
+records the timings and pixel checks. A physical multi-display picker
+remains unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

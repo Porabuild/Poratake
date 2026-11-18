@@ -1248,6 +1248,7 @@ pub fn open(cx: &mut App) {
                 if let Some(kind) = command.strip_prefix("capture ") {
                     let intent = match kind {
                         "area" => Intent::CaptureArea,
+                        "screen" => Intent::CaptureScreen,
                         "window" => Intent::CaptureWindow,
                         "timer" => Intent::TimerCapture,
                         _ => return false,
