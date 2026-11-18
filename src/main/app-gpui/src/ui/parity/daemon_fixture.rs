@@ -274,7 +274,7 @@ pub fn run() {
                 }
                 timer_visible = true;
                 match result {
-                    "completed" | "retry" => {
+                    "completed" | "retry" | "empty-screenshot" => {
                         timer_visible = false;
                         protocol::send_event(
                             poratake_daemon_common::contract::TIMER_CONTROL_COMPLETED_EVENT,
@@ -517,6 +517,13 @@ pub fn run() {
                 let path = Path::new(params["path"].as_str().unwrap());
                 let width = fixture["rect"]["width"].as_u64().unwrap() as u32;
                 let height = fixture["rect"]["height"].as_u64().unwrap() as u32;
+                if fixture["timer"] == "empty-screenshot" {
+                    protocol::respond_success(
+                        &request.id,
+                        json!({"path": path, "width": width, "height": height}),
+                    );
+                    continue;
+                }
                 if fixture["outcome"] == "invalid-image" {
                     std::fs::write(path, b"invalid image").unwrap();
                 } else {

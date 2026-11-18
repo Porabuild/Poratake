@@ -7022,6 +7022,21 @@ records the failure and the light and dark regression cases. Those
 workflows also cover valid output, partial-file retention, retries and
 cancellation during Finish.
 
+### 2026-11-18 macOS screenshot publication after an empty success
+
+The GPUI timer fixture completed its countdown and received a
+successful Screenshot response while its staged PNG was still empty.
+The old build published the zero-byte image. The new build removes
+the stage, shows the no-image message, and leaves history unchanged.
+The same publication check now serves area, display, window, timer,
+and scroll captures. A nonempty capture held after a publication
+failure remains recoverable, and a timeout with an uncertain result
+still retains its staging file.
+
+The [screenshot publication evidence](tests/native/evidence/macos-ui/screenshot-empty-success-20261118.txt)
+records the injected macOS timer reply and the ordinary timer and
+scroll save checks in both appearances.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -3499,6 +3499,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
         "cancelled",
         "timeout",
         "failed",
+        "empty-screenshot",
         "retry",
         "edge",
     ] {
@@ -3541,6 +3542,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
             .unwrap()
             .lines()
             .count();
+        take_notifications();
         cx.update(|cx| {
             crate::state::state(cx).config.update(|config| {
                 config.storage.screenshots_path = captures.to_string_lossy().into_owned();
@@ -3580,6 +3582,16 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
                 .iter()
                 .any(|item| Path::new(&item.original_path).parent() == Some(captures.as_path())));
         }
+        if name == "empty-screenshot" {
+            assert_eq!(
+                take_notifications(),
+                [(
+                    "Capture Failed".into(),
+                    "The screenshot produced no image".into(),
+                    false
+                )]
+            );
+        }
         let calls: Vec<serde_json::Value> =
             std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
                 .unwrap()
@@ -3592,7 +3604,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
                 .iter()
                 .filter(|call| call["module"] == "screenshot")
                 .count(),
-            usize::from(saved)
+            usize::from(saved || name == "empty-screenshot")
         );
         assert_eq!(
             calls

@@ -2,7 +2,6 @@
 //! so work started by short-lived windows (the area overlay) survives their
 //! removal and can still open follow-up UI on the main thread.
 
-use anyhow::Context as _;
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{ScrollCaptureStartRequest, ScrollSpeed};
@@ -11,7 +10,7 @@ use std::sync::Arc;
 use crate::capture::desktop_icons::CaptureHide;
 use crate::capture::intent::CaptureIntent;
 use crate::capture::{
-    capture_screenshot_to_file, prepare_screenshot, publish_screenshot, uuid_simple,
+    capture_screenshot_to_file, prepare_screenshot, publish_captured_screenshot, uuid_simple,
     CachedCaptureReservation, CaptureService, DisplayCapture,
 };
 
@@ -790,14 +789,9 @@ impl Coordinator {
                                         },
                                     )
                                     .and_then(|path| {
-                                        if path.is_some()
-                                            && std::fs::symlink_metadata(&temporary)
-                                                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-                                        {
-                                            Ok(())
-                                        } else {
-                                            Err(anyhow::anyhow!("The scroll capture produced no image"))
-                                        }
+                                        path.map(|_| ()).ok_or_else(|| {
+                                            anyhow::anyhow!("The scroll capture produced no image")
+                                        })
                                     });
                                     let _ = events
                                         .try_send(ScrollFinishEvent::Completed(result));
@@ -928,9 +922,11 @@ impl Coordinator {
                     let result = finish_result?;
                     let path = match result {
                         Ok(()) => match temporary.as_deref() {
-                            Some(temporary) => publish_screenshot(temporary, &output).with_context(|| {
-                                format!("Capture data is available at {}", temporary.display())
-                            }),
+                            Some(temporary) => publish_captured_screenshot(
+                                temporary,
+                                &output,
+                                "The scroll capture produced no image",
+                            ),
                             None => Err(anyhow::anyhow!(
                                 "The scroll capture produced no temporary image"
                             )),

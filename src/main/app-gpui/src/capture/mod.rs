@@ -70,8 +70,36 @@ fn capture_screenshot_to_file(
             temporary.display()
         )));
     }
-    publish_screenshot(&temporary, output)
-        .with_context(|| format!("Capture data is available at {}", temporary.display()))
+    publish_captured_screenshot(&temporary, output, "The screenshot produced no image")
+}
+
+fn publish_captured_screenshot(
+    temporary: &Path,
+    output: &Path,
+    no_image_message: &str,
+) -> Result<PathBuf> {
+    match std::fs::symlink_metadata(temporary) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {
+            return publish_screenshot(temporary, output)
+                .with_context(|| format!("Capture data is available at {}", temporary.display()));
+        }
+        Ok(metadata) if metadata.is_file() => {
+            std::fs::remove_file(temporary).with_context(|| {
+                format!(
+                    "{no_image_message}. Could not remove {}",
+                    temporary.display()
+                )
+            })?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Could not inspect the capture at {}", temporary.display())
+            });
+        }
+    }
+    anyhow::bail!("{no_image_message}")
 }
 
 pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Result<PathBuf> {
@@ -1538,6 +1566,22 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(stage).unwrap(), "partial capture");
             }
         }
+    }
+
+    #[test]
+    fn successful_reply_without_an_image_removes_the_stage_without_publishing() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        std::fs::write(&output, "existing capture").unwrap();
+
+        let error = super::capture_screenshot_to_file(&output, |_| Ok(())).unwrap_err();
+
+        assert_eq!(error.to_string(), "The screenshot produced no image");
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "existing capture"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
