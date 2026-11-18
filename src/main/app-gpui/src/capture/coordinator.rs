@@ -1029,11 +1029,11 @@ impl Coordinator {
                 _ => {}
             }));
         let theme = crate::theme::vars::active_theme(cx);
-        let display_bounds = crate::capture::timer::display_bounds(capture, cx);
+        let placement_bounds = crate::capture::timer::placement_bounds(capture, cx);
         if !crate::capture::timer::show(
             &daemon,
             capture,
-            display_bounds,
+            placement_bounds,
             crate::capture::timer::TIMER_DURATION,
             theme.accent,
             theme.accent_foreground,

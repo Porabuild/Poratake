@@ -24,8 +24,10 @@ struct TimerControlPlacementTest {
             button.frame = NSRect(x: 0, y: 0, width: 140, height: 52)
             panel.contentView = button
             precondition(!panel.isVisible)
-            precondition(panel.frame.minX >= screen.frame.minX)
-            precondition(panel.frame.maxX <= screen.frame.maxX)
+            precondition(
+                screen.visibleFrame.contains(panel.frame),
+                "Hidden timer at \(panel.frame) must fit AppKit work area \(screen.visibleFrame)"
+            )
             precondition(panel.frame.minX == CGFloat(position.0))
             precondition(DisplayCoordinates.topLeftY(
                 cocoaY: panel.frame.minY, height: panel.frame.height, primaryHeight: primaryHeight

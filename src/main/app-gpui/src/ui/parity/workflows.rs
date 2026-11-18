@@ -3454,6 +3454,14 @@ fn open_verified_capture_editor(
 }
 
 pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
+    #[cfg(target_os = "macos")]
+    let work_area = cx.update(|cx| {
+        let display = cx.primary_display().expect("timer fixture display");
+        crate::capture::overlay::physical_rect(
+            crate::system::work_area::work_area(display.as_ref()),
+            1.0,
+        )
+    });
     for name in [
         "completed",
         "cancelled",
@@ -3472,12 +3480,25 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
         } else {
             SELECTED_RECT
         };
+        #[cfg(target_os = "macos")]
+        let timer_position = {
+            use poratake_daemon_common::contract::{TIMER_CONTROL_TOP_MARGIN, TIMER_CONTROL_WIDTH};
+            let x = if name == "edge" { work_area.x } else { 330 };
+            let right = work_area.x + work_area.width - TIMER_CONTROL_WIDTH;
+            [
+                x.clamp(work_area.x, right),
+                work_area.y + TIMER_CONTROL_TOP_MARGIN,
+            ]
+        };
+        #[cfg(not(target_os = "macos"))]
+        let timer_position = [if name == "edge" { 0 } else { 260 }, 40];
         let captures = scratch.join(format!("timer-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
         std::fs::write(
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
-                "freeze": "frozen", "rect": rect, "windowId": null, "timer": if name == "edge" { "completed" } else { name }, "timerEdge": name == "edge",
+                "freeze": "frozen", "rect": rect, "windowId": null, "timer": if name == "edge" { "completed" } else { name },
+                "timerPosition": timer_position,
                 "expectedExcludedWindowIds": cfg!(target_os = "macos")
                     .then_some(crate::capture::overlay::PARITY_OVERLAY_WINDOW_IDS),
             }))
@@ -3548,16 +3569,6 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
                 .count(),
             1
         );
-        if name == "edge" {
-            let show = calls
-                .iter()
-                .find(|call| call["module"] == "timer-control" && call["method"] == "show")
-                .unwrap();
-            assert_eq!(
-                show["params"]["x"], 0,
-                "timer must remain inside the display"
-            );
-        }
         assert_eq!(
             calls
                 .iter()

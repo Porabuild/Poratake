@@ -5936,6 +5936,25 @@ offscreen Metal workflows passed at 1× and width 1280, with all 15 workflow
 PNGs matching the preceding runs byte for byte. Live placement on a second
 display and next to a visible Dock remains open.
 
+### 2026-11-18 macOS screenshot countdown placement
+
+For a selection at the top of the primary display, the old GPUI countdown
+started at y=20. A hidden AppKit timer panel exceeded the work area's top
+edge by 13 points. Electron also requests y=20 in this case. GPUI now uses
+the selected display's work area for the countdown while retaining its
+20-point top margin and its preferred position above the selection.
+
+The inset-display regression covers both sides of a negative-origin display
+and a selection near its bottom edge. The hidden GPUI popup probe returned
+(0, 53) and (1588, 53) at the top corners of the 1728×1117-point display.
+Hidden AppKit panels at those exact coordinates fit inside the work area on
+arm64 and x86_64 under Rosetta. The macOS GPUI suite passed 1,160 tests with
+23 ignored, and 21 Electron timer reference tests passed.
+The light and dark Metal workflows verified the new RPC placement and
+completion, cancellation, timeout, failure and retry. All six workflow
+PNGs matched the preceding runs byte for byte. Placement next to a
+visible Dock and on a second physical display remains unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -20,6 +20,49 @@ fn probe_tooltip(window: &herogpui::gpui::Window) -> Option<String> {
 }
 
 #[cfg(not(test))]
+fn timer_edge_position(cx: &mut App) {
+    use crate::capture::{overlay, timer};
+    use crate::system::work_area;
+    use poratake_daemon_common::contract::{
+        TIMER_CONTROL_HEIGHT, TIMER_CONTROL_TOP_MARGIN, TIMER_CONTROL_WIDTH,
+    };
+
+    let display = cx.primary_display().expect("primary display");
+    let bounds = work_area::display_bounds(display.as_ref());
+    let scale = work_area::capture_scale_factor(display.as_ref(), cx);
+    let full = overlay::display_capture(bounds, scale, Some(u64::from(display.id()) as u32));
+    let work = timer::placement_bounds(full, cx).expect("timer placement bounds");
+    let expected = overlay::physical_rect(work_area::work_area(display.as_ref()), scale);
+    assert_eq!(work, expected);
+
+    let mut left = full;
+    left.rect.width = 10;
+    left.rect.height = 100;
+    let mut right = left;
+    right.rect.x = full.rect.x + full.rect.width - right.rect.width;
+    let left_position = timer::timer_position(left, Some(work));
+    let right_position = timer::timer_position(right, Some(work));
+    let top = work.y + TIMER_CONTROL_TOP_MARGIN;
+    assert_eq!(left_position, (work.x, top));
+    assert_eq!(
+        right_position,
+        (work.x + work.width - TIMER_CONTROL_WIDTH, top)
+    );
+    assert!(top + TIMER_CONTROL_HEIGHT <= work.y + work.height);
+    println!(
+        "timer edge placement: display={} {} {} {}, left={} {}, right={} {}",
+        full.rect.x,
+        full.rect.y,
+        full.rect.width,
+        full.rect.height,
+        left_position.0,
+        left_position.1,
+        right_position.0,
+        right_position.1
+    );
+}
+
+#[cfg(not(test))]
 pub fn popup_frame_probe() {
     use cocoa::appkit::NSWindowStyleMask;
     use cocoa::base::{id, nil, BOOL, YES};
@@ -129,6 +172,7 @@ pub fn popup_frame_probe() {
             crate::ui::font::register(cx);
             crate::windows::scroll_capture::native_window_probe(cx, None);
             crate::capture::overlay::native_scroll_selector_probe(cx);
+            timer_edge_position(cx);
             cx.quit();
         });
     std::fs::remove_dir_all(directory).unwrap();
@@ -260,23 +304,7 @@ pub fn native_ui_probe() {
                             return;
                         }
                         if command == "timer-edge-position" {
-                            let display = cx.primary_display().expect("primary display");
-                            let bounds = crate::system::work_area::display_bounds(display.as_ref());
-                            let scale = crate::system::work_area::capture_scale_factor(display.as_ref(), cx);
-                            let full = crate::capture::overlay::display_capture(bounds, scale, Some(u64::from(display.id()) as u32));
-                            let display_bounds = crate::capture::timer::display_bounds(full, cx).expect("timer display bounds");
-                            assert_eq!(display_bounds, full.rect);
-                            let mut left = full;
-                            left.rect.width = 10;
-                            left.rect.height = 100;
-                            left.rect.y += 200;
-                            let mut right = left;
-                            right.rect.x = display_bounds.x + display_bounds.width - right.rect.width;
-                            let left_position = crate::capture::timer::timer_position(left, Some(display_bounds));
-                            let right_position = crate::capture::timer::timer_position(right, Some(display_bounds));
-                            assert_eq!(left_position.0, display_bounds.x);
-                            assert_eq!(right_position.0 + poratake_daemon_common::contract::TIMER_CONTROL_WIDTH, display_bounds.x + display_bounds.width);
-                            println!("timer edge placement: display={} {} {} {}, left={} {}, right={} {}", display_bounds.x, display_bounds.y, display_bounds.width, display_bounds.height, left_position.0, left_position.1, right_position.0, right_position.1);
+                            timer_edge_position(cx);
                             return;
                         }
                         if command == "rectangle" {

@@ -263,15 +263,8 @@ pub fn run() {
                 );
                 let params = request.params.as_ref().unwrap();
                 let fixture = capture_fixture(&output);
-                let (x, y) = if fixture["timerEdge"].as_bool() == Some(true) {
-                    (0, if cfg!(target_os = "macos") { 20 } else { 40 })
-                } else if cfg!(target_os = "macos") {
-                    (330, 20)
-                } else {
-                    (260, 40)
-                };
-                assert_eq!(params["x"], x);
-                assert_eq!(params["y"], y);
+                assert_eq!(params["x"], fixture["timerPosition"][0]);
+                assert_eq!(params["y"], fixture["timerPosition"][1]);
                 assert_eq!(params["duration"], 5);
                 let result = fixture["timer"].as_str().unwrap();
                 if result == "failed" {

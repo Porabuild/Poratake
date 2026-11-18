@@ -52,7 +52,7 @@ pub fn begin() -> Option<Session> {
         .map(|_| Session)
 }
 
-pub fn timer_position(capture: DisplayCapture, display_bounds: Option<ScreenRect>) -> (i32, i32) {
+pub fn timer_position(capture: DisplayCapture, placement_bounds: Option<ScreenRect>) -> (i32, i32) {
     let area = capture.rect;
     let scale = if cfg!(target_os = "macos") {
         1.0
@@ -63,34 +63,46 @@ pub fn timer_position(capture: DisplayCapture, display_bounds: Option<ScreenRect
     let height = (TIMER_CONTROL_HEIGHT as f32 * scale).round() as i32;
     let margin = (TIMER_CONTROL_TOP_MARGIN as f32 * scale).round() as i32;
     let centered_x = (area.x as f32 + area.width as f32 / 2.0 - width as f32 / 2.0).round() as i32;
-    let x = match display_bounds.filter(|bounds| bounds.width > 0) {
-        Some(bounds) => {
-            let right = bounds
-                .x
-                .saturating_add(bounds.width)
-                .saturating_sub(width)
-                .max(bounds.x);
-            centered_x.clamp(bounds.x, right)
-        }
-        None => centered_x.max(capture.display_origin().x),
+    let preferred_top = area.y.saturating_sub(height).saturating_sub(margin);
+    let Some(bounds) = placement_bounds.filter(|bounds| bounds.width > 0 && bounds.height > 0)
+    else {
+        let origin = capture.display_origin();
+        return (
+            centered_x.max(origin.x),
+            preferred_top.max(origin.y.saturating_add(margin)),
+        );
     };
-    let y = area.y - height - margin;
-    (x, y.max(capture.display_origin().y + margin))
+    let max_x = bounds.x.saturating_add((bounds.width - width).max(0));
+    let max_y = bounds.y.saturating_add((bounds.height - height).max(0));
+    let min_y = bounds.y.saturating_add(margin).min(max_y);
+    (
+        centered_x.clamp(bounds.x, max_x),
+        preferred_top.clamp(min_y, max_y),
+    )
 }
 
-pub fn display_bounds(capture: DisplayCapture, cx: &mut gpui::App) -> Option<ScreenRect> {
+pub fn placement_bounds(capture: DisplayCapture, cx: &mut gpui::App) -> Option<ScreenRect> {
     let display_id = capture.display_id?;
     let display = cx
         .displays()
         .into_iter()
         .find(|display| u64::from(display.id()) as u32 == display_id)?;
+    let scale = capture.scale_factor as f32;
     let bounds = crate::system::work_area::display_bounds(display.as_ref());
-    let rect = crate::capture::overlay::physical_rect(bounds, capture.scale_factor as f32);
-    (rect.x == capture.display_origin_x
-        && rect.y == capture.display_origin_y
-        && rect.width > 0
-        && rect.height > 0)
-        .then_some(rect)
+    let rect = crate::capture::overlay::physical_rect(bounds, scale);
+    if rect.x != capture.display_origin_x
+        || rect.y != capture.display_origin_y
+        || rect.width <= 0
+        || rect.height <= 0
+    {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    let rect = crate::capture::overlay::physical_rect(
+        crate::system::work_area::work_area(display.as_ref()),
+        scale,
+    );
+    Some(rect)
 }
 
 fn color_hex(color: Hsla) -> String {
@@ -106,7 +118,7 @@ fn color_hex(color: Hsla) -> String {
 pub fn show(
     daemon: &DaemonHandle,
     capture: DisplayCapture,
-    display_bounds: Option<ScreenRect>,
+    placement_bounds: Option<ScreenRect>,
     duration: u32,
     accent: Hsla,
     accent_foreground: Hsla,
@@ -115,7 +127,7 @@ pub fn show(
     if std::env::var_os("PORATAKE_TEST_TIMER_CONTROL").is_some() {
         return true;
     }
-    let (x, y) = timer_position(capture, display_bounds);
+    let (x, y) = timer_position(capture, placement_bounds);
     match daemon.timer_control().show(&TimerShowRequest {
         x,
         y,
@@ -212,6 +224,26 @@ mod tests {
             timer_position(capture(0, 1100, 200, 100, 1.0, (0, 1080)), None).1,
             1100
         );
+    }
+
+    #[test]
+    fn keeps_the_countdown_in_the_inset_work_area() {
+        let work_area = ScreenRect {
+            x: -1140,
+            y: -267,
+            width: 1060,
+            height: 823,
+        };
+        for (x, y, expected) in [
+            (-1200, -300, (-1140, -247)),
+            (-10, -300, (-220, -247)),
+            (-10, 590, (-220, 504)),
+        ] {
+            assert_eq!(
+                timer_position(capture(x, y, 10, 10, 1.0, (-1200, -300)), Some(work_area)),
+                expected
+            );
+        }
     }
 
     #[test]
