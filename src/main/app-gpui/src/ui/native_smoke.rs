@@ -697,6 +697,14 @@ pub fn native_ui_probe() {
                             println!("tray menu toggled");
                             return;
                         }
+                        if command == "tray-shortcut-area" {
+                            crate::dispatch_native_event(crate::system::native::NativeEvent::Intent {
+                                intent: Intent::CaptureArea,
+                                tray_rect: None,
+                            }, cx);
+                            println!("tray Capture Area shortcut dispatched");
+                            return;
+                        }
                         if command == "tray-select-area" {
                             if let Some(handle) = registry::handle(WindowKind::TrayMenu, cx) {
                                 let position = point(px(92.), px(82.));

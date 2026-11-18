@@ -131,6 +131,13 @@ pub struct TrayMenuWindow {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn dismiss_open_for_capture(cx: &mut App) {
+    if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
+        let _ = handle.update(cx, |_, window, cx| dismiss_for_capture(window, cx));
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn dismiss_for_capture(window: &mut Window, cx: &mut App) {
     #[cfg(not(test))]
     crate::system::window_visibility::disable_macos_transitions(window);

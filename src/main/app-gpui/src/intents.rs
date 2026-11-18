@@ -33,8 +33,13 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
         return;
     }
     #[cfg(target_os = "macos")]
-    if switch_pre_recording_capture(intent, cx) {
-        return;
+    {
+        if intent.starts_capture() {
+            crate::windows::tray_menu::dismiss_open_for_capture(cx);
+        }
+        if switch_pre_recording_capture(intent, cx) {
+            return;
+        }
     }
     match intent {
         Intent::AllInOne => {

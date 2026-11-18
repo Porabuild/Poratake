@@ -7100,6 +7100,21 @@ appeared. Both appearances saved a 380×320 crop covering the former
 menu position in live and frozen modes. Every pixel matched the
 generated backdrop. [Native handoff evidence](tests/native/evidence/macos-ui/native-tray-capture-handoff-20261118.txt)
 
+### 2026-11-18 macOS capture shortcuts with the status-bar menu open
+
+The native Capture Area event could still start capture while the tray
+menu was open. In the two baseline frozen runs, the menu remained
+visible at the freeze request and throughout the seven-second probe.
+The dark live selector also appeared while the menu was visible.
+
+The shared macOS capture dispatcher now closes any open tray menu
+before entering the capture flow. Both revised live runs had a clear
+selector in 26.0–31.6 ms. Both frozen runs and a run during Escape
+dismissal had no tray window at the freeze request or selector
+appearance. Selecting the Capture Area row still passed. Every
+pixel in each native 380×320 crop of the former menu region matched
+the generated backdrop. [Native shortcut evidence](tests/native/evidence/macos-ui/native-tray-shortcut-handoff-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

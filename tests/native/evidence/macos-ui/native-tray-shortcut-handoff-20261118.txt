@@ -1,0 +1,30 @@
+macOS native capture shortcut with the tray menu open, 2026-11-18
+
+One built-in Retina display and the isolated GPUI development probe.
+The probe delivered the native Capture Area intent event normally
+produced by shortcut resolution. It did not send a system-wide
+keystroke. The bridge observed tray and selector windows in
+WindowServer and checked the tray at the freeze request.
+
+                           Baseline 9ff90455                 Revised
+Light live                 selector 27.3 ms, tray absent     selector 26.0 ms, tray absent
+Dark live                  selector 28.8 ms, tray present    selector 31.6 ms, tray absent
+Light frozen               selector 212.1 ms, tray present   selector 168.0 ms, tray absent
+Dark frozen                selector 174.8 ms, tray present   selector 173.3 ms, tray absent
+
+The old frozen runs had visible tray windows at the freeze request
+and throughout the seven-second observation window. The revised
+frozen runs had no tray window at either the freeze request or the
+selector. An Escape followed immediately by a capture event passed
+the same check. The prior menu item path also passed.
+
+The six revised runs saved a 190×160-point area in the former tray
+window region of a generated AppKit backdrop. The 380×320 PNGs each
+contained exactly 121,600 pixels matching the backdrop (30, 86, 147)
+after ColorSync conversion to sRGB. The test used an already
+authorized screen-only daemon and an isolated profile. It avoided
+physical input, new privacy settings and the real clipboard.
+
+All 1,173 runnable GPUI tests and 70 Electron menu and tray reference
+tests passed. The times are individual sampled dispatch-to-visibility
+measurements.
