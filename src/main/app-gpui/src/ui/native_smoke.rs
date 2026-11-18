@@ -1485,6 +1485,8 @@ pub fn open(cx: &mut App) {
                         "screen" => Intent::CaptureScreen,
                         "window" => Intent::CaptureWindow,
                         "timer" => Intent::TimerCapture,
+                        "text" => Intent::CaptureText,
+                        "qr" => Intent::ScanQrCode,
                         _ => return false,
                     };
                     crate::intents::dispatch(intent, None, cx);
@@ -1512,6 +1514,13 @@ pub fn open(cx: &mut App) {
                 if command == "area selector" {
                     return crate::capture::overlay::active_intents_for_test(cx)
                         == [crate::capture::intent::CaptureIntent::Screenshot];
+                }
+                if command == "analysis selector" {
+                    use crate::capture::intent::CaptureIntent;
+                    return matches!(
+                        crate::capture::overlay::active_intents_for_test(cx).as_slice(),
+                        [CaptureIntent::Ocr] | [CaptureIntent::QrCode]
+                    );
                 }
                 if command == "timer selector" {
                     return crate::capture::overlay::active_intents_for_test(cx)

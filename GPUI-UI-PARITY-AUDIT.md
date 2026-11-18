@@ -7638,6 +7638,28 @@ setup did not change the saved preference. The Metal workflow holds
 Hide during the camera-off toggle and checks the selector handoff.
 No live camera feed was used.
 
+### 2026-11-18 macOS live OCR and QR area selections
+
+The native GPUI probe selected a 300 × 220-point area of a generated
+AppKit panel on the Retina display. The Swift daemon captured a
+600 × 440 PNG and recognized all three English and Chinese lines
+or decoded the exact generated QR payload. The blank panel returned
+empty results for both methods in light and dark.
+
+With the analysis reply held, the selector cleared in 1.0–8.4 ms
+from confirmation. The completed trial set measured 162–184 ms
+for text and 40–43 ms for the QR code. Two initial OCR attempts
+exceeded the probe's 12-second observation limit, and one earlier QR
+call took 2.06 seconds. The cause of those slow observations remains
+open.
+
+The bridge checked recognition before returning an empty result to
+GPUI. This exercised its cleanup path and kept the system clipboard
+untouched. Temporary PNGs were removed and the screenshot output
+folder stayed empty. Clipboard delivery remains unverified.
+The probe used the existing screen grant and app-local input, and
+all 34 Electron reference tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
