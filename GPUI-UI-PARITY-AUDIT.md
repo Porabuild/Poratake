@@ -2428,8 +2428,9 @@ Bugs fixed in this pass:
 - A failed or timed-out freeze could continue in the daemon after the app opened
   a live selector. The app now releases the failed freeze before falling back;
   if cleanup fails, it closes the selector and retains the generation for retry.
-  The native failure-injection check below verifies cleanup, live fallback,
-  and retry after a rejection. Natural daemon timeouts remain open.
+  The native failure-injection checks below verify cleanup, live fallback,
+  retry after a rejection, and the actual app deadline with a delayed reply.
+  Natural ScreenCaptureKit stalls remain open.
 - On Linux, release could complete while an X11 freeze window was still being
   presented or a replaced window was still closing. Generation changes,
   presentation and release now share a lock, and partial presentation failures
@@ -7237,6 +7238,27 @@ The failure replies were injected at the app boundary. The underlying
 AppKit freeze, release, and captures ran through the screen-only
 daemon. The probe used application-local input and 48 Electron
 freeze and capture reference tests passed.
+
+### 2026-11-18 macOS freeze deadline and late acknowledgement
+
+An isolated native GUI probe withheld the first Freeze acknowledgement
+at the daemon bridge. The unchanged GPUI client reached its 30-second
+deadline and sent Release at 30.006 seconds in dark and 30.016 seconds
+in light. Delivering the expired request's success while Release was
+pending left the selector closed.
+
+The dark fallback opened after Release and sent its screenshot
+request with cached=false. It saved one generated 600×320 PNG and opened
+a preview. A subsequent freeze waited for its own acknowledgement.
+The light run requested its replacement during the original hold.
+Even after a second delivery of the old success, the replacement
+stayed closed until its own Freeze reply. Cancelling it left no
+screenshot or redundant Release request.
+
+This probe ran the real GPUI request deadline and native selector
+lifecycle with a synthetic daemon. The fixture supplied screenshot
+pixels, and the probe used app-local events on one Retina display.
+All 48 Electron freeze and capture reference tests passed.
 
 ## Review gate
 
