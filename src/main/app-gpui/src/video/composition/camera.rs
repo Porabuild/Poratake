@@ -1,9 +1,9 @@
 //! Port of `composition/camera-canvas-renderer.ts` — the camera bubble, its
 //! zoom-aware shrink and the cursor-dodge fade.
 
-use tiny_skia::{Color, FillRule, PixmapRef, Rect};
+use tiny_skia::{BlendMode, Color, FillRule, PixmapRef, Rect};
 
-use crate::render::canvas::{rounded_rect_path, Canvas};
+use crate::render::canvas::{rounded_rect_path, Canvas, PathShadowCache};
 use crate::video::composition::segments::{map_timeline_to_video_time, VideoSegment};
 use crate::video::composition::wallpaper::shadow_config;
 use crate::video::composition::zoom::Position;
@@ -340,11 +340,12 @@ pub struct RenderConfig<'a> {
 }
 
 /// Port of `renderCamera`.
-pub fn render(
+pub(super) fn render(
     canvas: &mut Canvas,
     timeline_time: f64,
     source: PixmapRef<'_>,
     config: &RenderConfig<'_>,
+    shadows: &mut PathShadowCache,
 ) {
     if !config.camera_style.visible {
         return;
@@ -386,7 +387,14 @@ pub fn render(
     canvas.save();
     canvas.set_global_alpha(alpha as f32);
 
-    render_shadow(canvas, left, top, layout, config.camera_style.shadow);
+    render_shadow(
+        canvas,
+        left,
+        top,
+        layout,
+        config.camera_style.shadow,
+        shadows,
+    );
 
     let clip = if layout.border_radius > 0.0 {
         rounded_rect_path(
@@ -451,7 +459,14 @@ pub fn render(
     canvas.restore();
 }
 
-fn render_shadow(canvas: &mut Canvas, left: f64, top: f64, layout: Layout, shadow: f64) {
+fn render_shadow(
+    canvas: &mut Canvas,
+    left: f64,
+    top: f64,
+    layout: Layout,
+    shadow: f64,
+    shadows: &mut PathShadowCache,
+) {
     let Some(shadow) = shadow_config(shadow) else {
         return;
     };
@@ -470,7 +485,13 @@ fn render_shadow(canvas: &mut Canvas, left: f64, top: f64, layout: Layout, shado
     canvas.save();
     canvas.clip_path(&clip, FillRule::EvenOdd);
     canvas.set_shadow(Some(shadow));
-    canvas.fill_path(&path, Color::from_rgba8(0, 0, 0, 255), FillRule::Winding);
+    canvas.fill_path_with_shadow_cache(
+        &path,
+        Color::BLACK,
+        FillRule::Winding,
+        BlendMode::SourceOver,
+        Some(shadows),
+    );
     canvas.restore();
 }
 
@@ -661,6 +682,7 @@ mod tests {
                 offset_y: 0.0,
                 zoom: None,
             },
+            &mut PathShadowCache::default(),
         );
         let layout = calculate_layout(&settings, 400.0, 400.0, None);
         let x = (layout.left + layout.width / 2.0) as u32;

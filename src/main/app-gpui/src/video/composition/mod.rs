@@ -17,7 +17,7 @@ pub mod zoom;
 
 use tiny_skia::{Color, FillRule, Pixmap, PixmapRef};
 
-use crate::render::canvas::{rounded_rect_path, Canvas};
+use crate::render::canvas::{rounded_rect_path, Canvas, PathShadowCache};
 use crate::video::sidecars::{CursorData, KeyboardData, SubtitleData};
 use crate::windows::video_editor::model::VideoEditorState;
 use crate::windows::video_editor::styles::CursorStyle;
@@ -89,6 +89,7 @@ pub struct Frames<'a> {
 pub struct Engine {
     config: Config,
     zoom_cache: ZoomCache,
+    camera_shadows: PathShadowCache,
     video_segments: Vec<VideoSegment>,
     cached_dimensions: (u32, u32),
 }
@@ -100,6 +101,7 @@ impl Engine {
         Self {
             config,
             zoom_cache: ZoomCache::default(),
+            camera_shadows: PathShadowCache::default(),
             video_segments,
             cached_dimensions,
         }
@@ -547,7 +549,7 @@ impl Engine {
 
     /// `renderCameraOverlay`.
     fn render_camera(
-        &self,
+        &mut self,
         canvas: &mut Canvas,
         timeline_time: f64,
         source: PixmapRef<'_>,
@@ -577,6 +579,7 @@ impl Engine {
                     viewport: transform.viewport,
                 }),
             },
+            &mut self.camera_shadows,
         );
     }
 

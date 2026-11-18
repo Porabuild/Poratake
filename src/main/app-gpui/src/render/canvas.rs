@@ -5,6 +5,7 @@
 //! means both ports read like the TypeScript they mirror and share one
 //! rasterizer, which is what makes "preview equals export" hold.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use tiny_skia::{
@@ -15,6 +16,8 @@ use tiny_skia::{
 use crate::render::blur;
 
 pub const MAX_SHADOW_SURFACE_SIZE: u32 = 16_384;
+const MAX_CACHED_SHADOW_PIXELS: u64 = 1024 * 1024;
+const SHADOW_CACHE_CAPACITY: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
@@ -22,6 +25,54 @@ pub struct Shadow {
     pub blur: f32,
     pub offset_x: f32,
     pub offset_y: f32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ShadowRaster {
+    width: u32,
+    height: u32,
+    transform: Transform,
+    sigma: f32,
+    color: Color,
+}
+
+struct CachedPathShadow {
+    raster: ShadowRaster,
+    path: Path,
+    fill_rule: FillRule,
+    pixels: Pixmap,
+}
+
+#[derive(Default)]
+pub(crate) struct PathShadowCache {
+    entries: VecDeque<CachedPathShadow>,
+}
+
+impl PathShadowCache {
+    fn pixels(
+        &mut self,
+        raster: ShadowRaster,
+        path: &Path,
+        fill_rule: FillRule,
+        render: impl FnOnce() -> Option<Pixmap>,
+    ) -> Option<&Pixmap> {
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.raster == raster && &entry.path == path && entry.fill_rule == fill_rule
+        }) {
+            return Some(&self.entries[index].pixels);
+        }
+        let pixels = render()?;
+        if self.entries.len() == SHADOW_CACHE_CAPACITY {
+            self.entries.pop_back();
+        }
+        self.entries.push_front(CachedPathShadow {
+            raster,
+            path: path.clone(),
+            fill_rule,
+            pixels,
+        });
+        Some(&self.entries[0].pixels)
+    }
 }
 
 #[derive(Clone)]
@@ -218,10 +269,22 @@ impl Canvas {
         fill_rule: FillRule,
         blend: BlendMode,
     ) {
+        self.fill_path_with_shadow_cache(path, color, fill_rule, blend, None);
+    }
+
+    pub(crate) fn fill_path_with_shadow_cache(
+        &mut self,
+        path: &Path,
+        color: Color,
+        fill_rule: FillRule,
+        blend: BlendMode,
+        cache: Option<&mut PathShadowCache>,
+    ) {
         if let Some(shadow) = self.state.shadow {
             self.draw_shadow_of(
                 path_device_bounds(path, self.state.transform),
                 shadow,
+                cache.map(|cache| (cache, path, fill_rule)),
                 |canvas| {
                     canvas.fill_path_raw(
                         path,
@@ -275,7 +338,7 @@ impl Canvas {
                 path_device_bounds(path, self.state.transform),
                 stroke.width * self.device_scale(),
             );
-            self.draw_shadow_of(bounds, shadow, |canvas| {
+            self.draw_shadow_of(bounds, shadow, None, |canvas| {
                 canvas.stroke_path_raw(path, Color::from_rgba8(0, 0, 0, 255), stroke, false);
             });
         }
@@ -377,7 +440,7 @@ impl Canvas {
                 Rect::from_xywh(0.0, 0.0, source.width() as f32, source.height() as f32),
                 combined,
             );
-            self.draw_shadow_of(bounds, shadow, |canvas| {
+            self.draw_shadow_of(bounds, shadow, None, |canvas| {
                 canvas.draw_pixmap_raw(source, placement, 1.0, quality);
             });
         }
@@ -512,6 +575,7 @@ impl Canvas {
         &mut self,
         bounds: Option<Rect>,
         shadow: Shadow,
+        cache: Option<(&mut PathShadowCache, &Path, FillRule)>,
         draw: impl FnOnce(&mut Canvas),
     ) {
         let Some(bounds) = bounds else {
@@ -534,15 +598,37 @@ impl Canvas {
             return;
         }
 
-        let Some(mut offscreen) = Canvas::new(width, height) else {
-            return;
+        let raster = ShadowRaster {
+            width,
+            height,
+            transform: self.state.transform.post_translate(-left, -top),
+            sigma,
+            color: shadow.color,
         };
-        offscreen.state.transform = self.state.transform.post_translate(-left, -top);
-        draw(&mut offscreen);
-
-        let mut mask = offscreen.into_pixmap();
-        blur::blur_alpha(&mut mask, sigma);
-        tint(&mut mask, shadow.color);
+        let render = || {
+            let mut offscreen = Canvas::new(width, height)?;
+            offscreen.state.transform = raster.transform;
+            draw(&mut offscreen);
+            let mut mask = offscreen.into_pixmap();
+            blur::blur_alpha(&mut mask, raster.sigma);
+            tint(&mut mask, raster.color);
+            Some(mask)
+        };
+        let uncached;
+        let mask = if let Some((cache, path, fill_rule)) =
+            cache.filter(|_| u64::from(width) * u64::from(height) <= MAX_CACHED_SHADOW_PIXELS)
+        {
+            let Some(mask) = cache.pixels(raster, path, fill_rule, render) else {
+                return;
+            };
+            mask
+        } else {
+            let Some(mask) = render() else {
+                return;
+            };
+            uncached = mask;
+            &uncached
+        };
 
         let paint = PixmapPaint {
             opacity: self.state.alpha,
@@ -979,6 +1065,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn cached_path_shadows_match_uncached_shadows_across_view_changes() {
+        let mut cache = PathShadowCache::default();
+        for (scale, alpha, clip_width, offset_y, radius) in [
+            (1.0, 1.0, 320.0, 6.0, 42.0),
+            (0.5, 0.9, 220.0, 6.0, 42.0),
+            (1.0, 0.25, 180.0, 9.0, 42.0),
+            (0.5, 0.4, 260.0, 9.0, 42.0),
+            (1.0, 1.0, 220.0, 6.0, 20.0),
+        ] {
+            let path = rounded_rect_path(49.25, 25.75, 280.0, 230.0, radius).unwrap();
+            let fill = Color::from_rgba8(36, 104, 172, 255);
+            let shadow = Shadow {
+                color: Color::from_rgba8(0, 0, 0, 128),
+                blur: 25.0,
+                offset_x: 0.0,
+                offset_y,
+            };
+            let mut expected = Canvas::new(360, 310).unwrap();
+            let mut actual = Canvas::new(360, 310).unwrap();
+            for canvas in [&mut expected, &mut actual] {
+                canvas.fill_all(Color::WHITE);
+                canvas.translate(-18.0, -11.0);
+                canvas.scale(scale, scale);
+                canvas.set_shadow_scale(scale);
+                canvas.clip_rect(Rect::from_xywh(0.0, 0.0, clip_width, 280.0).unwrap());
+                canvas.set_global_alpha(alpha);
+                canvas.set_shadow(Some(shadow));
+            }
+            expected.fill_path(&path, fill, FillRule::Winding);
+            actual.fill_path_with_shadow_cache(
+                &path,
+                fill,
+                FillRule::Winding,
+                BlendMode::SourceOver,
+                Some(&mut cache),
+            );
+            assert_eq!(actual.pixmap().data(), expected.pixmap().data());
+        }
+        assert_eq!(cache.entries.len(), 2);
     }
 
     #[test]
