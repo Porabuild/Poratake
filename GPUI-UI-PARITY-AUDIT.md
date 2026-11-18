@@ -6174,6 +6174,22 @@ under Rosetta. The Swift daemon typechecked, and eight Electron preview and
 daemon contract tests passed. Physical hover transitions between controls
 remain unverified.
 
+### 2026-11-18 macOS camera preview error labels
+
+The native camera preview uses a black background. A generated AppKit
+fixture reproduced low-contrast error text in Aqua. The old text field
+filled the panel and successive errors added more fields. The error now
+uses one centered, light label in both appearances. A new attempt clears
+the label, and a successful capture removes any label still present.
+Failure callbacks check that their source still matches the current request.
+
+The generated error and full native recording outline fixtures passed
+on arm64 and x86_64 under Rosetta. They verified the rendered text,
+placement, reuse and retry cleanup. The Swift daemon typechecked and all
+21 camera preview and daemon contract tests passed. The authorization
+check returned not determined. Live camera output and recovery remain
+unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

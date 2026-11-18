@@ -151,8 +151,36 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyCameraPreviewError() {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let view = CameraPreviewModule.testErrorView(messages: ["No camera found", "Camera access denied"])
+            view.appearance = NSAppearance(named: name)
+            view.layoutSubtreeIfNeeded()
+            let container = view.subviews.last!
+            let labels = container.subviews.compactMap { $0 as? NSTextField }
+            guard let label = labels.last else { preconditionFailure("Camera error label missing") }
+            let bitmap = label.bitmapImageRepForCachingDisplay(in: label.bounds)!
+            label.cacheDisplay(in: label.bounds, to: bitmap)
+            let ink = (0..<bitmap.pixelsHigh).flatMap { y in
+                (0..<bitmap.pixelsWide).compactMap { x in
+                    bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+                }
+            }.filter { $0.alphaComponent > 0.6 }
+            precondition(ink.contains { $0.redComponent > 0.8 && $0.greenComponent > 0.8 && $0.blueComponent > 0.8 },
+                         "Camera error text is too dark against its black backdrop in \(name)")
+            precondition(labels.count == 1 && label.stringValue == "Camera access denied")
+            precondition(abs(label.frame.midY - container.bounds.midY) <= 1)
+            precondition(label.frame.height <= ceil(label.fittingSize.height) + 1)
+            let retry = CameraPreviewModule.testErrorView(messages: ["No camera found"], retry: true)
+            precondition(retry.subviews.last?.subviews.isEmpty == true)
+        }
+        print("camera preview error: centered, legible in both appearances, and cleared on retry")
+    }
+
+    @MainActor
     static func run() async throws {
         verifyCameraPreviewPlacement()
+        verifyCameraPreviewError()
         guard NSScreen.screens.first != nil else {
             print("SKIP recording outline lifecycle: no AppKit display")
             return
@@ -336,6 +364,10 @@ struct RecordingOutlineLifecycleTest {
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        if CommandLine.arguments.contains("--camera-preview-error") {
+            verifyCameraPreviewError()
+            return
+        }
         Task { @MainActor in
             do {
                 try await run()

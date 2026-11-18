@@ -347,6 +347,17 @@ class CameraPreviewModule: Module {
     }
 
     #if RECORDING_OUTLINE_TEST
+    @MainActor
+    static func testErrorView(messages: [String], retry: Bool = false) -> NSView {
+        let content = CameraPreviewContentView(frame: NSRect(x: 0, y: 0, width: 270, height: 270),
+                                               flipped: false, padding: 20)
+        messages.forEach { content.showError($0) }
+        if retry {
+            content.updateCamera(CameraPreviewSource(deviceName: "generated camera"))
+        }
+        return content
+    }
+
     private(set) var testReportedPositions: [NSPoint] = []
     private(set) var testShowResults: [String: Bool] = [:]
     private(set) var testFailedShows: Set<String> = []
@@ -381,6 +392,7 @@ private class CameraPreviewContentView: NSView {
     private var captureSession: AVCaptureSession?
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var containerView: NSView!
+    private var errorLabel: NSTextField?
     
     private(set) var source: CameraPreviewSource?
     private var isMirrored: Bool
@@ -448,7 +460,8 @@ private class CameraPreviewContentView: NSView {
             
             guard let camera = self.findCamera(source) else {
                 DispatchQueue.main.async { [weak self] in
-                    self?.showError("No camera found")
+                    guard let self, self.source == source else { return }
+                    self.showError("No camera found")
                 }
                 return
             }
@@ -465,7 +478,8 @@ private class CameraPreviewContentView: NSView {
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
-                    self?.showError("Camera access denied")
+                    guard let self, self.source == source else { return }
+                    self.showError("Camera access denied")
                 }
                 return
             }
@@ -489,6 +503,7 @@ private class CameraPreviewContentView: NSView {
                 }
                 
                 self.captureSession = session
+                self.clearError()
                 
                 let previewLayer = AVCaptureVideoPreviewLayer(session: session)
                 previewLayer.videoGravity = .resizeAspectFill
@@ -538,7 +553,13 @@ private class CameraPreviewContentView: NSView {
     
     func updateCamera(_ source: CameraPreviewSource) {
         self.source = source
+        clearError()
         startCamera(source)
+    }
+
+    private func clearError() {
+        errorLabel?.removeFromSuperview()
+        errorLabel = nil
     }
 
     func updateFlipped(_ flipped: Bool) {
@@ -584,13 +605,23 @@ private class CameraPreviewContentView: NSView {
         return AVCaptureDevice.default(for: .video)
     }
     
-    private func showError(_ message: String) {
+    func showError(_ message: String) {
+        if let errorLabel {
+            errorLabel.stringValue = message
+            return
+        }
         let label = NSTextField(labelWithString: message)
-        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.textColor = NSColor.white.withAlphaComponent(0.9)
         label.font = NSFont.systemFont(ofSize: 12)
         label.alignment = .center
-        label.frame = containerView.bounds
         containerView.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -12),
+            label.centerYAnchor.constraint(equalTo: containerView.centerYAnchor),
+        ])
+        errorLabel = label
     }
     
     override func layout() {
