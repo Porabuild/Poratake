@@ -5987,6 +5987,20 @@ passed on arm64 and x86_64 under Rosetta. The production daemon typechecked,
 and 27 Electron timer and daemon contract tests passed. VoiceOver
 announcement and navigation on a visible countdown remain unverified.
 
+### 2026-11-18 macOS tooltip placement beside tall preview stacks
+
+When a protected tooltip could fit neither below nor above its owner, the
+pointer-relative fallback could cover a tall capture preview stack despite
+available space beside it. The native tooltip now checks both sides and
+uses a four-point gap when a side fits within the display's visible frame.
+The bubble stays vertically aligned near the hovered control.
+
+A hidden AppKit regression reproduced the overlap before the change.
+The light single-line and dark long-label panels fit on opposite sides
+after the fix on arm64 and x86_64 under Rosetta. The fixture checks the
+native frame and gap and runs as part of the scroll preview fixture.
+Live hover on a tall preview stack and across displays remains unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

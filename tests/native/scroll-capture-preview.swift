@@ -317,7 +317,35 @@ struct ScrollCapturePreviewTest {
         }
     }
 
+    @MainActor
+    static func verifyTallTooltipPlacement() {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 640 else {
+            print("SKIP tall tooltip placement: no suitable AppKit display")
+            return
+        }
+        let work = screen.visibleFrame
+        let tooltip = ProtectedTooltip()
+        for rightEdge in [false, true] {
+            let x = rightEdge ? work.maxX - 240 : work.minX
+            let owner = NSRect(x: x, y: work.minY + 2, width: 240, height: work.height - 4)
+            let point = NSPoint(x: owner.midX, y: owner.midY)
+            let text = rightEdge ? String(repeating: "Preview action ", count: 14) : "Close preview"
+            let panel = tooltip.testMakePanel(text: text, dark: rightEdge, point: point, ownerFrame: owner, screen: screen)
+            precondition(!panel.isVisible)
+            precondition(work.contains(panel.frame), "Tooltip must fit the visible frame")
+            precondition(!owner.intersects(panel.frame), "Tooltip overlaps the tall owner despite room beside it")
+            precondition(rightEdge ? panel.frame.maxX <= owner.minX - 4 : panel.frame.minX >= owner.maxX + 4)
+        }
+        print("tall tooltip placement: light and dark panels fit beside their owners")
+    }
+
+    @MainActor
     static func main() {
+        if CommandLine.arguments.contains("--tooltip-placement") {
+            verifyTallTooltipPlacement()
+            return
+        }
         FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
         runExistingScrollChecks()
         FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
@@ -701,6 +729,7 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("screenshot frame deadline: complete\n".utf8))
 
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
+        verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
             let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)

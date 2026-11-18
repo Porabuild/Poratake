@@ -11,6 +11,10 @@ final class ProtectedTooltip {
     private var panel: NSPanel?
     #if SCROLL_CAPTURE_TEST
     var testPanel: NSPanel? { panel }
+
+    func testMakePanel(text: String, dark: Bool, point: NSPoint, ownerFrame: NSRect, screen: NSScreen) -> NSPanel {
+        makePanel(text: text, dark: dark, point: point, ownerFrame: ownerFrame, screen: screen)
+    }
     #endif
 
     init(registry: RecordingCaptureWindowRegistry = .shared) {
@@ -115,16 +119,31 @@ final class ProtectedTooltip {
         let padding = NSSize(width: 8, height: 4)
         let size = NSSize(width: labelSize.width + padding.width * 2, height: labelSize.height + padding.height * 2)
         let visible = screen.visibleFrame
-        let x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
+        var x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
         let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
         let below = anchorFrame.map { $0.minY - size.height - 4 } ?? point.y - 18 - size.height
         let above = anchorFrame.map { $0.maxY + 4 } ?? point.y + 18
         let belowFits = below >= visible.minY
         let aboveFits = above + size.height <= visible.maxY
-        let preferredY = belowFits ? below : (aboveFits ? above : point.y - 18 - size.height)
+        var preferredY = point.y - 18 - size.height
+        if belowFits {
+            preferredY = below
+        } else if aboveFits {
+            preferredY = above
+        } else if let anchorFrame {
+            let right = max(visible.minX, anchorFrame.maxX + 4)
+            let left = min(visible.maxX - size.width, anchorFrame.minX - size.width - 4)
+            if right + size.width <= visible.maxX {
+                x = right
+                preferredY = point.y - size.height / 2
+            } else if left >= visible.minX {
+                x = left
+                preferredY = point.y - size.height / 2
+            }
+        }
         let y = min(max(preferredY, visible.minY), max(visible.minY, visible.maxY - size.height))
         let panel = NSPanel(
-            contentRect: NSRect(origin: NSPoint(x: x, y: max(visible.minY, y)), size: size),
+            contentRect: NSRect(origin: NSPoint(x: x, y: y), size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
