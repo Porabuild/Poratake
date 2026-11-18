@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use herogpui::gpui::{HeadlessAppContext, WindowHandle};
 
@@ -128,12 +127,12 @@ pub(super) fn capture_scaled(
     let expected = DecodedFrame {
         width: 640,
         height: 360,
-        bgra: Arc::from(expected.as_bytes(0).unwrap()),
+        bgra: expected.as_bytes(0).unwrap().to_vec().into(),
     };
     let without = DecodedFrame {
         width: 640,
         height: 360,
-        bgra: Arc::from(without.as_bytes(0).unwrap()),
+        bgra: without.as_bytes(0).unwrap().to_vec().into(),
     };
     let rendered = super::recording_preview_comparison::compare_at_display_size(
         &screenshot,

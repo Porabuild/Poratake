@@ -544,7 +544,7 @@ fn recorded_editor_and_export(
                     let unencoded = crate::video::decoder::DecodedFrame {
                         width: decoded.width,
                         height: decoded.height,
-                        bgra: std::sync::Arc::from(expected),
+                        bgra: expected.to_vec().into(),
                     };
                     super::recording_preview_comparison::save_frame(
                         &unencoded,
@@ -575,7 +575,7 @@ fn recorded_editor_and_export(
             let unencoded = crate::video::decoder::DecodedFrame {
                 width: decoded.width,
                 height: decoded.height,
-                bgra: std::sync::Arc::from(expected),
+                bgra: expected.to_vec().into(),
             };
             let displayed = super::recording_preview_comparison::compare(
                 &screenshot,

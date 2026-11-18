@@ -7802,6 +7802,22 @@ runs use generated surfaces and app-local input.
 [GPUI dark capture](tests/native/evidence/macos-ui/all-in-one-tooltip-clearance-gpui-dark-20261119.png)
 [Electron light capture](tests/native/evidence/macos-ui/all-in-one-tooltip-clearance-electron-light-20261119.png)
 
+### 2026-11-19 macOS native editor playback and raw-frame copies
+
+Decoded frames now share the byte buffer that FFmpeg fills. This
+removes a second allocation and pixel copy for each received frame.
+The decoder retains the same BGRA bytes and timestamp selection.
+
+At 30 fps, the native editor published 90 updates over three media
+seconds for both 1080p and 4K in each appearance. In three paired 4K60
+runs, both builds published 180 updates in that interval. The revised
+build held a 640×360 interactive preview through the sample. The earlier
+build stepped down to 432×243 or 480×270. A fourth pair stalled on both
+builds, even at the smallest preview size. The bottleneck during those
+stalls remains open. These counts measure preview updates delivered to
+the editor, and do not measure display presentation.
+[Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

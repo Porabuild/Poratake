@@ -977,3 +977,42 @@ At 2×, gpui-video-thumbnail-idle.png, gpui-video-thumbnail-hover.png
 and gpui-video-thumbnail-exit.png were byte-identical across old
 and new builds in each of the two appearances. This fixture uses
 offscreen rendering and excludes screen capture and device access.
+
+2026-11-19 macOS native video playback and decoded frame storage
+
+The isolated native GPUI recording flow supplied 4.2-second generated
+H.264 clips instead of opening ScreenCaptureKit. The probe opened the
+real editor, waited for its first composed image, and used the editor
+transport to start playback. Diagnostic output timestamped accepted
+composed images. The steady window was media time 0.75–3.75 seconds.
+Intervals use app-to-probe arrival time. Compose time includes source
+frame retrieval and rasterization. Display presentation was outside
+the test. The temporary instrumentation was removed.
+
+30 fps before the storage change. Values in ms.
+
+Theme  Source      First update  Steady updates  Interval p95/max  Compose median
+Light  1920×1080           44.1              90        34.6/37.7             4.4
+Light  3840×2160           43.4              90        35.1/36.9             9.5
+Dark   3840×2160           44.3              90        34.7/35.2             9.3
+Dark   1920×1080           42.1              90        34.0/34.7             4.6
+
+Two initial 4K60 runs stalled after 3 and 9 total updates. A third
+run delivered all 180 steady updates before the storage trial.
+The same 4K60 clip decoded all 252 frames to raw BGRA in 0.63 s
+through standalone FFmpeg writing to /dev/null. That measurement
+excludes pipe transport and the editor. It does not explain the stalls.
+
+4K60 paired runs with alternating order. Values in ms. Before / after.
+
+Pair  Theme  Steady updates  Interval p95  Last steady preview size
+  1   Light       180 / 180   19.3 / 18.2       480×270 / 640×360
+  2   Dark        180 / 180   18.2 / 18.2       480×270 / 640×360
+  3   Dark        180 / 180   17.9 / 19.2       432×243 / 640×360
+  4   Light         8 / 2    600.7 / 1486.6     384×216 / 384×216
+
+In the stalled pair both variants published their first update in
+about 25 ms. The revised build's steady interval is a single sample
+because only two updates arrived in that window. These runs establish
+lower per-frame allocation and a higher interactive resolution in
+the three full-rate pairs. The stall persisted and is unclassified.

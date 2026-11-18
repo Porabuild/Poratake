@@ -32,7 +32,7 @@ impl VideoInfo {
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub bgra: Arc<[u8]>,
+    pub bgra: Arc<Vec<u8>>,
 }
 
 enum Command {
@@ -983,7 +983,7 @@ mod backend {
                 &mut decoder,
             )
             .expect("first video frame");
-            assert_eq!(first.bgra.as_ref(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            assert_eq!(first.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
             let gap = read_frame(
                 &ffmpeg,
                 &source,
@@ -993,7 +993,7 @@ mod backend {
                 &mut decoder,
             )
             .expect("sparse video gap");
-            assert_eq!(gap.bgra.as_ref(), first.bgra.as_ref());
+            assert_eq!(gap.bgra.as_slice(), first.bgra.as_slice());
             assert_eq!(
                 std::fs::read_to_string(directory.path().join("ffmpeg.count"))
                     .expect("FFmpeg launch count"),
@@ -1008,7 +1008,7 @@ mod backend {
                 &mut decoder,
             )
             .expect("second video frame");
-            assert_eq!(second.bgra.as_ref(), [9, 8, 7, 255, 12, 11, 10, 255]);
+            assert_eq!(second.bgra.as_slice(), [9, 8, 7, 255, 12, 11, 10, 255]);
 
             let random = read_frame(
                 &ffmpeg,
@@ -1019,7 +1019,7 @@ mod backend {
                 &mut None,
             )
             .expect("random seek video frame");
-            assert_eq!(random.bgra.as_ref(), first.bgra.as_ref());
+            assert_eq!(random.bgra.as_slice(), first.bgra.as_slice());
         }
     }
 }
