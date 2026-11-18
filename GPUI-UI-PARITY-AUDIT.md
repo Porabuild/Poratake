@@ -6224,6 +6224,26 @@ thumbnail with the selector gone. In the dark repeat the warm median was
 thumbnail readiness. Physical input latency and time to the first composited
 editor frame remain unverified.
 
+### 2026-11-18 macOS preview-to-editor opening latency
+
+The editor previously decoded each screenshot once for window sizing and
+again when constructing the editor. It now uses the existing color-managed
+decoder once and passes the decoded image into the editor. The open error
+toast and history-state restoration are preserved.
+
+For a 3000×1800 screenshot in dark mode, the warm median from preview
+double-click to editor visibility fell from 62.6 to 54.1 ms with live capture
+and from 48.0 to 41.5 ms with Freeze Screen. The first editor openings fell
+from 92.9 to 71.2 ms live and from 81.4 to 64.8 ms frozen. A 600×440 live
+screenshot opened in a warm median of 26.5 ms on the final build. The full
+arm64 GPUI suite passed 1,162 tests with 23 ignored.
+The light 2× Metal workflow and native attachment cancellation also passed.
+
+The [native timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the final selector, preview and editor numbers and the observed
+tails. It measures one Apple Silicon system with generated images.
+Performance across hardware, mixed displays and physical input remains open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

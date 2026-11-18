@@ -1,0 +1,48 @@
+2026-11-18 macOS native capture responsiveness
+
+Apple M5 Pro, macOS 27.2, one built-in Retina display. Current GPUI parity
+development app, temporary profiles and generated backdrop, with the previously
+authorized screen-only Swift daemon. Six cycles per profile and build. Warm
+statistics use the five cycles after the first. Times are milliseconds.
+
+The driver sent app-local commands and polled WindowServer window metadata at
+roughly 4 ms intervals. Switching required the old selector to disappear and
+the replacement to appear. Thumbnail readiness also required the selector
+to disappear. The editor endpoint was the appearance of its native window.
+The measurements include dispatch and polling overhead. No physical pointer
+input, compositor-paint timestamps or camera capture were involved.
+
+Final build, warm median (warm maximum)
+                                      600×440 live   3000×1800 live  3000×1800 frozen
+                                      Light          Dark            Dark
+Area selector visible                  22.1 (25.9)   21.2 (23.0)     47.3 (50.8)
+Area to window selector switch         23.0 (24.3)   21.4 (24.1)     52.8 (109.7)
+Cancel to selector hidden               9.1 (27.2)   13.7 (20.4)     13.8 (26.3)
+Confirm to selector hidden             16.0 (26.4)   15.4 (18.4)      9.0 (14.6)
+Confirm to preview window             102.1 (124.1) 138.0 (142.2)    81.1 (82.0)
+Confirm to ready thumbnail            108.3 (133.6) 163.9 (168.8)   100.8 (103.3)
+Preview to editor window               26.5 (28.7)   54.1 (57.4)     41.5 (43.6)
+
+Final build, first cycle
+                                      600×440 live   3000×1800 live  3000×1800 frozen
+Area selector visible                  71.0         119.6           167.6
+Area to window selector switch         51.4          64.8            66.9
+Cancel to selector hidden               9.5          12.6            15.7
+Confirm to selector hidden             16.0          20.1            13.1
+Confirm to preview window             186.4         211.7            85.9
+Confirm to ready thumbnail            190.8         240.2           104.0
+Preview to editor window               51.3          71.2            64.8
+
+Before selector fix, warm cancel-to-hidden was 166.9 ms for small live,
+167.5 ms for large live, and 163.8 ms for large frozen. In the direct light
+comparison it fell to 14.7, 12.3, and 13.6 ms. Switching medians fell from
+182.7, 177.3, and 167.4 ms to 25.7, 34.9, and 79.2 ms.
+
+Before the editor fix, with the faster selector already applied, dark
+preview-to-editor warm medians were 62.6 ms live and 48.0 ms frozen at
+3000×1800. The corresponding first opens were 92.9 and 81.4 ms.
+
+One earlier frozen trial took 884.1 ms to a ready thumbnail, with a 509.2 ms
+screenshot RPC observed in that timing group. The repeated frozen groups
+did not reproduce that tail. These samples give observed ranges and do not
+establish a latency bound.

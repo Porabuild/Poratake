@@ -67,8 +67,8 @@ pub(crate) fn open_editor_with_state(
     path: &str,
     editor_state: Option<editor::window::PersistedEditorState>,
 ) -> bool {
-    let (image_width, image_height) = match image::open(std::path::Path::new(path)) {
-        Ok(image) => (image.width() as f32, image.height() as f32),
+    let image = match crate::render::images::open(path) {
+        Ok(image) => image,
         Err(error) => {
             windows::toast::Toast::show(
                 cx,
@@ -88,8 +88,13 @@ pub(crate) fn open_editor_with_state(
         })
         .unwrap_or((1920.0, 1080.0));
     let stored = crate::config::window_state::get(crate::config::window_state::SCREENSHOT_EDITOR);
-    let (width, height) =
-        chrome::editor_window_size(image_width, image_height, work_width, work_height, stored);
+    let (width, height) = chrome::editor_window_size(
+        image.width() as f32,
+        image.height() as f32,
+        work_width,
+        work_height,
+        stored,
+    );
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
@@ -102,9 +107,8 @@ pub(crate) fn open_editor_with_state(
             )),
         ),
         |window, cx| {
-            cx.new(|cx| match editor_state {
-                Some(state) => editor::EditorWindow::from_file_with_state(path, state, window, cx),
-                None => editor::EditorWindow::from_file(path, window, cx),
+            cx.new(|cx| {
+                editor::EditorWindow::from_decoded(path, editor_state, Some(image), window, cx)
             })
         },
     );

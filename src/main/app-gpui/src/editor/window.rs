@@ -476,26 +476,36 @@ pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
 impl EditorWindow {
     pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
-            .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
-            .unwrap_or_default();
-        Self::from_file_with_state(path, persisted, window, cx)
+        Self::from_decoded(path, None, decode_editor_image(path), window, cx)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_file_with_state(
         path: &str,
         persisted: PersistedEditorState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (image, base, width, height) = match load_image(path) {
-            Ok(result) => result,
-            Err(error) => {
-                eprintln!("[editor] failed to load {path}: {error}");
-                (None, None, 0.0, 0.0)
-            }
-        };
+        Self::from_decoded(path, Some(persisted), decode_editor_image(path), window, cx)
+    }
 
+    pub(crate) fn from_decoded(
+        path: &str,
+        persisted: Option<PersistedEditorState>,
+        decoded: Option<image::DynamicImage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let persisted = persisted.unwrap_or_else(|| {
+            crate::history_store::editor_state_for_path(std::path::Path::new(path))
+                .and_then(|state| serde_json::from_value(state).ok())
+                .unwrap_or_default()
+        });
+        let base = decoded.map(|image| image::DynamicImage::ImageRgba8(image.into_rgba8()));
+        let (width, height) = base.as_ref().map_or((0., 0.), |image| {
+            (image.width() as f32, image.height() as f32)
+        });
+        let image = base.as_ref().map(render_image_from_base);
         let image_tiles = image
             .as_deref()
             .map(crate::editor::image_tiles::create)
@@ -3967,21 +3977,14 @@ impl EditorWindow {
         self.history.push(annotations);
     }
 }
-fn load_image(
-    path: &str,
-) -> anyhow::Result<(
-    Option<Arc<gpui::RenderImage>>,
-    Option<image::DynamicImage>,
-    f32,
-    f32,
-)> {
-    let decoded = crate::render::images::open(path)?;
-    let (width, height) = (decoded.width() as f32, decoded.height() as f32);
-
-    let base = image::DynamicImage::ImageRgba8(decoded.into_rgba8());
-    let render_image = render_image_from_base(&base);
-
-    Ok((Some(render_image), Some(base), width, height))
+fn decode_editor_image(path: &str) -> Option<image::DynamicImage> {
+    match crate::render::images::open(path) {
+        Ok(image) => Some(image),
+        Err(error) => {
+            eprintln!("[editor] failed to load {path}: {error}");
+            None
+        }
+    }
 }
 
 fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> {
