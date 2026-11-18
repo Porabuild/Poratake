@@ -4383,7 +4383,7 @@ appearance.
 | P1       | Recording media and target continuity                    | Native mic/system/camera enable/disable and device changes, target close/move/resize, audio continuity and camera visible ranges. Control-bar fixtures and image baselines cover UI/RPC transitions; hardware output still needs proof.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | P1       | Real-media audio speed edits                             | Synthetic checks now verify source pitch and short sounds in preview and decoded export, plus stereo tones and boundary transients across speeds. Verify live microphone, speech and music against Electron; non-x86 alignment performance is unmeasured.                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
-| P1       | Video redaction crop and rounded camera                  | Crops include intersecting camera clips and local rectangle corners. A 4,096-case generated comparison still has 17 channels above one level, up to two. Verify actual editor preview against decoded export and investigate the remaining cases and 4K playback cost.                                                                                                                                                                                                                                                                                                                                                                   |
+| P1       | Video redaction crop and rounded camera                  | Crops include camera clips and rectangle corners. Offscreen macOS editor frames with rounded camera, zoom and pixelation match decoded export within two mean RGB levels in the effect region. The 17 residual channels and 4K playback cost remain open.                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Native accessibility action delivery                     | Native macOS Settings verified dropdown opening and selection, switch toggling, and slider setting and stepping at 880×700. Isolated tests exercise HeroGPUI actions. Verify screen readers and other operating system adapters.                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | History visual and native verification                   | Verified native macOS contrast, 2× grid spacing, compact list at 140pt, opening and Finder reveal on one display. Mock tests cover grid and list tooltip boundaries. Verify live tooltips and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -5507,6 +5507,25 @@ controls stayed clear of the image. Re-exporting the reopened document
 preserved all 1,008,000 RGBA pixels, including the transparent quadrant.
 The focused Escape fixture and pending-freeze checks passed. Native
 keyboard cancellation is still open.
+
+### 2026-11-18 macOS painted camera and redaction preview
+
+A generated project used a rounded camera with shadow, 1.5× video zoom and
+pixelation across the camera edge. The camera was visible from 0 to 0.75
+seconds and from 1.25 to 2 seconds. The offscreen macOS editor painted the
+saved project at 0.25, 0.5, 1 and 1.5 seconds in a 1280×750-point dark
+window at 1× and a 720×520-point light window at 2×. The camera appeared
+and disappeared at the expected times in both profiles. At one second,
+the camera-region content matched the no-camera control exactly before
+display scaling.
+
+The GPUI exporter produced a 320×180 H.264 file. With the decoded frames
+resized to match the preview using bilinear sampling at 2×, the mean
+RGB difference over the full image was 0.899–0.951 levels at 1× and
+0.608–0.651 at 2×. The pixelation region averaged 1.025–1.895 levels at
+1× and 0.774–1.414 at 2×. The existing composition and decoded-export
+fixture also passed. The generated camera clip required no device access.
+Live camera and playback performance remain open.
 
 ## Review gate
 
