@@ -461,8 +461,6 @@ pub(crate) fn open_native_control_probe(cx: &mut App) -> gpui::AnyWindowHandle {
 
 #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
 pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
-    use base64::Engine;
-
     let display = cx.primary_display().expect("primary display");
     let work = crate::system::work_area::work_area(display.as_ref());
     let width = f32::from(work.size.width) as i32;
@@ -470,15 +468,28 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
         .filter(|requested| *requested >= PREVIEW_WIDTH as i32 && *requested < width);
-    let area = ScreenRect {
-        x: f32::from(work.left()) as i32,
-        y: f32::from(work.top()) as i32,
-        width: fixture_width.unwrap_or(width),
-        height: f32::from(work.size.height) as i32,
+    let edge = std::env::var("PORATAKE_NATIVE_SCROLL_FIXTURE_EDGE").ok();
+    let area = match edge.as_deref() {
+        Some("bottom-left" | "bottom-right") => ScreenRect {
+            x: if edge.as_deref() == Some("bottom-right") {
+                f32::from(work.right()) as i32 - 96
+            } else {
+                f32::from(work.left()) as i32
+            },
+            y: f32::from(work.bottom()) as i32 - 72,
+            width: 96,
+            height: 64,
+        },
+        _ => ScreenRect {
+            x: f32::from(work.left()) as i32,
+            y: f32::from(work.top()) as i32,
+            width: fixture_width.unwrap_or(width),
+            height: f32::from(work.size.height) as i32,
+        },
     };
     let (signal, _receiver) = smol::channel::bounded(1);
     let ui = ScrollCaptureSession::open(cx, crate::state::state(cx).daemon, area, signal);
-    if fixture_width.is_some() {
+    if edge.is_none() && fixture_width.is_some() {
         cx.windows()
             .into_iter()
             .find_map(|handle| handle.downcast::<ScrollPreviewPanel>())
@@ -491,15 +502,7 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
             })
             .unwrap();
     }
-    let mut png = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-        240,
-        180,
-        image::Rgba([235, 14, 200, 255]),
-    ))
-    .write_to(&mut png, image::ImageFormat::Png)
-    .unwrap();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+    let encoded = native_scroll_preview_fixture(180);
     ui.update(cx, |ui, cx| {
         ui.preview = decode_preview(&encoded, ui.preview_width, ui.preview_max_height);
         cx.notify();
@@ -515,19 +518,66 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
         "scroll exclusion fixture {} {} {} {} {} {} {}",
         area.x, area.y, area.width, area.height, ids[0], ids[1], ids[2]
     );
-    let (done, finished) = smol::channel::bounded(1);
+    if edge.is_some() {
+        println!(
+            "scroll fixture work area {} {} {} {}",
+            f32::from(work.left()),
+            f32::from(work.top()),
+            f32::from(work.right()),
+            f32::from(work.bottom()),
+        );
+    }
+    let (frames, requested) = smol::channel::bounded(1);
     std::thread::spawn(move || {
-        let _ = std::io::stdin().read_line(&mut String::new());
-        let _ = done.send_blocking(());
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            let Some(height) = line
+                .strip_prefix("frame ")
+                .and_then(|height| height.parse::<u32>().ok())
+            else {
+                break;
+            };
+            if !(1..=1200).contains(&height) || frames.send_blocking(height).is_err() {
+                break;
+            }
+        }
     });
     cx.spawn(async move |cx| {
-        let _ = finished.recv().await;
+        while let Ok(height) = requested.recv().await {
+            let encoded = smol::unblock(move || native_scroll_preview_fixture(height)).await;
+            cx.update(|cx| {
+                apply_progress(
+                    &ui,
+                    ScrollSessionSignal::Frame {
+                        preview: Some(encoded),
+                    },
+                    cx,
+                );
+            });
+        }
         cx.update(|cx| {
             ScrollCaptureSession::close(cx);
             cx.quit();
         });
     })
     .detach();
+}
+
+#[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+fn native_scroll_preview_fixture(height: u32) -> String {
+    use base64::Engine;
+    let image = image::RgbaImage::from_fn(240, height, |_, y| {
+        if y < height.saturating_sub(360) {
+            image::Rgba([44, 220, 40, 255])
+        } else {
+            image::Rgba([235, 14, 200, 255])
+        }
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    base64::engine::general_purpose::STANDARD.encode(png.into_inner())
 }
 
 #[cfg(all(feature = "parity", target_os = "macos", not(test)))]

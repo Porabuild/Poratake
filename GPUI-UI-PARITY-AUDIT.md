@@ -7563,6 +7563,22 @@ The 2-point preview radius follows the Electron renderer's
 existing corner pixel and Finish/Cancel assertions. The native
 window captures used one physical Retina display.
 
+### 2026-11-18 macOS scroll preview growth at the bottom edges
+
+The native scroll fixture delivered 60-, 200-, and 960-point generated
+frames to the same preview, beside a 96-point selection at each bottom
+edge of the built-in Retina display. In both appearances the preview
+stayed 240 points wide and on the side with available space. Its painted
+image heights were 60, 200 and 360 points.
+
+The short image aligned with the selection and ended 12 points above
+the work-area bottom. The taller images moved up to fit, ending exactly
+at the work-area bottom. The capped preview showed only the bottom
+360 points of the tall fixture. No pixels from its contrasting upper
+strip were visible. The check sampled the native preview window with
+app-local frame delivery. Physical narrow and mixed-DPI displays remain
+outside this run.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
