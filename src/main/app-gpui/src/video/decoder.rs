@@ -688,7 +688,7 @@ mod backend {
                 "0:v:0",
                 "-an",
                 "-vf",
-                "showinfo",
+                "showinfo=checksum=0",
                 "-fps_mode",
                 "passthrough",
                 "-f",
@@ -806,7 +806,7 @@ mod backend {
             let executable = directory.path().join("ffmpeg");
             std::fs::write(
                 &executable,
-                "#!/bin/sh\ncase \"$*\" in\n  *'showinfo'*'rawvideo'*) printf x >> \"$0.count\"; printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\\n' >&2; printf '\\003\\002\\001\\377\\006\\005\\004\\377'; printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\\n' >&2; printf '\\011\\010\\007\\377\\014\\013\\012\\377' ;;\n  *) printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\\n' >&2; exit 1 ;;\nesac\n",
+                "#!/bin/sh\ncase \"$*\" in\n  *'showinfo=checksum=0'*'rawvideo'*) printf x >> \"$0.count\"; printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\\n' >&2; printf '\\003\\002\\001\\377\\006\\005\\004\\377'; printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\\n' >&2; printf '\\011\\010\\007\\377\\014\\013\\012\\377' ;;\n  *) printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\\n' >&2; exit 1 ;;\nesac\n",
             )
             .expect("fake FFmpeg");
             let mut permissions = std::fs::metadata(&executable)

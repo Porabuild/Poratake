@@ -7722,6 +7722,20 @@ A standalone single-thread FFmpeg comparison produced identical
 median readiness with that setting. The decoder settings were kept.
 [Readiness and decoder measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 FFmpeg decoder checksum work on macOS
+
+GPUI uses FFmpeg's `showinfo` filter for frame timestamps. The decoder
+now disables the filter's per-frame checksum and pixel statistics.
+Paired tests of a generated 4K H.264 clip produced identical BGRA bytes
+and timestamps across all 60 frames. [FFmpeg showinfo filter](https://ffmpeg.org/doxygen/9.0/vf__showinfo_8c_source.html)
+
+In four paired decode-only runs using FFmpeg's null output, median CPU
+time fell from 1,159 to 740 ms. The native app's first-frame timings
+varied across three pairs. Median Stop-to-thumbnail time was 179 ms
+before and 189 ms after. Median preview-to-editor time was 217 ms
+before and 227 ms after. These results establish reduced decoder CPU
+work for the fixture. They leave first-frame latency open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
