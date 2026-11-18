@@ -7008,6 +7008,20 @@ The shared area and window capture paths use this rule. The
 [native window evidence](tests/native/evidence/macos-ui/native-window-screenshot-target-change-20261118.txt)
 records both appearances and the focused regression.
 
+### 2026-11-18 macOS scroll finish that reports success without an image
+
+A parity fixture reported successful Finish while leaving the GPUI staging
+file empty. The old build promoted it to a zero-byte PNG. GPUI now checks
+that the reserved output is a nonempty regular file before publishing it.
+An empty stage takes the existing no-image error path. The selector and
+controls close, and history, preview and clipboard stay clear of the
+failed result.
+
+The [scroll finish evidence](tests/native/evidence/macos-ui/scroll-empty-finish-20261118.txt)
+records the failure and the light and dark regression cases. Those
+workflows also cover valid output, partial-file retention, retries and
+cancellation during Finish.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

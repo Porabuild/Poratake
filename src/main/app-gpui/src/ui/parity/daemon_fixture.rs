@@ -460,7 +460,7 @@ pub fn run() {
                 let params = request.params.as_ref().unwrap();
                 let path = Path::new(params["outputPath"].as_str().unwrap());
                 let success = fixture["scroll"] != "empty";
-                if success {
+                if success && fixture["scroll"] != "finish-empty-success" {
                     image::RgbaImage::from_pixel(640, 900, image::Rgba([32, 168, 96, 255]))
                         .save(path)
                         .unwrap();

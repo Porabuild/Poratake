@@ -98,6 +98,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "start-failed",
         "finish-failed",
         "finish-partial-failed",
+        "finish-empty-success",
         "empty",
         "finish-held",
         "cancel-finishing-held",
@@ -454,7 +455,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         }
         let body = match name {
             "start-failed" => Some("The scroll capture could not be started"),
-            "finish-failed" | "empty" => Some("The scroll capture produced no image"),
+            "finish-failed" | "finish-empty-success" | "empty" => {
+                Some("The scroll capture produced no image")
+            }
             "finish-spawn-failed" => Some("parity-injected scroll finish thread creation failure"),
             _ => None,
         };
@@ -557,6 +560,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                         "early-finish"
                             | "finish-failed"
                             | "finish-partial-failed"
+                            | "finish-empty-success"
                             | "empty"
                             | "finish-held"
                             | "cancel-finishing-held"
@@ -640,6 +644,7 @@ fn wait_for_scroll_result(
         "start-failed"
         | "finish-failed"
         | "finish-partial-failed"
+        | "finish-empty-success"
         | "empty"
         | "finish-spawn-failed" => 1,
         _ => 0,

@@ -29,7 +29,7 @@ struct PendingEditorAttach {
 enum ScrollFinishEvent {
     Prepared(std::path::PathBuf),
     RequestSent,
-    Completed(Result<std::path::PathBuf, anyhow::Error>),
+    Completed(anyhow::Result<()>),
     Cancelled(Result<(), String>),
 }
 
@@ -790,12 +790,14 @@ impl Coordinator {
                                         },
                                     )
                                     .and_then(|path| {
-                                        path.ok_or_else(|| {
-                                            anyhow::anyhow!(
-                                                "The scroll capture produced no image. Capture data may be available at {}",
-                                                temporary.display()
-                                            )
-                                        })
+                                        if path.is_some()
+                                            && std::fs::symlink_metadata(&temporary)
+                                                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+                                        {
+                                            Ok(())
+                                        } else {
+                                            Err(anyhow::anyhow!("The scroll capture produced no image"))
+                                        }
                                     });
                                     let _ = events
                                         .try_send(ScrollFinishEvent::Completed(result));
@@ -925,7 +927,7 @@ impl Coordinator {
 
                     let result = finish_result?;
                     let path = match result {
-                        Ok(_) => match temporary.as_deref() {
+                        Ok(()) => match temporary.as_deref() {
                             Some(temporary) => publish_screenshot(temporary, &output).with_context(|| {
                                 format!("Capture data is available at {}", temporary.display())
                             }),
