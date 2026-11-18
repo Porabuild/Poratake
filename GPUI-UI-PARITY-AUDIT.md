@@ -7691,6 +7691,20 @@ Fresh processes shared the existing macOS service state. The cause
 inside Vision and performance after an OS restart remain unverified.
 [Stage timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS visible countdown accessibility
+
+The AppKit timer fixture now checks the visible countdown as well as
+the hidden test view. Its accessibility frame matches the 140 × 52-point
+panel in screen coordinates. A center hit test locates the countdown
+button, and the real timer updates its value from “2 seconds remaining”
+to “1 second remaining”. [AppKit accessibility frame](https://developer.apple.com/documentation/appkit/nsaccessibility-c.protocol/accessibilityframe)
+
+The fixture presses the button through AppKit and observes one
+cancellation, with the panel removed or transparent in WindowServer.
+A second press on the retired element is rejected. The macOS native
+timer workflow runs this case in CI. VoiceOver navigation and speech
+remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
