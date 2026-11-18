@@ -649,7 +649,7 @@ impl RecordingControl {
     pub(crate) fn start_enabled(&self, cx: &App) -> bool {
         #[cfg(target_os = "macos")]
         if crate::intents::recording_outline_is_hiding(cx)
-            || crate::capture::overlay::pending_recording_overlay(cx).is_some()
+            || crate::capture::overlay::pending_recording_preparation(cx).is_some()
         {
             return false;
         }
@@ -760,6 +760,75 @@ impl RecordingControl {
     }
 
     fn begin_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        {
+            let frozen = crate::capture::overlay::frozen_selection_generation(cx);
+            if frozen != 0 {
+                self.release_before_recording(frozen, window, cx);
+                return;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        if !crate::capture::overlay::release_frozen_screen_in_place(cx) {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Recording failed",
+                "Could not release the frozen screen",
+            );
+            return;
+        }
+        self.prepare_recording(window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_before_recording(&self, frozen: u64, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::capture::overlay;
+
+        let owner = overlay::revision(cx);
+        let generation = self.countdown_generation;
+        let control = window
+            .window_handle()
+            .downcast::<Self>()
+            .expect("recording control");
+        let finished = overlay::begin_recording_preparation(cx);
+        let service = crate::state::state(cx);
+        cx.notify();
+        cx.spawn(async move |_, cx| {
+            let released = smol::unblock(move || service.release_screen(frozen)).await;
+            cx.update(|cx| {
+                overlay::finish_recording_preparation(cx);
+                let owns_selection = overlay::revision(cx) == owner;
+                if released && owns_selection {
+                    overlay::mark_frozen_selection_released(frozen, cx);
+                }
+                let current = control.update(cx, |this, window, cx| {
+                    cx.notify();
+                    if !owns_selection
+                        || this.mode != Mode::PreRecording
+                        || this.countdown_generation != generation
+                    {
+                        return;
+                    }
+                    if released {
+                        this.prepare_recording(window, cx);
+                    } else {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Recording failed",
+                            "Could not release the frozen screen",
+                        );
+                    }
+                });
+                if current.is_err() {
+                    Self::refresh_after_outline_cleanup(cx);
+                }
+            });
+            drop(finished);
+        })
+        .detach();
+    }
+
+    fn prepare_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ios_recording = self.selected_ios_id.is_some();
         #[cfg(all(target_os = "macos", not(test)))]
         let native_window_id = super::macos_window_id(window);
@@ -783,14 +852,6 @@ impl RecordingControl {
         };
         #[cfg(any(not(target_os = "macos"), test))]
         let excluded_window_ids = Vec::new();
-        if !crate::capture::overlay::release_frozen_screen_in_place(cx) {
-            crate::windows::toast::Toast::show(
-                cx,
-                "Recording failed",
-                "Could not release the frozen screen",
-            );
-            return;
-        }
         if ios_recording {
             crate::capture::overlay::close_all(cx);
         }
@@ -811,7 +872,7 @@ impl RecordingControl {
                         .ok()
                         == Some(true);
                     cx.update(|cx| {
-                        crate::capture::overlay::finish_recording_overlay_preparation(cx);
+                        crate::capture::overlay::finish_recording_preparation(cx);
                         let continue_start = control
                             .update(cx, |this, window, cx| {
                                 if this.mode != Mode::PreRecording

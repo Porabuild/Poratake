@@ -1376,6 +1376,18 @@ pub fn open(cx: &mut App) {
                         )
                         .is_ok();
                 }
+                if command == "record all-in-one" {
+                    crate::state::state(cx).config.update(|config| {
+                        config.all_in_one.remember_choices = true;
+                        config.all_in_one.last_mode = "record".into();
+                        config.all_in_one.last_targets.record = "area".into();
+                        config.all_in_one.recording.mic_enabled = false;
+                        config.all_in_one.recording.camera_enabled = false;
+                        config.all_in_one.recording.system_audio = false;
+                    });
+                    crate::intents::dispatch(Intent::AllInOne, None, cx);
+                    return true;
+                }
                 if let Some(kind) = command.strip_prefix("capture ") {
                     let intent = match kind {
                         "area" => Intent::CaptureArea,

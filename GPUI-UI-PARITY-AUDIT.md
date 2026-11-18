@@ -7143,6 +7143,22 @@ Show completed and left no recording project. A capture switch waited
 for Show and Hide before opening its selector. An injected failed
 overlay response cleaned up and re-enabled Start. [Native startup evidence](tests/native/evidence/macos-ui/native-recording-overlay-show-20261118.txt)
 
+### 2026-11-18 macOS All-in-One frozen recording preparation
+
+Starting an area recording from a frozen All-in-One selection used
+to block the toolbar while the daemon released the frozen screen.
+A held Release response stalled the baseline parity fixture until
+the response timed out. GPUI now waits off the UI thread and
+checks that the selection and toolbar still own the attempt before
+continuing to the recording overlay.
+
+The native toolbar answered app-local status requests in 0.04–0.86 ms
+during a 650 ms hold. Both appearances recorded screen-only video
+and opened the preview after Release, Show and Start. Cancel closed
+the toolbar and selector without a project. Switching to a screenshot
+opened a new selector after release, with no stale recorder request.
+[Native evidence](tests/native/evidence/macos-ui/native-frozen-recording-release-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

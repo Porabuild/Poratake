@@ -1,0 +1,33 @@
+macOS All-in-One frozen recording release, 2026-11-18
+
+Baseline 4c97432e with the modified recording fixture held the
+freeze-screen Release reply after a frozen All-in-One area selection.
+The fixture timed out while trying to proceed with the app. The
+revised recording parity test reaches the held reply with Start
+disabled and the recorder idle. It sees neither an overlay Show
+nor a recorder Start until the acknowledgement is released. The
+light and dark parity workflows both passed.
+
+The native GPUI probe opened a frozen All-in-One recording selector
+on one built-in Retina display. App-local pointer events chose an
+area over a generated moving backdrop. An authorized screen-only
+daemon released the freeze; a bridge held the successful response
+for 650 ms. Camera protection used fixture replies. The screen
+recordings used video only with audio and key tracking disabled.
+
+Scenario                          Status response during Release hold
+Light normal start                0.04 ms
+Dark normal start                 0.86 ms
+Dark cancel                       0.07 ms
+Dark switch to screenshot         0.19 ms
+
+The app sent Show and Start only after Release. The two recordings
+saved 600×440 video and opened the preview. In the cancel run the
+toolbar and selector closed within the hold and stayed closed after
+release. In the switch run a new screenshot selector opened after
+release. No recorder start or project resulted from either cancelled
+recording intent. The probe used application-local input and
+observed individual replies.
+
+All 1,173 runnable GPUI tests and 92 Electron recording and freeze
+reference tests passed.

@@ -681,7 +681,7 @@ fn recorded_editor_and_export(
 pub(super) fn wait_for_recording_start(cx: &mut HeadlessAppContext) {
     let started = std::time::Instant::now();
     while crate::video::recorder::state() == crate::video::recorder::RecorderState::Starting
-        || cx.update(|cx| crate::capture::overlay::pending_recording_overlay(cx).is_some())
+        || cx.update(|cx| crate::capture::overlay::pending_recording_preparation(cx).is_some())
     {
         cx.run_until_parked();
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
@@ -1491,9 +1491,12 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                     config.history.enabled,
                 )
             });
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let mut fixture = serde_json::json!({
-                "freeze": "live", "recordingAreaStartFails": true,
+                "freeze": "frozen", "recordingAreaStartFails": true,
                 "recordingAreaStartWritesPartial": true,
+                "recordingHoldFreezeRelease": true,
+                "barrier": listener.local_addr().unwrap().to_string(),
             });
             let expected_duration = configure_recording_fixture(&mut fixture, "area");
             std::fs::write(
@@ -1511,8 +1514,38 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             });
             let before = super::daemon_fixture::calls(output).len();
             take_notifications();
+            let release = recording_outline_barrier(&listener);
             click_measured(cx, control, "recording-controls", 0);
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
             cx.run_until_parked();
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(
+                !control
+                    .downcast::<RecordingControl>()
+                    .unwrap()
+                    .update(cx, |control, _, cx| { control.start_enabled(cx) })
+                    .unwrap(),
+                "Start must remain disabled while releasing the frozen selection"
+            );
+            assert!(
+                !super::daemon_fixture::calls(output)[before..]
+                    .iter()
+                    .any(|call| matches!(
+                        call["module"].as_str(),
+                        Some("recording-overlay" | "screen-recorder")
+                    )),
+                "recording must wait for the freeze release"
+            );
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+            release.write_all(&[0]).unwrap();
             wait_for_recording_start(cx);
             let cleanup_started = std::time::Instant::now();
             while cx.update(|cx| crate::intents::recording_outline_is_hiding(cx)) {
@@ -1560,9 +1593,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 title == "Recording failed"
                     && body.contains(failed_recording.parent().unwrap().to_str().unwrap())
             }));
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            fixture["recordingHoldFreezeRelease"] = false.into();
             fixture["recordingHoldOutlineShow"] = true.into();
-            fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&fixture).unwrap(),
@@ -1578,9 +1610,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 crate::video::recorder::state(),
                 crate::video::recorder::RecorderState::Idle
             );
-            assert!(
-                cx.update(|cx| crate::capture::overlay::pending_recording_overlay(cx).is_some())
-            );
+            assert!(cx
+                .update(|cx| crate::capture::overlay::pending_recording_preparation(cx).is_some()));
             assert!(!control
                 .downcast::<RecordingControl>()
                 .unwrap()

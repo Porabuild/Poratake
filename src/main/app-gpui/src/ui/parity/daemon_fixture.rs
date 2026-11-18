@@ -181,6 +181,13 @@ pub fn run() {
                     )
                     .unwrap();
                 }
+                if fixture["recordingHoldFreezeRelease"] == true {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"frozen": false}));
+                    });
+                    continue;
+                }
                 json!({"frozen": false})
             }
             ("desktop-helper", "hide") => {

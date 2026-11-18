@@ -56,7 +56,7 @@ struct OverlaySession {
     #[cfg(target_os = "macos")]
     native_recording_overlay_requested: bool,
     #[cfg(target_os = "macos")]
-    pending_recording_overlay: Option<smol::channel::Receiver<()>>,
+    pending_recording_preparation: Option<smol::channel::Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -247,19 +247,30 @@ pub fn close_all(cx: &mut App) {
     }
 }
 
-pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
-    let generation = session(cx)
+pub(crate) fn frozen_selection_generation(cx: &mut App) -> u64 {
+    session(cx)
         .handles
         .iter()
         .map(|tracked| tracked.generation)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+pub(crate) fn mark_frozen_selection_released(generation: u64, cx: &mut App) {
+    for tracked in &mut session(cx).handles {
+        if tracked.generation <= generation {
+            tracked.generation = 0;
+        }
+    }
+    finish_pending_freeze_release(generation, true, cx);
+}
+
+pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
+    let generation = frozen_selection_generation(cx);
     if !crate::state::state(cx).release_screen(generation) {
         return false;
     }
-    for tracked in &mut session(cx).handles {
-        tracked.generation = 0;
-    }
+    mark_frozen_selection_released(generation, cx);
     true
 }
 
@@ -293,22 +304,27 @@ pub(crate) fn prepare_recording_overlay(cx: &mut App) -> Option<smol::channel::S
     if session.outlined_window_id.is_some() {
         return None;
     }
-    let (finished, pending) = smol::channel::bounded(1);
-    session.pending_recording_overlay = Some(pending);
     session.native_recording_overlay_requested = true;
-    Some(finished)
+    Some(begin_recording_preparation(cx))
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn pending_recording_overlay(cx: &App) -> Option<smol::channel::Receiver<()>> {
+pub(crate) fn begin_recording_preparation(cx: &mut App) -> smol::channel::Sender<()> {
+    let (finished, pending) = smol::channel::bounded(1);
+    session(cx).pending_recording_preparation = Some(pending);
+    finished
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn pending_recording_preparation(cx: &App) -> Option<smol::channel::Receiver<()>> {
     cx.try_global::<OverlaySession>()?
-        .pending_recording_overlay
+        .pending_recording_preparation
         .clone()
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn finish_recording_overlay_preparation(cx: &mut App) {
-    session(cx).pending_recording_overlay = None;
+pub(crate) fn finish_recording_preparation(cx: &mut App) {
+    session(cx).pending_recording_preparation = None;
 }
 
 #[cfg(target_os = "macos")]
