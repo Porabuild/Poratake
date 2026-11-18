@@ -697,6 +697,38 @@ pub fn native_ui_probe() {
                             println!("tray menu toggled");
                             return;
                         }
+                        if command == "history-toggle" {
+                            if crate::history_store::load_history().is_empty() {
+                                crate::history_store::add_item(
+                                    crate::history_store::HistoryItem {
+                                        id: "native-history-probe".into(),
+                                        timestamp: chrono::Local::now().timestamp_millis(),
+                                        original_path: probe_directory.join("preview.png").to_string_lossy().into_owned(),
+                                        r#type: crate::history_store::HistoryItemType::Screenshot,
+                                        editor_state: None,
+                                        duration: None,
+                                    },
+                                    10,
+                                    true,
+                                );
+                            }
+                            crate::intents::dispatch(Intent::History, None, cx);
+                            println!("history toggled");
+                            return;
+                        }
+                        if matches!(command.as_str(), "history-escape" | "history-enter") {
+                            if let Some(handle) = registry::handle(WindowKind::History, cx) {
+                                let key = if command == "history-enter" { "enter" } else { "escape" };
+                                let event = PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                    keystroke: gpui::Keystroke::parse(key).unwrap(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                });
+                                let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                            }
+                            println!("{command} dispatched");
+                            return;
+                        }
                         if command == "tray-shortcut-area" {
                             crate::dispatch_native_event(crate::system::native::NativeEvent::Intent {
                                 intent: Intent::CaptureArea,

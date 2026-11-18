@@ -114,7 +114,13 @@ impl HistoryWindow {
     }
 
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
-        registry::toggle(RegistryKind::History, cx, |cx| {
+        if let Some(handle) =
+            registry::handle(RegistryKind::History, cx).and_then(|handle| handle.downcast::<Self>())
+        {
+            let _ = handle.update(cx, |this, window, cx| this.close(window, cx));
+            return;
+        }
+        registry::open_or_activate(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
             let (bounds, display_id) = popover_placement(tray_rect, cx);
             let window_bounds = display_id
@@ -193,7 +199,9 @@ impl HistoryWindow {
             return;
         }
         self.closing = true;
-        registry::close(RegistryKind::History, cx);
+        registry::forget(RegistryKind::History, cx);
+        #[cfg(all(target_os = "macos", not(test)))]
+        crate::system::window_visibility::disable_macos_transitions(window);
         window.remove_window();
     }
 

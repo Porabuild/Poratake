@@ -4389,7 +4389,7 @@ appearance.
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Ambiguous scroll seams, physical pointer movement between controls, live camera capture, and multi-display workflows remain open.                                                                                                                                                                                                                                                                                                                                      |
-| P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History, onboarding and broader native interaction remain outstanding; see [the Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt).                                                                                                                                                                                                                                            |
+| P2       | Other app surfaces                                       | Settings appearance has live dark/light images at 880x700; recording controls and the bottom-right capture preview have live images in both themes. A generated screenshot-editor annotation/save/reopen also passed. History popover visibility, dismissal and editor handoff also passed in both themes. Onboarding and broader native interaction remain outstanding. [Mac live smoke evidence](tests/native/evidence/macos-ui/macos-live-smoke-20261117.txt) [History popover timings](#2026-11-18-macos-history-popover-dismissal-and-editor-handoff)                                                                               |
 
 GPUI now attempts to restore history after returned write errors and reports when a
 capture was deleted but its history update failed. Isolated store tests cover
@@ -7290,6 +7290,28 @@ results with access granted by the fixture. Both the focused check
 and the generated AppKit lifecycle passed on arm64 and under Rosetta.
 The Swift daemon typechecked and 41 Electron and daemon contract
 reference tests passed. The test uses simulated permission outcomes.
+
+### 2026-11-18 macOS History popover dismissal and editor handoff
+
+History now disables the AppKit window transition at dismissal. A second
+toggle and the popover's keyboard actions share the same close path.
+In the GPUI dev app on the built-in Retina display, a generated screenshot
+appeared as a History thumbnail in both themes. The native popover measured
+400 × 500 points. [Light capture](tests/native/evidence/macos-ui/history-popover-light-20261118.png)
+[Dark capture](tests/native/evidence/macos-ui/history-popover-dark-20261118.png)
+
+| WindowServer observation                                   | Light before → after | Dark before → after |
+| ---------------------------------------------------------- | -------------------: | ------------------: |
+| Toggle to History dismissal, warm median                   |      165.2 → 20.2 ms |     167.0 → 13.7 ms |
+| Escape to History dismissal, warm median                   |       166.6 → 9.7 ms |      168.4 → 9.6 ms |
+| Enter on the screenshot to editor visibility, one handoff  |       46.4 → 42.6 ms |      49.3 → 50.9 ms |
+| Enter on the screenshot to History dismissal, same handoff |      208.4 → 51.8 ms |     206.2 → 52.2 ms |
+
+The revised warm open samples ranged from 23.2 to 32.0 ms. Each dismissal
+median uses three samples after the first attempt for that action. The
+probe measured WindowServer visibility with app-local events and an
+isolated History profile. The editor timing ends when its window is
+visible. All 53 Electron History and popover reference tests passed.
 
 ## Review gate
 
