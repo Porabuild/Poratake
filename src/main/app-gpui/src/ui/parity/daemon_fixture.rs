@@ -628,7 +628,18 @@ pub fn run() {
             }
             ("recording-control", "listIOSDevices") => json!({"devices": []}),
             ("recording-control", "setTooltip") => json!({"visible": false}),
-            ("recording-overlay", "show") => json!({"visible": true}),
+            ("recording-overlay", "show") => {
+                if let Some(fixture) = optional_capture_fixture(&output)
+                    .filter(|fixture| fixture["recordingHoldOutlineShow"] == true)
+                {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"visible": true}));
+                    });
+                    continue;
+                }
+                json!({"visible": true})
+            }
             ("recording-overlay", "showWindow") => json!({"visible": true}),
             ("screen-recorder", "start") => {
                 recording_stop_was_held = false;

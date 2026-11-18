@@ -26,3 +26,9 @@ All 1,173 runnable GPUI tests, both recording parity workflows, and
 76 Electron recording-control reference tests passed. Status samples
 measure app-local dispatch and replies. They do not measure physical
 input delivery or display scan-out.
+
+The recording parity workflow now also holds the outline Show response
+during retry after a failed Start. While the fixture is still holding
+Show, it verifies that the app stays idle, Start is disabled, and no
+second recorder request was sent. Releasing Show lets the existing
+record, editor, and export checks finish in light and dark.

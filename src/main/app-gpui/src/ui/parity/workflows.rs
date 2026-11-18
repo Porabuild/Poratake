@@ -700,6 +700,25 @@ fn wait_for_recording_stop(cx: &mut HeadlessAppContext) {
 }
 
 #[cfg(target_os = "macos")]
+fn recording_outline_barrier(
+    listener: &std::net::TcpListener,
+) -> std::sync::mpsc::Receiver<std::net::TcpStream> {
+    use std::io::Read;
+
+    let listener = listener.try_clone().unwrap();
+    let (ready, stream) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        stream.read_exact(&mut [1]).unwrap();
+        ready.send(stream).unwrap();
+    });
+    stream
+}
+
+#[cfg(target_os = "macos")]
 fn recorded_screen_handoff(
     cx: &mut HeadlessAppContext,
     control: gpui::AnyWindowHandle,
@@ -1320,8 +1339,10 @@ fn recording_stop_timeout_handoff(
 }
 
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
+    #[cfg(windows)]
+    use std::io::Read;
     #[cfg(any(windows, target_os = "macos"))]
-    use std::io::{Read, Write};
+    use std::io::Write;
 
     use crate::windows::registry::{self, WindowKind};
 
@@ -1457,6 +1478,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         }
         #[cfg(target_os = "macos")]
         if target == "area" {
+            use crate::windows::recording_control::RecordingControl;
+
             let recordings = output.join("recording-area-failed-start");
             std::fs::create_dir_all(&recordings).unwrap();
             let previous = cx.update(|cx| {
@@ -1537,8 +1560,48 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 title == "Recording failed"
                     && body.contains(failed_recording.parent().unwrap().to_str().unwrap())
             }));
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            fixture["recordingHoldOutlineShow"] = true.into();
+            fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&fixture).unwrap(),
+            )
+            .unwrap();
+            let show = recording_outline_barrier(&listener);
             click_measured(cx, control, "recording-controls", 0);
-            settle(cx, control);
+            let mut show = show
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(
+                cx.update(|cx| crate::capture::overlay::pending_recording_overlay(cx).is_some())
+            );
+            assert!(!control
+                .downcast::<RecordingControl>()
+                .unwrap()
+                .update(cx, |control, _, cx| { control.start_enabled(cx) })
+                .unwrap());
+            assert_eq!(
+                super::daemon_fixture::calls(output)[before..]
+                    .iter()
+                    .filter(|call| {
+                        call["module"] == "screen-recorder" && call["method"] == "start"
+                    })
+                    .count(),
+                1,
+                "only the first failed Start may have been sent"
+            );
+            show.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(show.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the fixture must still be waiting for outline Show release"
+            );
+            show.write_all(&[0]).unwrap();
             wait_for_recording_start(cx);
             assert_eq!(
                 crate::video::recorder::state(),
@@ -1546,30 +1609,20 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
             cx.advance_clock(std::time::Duration::from_secs(2));
             settle(cx, control);
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            fixture["recordingHoldOutlineShow"] = false.into();
             fixture["recordingHoldOutlineHide"] = true.into();
-            fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
             std::fs::write(
                 output.join("capture-fixture.json"),
                 serde_json::to_vec(&fixture).unwrap(),
             )
             .unwrap();
-            let (ready, hide) = std::sync::mpsc::sync_channel(1);
-            let accept_hide = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                    .unwrap();
-                stream.read_exact(&mut [1]).unwrap();
-                ready.send(stream).unwrap();
-            });
+            let hide = recording_outline_barrier(&listener);
             click_measured(cx, control, "recording-controls", 1);
             cx.run_until_parked();
             wait_for_recording_stop(cx);
             let mut hide = hide
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            accept_hide.join().unwrap();
             cx.run_until_parked();
             assert!(
                 cx.update(|cx| registry::is_open(WindowKind::VideoEditor, cx)),
