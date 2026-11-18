@@ -6190,6 +6190,19 @@ placement, reuse and retry cleanup. The Swift daemon typechecked and all
 check returned not determined. Live camera output and recovery remain
 unverified.
 
+### 2026-11-18 macOS camera device identity
+
+The macOS preview and recorder previously matched camera names before
+checking the selected device ID. A generated input with two cameras named
+USB Camera reproduced selection of the first device when the second
+device's native ID was requested. Both paths now prefer a discovered
+native ID. An unmatched saved ID still falls back to an exact or partial
+name match and then the default camera.
+
+The generated fixture passed on arm64 and x86_64 under Rosetta. It checked
+duplicate names, a stale name paired with a working ID, and saved browser
+IDs that need name fallback. Live multi-camera hardware remains unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

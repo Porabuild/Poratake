@@ -182,6 +182,7 @@ jobs:
             src/main/daemon/Core/DaemonContract.generated.swift \
             src/main/daemon/Core/DisplayCoordinates.swift \
             src/main/daemon/Core/FrozenFrameStore.swift \
+            src/main/daemon/Core/CameraDeviceLookup.swift \
             src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
             src/main/daemon/UI/Theme.swift \
             src/main/daemon/Modules/RecordingOverlayModule.swift \

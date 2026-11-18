@@ -458,7 +458,7 @@ private class CameraPreviewContentView: NSView {
             self.stopCameraInternal()
             self.isStopped = false
             
-            guard let camera = self.findCamera(source) else {
+            guard let camera = CameraDeviceLookup.find(deviceId: source.deviceId, deviceName: source.deviceName) else {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.source == source else { return }
                     self.showError("No camera found")
@@ -567,42 +567,6 @@ private class CameraPreviewContentView: NSView {
         previewLayer?.setAffineTransform(
             CGAffineTransform(scaleX: flipped ? -1 : 1, y: 1)
         )
-    }
-    
-    private func findCamera(_ source: CameraPreviewSource) -> AVCaptureDevice? {
-        let discoverySession: AVCaptureDevice.DiscoverySession
-        if #available(macOS 14.0, *) {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
-                mediaType: .video,
-                position: .unspecified
-            )
-        } else {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
-                mediaType: .video,
-                position: .unspecified
-            )
-        }
-        
-        if let deviceName = source.deviceName {
-            if let device = discoverySession.devices.first(where: { $0.localizedName == deviceName }) {
-                return device
-            }
-            if let device = discoverySession.devices.first(where: { 
-                deviceName.contains($0.localizedName) || $0.localizedName.contains(deviceName) 
-            }) {
-                return device
-            }
-        }
-        
-        if let deviceId = source.deviceId {
-            if let device = discoverySession.devices.first(where: { $0.uniqueID == deviceId }) {
-                return device
-            }
-        }
-        
-        return AVCaptureDevice.default(for: .video)
     }
     
     func showError(_ message: String) {

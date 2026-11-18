@@ -109,41 +109,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
             try fileManager.removeItem(atPath: outputPath)
         }
 
-        var cameraDevice: AVCaptureDevice?
-
-        let discoverySession: AVCaptureDevice.DiscoverySession
-        if #available(macOS 14.0, *) {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
-                mediaType: .video,
-                position: .unspecified
-            )
-        } else {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
-                mediaType: .video,
-                position: .unspecified
-            )
-        }
-
-        if let deviceName = deviceName {
-            cameraDevice = discoverySession.devices.first { $0.localizedName == deviceName }
-            if cameraDevice == nil {
-                cameraDevice = discoverySession.devices.first { device in
-                    deviceName.contains(device.localizedName) || device.localizedName.contains(deviceName)
-                }
-            }
-        }
-
-        if cameraDevice == nil, let deviceId = deviceId {
-            cameraDevice = discoverySession.devices.first { $0.uniqueID == deviceId }
-        }
-
-        if cameraDevice == nil {
-            cameraDevice = AVCaptureDevice.default(for: .video)
-        }
-
-        guard let camera = cameraDevice else {
+        guard let camera = CameraDeviceLookup.find(deviceId: deviceId, deviceName: deviceName) else {
             throw RecorderError.configuration("No camera device found")
         }
 

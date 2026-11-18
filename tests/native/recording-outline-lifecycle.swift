@@ -60,6 +60,27 @@ struct RecordingOutlineLifecycleTest {
         print("camera preview geometry: dock insets, negative origins and disconnected display")
     }
 
+    static func verifyCameraSelection() {
+        struct Device {
+            let id: String
+            let name: String
+        }
+        let cameras = [
+            Device(id: "first", name: "USB Camera"),
+            Device(id: "second", name: "USB Camera"),
+            Device(id: "third", name: "Desk Camera"),
+        ]
+        func match(_ id: String?, _ name: String?) -> String? {
+            CameraDeviceLookup.match(cameras, deviceId: id, deviceName: name, id: \.id, name: \.name)?.id
+        }
+        precondition(match("second", "USB Camera") == "second", "A shared camera name overrode the selected native ID")
+        precondition(match("third", "USB Camera") == "third")
+        precondition(match("legacy-browser-id", "Desk Camera") == "third")
+        precondition(match(nil, "External Desk Camera") == "third")
+        precondition(match(nil, "Unavailable camera") == nil)
+        print("camera selection: native IDs win and saved names remain usable")
+    }
+
     @MainActor
     static func verifyCameraPreviewStartup() async throws {
         let camera = CameraPreviewModule()
@@ -179,6 +200,7 @@ struct RecordingOutlineLifecycleTest {
 
     @MainActor
     static func run() async throws {
+        verifyCameraSelection()
         verifyCameraPreviewPlacement()
         verifyCameraPreviewError()
         guard NSScreen.screens.first != nil else {
@@ -364,6 +386,10 @@ struct RecordingOutlineLifecycleTest {
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        if CommandLine.arguments.contains("--camera-selection") {
+            verifyCameraSelection()
+            return
+        }
         if CommandLine.arguments.contains("--camera-preview-error") {
             verifyCameraPreviewError()
             return
