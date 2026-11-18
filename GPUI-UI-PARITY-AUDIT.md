@@ -5899,6 +5899,24 @@ matching their references byte for byte. If the hovered frame is still being
 composed when playback starts, the displayed image can wait for the first
 playback tick and compose. Physical 4K first-frame latency remains open.
 
+### 2026-11-18 macOS scroll capture stop and cursor prompt
+
+When auto-scroll stopped at an ambiguous seam while the cursor was outside the
+selection, the orange outline and “Move cursor here to continue” prompt stayed
+visible. The Swift daemon now restores the blue outline and sends the cursor
+state change when auto-scroll stops. GPUI shows the prompt only during active
+auto-scroll and hides it when finishing the capture.
+
+The focused Swift fixture reproduced the stale state before the fix. On arm64
+and x86_64 under Rosetta, the fixed fixture cleared the cursor state, restored
+the hidden AppKit boundary's color and saved the last verified pixels. The arm64
+GPUI suite passed 1,158 tests with 23 ignored, and 62 Electron scroll capture and
+daemon contract tests passed. The dark offscreen Metal check at width 1280 and
+1× passed selection, save, history, editor handoff and retry.
+
+Live cursor interaction remains open. Repeated scroll histories can still
+produce identical frames and leave the seam ambiguous.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

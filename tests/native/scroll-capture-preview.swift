@@ -2311,7 +2311,19 @@ struct ScrollCapturePreviewTest {
         let autoStopModule = ScrollCaptureModule()
         var autoStopPreviewCounts: [Int] = []
         var noOverlapEvents: [[String: Any]] = []
+        var autoStopCursorEvents: [Bool] = []
         autoStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        let boundary = NSScreen.screens.first.map { _ -> NSWindow in
+            _ = NSApplication.shared
+            let window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+            window.backgroundColor = .systemBlue
+            autoStopModule.testInstallBoundary(window)
+            return window
+        }
+        autoStopModule.testSetCursorResponder { autoStopCursorEvents.append($0) }
+        autoStopModule.testCheckCursor(inside: false)
+        precondition(autoStopCursorEvents == [true])
+        precondition(boundary.map { $0.backgroundColor != .systemBlue } ?? true)
         autoStopModule.testSetPreviewEncoder { _ in "preview" }
         autoStopModule.testSetPreviewResponder { _, frameCount, _ in
             autoStopPreviewCounts.append(frameCount)
@@ -2333,6 +2345,8 @@ struct ScrollCapturePreviewTest {
         precondition(!autoStopModule.testIsAutoScrolling(), "Ambiguous alignment must stop auto-scroll")
         precondition((noOverlapEvents.first?["reason"] as? String) == "no-overlap")
         precondition((noOverlapEvents.first?["frameCount"] as? Int) == 1)
+        precondition(autoStopCursorEvents == [true, false], "Stopping must dismiss the resume-scrolling prompt")
+        precondition(boundary.map { $0.backgroundColor == .systemBlue } ?? true, "Stopping must restore the normal boundary")
         precondition(autoStopPreviewCounts == [1], "The ambiguous frame must not replace the last accepted preview")
         let autoStopOutput = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("poratake-scroll-auto-stop-\(UUID().uuidString).png")

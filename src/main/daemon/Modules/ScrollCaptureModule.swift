@@ -359,6 +359,8 @@ class ScrollCaptureModule: NSObject, Module {
     private var testPreviewEncoder: ((CGImage) -> String?)?
     private var testPreviewResponder: ((CGImage, Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
+    private var testCursorInside: Bool?
+    private var testCursorResponder: ((Bool) -> Void)?
     private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
     private var testCoordinatedCaptureProvider: ((Set<CGWindowID>?, @escaping (CGImage?) -> Void) -> Void)?
     private var testScheduleAutoScroll: (() -> Void)?
@@ -801,7 +803,6 @@ class ScrollCaptureModule: NSObject, Module {
 
         isAutoScrolling = true
         autoButton?.title = "Stop"
-        isCursorOutside = false
         currentScrollStep = 0
 
         let frameHeight = Int(captureArea.height)
@@ -826,7 +827,7 @@ class ScrollCaptureModule: NSObject, Module {
         let wasScrolling = isAutoScrolling
         captureGeneration &+= 1
         isAutoScrolling = false
-        isCursorOutside = false
+        setCursorOutside(false)
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
         autoButton?.title = "Auto"
@@ -899,6 +900,9 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func isCursorInsideCaptureArea() -> Bool {
+#if SCROLL_CAPTURE_TEST
+        if let testCursorInside { return testCursorInside }
+#endif
         let mouseLocation = NSEvent.mouseLocation
         return captureArea.contains(mouseLocation)
     }
@@ -917,16 +921,23 @@ class ScrollCaptureModule: NSObject, Module {
 
     private func checkCursorPosition() {
         guard isAutoScrolling else { return }
+        setCursorOutside(!isCursorInsideCaptureArea())
+    }
 
-        let isInside = isCursorInsideCaptureArea()
-        guard isInside != !isCursorOutside else { return }
-
-        isCursorOutside = !isInside
-        let frameColor = isCursorOutside
+    private func setCursorOutside(_ outside: Bool) {
+        guard outside != isCursorOutside else { return }
+        isCursorOutside = outside
+        let frameColor = outside
             ? NSColor(red: 249 / 255, green: 115 / 255, blue: 22 / 255, alpha: 1)
-            : NSColor(red: 59 / 255, green: 130 / 255, blue: 246 / 255, alpha: 1)
+            : .systemBlue
         boundaryWindows.forEach { $0.backgroundColor = frameColor }
-        emit(event: "cursor", data: ["outside": isCursorOutside])
+#if SCROLL_CAPTURE_TEST
+        if let testCursorResponder {
+            testCursorResponder(outside)
+            return
+        }
+#endif
+        emit(event: "cursor", data: ["outside": outside])
     }
 
     private func simulateScroll(delta: Int32) {
@@ -1917,7 +1928,6 @@ class ScrollCaptureModule: NSObject, Module {
         publishedPreviewFrameCount = 0
         capturedFrames.removeAll()
         isCapturing = false
-        isCursorOutside = false
         lastFrameHash = nil
         duplicateFrameCount = 0
         currentScrollStep = 0
@@ -2391,6 +2401,20 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testSetScrollEndedResponder(_ responder: @escaping ([String: Any]) -> Void) {
         testScrollEndedResponder = responder
+    }
+
+    func testSetCursorResponder(_ responder: @escaping (Bool) -> Void) {
+        testCursorResponder = responder
+    }
+
+    func testCheckCursor(inside: Bool) {
+        testCursorInside = inside
+        checkCursorPosition()
+        testCursorInside = nil
+    }
+
+    func testInstallBoundary(_ window: NSWindow) {
+        boundaryWindows.append(window)
     }
 
     func testHoldFinishWorker(started: DispatchSemaphore, release: DispatchSemaphore) {

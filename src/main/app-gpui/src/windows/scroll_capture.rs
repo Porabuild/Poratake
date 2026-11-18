@@ -52,6 +52,10 @@ struct PreviewImage {
 }
 
 impl ScrollCaptureUi {
+    fn cursor_prompt_visible(&self) -> bool {
+        self.auto_scrolling && self.cursor_outside && self.finish_state == FinishState::Capturing
+    }
+
     fn toggle_auto_scroll(&mut self, cx: &mut App) {
         if self.finish_state != FinishState::Capturing {
             return;
@@ -531,6 +535,9 @@ pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal,
         ScrollSessionSignal::AutoScrolling(scrolling) => {
             ui.update(cx, |ui, cx| {
                 ui.auto_scrolling = scrolling;
+                if !scrolling {
+                    ui.cursor_outside = false;
+                }
                 cx.notify();
             });
         }
@@ -630,13 +637,13 @@ struct ScrollAreaPrompt {
 
 impl Render for ScrollAreaPrompt {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let outside = self.ui.read(cx).cursor_outside;
+        let show_prompt = self.ui.read(cx).cursor_prompt_visible();
         crate::ui::font::root()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
-            .children(outside.then(|| {
+            .children(show_prompt.then(|| {
                 div()
                     .flex()
                     .flex_row()
@@ -1325,9 +1332,22 @@ mod tests {
             apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
             let state = ui.read(cx);
             assert!(state.preview.is_some());
-            assert!(state.auto_scrolling && state.cursor_outside);
+            assert!(state.cursor_prompt_visible());
+            apply_progress(&ui, ScrollSessionSignal::AutoScrolling(false), cx);
+            assert!(
+                !ui.read(cx).cursor_outside,
+                "stopping must clear the resume-scrolling prompt"
+            );
+            apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
+            assert!(
+                !ui.read(cx).cursor_prompt_visible(),
+                "a late cursor event must not restore the stopped prompt"
+            );
+            apply_progress(&ui, ScrollSessionSignal::AutoScrolling(true), cx);
+            apply_progress(&ui, ScrollSessionSignal::CursorOutside(true), cx);
             ScrollCaptureSession::finish_requested(cx);
             assert_eq!(ui.read(cx).finish_state, FinishState::Finishing);
+            assert!(!ui.read(cx).cursor_prompt_visible());
             ScrollCaptureSession::mark_retryable(&ui, cx);
             assert_eq!(ui.read(cx).finish_state, FinishState::Retry);
             ScrollCaptureSession::finish_requested(cx);
