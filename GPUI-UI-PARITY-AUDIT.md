@@ -6844,6 +6844,26 @@ inside the viewport after shrinking it and that Delete becomes fully
 visible on the next Tab. The AppKit probe used a generated four-card
 stack and app-local input. Physical mixed-display focus remains open.
 
+### 2026-11-18 macOS timer startup responsiveness and capture handoff
+
+GPUI previously waited for the timer daemon's show response on the UI
+thread. In the native probe, holding a successful reply for 650 ms
+also blocked a status command. Timer startup now waits on a background
+worker. With the same reply held, the status command returned in
+about 0.1 ms in both appearances.
+
+An app-local cancel while the reply was held removed the selector.
+After the reply was released, GPUI hid the native panel and saved no
+image. The native panel deliberately overlapped the selected region.
+Both completed light and dark takes had uniform backdrop pixels across
+the 600 × 320 crop. Both showed a preview and opened the image editor.
+The countdown completed about five seconds after native show. The
+[measurement record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the callback and preview timings. All 1,170 runnable GPUI tests
+passed, and all six timer workflow PNGs matched the previous build byte
+for byte. The native probe used one physical display, the authorized
+screen-only daemon and generated app-local input.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

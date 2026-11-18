@@ -525,3 +525,26 @@ before its third strip and verifies that a drawn source frame is
 released during Finish. The held preview resumes and publishes no
 stale update. The peak figures apply to this controlled overlap and
 depend on which strips have already been drawn.
+
+Live timer startup and completion
+
+A GPUI native development fixture selected a 300x160-point area
+at (650,40) on the built-in Retina display. The test daemon used
+its existing screen authorization and an opaque generated backdrop.
+Its native countdown panel intersected the selected area at y=53.
+An isolated bridge held the successful timer-control show reply
+for about 650 ms while the driver sent an app-local status command.
+
+                                Previous light   Fixed light   Fixed dark
+Status while show reply held     Blocked          0.1 ms        0.1 ms
+Confirm to native show           63.5 ms         41.9 ms       40.1 ms
+Show to completion             5002.8 ms       5003.9 ms     5004.2 ms
+Completion to capture reply     128.3 ms        121.4 ms      112.5 ms
+Completion to visible preview   180.1 ms        173.3 ms      163.1 ms
+Completion to ready thumbnail   180.2 ms        173.3 ms      163.1 ms
+
+The three 600x320 PNGs had uniform backdrop values, and each preview
+opened in the screenshot editor. The fixed cancel run dismissed the
+selector with the show reply held, then observed the panel disappear
+and the output directory remain empty. The timings cover app-local
+dispatch and WindowServer visibility on one display.

@@ -1030,30 +1030,43 @@ impl Coordinator {
             }));
         let theme = crate::theme::vars::active_theme(cx);
         let placement_bounds = crate::capture::timer::placement_bounds(capture, cx);
-        if !crate::capture::timer::show(
-            &daemon,
-            capture,
-            placement_bounds,
-            crate::capture::timer::TIMER_DURATION,
-            theme.accent,
-            theme.accent_foreground,
-        ) {
-            drop(subscription);
-            drop(session);
-            crate::capture::overlay::close_timer(owner, cx);
-            crate::capture::desktop_icons::release_for_capture(hide, cx);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Timer Capture Failed",
-                "The countdown control could not be started",
-            );
-            return;
-        }
-
+        let accent = theme.accent;
+        let accent_foreground = theme.accent_foreground;
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         cx.spawn(async move |entity, cx| {
+            let start_daemon = daemon.clone();
+            let shown = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::capture::timer::show(
+                        &start_daemon,
+                        capture,
+                        placement_bounds,
+                        crate::capture::timer::TIMER_DURATION,
+                        accent,
+                        accent_foreground,
+                    )
+                })
+                .await;
+            if !shown {
+                drop(subscription);
+                drop(session);
+                cx.update(|cx| {
+                    if crate::capture::overlay::close_timer(owner, cx) {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Timer Capture Failed",
+                            "The countdown control could not be started",
+                        );
+                    }
+                    crate::capture::desktop_icons::release_for_capture(hide, cx);
+                });
+                drop(transition);
+                return;
+            }
+
             let timeout = cx
                 .background_executor()
                 .timer(std::time::Duration::from_secs(
