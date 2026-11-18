@@ -1949,7 +1949,7 @@ struct ScrollCapturePreviewTest {
             return expected
         }
         alignmentModule.testSetPreviewEncoder { _ in "preview" }
-        alignmentModule.testSetPreviewResponder { _, frameCount, _ in
+        alignmentModule.testSetPreviewResponder { frameCount, _ in
             alignmentPublications.append(frameCount)
         }
         alignmentModule.testSetFinishAlignmentWaitStarted(finishWaitingForAlignment)
@@ -2042,6 +2042,24 @@ struct ScrollCapturePreviewTest {
         precondition(drainSaved.height == height + 224)
         precondition(pixels(drainSaved) == pixels(frame(start: 0, width: width, height: height + 224)))
 
+        let retentionModule = ScrollCaptureModule()
+        weak var composedPreview: CGImage?
+        var encodedComposedPreview = false
+        retentionModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        retentionModule.testSetPreviewEncoder { image in
+            if image.height > allFrames[0].height {
+                encodedComposedPreview = true
+                composedPreview = image
+            }
+            return "preview"
+        }
+        retentionModule.testPreparePreview(step: step)
+        retentionModule.testAppendPreviewFrame(allFrames[0])
+        retentionModule.testAppendPreviewFrame(allFrames[1])
+        retentionModule.testWaitForPreviewWork()
+        precondition(encodedComposedPreview, "The encoder must receive the stitched bitmap")
+        precondition(composedPreview == nil, "The published scroll preview must release its full-size bitmap")
+
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
         let releaseFirstEncode = DispatchSemaphore(value: 0)
@@ -2065,7 +2083,7 @@ struct ScrollCapturePreviewTest {
             }
             return "preview-\(count)"
         }
-        backlogModule.testSetPreviewResponder { _, frameCount, _ in
+        backlogModule.testSetPreviewResponder { frameCount, _ in
             backlogPublications.append(frameCount)
         }
         backlogModule.testPreparePreview(step: step)
@@ -2110,7 +2128,7 @@ struct ScrollCapturePreviewTest {
             }
             return "preview-\(count)"
         }
-        staleModule.testSetPreviewResponder { _, frameCount, _ in
+        staleModule.testSetPreviewResponder { frameCount, _ in
             stalePublications.append(frameCount)
         }
         staleModule.testPreparePreview(step: step)
@@ -2551,7 +2569,7 @@ struct ScrollCapturePreviewTest {
         precondition(autoStopCursorEvents == [true])
         precondition(boundary.map { $0.backgroundColor != .systemBlue } ?? true)
         autoStopModule.testSetPreviewEncoder { _ in "preview" }
-        autoStopModule.testSetPreviewResponder { _, frameCount, _ in
+        autoStopModule.testSetPreviewResponder { frameCount, _ in
             autoStopPreviewCounts.append(frameCount)
         }
         autoStopModule.testSetScrollEndedResponder { data in noOverlapEvents.append(data) }
@@ -2601,7 +2619,7 @@ struct ScrollCapturePreviewTest {
         var manualNoOverlapEvents: [[String: Any]] = []
         manualStopModule.testPreparePreview(step: footerStep, width: footerWidth, height: footerHeight)
         manualStopModule.testSetPreviewEncoder { _ in "preview" }
-        manualStopModule.testSetPreviewResponder { _, frameCount, _ in
+        manualStopModule.testSetPreviewResponder { frameCount, _ in
             manualStopPreviewCounts.append(frameCount)
         }
         manualStopModule.testSetScrollEndedResponder { data in manualNoOverlapEvents.append(data) }

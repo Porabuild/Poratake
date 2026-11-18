@@ -407,3 +407,28 @@ pixels matched between builds. Against the unobstructed P3 reference,
 54 of 6,240,000 pixels differed by one RGB level. This checks scheduled
 frame capture and output, with app-local movement and no physical
 pointer input.
+
+Scroll preview steady memory
+
+The native fixture fed nine distinct 3400x2060 Display P3 images
+through the normal preview compositor and PNG encoder. The fixture
+supplied a fixed 600-pixel overlap to isolate preview storage from the
+alignment cost. The preview represented 3400x13740 pixels. Measurements
+were taken after the last preview finished, with the session still alive.
+
+Sample                 Physical footprint      RSS
+Previous 1                  364.3 MiB          386016 KiB
+Fixed 1                     185.5 MiB          202976 KiB
+Fixed 2                     186.3 MiB          203744 KiB
+Previous 2                  364.3 MiB          385920 KiB
+
+The fixture used fresh processes in the order above. These are
+whole-process steady measurements. The original frame buffers remain
+available to the final stitch. This change releases the intermediate
+composite once the encoded preview is available.
+
+A live three-frame run with overlapping GPUI controls captured the
+authorized generated page in both themes. Both 1200x5200 Display P3
+PNGs matched 6,239,946 of 6,240,000 reference pixels exactly. The other
+54 pixels differed by at most one channel level. No global pointer
+input was posted.

@@ -6625,6 +6625,24 @@ displacement is still unavailable. The matcher and duplicate
 criteria are unchanged. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 contains the endpoints and scope.
 
+### 2026-11-18 macOS scroll preview bitmap lifetime
+
+The scroll preview kept its full stitched bitmap in the published
+snapshot after encoding the smaller preview. The snapshot now keeps
+the encoded image, dimensions and capture progress. The full bitmap
+is released after encoding. Preview composition and the final PNG
+still use the existing color and stitch paths.
+
+In two fresh native fixture runs per build, a 3400 × 13740 preview's
+steady process footprint fell from 364.3 MiB to 185.5–186.3 MiB.
+A focused regression verified that the encoder received the stitched
+bitmap and the published preview released it. The light and dark
+overlapping-control runs each saved three filtered frames. The
+1200 × 5200 Display P3 PNGs stayed within one RGB level of their
+unobstructed references. Transient allocation during composition
+remains open. The [memory record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the individual samples.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

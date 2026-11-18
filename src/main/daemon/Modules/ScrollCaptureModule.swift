@@ -50,7 +50,8 @@ private struct ScrollAlignmentSnapshot {
 
 private final class ScrollPreviewSession {
     struct Snapshot {
-        let image: CGImage
+        let width: Int
+        let height: Int
         let encodedImage: String
         let frameCount: Int
         let estimatedHeight: Int
@@ -248,7 +249,8 @@ private final class ScrollPreviewSession {
             }
 
             let snapshot = Snapshot(
-                image: image,
+                width: image.width,
+                height: image.height,
                 encodedImage: encodedImage,
                 frameCount: request.frameCount,
                 estimatedHeight: Int(CGFloat(image.height) * request.pointsPerPixel)
@@ -364,7 +366,7 @@ class ScrollCaptureModule: NSObject, Module {
     private var testFinishResponder: ((String, [String: Any]) -> Void)?
     private var testPreviewAlignment: ((CGImage, CGImage, Int, () -> Bool) -> Int?)?
     private var testPreviewEncoder: ((CGImage) -> String?)?
-    private var testPreviewResponder: ((CGImage, Int, Int) -> Void)?
+    private var testPreviewResponder: ((Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
     private var testCursorInside: Bool?
     private var testCursorResponder: ((Bool) -> Void)?
@@ -1999,7 +2001,7 @@ class ScrollCaptureModule: NSObject, Module {
             self.publishedPreviewFrameCount = snapshot.frameCount
 #if SCROLL_CAPTURE_TEST
             if let testPreviewResponder = self.testPreviewResponder {
-                testPreviewResponder(snapshot.image, snapshot.frameCount, snapshot.estimatedHeight)
+                testPreviewResponder(snapshot.frameCount, snapshot.estimatedHeight)
                 return
             }
 #endif
@@ -2093,8 +2095,8 @@ class ScrollCaptureModule: NSObject, Module {
             "frameCount": snapshot.frameCount,
             "estimatedHeight": snapshot.estimatedHeight,
             "preview": snapshot.encodedImage,
-            "previewWidth": snapshot.image.width,
-            "previewHeight": snapshot.image.height
+            "previewWidth": snapshot.width,
+            "previewHeight": snapshot.height
         ]
         emit(event: "frame", data: payload)
     }
@@ -2274,6 +2276,20 @@ class ScrollCaptureModule: NSObject, Module {
         captureArea = NSRect(x: 0, y: 0, width: first.width, height: first.height)
         scrollStepPoints = step
         capturedFrames.removeAll()
+        let previousEncoder = testPreviewEncoder
+        let backingScaleFactor = targetScreen?.backingScaleFactor ?? 1
+        var renderedPreview: CGImage?
+        testSetPreviewEncoder { [weak self] image in
+            let encoded: String?
+            if let previousEncoder {
+                encoded = previousEncoder(image)
+            } else {
+                encoded = self?.encodePreviewBase64(image, backingScaleFactor: backingScaleFactor)
+            }
+            if encoded != nil { renderedPreview = image }
+            return encoded
+        }
+        defer { testPreviewEncoder = previousEncoder }
         for (index, image) in frames.enumerated() {
             let previousFrame = index > 0 ? frames[index - 1] : nil
             capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
@@ -2285,7 +2301,7 @@ class ScrollCaptureModule: NSObject, Module {
                 completion: nil
             )
         }
-        guard let snapshot = session.previewSnapshot() else {
+        guard let snapshot = session.previewSnapshot(), let renderedPreview else {
             fatalError("Failed to create scroll preview")
         }
         let alignmentSnapshot = session.alignmentSnapshot()
@@ -2303,7 +2319,7 @@ class ScrollCaptureModule: NSObject, Module {
             fatalError("Failed to create preview or saved scroll capture")
         }
         return (
-            snapshot.image,
+            renderedPreview,
             saved,
             snapshot.encodedImage,
             overlaps,
@@ -2383,7 +2399,7 @@ class ScrollCaptureModule: NSObject, Module {
                 return
             }
             self.publishedPreviewFrameCount = snapshot.frameCount
-            self.testPreviewResponder?(snapshot.image, snapshot.frameCount, snapshot.estimatedHeight)
+            self.testPreviewResponder?(snapshot.frameCount, snapshot.estimatedHeight)
         }
     }
 
@@ -2452,7 +2468,7 @@ class ScrollCaptureModule: NSObject, Module {
         testPreviewEncoder = encoder
     }
 
-    func testSetPreviewResponder(_ responder: @escaping (CGImage, Int, Int) -> Void) {
+    func testSetPreviewResponder(_ responder: @escaping (Int, Int) -> Void) {
         testPreviewResponder = responder
     }
 
