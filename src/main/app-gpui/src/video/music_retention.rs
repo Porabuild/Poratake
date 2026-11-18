@@ -145,6 +145,9 @@ impl MusicRetentionSession {
             return None;
         }
         let _ = sync_directory(&self.project.join(SESSIONS));
+        if !has_retention_records(&self.project) {
+            return None;
+        }
         let project = self.project.clone();
         std::thread::Builder::new()
             .spawn(move || collect_candidates(&project, None))
@@ -295,6 +298,56 @@ impl Drop for CollectorLock {
     }
 }
 
+fn has_retention_records(project: &Path) -> bool {
+    let records = project.join(FOLDER);
+    fs::symlink_metadata(&records).is_ok_and(|metadata| metadata.file_type().is_dir())
+        && fs::read_dir(records).is_ok_and(|mut entries| matches!(entries.next(), Some(Ok(_))))
+}
+
+fn reap_crashed_sessions(sessions: &Path, ignored_session: Option<&Path>) -> bool {
+    let Ok(entries) = fs::read_dir(sessions) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let path = entry.path();
+        if ignored_session.is_some_and(|ignored| ignored == path) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        if name == LEGACY_COLLECTING || name.starts_with(COLLECTING_PREFIX) {
+            continue;
+        }
+        if !name.starts_with("session-") || !name.ends_with(".json") {
+            return false;
+        }
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        };
+        if !metadata.file_type().is_file() {
+            return false;
+        }
+        let Some(pid) = session_process_id(&path, name) else {
+            return false;
+        };
+        if process_is_alive(pid) {
+            return false;
+        }
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
 fn collect_candidates(project: &Path, ignored_session: Option<&Path>) {
     let sessions = project.join(SESSIONS);
     let Ok(metadata) = fs::symlink_metadata(&sessions) else {
@@ -304,6 +357,10 @@ fn collect_candidates(project: &Path, ignored_session: Option<&Path>) {
         return;
     }
     if !matches!(collector_is_active(&sessions), Ok(false)) {
+        return;
+    }
+    if !has_retention_records(project) {
+        reap_crashed_sessions(&sessions, ignored_session);
         return;
     }
     let now = SystemTime::now()
@@ -322,46 +379,13 @@ fn collect_candidates(project: &Path, ignored_session: Option<&Path>) {
     else {
         return;
     };
-    let _lock = CollectorLock(lock_path.clone());
+    let _lock = CollectorLock(lock_path);
     if lock_file.sync_all().is_err() || sync_directory(&sessions).is_err() {
         return;
     }
     drop(lock_file);
-    let Ok(entries) = fs::read_dir(&sessions) else {
+    if !reap_crashed_sessions(&sessions, ignored_session) {
         return;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return;
-        };
-        let path = entry.path();
-        if path == lock_path || ignored_session.is_some_and(|ignored| ignored == path) {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return;
-        };
-        if name == LEGACY_COLLECTING || name.starts_with(COLLECTING_PREFIX) {
-            continue;
-        }
-        if !name.starts_with("session-") || !name.ends_with(".json") {
-            return;
-        }
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            return;
-        };
-        if !metadata.file_type().is_file() {
-            return;
-        }
-        let Some(pid) = session_process_id(&path, name) else {
-            return;
-        };
-        if process_is_alive(pid) {
-            return;
-        }
-        if fs::remove_file(path).is_err() {
-            return;
-        }
     }
     let state_path = project::editor_state_path(project);
     let Ok(state_metadata) = fs::symlink_metadata(&state_path) else {
@@ -762,6 +786,27 @@ mod tests {
     }
 
     #[test]
+    fn an_editor_reopens_immediately_when_there_are_no_retention_records() {
+        for create_empty_folder in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().join("take.poratake");
+            save_tracks(&project, Vec::new());
+            if create_empty_folder {
+                fs::create_dir(project.join(FOLDER)).unwrap();
+            }
+            let sessions = project.join(SESSIONS);
+            fs::create_dir(&sessions).unwrap();
+            let stale = sessions.join("session-2147483647-crashed.json");
+            fs::write(&stale, b"").unwrap();
+            let session = MusicRetentionSession::open(&project).unwrap().unwrap();
+            assert!(!stale.exists());
+            assert!(session.close().is_none());
+            let reopened = MusicRetentionSession::open(&project).unwrap().unwrap();
+            assert!(reopened.close().is_none());
+        }
+    }
+
+    #[test]
     fn recovers_stale_collectors_and_interrupted_session_markers() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("take.poratake");
@@ -782,7 +827,7 @@ mod tests {
         assert!(!stale_collector.exists());
         assert!(!interrupted_session.exists());
         assert!(!project.join("music/orphan.wav").exists());
-        session.close().unwrap().join().unwrap();
+        assert!(session.close().is_none());
     }
 
     #[test]
@@ -835,7 +880,7 @@ mod tests {
         let session = MusicRetentionSession::open(&alias).unwrap().unwrap();
 
         assert!(project.join(SESSIONS).is_dir());
-        session.close().unwrap().join().unwrap();
+        assert!(session.close().is_none());
     }
 
     #[test]
@@ -910,6 +955,6 @@ mod tests {
         let session = MusicRetentionSession::open(&project).unwrap().unwrap();
         assert!(!sessions.join("session-crashed.json").exists());
         assert!(!project.join("music/song.wav").exists());
-        session.close().unwrap().join().unwrap();
+        assert!(session.close().is_none());
     }
 }

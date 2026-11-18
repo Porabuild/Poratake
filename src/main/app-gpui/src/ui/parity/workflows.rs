@@ -399,7 +399,12 @@ fn recorded_editor_and_export(
     });
     let video = cx.update(|cx| {
         registry::handle(WindowKind::VideoEditor, cx)
-            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "reopen of {target} recording failed: {:?}",
+                    take_notifications()
+                )
+            })
             .downcast::<VideoEditorWindow>()
             .unwrap()
     });
