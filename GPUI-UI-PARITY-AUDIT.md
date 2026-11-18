@@ -7037,6 +7037,23 @@ The [screenshot publication evidence](tests/native/evidence/macos-ui/screenshot-
 records the injected macOS timer reply and the ordinary timer and
 scroll save checks in both appearances.
 
+### 2026-11-18 macOS recording menu frames during native resize
+
+The native recording toolbar occasionally stretched the compact
+Metal frame across the expanded window as a device menu opened.
+The toolbar now aligns the layer content to the top edge at its
+original scale while AppKit resizes. The change applies to the
+recording toolbar's backing layer. [Apple layer documentation](https://developer.apple.com/documentation/quartzcore/calayer/contentsgravity)
+
+The [old expanded frame](tests/native/evidence/macos-ui/recording-menu-resize-stretched-20261118.png)
+and [revised waiting frame](tests/native/evidence/macos-ui/recording-menu-resize-pinned-20261118.png)
+show the difference. The [painted Camera menu](tests/native/evidence/macos-ui/recording-camera-menu-composited-dark-20261118.png)
+shows the final layout. Across 42 openings per build, two of 148
+baseline samples stretched and zero of 157 revised samples stretched.
+The baseline issue was intermittent. The window captured the expected
+microphone, camera, and empty iOS menus in both appearances using
+generated device data. [Native timing and pixel evidence](tests/native/evidence/macos-ui/recording-menu-compositing-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

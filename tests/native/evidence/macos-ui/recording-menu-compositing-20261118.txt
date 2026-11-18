@@ -1,0 +1,48 @@
+macOS native recording menu resize and paint samples, 2026-11-18
+
+Baseline 498b0731 and a build with top-aligned recording toolbar layer
+contents. The probe used the built-in Retina display, the floating
+AppKit toolbar, app-local input, and an isolated daemon fixture that
+supplied microphone and camera lists. The iOS list was empty. A separate
+screen-only daemon with prior authorization captured only the probe's
+toolbar window by ID. No media devices were accessed.
+
+Each theme and build ran 21 menu openings, split into sessions of
+three and four cycles through microphone, camera, and iOS. The driver
+waited for expanded WindowServer geometry, then sampled the PNG's
+alpha below the toolbar to detect a menu. A resized surface containing
+the scaled compact toolbar covered at least 85 percent of that sample's
+canvas, and was counted separately. Representative frames were also
+inspected visually.
+
+                                  Opens   Stretched / captured frames
+Baseline, light                     21    2 / 79
+Baseline, dark                      21    0 / 69
+Revised, light                      21    0 / 77
+Revised, dark                       21    0 / 80
+
+One earlier exploratory dark sample also captured a stretched frame.
+The paired baseline did not reproduce it in every session. Both builds
+kept the toolbar centered and produced the expected visible menus. Long
+microphone and camera names were ellipsized. The iOS menu showed None.
+Dismissal restored the compact 276×44-point toolbar frame.
+
+Menu-pixel sample reply, from app-local dispatch (minimum / median / maximum)
+Baseline: 106.3 / 156.4 / 288.3 ms
+Revised:  104.0 / 149.6 / 215.4 ms
+
+The times include WindowServer polling, screenshot RPC and the sampling
+interval. They are observations of a captured frame with menu pixels.
+They do not establish the first scan-out timestamp or a speedup. The
+samples use one display and generated pointer events.
+
+Both final offscreen Metal comparisons passed in serial. All 18 light
+and 18 dark toolbar snapshot PNGs matched the baseline byte for byte.
+A concurrent baseline run had observed Stopping at the fixture's
+immediate Idle assertion. The serial rerun completed. All 1,173 runnable
+GPUI tests and 76 Electron recording-control reference tests passed.
+
+Retained native frames in this directory:
+- recording-menu-resize-stretched-20261118.png
+- recording-menu-resize-pinned-20261118.png
+- recording-camera-menu-composited-dark-20261118.png
