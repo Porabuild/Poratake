@@ -6020,6 +6020,24 @@ Partially visible cards still count as visible. The delay restarts after
 the timer observes complete clipping. Physical short displays remain
 unverified.
 
+### 2026-11-18 native macOS attachment cancellation
+
+An isolated GPUI development app opened a generated PNG, started a right
+attachment using the normal editor action, and verified that AppKit hid
+the editor while the selector was visible. The probe delivered one Escape
+event to the selector's native AppKit view. The selector window and pending
+attachment both cleared, the same editor became visible, and its exported
+composition matched the pre-selection PNG byte for byte. The source file
+remained on disk.
+
+The light and dark runs passed on arm64, and dark also passed on x86_64 under
+Rosetta. The focused GPUI Escape test and 38 Electron overlay tests passed.
+The native runs used Freeze Screen off and disabled the capture daemon.
+The event was delivered in process, so physical Escape delivery
+and native freeze release during cancellation remain unverified. Reproduce
+with the parity development binary using `--native-ui-probe --attachment-cancel`
+and `PORATAKE_DAEMON_PATH=/usr/bin/false`.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

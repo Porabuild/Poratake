@@ -179,6 +179,87 @@ pub fn popup_frame_probe() {
 }
 
 #[cfg(not(test))]
+fn attachment_cancel_probe(path: &std::path::Path, cx: &mut App) {
+    use cocoa::base::{id, nil, BOOL, NO, YES};
+    use cocoa::foundation::{NSPoint, NSString};
+    use objc::{class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let native_view = |window: &herogpui::gpui::Window| {
+        let handle = HasWindowHandle::window_handle(window).unwrap();
+        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+            panic!("expected an AppKit view");
+        };
+        appkit.ns_view.as_ptr() as id
+    };
+    let visible = move |window: &herogpui::gpui::Window| {
+        let native: id = unsafe { msg_send![native_view(window), window] };
+        let visible: BOOL = unsafe { msg_send![native, isVisible] };
+        visible == YES
+    };
+    let service = crate::state::state(cx);
+    service.config.update(|config| {
+        config.screenshot.freeze_screen = false;
+        config.screenshot.hide_desktop_icons = false;
+        config.history.enabled = false;
+    });
+    crate::capture::overlay::init_bindings(cx);
+    assert!(crate::open_editor_for(cx, path.to_str().unwrap()));
+    let editor = cx
+        .windows()
+        .into_iter()
+        .find_map(|handle| handle.downcast::<crate::editor::EditorWindow>())
+        .expect("screenshot editor");
+    let before = editor
+        .update(cx, |editor, window, cx| {
+            assert!(visible(window));
+            let before = editor.export_png().expect("initial composition");
+            editor.attach_layer(crate::editor::layers::Edge::Right, window, cx);
+            assert!(!visible(window));
+            before
+        })
+        .unwrap();
+    let path = path.to_owned();
+    cx.spawn(async move |cx| {
+        let (selector, view, number) = cx.update(|cx| {
+            assert!(crate::state::coordinator(cx).read(cx).has_pending_editor_attach());
+            let selector = crate::capture::overlay::parity_active_overlay(cx).expect("attachment selector");
+            let (view, number) = selector.update(cx, |_, window, cx| {
+                assert!(visible(window));
+                window.draw(cx).clear(cx);
+                let view = native_view(window);
+                let native: id = unsafe { msg_send![view, window] };
+                let number: isize = unsafe { msg_send![native, windowNumber] };
+                (view, number)
+            }).unwrap();
+            (selector, view, number)
+        });
+        unsafe {
+            let escape = NSString::alloc(nil).init_str("\u{1b}");
+            let event: id = msg_send![class!(NSEvent), keyEventWithType: 10usize
+                location: NSPoint::new(0., 0.) modifierFlags: 0usize timestamp: 0.0f64
+                windowNumber: number context: nil characters: escape
+                charactersIgnoringModifiers: escape isARepeat: NO keyCode: 53u16];
+            assert_ne!(event, nil);
+            let _: () = msg_send![view, keyDown: event];
+            let _: () = msg_send![escape, release];
+        }
+        cx.update(|cx| {
+            assert!(!crate::capture::overlay::parity_is_active(cx), "native Escape must close the attachment selector");
+            assert!(!crate::state::coordinator(cx).read(cx).has_pending_editor_attach());
+            assert!(selector.update(cx, |_, _, _| ()).is_err());
+            editor.update(cx, |editor, window, _| {
+                assert!(visible(window));
+                assert_eq!(editor.export_png().expect("restored composition"), before);
+            }).unwrap();
+            assert!(path.is_file());
+            println!("attachment cancel: AppKit Escape restored the editor and preserved the composition");
+            cx.quit();
+        });
+    }).detach();
+}
+
+#[cfg(not(test))]
 pub fn native_ui_probe() {
     let directory =
         std::env::temp_dir().join(format!("poratake-native-ui-probe-{}", std::process::id()));
@@ -226,6 +307,10 @@ pub fn native_ui_probe() {
             crate::state::set_test_state(cx, config);
             crate::ui::font::register(cx);
             crate::editor::actions::init_bindings(cx);
+            if std::env::args().nth(2).as_deref() == Some("--attachment-cancel") {
+                attachment_cancel_probe(&image_path, cx);
+                return;
+            }
             RecordingControl::open(
                 cx,
                 RecordingTarget::Area,
