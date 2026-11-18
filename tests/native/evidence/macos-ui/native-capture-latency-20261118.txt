@@ -823,3 +823,29 @@ Rendered preview/export mean RGB error at 1.0 second was 1.186
 in both, including 416 channels more than 32 levels from the
 decoded frame. Export duration differed by less than one frame at
 30 fps. Editor input used the parity fixture's app-local gestures.
+
+Paused live window recordings with a moving or closing target
+
+The built-in Retina display hosted an owned 320 × 240-point window.
+ScreenCaptureKit captured the selected window independently. The
+screen-only fixture disabled audio, camera and keystroke capture.
+The test hid and restored the window, moved it on the same display,
+or closed it while GPUI reported Paused.
+
+Action       Theme  Elapsed (s) Clip (s) Colors  To preview (ms) Editor (ms)
+Move/resume  Light       1.930    1.015  R → B             97.6        125.5
+Move/resume  Dark        1.907    1.017  R → B             96.1         83.6
+Hide/resume  Light       1.866    1.020  R → B            100.3         83.8
+Hide/resume  Dark        1.880    1.028  R → B            124.8         90.9
+Close paused Light       1.227    0.502  R                120.9         82.8
+Close paused Dark        1.222    0.493  R                163.8         90.9
+
+The preview timing starts at Stop or the close command. Editor time
+starts when opening from the decoded preview. All six clips decoded
+at 640 × 480 with no green frames. WindowServer retained the target's
+ID during hiding and removed it on release. Both true closures
+reported TARGET_CLOSED once, triggered Stop without a user command,
+and acknowledged outline cleanup. The fixture's original NSPanel
+was retained in WindowServer and was therefore unsuitable as a
+closure check. The final runs used an NSWindow created on the
+running AppKit main queue, then closed and released it explicitly.
