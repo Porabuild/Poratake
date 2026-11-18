@@ -7705,6 +7705,23 @@ A second press on the retired element is rejected. The macOS native
 timer workflow runs this case in CI. VoiceOver navigation and speech
 remain unverified.
 
+### 2026-11-19 macOS first frame with a 4K video source
+
+The native GPUI probe opened a recording preview and editor from
+generated 1080p and 4K H.264 clips on the built-in Retina display.
+Six runs per size covered light and dark. Median Stop-to-thumbnail
+time was 173 ms at 1080p and 325 ms at 4K. Median preview-to-editor
+frame time was 170 ms and 448 ms, respectively.
+
+The stage trace placed the largest thumbnail delay in the FFmpeg
+frame request, which includes decode and BGRA transport. It took
+156–647 ms at 4K, and thumbnail scaling and conversion took
+35–38 ms. The measured editor composition stage includes decoding.
+A standalone single-thread FFmpeg comparison produced identical
+4K software-decoded bytes, but the native app comparison had slower
+median readiness with that setting. The decoder settings were kept.
+[Readiness and decoder measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

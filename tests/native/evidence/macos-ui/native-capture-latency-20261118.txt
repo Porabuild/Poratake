@@ -880,3 +880,36 @@ spent 1084.307 ms inside Vision. All 60 replies matched their
 expected content. These are fresh subprocesses and may share
 framework caches. The fixture locates the delay within Vision's
 perform call without identifying its internal cause.
+
+2026-11-19 1080p and 4K source readiness on macOS
+
+A simulated Stop supplied generated two-second, 30 fps H.264 movies.
+The production GPUI preview and editor decoded them on the built-in
+Retina display. App-local commands opened the video editor from the
+preview. There were six fresh app processes per size, three per
+appearance. No screen or device was recorded.
+
+Source  Stop to thumbnail median/range  Preview to editor frame median/range
+1080p              173.1 / 130.4–436.7                  170.3 / 147.0–210.5
+4K                 325.0 / 279.8–570.3                  447.6 / 403.7–650.7
+
+Three additional dark runs per size traced the first thumbnail and
+editor frame stages. Times are milliseconds.
+
+Source  Thumbnail frame request  Scale/convert  Editor source open  Editor compose  Render image
+1080p          92.3–171.3          10.3–10.9       26.5–30.6        118.9–180.1       7.8–12.5
+4K            155.5–646.5          35.2–37.7       41.0–62.6        247.7–311.9      30.1–34.5
+
+The frame request includes FFmpeg initialization, decode and raw
+BGRA transport. Editor compose includes decoding, so those results
+do not isolate composition cost.
+
+In three standalone 4K first-two-frame tests, the default decoder
+returned its first frame in a median 126 ms and one software thread
+in 106 ms. Both produced identical software BGRA bytes across all
+60 frames. VideoToolbox was slower in these tests and produced
+different BGRA bytes. In three paired dark native app runs, the
+default and single-thread median times were 236.5 and 251.7 ms to
+the thumbnail, and 267.7 and 313.3 ms from preview to editor frame.
+The single-thread setting used a fixture-only FFmpeg wrapper.
+The production decoder settings were kept.
