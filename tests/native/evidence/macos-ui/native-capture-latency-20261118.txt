@@ -913,3 +913,27 @@ default and single-thread median times were 236.5 and 251.7 ms to
 the thumbnail, and 267.7 and 313.3 ms from preview to editor frame.
 The single-thread setting used a fixture-only FFmpeg wrapper.
 The production decoder settings were kept.
+
+2026-11-19 FFmpeg raw-frame output threading
+
+The FFmpeg command used the same software decoder, pixel format
+and timestamp filter in both configurations. The serial command
+used -threads:v 1 after the input, for the raw BGRA output stream.
+Each run streamed all 60 frames of a generated 3840 × 2160 H.264
+clip. The full BGRA hash and all timestamps matched.
+
+Pair  Default first two / total (ms)  Serial first two / total (ms)  Default / serial RSS (MiB)
+  1        123.2 / 1097.1                   99.2 / 1041.7                   1112 / 887
+  2        117.7 / 1099.4                  106.0 / 1066.3                   1112 / 888
+  3        120.4 / 1083.8                  107.4 / 1045.6                   1113 / 887
+  4        117.6 / 1079.2                  103.3 / 1046.3                   1113 / 888
+
+The native GPUI app used the same movie in a simulated recording
+handoff, including normal preview and editor window creation.
+Each pair started new app processes. Test order alternated.
+
+Theme  Stop to thumbnail before / after (ms)  Preview to editor frame before / after (ms)
+Light                  230.4 / 160.9                           233.5 / 210.1
+Dark                   207.4 / 159.5                           221.4 / 221.0
+Light                  186.8 / 158.3                           227.1 / 190.9
+Dark                   171.4 / 167.4                           215.7 / 200.9

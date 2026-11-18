@@ -7736,6 +7736,20 @@ before and 189 ms after. Median preview-to-editor time was 217 ms
 before and 227 ms after. These results establish reduced decoder CPU
 work for the fixture. They leave first-frame latency open.
 
+### 2026-11-19 macOS FFmpeg raw-frame output queue
+
+The GPUI FFmpeg decoder now uses one thread for writing raw output
+frames. The flag applies to the output stream and leaves input
+decoding on the existing thread policy. [FFmpeg option scoping](https://ffmpeg.org/ffmpeg.html) [Raw video encoder](https://ffmpeg.org/doxygen/9.0/libavcodec_2rawenc_8c_source.html)
+
+Four paired 4K H.264 runs produced identical BGRA bytes and timestamps
+for all 60 frames. Median time to the first two frames fell from
+119 to 105 ms, and peak FFmpeg memory fell by 225 MiB. Four paired
+native launches with the same generated clip reduced median thumbnail
+readiness from 197 to 160 ms and median preview-to-editor frame time
+from 224 to 206 ms. The native launches covered light and dark on the
+built-in Retina display. [Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
