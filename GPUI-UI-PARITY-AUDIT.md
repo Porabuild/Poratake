@@ -7198,6 +7198,23 @@ The color picker now uses the same cached-or-live decision as the
 screenshot paths. The regression isolates the cache decision from
 native pixel output.
 
+### 2026-11-18 redundant freeze release during capture replacement
+
+A native timer-to-screenshot switch sent a second Release after the
+daemon had acknowledged release of the old generation. GPUI now records
+the acknowledgement under the freeze lock. The replacement can skip
+that Release and begin its own freeze. A failed release remains
+eligible for retry, and newer generations still need their own release.
+
+The native probe held the first successful release reply for 650 ms
+and switched to a screenshot while it was held. The baseline sent
+two Release requests before showing the replacement. The revised
+light and dark runs each sent one, displayed the replacement after
+release, and left no stale countdown or saved output. A focused unit
+test covers the successful, failed, and newer-generation cases. All
+1,175 GPUI tests and 48 Electron reference tests passed, along with
+the light and dark timer and recording workflows.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

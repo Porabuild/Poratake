@@ -204,6 +204,7 @@ struct FreezeProgress {
     completed_generation: u64,
     frozen_generation: Option<u64>,
     releasing_generation: Option<u64>,
+    released_through: u64,
 }
 
 pub(crate) struct CachedCaptureReservation {
@@ -424,24 +425,39 @@ impl CaptureService {
                 return true;
             }
             let _operation = self.freeze.operation.lock();
-            let mut state = self.freeze.state.lock();
+            let state = self.freeze.state.lock();
             if state.next_generation > generation {
                 return true;
             }
             if state.captures.range(..=generation).next().is_some() {
                 continue;
             }
-            state.releasing_generation = Some(generation);
-            drop(state);
-            let released = release();
-            let mut state = self.freeze.state.lock();
-            if released && state.frozen_generation == Some(generation) {
+            return self.release_generation(generation, state, release);
+        }
+    }
+
+    fn release_generation(
+        &self,
+        generation: u64,
+        mut state: parking_lot::MutexGuard<'_, FreezeProgress>,
+        release: impl FnOnce() -> bool,
+    ) -> bool {
+        if state.released_through >= generation {
+            return true;
+        }
+        state.releasing_generation = Some(generation);
+        drop(state);
+        let released = release();
+        let mut state = self.freeze.state.lock();
+        if released {
+            state.released_through = generation;
+            if state.frozen_generation == Some(generation) {
                 state.frozen_generation = None;
             }
-            state.releasing_generation = None;
-            self.freeze.settled.notify_all();
-            return released;
         }
+        state.releasing_generation = None;
+        self.freeze.settled.notify_all();
+        released
     }
 
     fn release_screen_started(&self) -> bool {
@@ -713,16 +729,18 @@ fn with_frozen_screen(
             .spawn(async move {
                 freezer.wait_for_freeze_turn(generation);
                 let _operation = freezer.freeze.operation.lock();
-                let released = release_first
-                    .filter(|generation| *generation != 0)
-                    .is_none()
-                    || freezer.release_screen_started();
+                let release = |generation| {
+                    freezer.release_generation(generation, freezer.freeze.state.lock(), || {
+                        freezer.release_screen_started()
+                    })
+                };
+                let released = release_first.is_none_or(&release);
                 let result = if released {
                     freezer.freeze_screen_started()
                 } else {
                     Err(anyhow::anyhow!("Could not release the frozen screen"))
                 };
-                let released = released && (result.is_ok() || freezer.release_screen_started());
+                let released = released && (result.is_ok() || release(generation));
                 (freezer.finish_freeze(generation, result), released)
             })
             .await;
@@ -2830,6 +2848,29 @@ mod tests {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(service.release_screen(generation));
         assert_eq!(service.freeze.state.lock().frozen_generation, None);
+    }
+
+    #[test]
+    fn only_an_acknowledged_release_can_suppress_another_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let first = service.begin_freeze();
+        service.finish_freeze(first, Ok(())).unwrap();
+
+        assert!(!service.release_screen_with(first, || false));
+        let mut retried = false;
+        assert!(service.release_screen_with(first, || {
+            retried = true;
+            true
+        }));
+        assert!(retried);
+        assert!(service.release_screen_with(first, || panic!("release was already acknowledged")));
+
+        let second = service.begin_freeze();
+        service.finish_freeze(second, Ok(())).unwrap();
+        assert!(!service.release_screen_with(second, || false));
+        assert!(service.reserve_cached_capture().wait_for_freeze());
     }
 
     #[test]
