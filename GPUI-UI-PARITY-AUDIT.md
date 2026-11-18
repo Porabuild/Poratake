@@ -5548,6 +5548,27 @@ frames. Decode is skipped completely when the camera is disabled or its
 last visible range has ended. All 92 runnable composition tests passed,
 along with the FFmpeg preview visibility and rounded-camera export tests.
 
+### 2026-11-18 macOS 4K camera shadow reuse
+
+The visible-camera version of the 4K fixture spent a median 34.3 ms in
+composition at 640×360. Disabling the shadow reduced that stage to
+16.0 ms. The full-resolution redaction crop was rasterizing and blurring
+the same rounded shadow on every frame.
+
+The engine now keeps up to two exact shadow masks per composition, at up
+to 4 MiB each. The raster key includes the camera path, fill rule,
+dimensions, transform, blur and tint. Placement, clip and opacity are
+applied when each frame is painted. Oversized masks still use the normal
+rasterizer.
+
+In the run with steadier decode timings, the composition median was 22.0 ms
+with reuse. Decode, composition and GPUI image preparation together took
+32.4 ms versus 44.0–44.1 ms in the uncached runs. Four alternating cached
+and uncached runs also produced identical frame checksums. Decode and
+Metal readback times fluctuated substantially in those runs. Interactive
+4K frame pacing remains unverified. All 11 canvas tests, 92 runnable
+composition tests and the rounded-camera decoded-export test passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                     |
