@@ -11,8 +11,8 @@ use std::sync::Arc;
 use crate::capture::desktop_icons::CaptureHide;
 use crate::capture::intent::CaptureIntent;
 use crate::capture::{
-    prepare_screenshot, publish_screenshot, uuid_simple, CachedCaptureReservation, CaptureService,
-    DisplayCapture,
+    capture_screenshot_to_file, prepare_screenshot, publish_screenshot, uuid_simple,
+    CachedCaptureReservation, CaptureService, DisplayCapture,
 };
 
 pub struct Coordinator {
@@ -279,27 +279,18 @@ impl Coordinator {
             .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
-            let (result, released) = crate::capture::capture_then_release(
-                &service,
-                release_after,
-                || -> anyhow::Result<_> {
-                    let temporary = prepare_screenshot(&path)?;
-                    service
-                        .capture_area_cached(
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    capture_screenshot_to_file(&path, |temporary| {
+                        service.capture_area_cached(
                             capture,
-                            &temporary,
+                            temporary,
                             reservation,
                             None,
                             excluded_window_ids,
                         )
-                        .with_context(|| {
-                            format!("Capture data may be available at {}", temporary.display())
-                        })?;
-                    publish_screenshot(&temporary, &path).with_context(|| {
-                        format!("Capture data is available at {}", temporary.display())
                     })
-                },
-            );
+                });
             drop(hide);
             drop(transition);
             (result, released)
@@ -543,21 +534,12 @@ impl Coordinator {
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
-            let (result, released) = crate::capture::capture_then_release(
-                &service,
-                release_after,
-                || -> anyhow::Result<_> {
-                    let temporary = prepare_screenshot(&path)?;
-                    service
-                        .capture_window_to_file(window_id, capture, &temporary, reservation)
-                        .with_context(|| {
-                            format!("Capture data may be available at {}", temporary.display())
-                        })?;
-                    publish_screenshot(&temporary, &path).with_context(|| {
-                        format!("Capture data is available at {}", temporary.display())
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    capture_screenshot_to_file(&path, |temporary| {
+                        service.capture_window_to_file(window_id, capture, temporary, reservation)
                     })
-                },
-            );
+                });
             drop(hide);
             drop(transition);
             (result, released)

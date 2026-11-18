@@ -1145,7 +1145,10 @@ impl ScreenshotClient<'_> {
             ScreenshotMethod::CaptureArea.id(),
             Some(params),
         );
-        result.map_err(|error| anyhow!("capture-area failed: {error}"))?;
+        result.map_err(|error| {
+            let message = format!("capture-area failed: {error}");
+            error.context(message)
+        })?;
         Ok(())
     }
 
@@ -1158,7 +1161,10 @@ impl ScreenshotClient<'_> {
                 ScreenshotMethod::CaptureWindow.id(),
                 Some(params),
             )
-            .map_err(|error| anyhow!("capture-window failed: {error}"))?;
+            .map_err(|error| {
+                let message = format!("capture-window failed: {error}");
+                error.context(message)
+            })?;
         Ok(())
     }
 

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use parking_lot::{Condvar, Mutex};
 use poratake_daemon_common::geometry::{CaptureAreaRequest, CaptureWindowRequest};
 
@@ -42,6 +42,36 @@ pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
             Err(error) => return Err(error),
         }
     }
+}
+
+fn capture_screenshot_to_file(
+    output: &Path,
+    capture: impl FnOnce(&Path) -> Result<()>,
+) -> Result<PathBuf> {
+    let temporary = prepare_screenshot(output)?;
+    if let Err(error) = capture(&temporary) {
+        let completed = error
+            .downcast_ref::<crate::daemon::DaemonRpcError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.code.as_str(),
+                    "CAPTURE_FAILED" | "INVALID_PARAMS" | "METHOD_NOT_FOUND" | "DAEMON_UNAVAILABLE"
+                )
+            });
+        if completed
+            && std::fs::symlink_metadata(&temporary)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0)
+            && std::fs::remove_file(&temporary).is_ok()
+        {
+            return Err(error);
+        }
+        return Err(error.context(format!(
+            "Capture data may be available at {}",
+            temporary.display()
+        )));
+    }
+    publish_screenshot(&temporary, output)
+        .with_context(|| format!("Capture data is available at {}", temporary.display()))
 }
 
 pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Result<PathBuf> {
@@ -1470,6 +1500,44 @@ mod tests {
             std::fs::read_dir(output.parent().unwrap()).unwrap().count(),
             13
         );
+    }
+
+    #[test]
+    fn failed_screenshot_capture_only_removes_an_empty_stage_after_a_definite_reply() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        for (code, partial, retained) in [
+            (Some("CAPTURE_FAILED"), false, false),
+            (Some("CAPTURE_FAILED"), true, true),
+            (None, false, true),
+        ] {
+            let mut stage = None;
+            let error = super::capture_screenshot_to_file(&output, |path| {
+                stage = Some(path.to_owned());
+                if partial {
+                    std::fs::write(path, "partial capture")?;
+                }
+                Err(match code {
+                    Some(code) => anyhow::Error::new(crate::daemon::DaemonRpcError {
+                        code: code.into(),
+                        message: "Window no longer available".into(),
+                    })
+                    .context("capture-window failed: Window no longer available"),
+                    None => anyhow::anyhow!("Request timeout: screenshot.capture-window"),
+                })
+            })
+            .unwrap_err();
+            let stage = stage.unwrap();
+            assert_eq!(stage.exists(), retained);
+            assert_eq!(
+                error.to_string().contains("Capture data may be available"),
+                retained
+            );
+            assert!(!output.exists());
+            if partial {
+                assert_eq!(std::fs::read_to_string(stage).unwrap(), "partial capture");
+            }
+        }
     }
 
     #[test]

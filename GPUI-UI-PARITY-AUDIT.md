@@ -6988,6 +6988,26 @@ display evidence](tests/native/evidence/macos-ui/native-full-display-capture-202
 records the timings and pixel checks. A physical multi-display picker
 remains unverified.
 
+### 2026-11-18 native macOS window screenshot after target changes
+
+The window picker selected a disposable AppKit target on the Retina
+display. After the picker cleared, the fixture moved and resized the
+target before forwarding the screenshot request. Live capture followed
+its window ID and saved the new green 560×640 frame. Frozen capture
+retained the original red 720×480 frame, including when the target
+closed. All saved frames matched their corresponding solid backdrop
+across the entire image after ColorSync conversion to sRGB. Preview
+and editor opening passed.
+
+A live capture of the closed window returned a definite failure
+and previously left an empty staging PNG. GPUI now preserves the
+daemon error code through the screenshot client and removes an empty
+stage after a definitive failure, matching Electron's cleanup rule.
+Nonempty stages and ambiguous transport failures remain recoverable.
+The shared area and window capture paths use this rule. The
+[native window evidence](tests/native/evidence/macos-ui/native-window-screenshot-target-change-20261118.txt)
+records both appearances and the focused regression.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
