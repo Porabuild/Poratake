@@ -4,6 +4,9 @@ class TimerButton: NSView {
     var remainingSeconds: Int = 5 {
         didSet {
             updateDisplay()
+            if remainingSeconds != oldValue, window?.isVisible == true {
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
         }
     }
     
@@ -24,6 +27,10 @@ class TimerButton: NSView {
         self.foregroundColor = foregroundColor
         super.init(frame: .zero)
         setupView()
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Cancel screenshot countdown")
+        setAccessibilityChildren([])
         remainingSeconds = seconds
         updateDisplay()
     }
@@ -31,6 +38,17 @@ class TimerButton: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError()
+    }
+
+    override func accessibilityValue() -> Any? {
+        let unit = remainingSeconds == 1 ? "second" : "seconds"
+        return "\(remainingSeconds) \(unit) remaining"
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onCancel else { return false }
+        onCancel()
+        return true
     }
     
     private func setupView() {

@@ -36,11 +36,11 @@ final class Fixture {
     var positions: [(Int, Int)] = []
     var panelID: CGWindowID = 0
 #if TIMER_CONTROL_TEST
-    var timingCase: String?
+    var hiddenCase: String?
     var resumedAt: ContinuousClock.Instant?
 
-    func startTimingCase(_ name: String) {
-        timingCase = name
+    func startHiddenCase(_ name: String) {
+        hiddenCase = name
         module.testKeepPanelHidden = true
         if name == "--queued" {
             show(0, duration: 30, requestId: "first")
@@ -48,7 +48,7 @@ final class Fixture {
         show(1, duration: 2, requestId: "last")
     }
 
-    func timingResponse(_ id: String, _ result: Any?) {
+    func hiddenResponse(_ id: String, _ result: Any?) {
         guard let payload = result as? [String: Bool], payload["visible"] == true,
               let timer = module.testTimerButton, timer.window?.isVisible == false else {
             fail("missing hidden timer after \(id)")
@@ -60,7 +60,24 @@ final class Fixture {
             return
         }
         guard id == "last" else { return }
-        if timingCase == "--queued" {
+        if hiddenCase == "--accessibility" {
+            guard timer.isAccessibilityElement(), timer.accessibilityRole() == .button,
+                  timer.accessibilityLabel() == "Cancel screenshot countdown",
+                  timer.accessibilityValue() as? String == "2 seconds remaining",
+                  timer.accessibilityChildren()?.isEmpty == true else {
+                fail("timer did not expose one accessible button with its remaining time")
+                return
+            }
+            timer.remainingSeconds = 1
+            guard timer.accessibilityValue() as? String == "1 second remaining",
+                  timer.accessibilityPerformPress(),
+                  !timer.accessibilityPerformPress() else {
+                fail("timer did not update its accessible value or accept a press")
+                return
+            }
+            return
+        }
+        if hiddenCase == "--queued" {
             print("queued shows display their own duration")
             finish(true)
         }
@@ -113,8 +130,8 @@ final class Fixture {
 
     func response(_ id: String, _ result: Any?) {
 #if TIMER_CONTROL_TEST
-        if timingCase != nil {
-            timingResponse(id, result)
+        if hiddenCase != nil {
+            hiddenResponse(id, result)
             return
         }
 #endif
@@ -160,7 +177,18 @@ final class Fixture {
 
     func event(_ name: String) {
 #if TIMER_CONTROL_TEST
-        if timingCase != nil {
+        if hiddenCase == "--accessibility" {
+            guard name == "cancel", module.testTimerButton == nil else {
+                fail("accessible press did not cancel and dismiss the countdown")
+                return
+            }
+            DispatchQueue.main.async {
+                print("accessible countdown reported its value and canceled through AppKit")
+                self.finish(true)
+            }
+            return
+        }
+        if hiddenCase != nil {
             guard name == "completed", module.testTimerButton == nil, let resumedAt else {
                 fail("unexpected event during hidden countdown: \(name)")
                 return
@@ -202,8 +230,8 @@ struct TimerControlLifecycleTest {
         fixture.positions = [(numbers[0], numbers[1]), (numbers[2], numbers[3])]
         DispatchQueue.main.async {
 #if TIMER_CONTROL_TEST
-            if let name = CommandLine.arguments.last, ["--late", "--queued"].contains(name) {
-                fixture.startTimingCase(name)
+            if let name = CommandLine.arguments.last, ["--accessibility", "--late", "--queued"].contains(name) {
+                fixture.startHiddenCase(name)
                 return
             }
 #endif

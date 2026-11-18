@@ -204,6 +204,7 @@ jobs:
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --queued
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --late
+          "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --accessibility
 
       - name: Test macOS recording timeline
         run: |

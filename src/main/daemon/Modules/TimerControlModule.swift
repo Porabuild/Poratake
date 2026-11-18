@@ -125,6 +125,7 @@ class TimerControlModule: Module {
     }
     
     private func hidePanel() {
+        timerButton?.onCancel = nil
         panel?.alphaValue = 0
         if panel != nil { CATransaction.flush() }
         panel?.orderOut(nil)

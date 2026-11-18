@@ -5971,6 +5971,22 @@ both cases alongside the existing window lifecycle checks. The full production
 Swift daemon typechecked on arm64, and 27 Electron timer and daemon contract
 tests passed.
 
+### 2026-11-18 macOS screenshot countdown accessibility
+
+The native screenshot countdown is a custom AppKit view shared by GPUI and
+Electron. The hidden AppKit fixture found that the view did not expose an
+accessible cancel button. It now exposes a single button named “Cancel
+screenshot countdown” with the current time remaining. Its press action
+uses the same callback as a click. Dismissing the countdown clears that
+callback so a retained accessibility element cannot cancel a later capture.
+
+The regression checks the button role and label, singular and plural time
+values, cancellation and a second press on the retired view. It runs in
+the macOS timer CI fixture. The hidden accessibility and timing cases
+passed on arm64 and x86_64 under Rosetta. The production daemon typechecked,
+and 27 Electron timer and daemon contract tests passed. VoiceOver
+announcement and navigation on a visible countdown remain unverified.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
