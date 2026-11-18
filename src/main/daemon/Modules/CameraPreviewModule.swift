@@ -64,6 +64,9 @@ class CameraPreviewModule: Module {
                     #endif
                     self.respond(id: requestId, result: ["visible": visible])
                 } catch {
+                    #if RECORDING_OUTLINE_TEST
+                    self.testFailedShows.insert(requestId)
+                    #endif
                     self.respondError(id: requestId, code: "CAPTURE_ERROR", message: error.localizedDescription)
                 }
             }
@@ -346,10 +349,16 @@ class CameraPreviewModule: Module {
     #if RECORDING_OUTLINE_TEST
     private(set) var testReportedPositions: [NSPoint] = []
     private(set) var testShowResults: [String: Bool] = [:]
+    private(set) var testFailedShows: Set<String> = []
 
     @MainActor
     var testStartup: (panel: NSPanel?, generation: UInt64, starts: [String?]) {
         (panel, presentationGeneration.value, contentView?.testStartedCameras ?? [])
+    }
+
+    @MainActor
+    func testStartedCameras(in panel: NSPanel) -> [String?]? {
+        (panel.contentView as? CameraPreviewContentView)?.testStartedCameras
     }
 
     @MainActor

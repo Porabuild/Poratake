@@ -107,6 +107,47 @@ struct RecordingOutlineLifecycleTest {
         await camera.testHidePanel()
         precondition(registry.currentWindowIDs().isEmpty)
         print("camera preview startup: one accepted camera request after protection")
+
+        var blockedFilter: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater { windowIDs in
+            guard !windowIDs.isEmpty else { return }
+            await withCheckedContinuation { blockedFilter = $0 }
+            throw RecordingCaptureFilterError.unavailableWindows(windowIDs)
+        }
+        show("generated retry camera", requestId: "camera-failing-first")
+        try await waitFor("camera preview did not enter capture filter setup") {
+            blockedFilter != nil
+        }
+        guard let rejectFilter = blockedFilter, let failedPanel = camera.testStartup.panel else {
+            fatalError("staged camera panel or pending filter missing")
+        }
+        let failedID = CGWindowID(failedPanel.windowNumber)
+        precondition(registry.currentWindowIDs() == [failedID])
+        precondition(failedPanel.alphaValue == 0 && failedPanel.ignoresMouseEvents)
+        let failedGeneration = camera.testStartup.generation
+        show("generated retry camera", requestId: "camera-failing-current")
+        try await waitFor("replacement show did not join the pending camera presentation") {
+            camera.testStartup.generation == failedGeneration + 1
+        }
+        rejectFilter.resume()
+        try await waitFor("camera preview did not report capture filter failure") {
+            camera.testShowResults["camera-failing-first"] == false
+                && camera.testFailedShows.contains("camera-failing-current")
+        }
+        precondition(camera.testStartup.panel == nil && registry.currentWindowIDs().isEmpty)
+        precondition(camera.testStartedCameras(in: failedPanel) == [])
+        precondition(onScreenAlpha(failedID).map { $0 == 0 } ?? true)
+        registry.setFilterUpdater(nil)
+        print("camera preview filter failure: hidden panel removed without startup")
+
+        show("generated retry camera", requestId: "camera-retry")
+        try await waitFor("camera preview retry did not reveal") {
+            camera.testShowResults["camera-retry"] == true
+        }
+        precondition(camera.testStartup.panel !== failedPanel && camera.testStartup.starts == ["generated retry camera"])
+        await camera.testHidePanel()
+        precondition(registry.currentWindowIDs().isEmpty)
+        print("camera preview filter retry: fresh panel and one startup")
     }
 
     @MainActor
