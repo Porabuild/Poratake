@@ -5497,8 +5497,16 @@ comparisons and the composition was inspected in the editor before saving.
 
 The third selector stayed open after the desktop helper attempted Escape.
 The helper could not target that temporary selector directly.
-Cancellation and a rendered comparison after reopening remain unverified.
 The isolated processes closed and the existing editor stayed open.
+
+A follow-up opened the exact saved PNG in the offscreen macOS Metal
+renderer. In light and dark mode, every rendered image pixel matched the
+PNG composited over the corresponding editor background at 1× and 2×.
+The viewports were 1440×1060 and 950×700 points, respectively, so the zoom
+controls stayed clear of the image. Re-exporting the reopened document
+preserved all 1,008,000 RGBA pixels, including the transparent quadrant.
+The focused Escape fixture and pending-freeze checks passed. Native
+keyboard cancellation is still open.
 
 ## Review gate
 
