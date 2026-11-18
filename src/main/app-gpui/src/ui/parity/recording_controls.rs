@@ -439,9 +439,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 output,
                 &format!("record-control-{name}-active-open"),
             );
-            key(cx, window, "home");
-            key(cx, window, "enter");
-            settle(cx, window);
+            let disable = |cx: &mut HeadlessAppContext| {
+                key(cx, window, "home");
+                key(cx, window, "enter");
+                settle(cx, window);
+            };
+            #[cfg(target_os = "macos")]
+            if name == "microphone" {
+                check_held_audio_change(cx, window, output, true, disable);
+                continue;
+            }
+            disable(cx);
             if name == "camera-locked" {
                 cx.update(|cx| {
                     crate::state::state(cx).daemon.emit_parity_event(
@@ -460,50 +468,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 8);
         #[cfg(target_os = "macos")]
-        {
-            use std::io::Write;
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let ready = super::workflows::accept_fixture_barrier(&listener);
-            let fixture_path = output.join("capture-fixture.json");
-            let previous = std::fs::read(&fixture_path).ok();
-            std::fs::write(
-                &fixture_path,
-                serde_json::to_vec(&serde_json::json!({
-                    "recordingAudioBarrier": true,
-                    "barrier": listener.local_addr().unwrap().to_string(),
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+        check_held_audio_change(cx, window, output, false, |cx| {
             click_measured(cx, window, "recording-controls", 8);
-            let mut connection = ready
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
-            let audio_is_on = |cx: &mut HeadlessAppContext| {
-                cx.update_window(window, |root, _, cx| {
-                    root.downcast::<RecordingControl>()
-                        .unwrap()
-                        .read(cx)
-                        .parity_system_audio()
-                })
-                .unwrap()
-            };
-            assert!(audio_is_on(cx), "audio state must await the daemon reply");
-            click_measured(cx, window, "recording-controls", 8);
-            assert!(audio_is_on(cx));
-            connection.write_all(&[1]).unwrap();
-            let acknowledged = std::time::Instant::now();
-            while audio_is_on(cx) {
-                cx.run_until_parked();
-                assert!(acknowledged.elapsed() < std::time::Duration::from_secs(5));
-                std::thread::yield_now();
-            }
-            if let Some(contents) = previous {
-                std::fs::write(&fixture_path, contents).unwrap();
-            } else {
-                std::fs::remove_file(&fixture_path).unwrap();
-            }
-        }
+        });
         cx.update(|cx| {
             assert_eq!(
                 serde_json::to_value(crate::state::state(cx).config.get().recording).unwrap(),
@@ -742,5 +709,59 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             })
             .count();
         assert_eq!(hides_after, hides_before + 1);
+    }
+}
+
+
+#[cfg(target_os = "macos")]
+fn check_held_audio_change(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    output: &Path,
+    microphone: bool,
+    disable: impl FnOnce(&mut HeadlessAppContext),
+) {
+    use crate::windows::recording_control::RecordingControl;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let (method, index) = if microphone { ("setMicrophone", 7) } else { ("setSystemAudio", 8) };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ready = super::workflows::accept_fixture_barrier(&listener);
+    let fixture_path = output.join("capture-fixture.json");
+    let previous = std::fs::read(&fixture_path).ok();
+    std::fs::write(
+        &fixture_path,
+        serde_json::to_vec(&serde_json::json!({
+            "recordingAudioBarrier": method,
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    disable(cx);
+    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let audio_is_on = |cx: &mut HeadlessAppContext| {
+        cx.update_window(window, |root, _, cx| {
+            let view = root.downcast::<RecordingControl>().unwrap();
+            let control = view.read(cx);
+            if microphone { control.parity_microphone() } else { control.parity_system_audio() }
+        })
+        .unwrap()
+    };
+    assert!(audio_is_on(cx), "audio state must await the daemon reply");
+    click_measured(cx, window, "recording-controls", index);
+    assert!(audio_is_on(cx));
+    connection.write_all(&[1]).unwrap();
+    let acknowledged = Instant::now();
+    while audio_is_on(cx) {
+        cx.run_until_parked();
+        assert!(acknowledged.elapsed() < Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    if let Some(contents) = previous {
+        std::fs::write(&fixture_path, contents).unwrap();
+    } else {
+        std::fs::remove_file(&fixture_path).unwrap();
     }
 }

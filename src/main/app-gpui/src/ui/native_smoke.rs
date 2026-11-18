@@ -1643,6 +1643,21 @@ pub fn open(cx: &mut App) {
                 else {
                     return false;
                 };
+                if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() {
+                    if let Some(id) = command.strip_prefix("microphone-select ") {
+                        return handle
+                            .update(cx, |control, _, cx| {
+                                recorder::state() == recorder::RecorderState::Recording
+                                    && control.set_microphone(true, Some(id.into()), cx)
+                            })
+                            .unwrap_or(false);
+                    }
+                    if let Some(id) = command.strip_prefix("microphone-state ") {
+                        return handle
+                            .update(cx, |control, _, _| control.parity_microphone_selected(id))
+                            .unwrap_or(false);
+                    }
+                }
                 match command.as_str() {
                     "system-audio-on" | "system-audio-state"
                         if std::env::var_os("PORATAKE_NATIVE_UI_FAKE_DAEMON").is_some() =>

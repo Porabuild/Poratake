@@ -7399,6 +7399,22 @@ reply, and the wider recording workflow exercised a terminal audio
 failure. All 1,175 runnable GPUI tests and 111 Electron reference tests
 passed. The native probe used app-local input and simulated system audio.
 
+### 2026-11-18 macOS microphone changes during recording
+
+The GPUI microphone menu now sends changes in order and waits for the
+daemon off the UI thread. While a switch is pending, it displays the
+confirmed device and keeps the microphone menu closed. A rejected switch
+preserves the previous device and allows a retry. Live changes stay
+within the recording session.
+
+In light and dark native runs against a simulated daemon, microphone
+change commands returned in 0.12–1.53 ms. Stop reached the fixture in
+7.67–8.21 ms while a microphone reply was held. Accepted switches
+selected the replacement device, while rejected switches kept the
+original. The Metal toolbar workflow separately exercised the real
+microphone menu during a held disable acknowledgement. These checks
+used an isolated profile and did not access the microphone.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

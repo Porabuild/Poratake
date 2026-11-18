@@ -837,6 +837,7 @@ impl ScreenRecorderClient<'_> {
             .map(|response| ScreenRecordingStop::Stopped(recording_stop_info(&response)))
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn set_microphone(&self, request: ScreenRecorderMicrophoneRequest) -> Result<()> {
         self.call(
             ScreenRecorderMethod::SetMicrophone,
@@ -854,12 +855,28 @@ impl ScreenRecorderClient<'_> {
         &self,
         enabled: bool,
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
-        let method = ScreenRecorderMethod::SetSystemAudio.id();
-        let (id, response) = self.daemon.begin_call(
-            SCREEN_RECORDER_MODULE,
-            method,
-            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
-        )?;
+        self.begin_setting(
+            ScreenRecorderMethod::SetSystemAudio,
+            serde_json::to_value(ScreenRecorderToggleRequest { enabled })?,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_microphone(
+        &self,
+        request: ScreenRecorderMicrophoneRequest,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        self.begin_setting(ScreenRecorderMethod::SetMicrophone, serde_json::to_value(request)?)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn begin_setting(
+        &self,
+        method: ScreenRecorderMethod,
+        params: Value,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let method = method.id();
+        let (id, response) = self.daemon.begin_call(SCREEN_RECORDER_MODULE, method, Some(params))?;
         let daemon = self.daemon.clone();
         Ok(move || {
             daemon

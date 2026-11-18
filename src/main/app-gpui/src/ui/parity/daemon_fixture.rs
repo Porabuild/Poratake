@@ -902,9 +902,9 @@ pub fn run() {
                 );
                 json!({})
             }
-            ("screen-recorder", "setSystemAudio") => {
+            ("screen-recorder", method @ ("setSystemAudio" | "setMicrophone")) => {
                 if let Some(fixture) = optional_capture_fixture(&output)
-                    .filter(|fixture| fixture["recordingAudioBarrier"] == true)
+                    .filter(|fixture| fixture["recordingAudioBarrier"] == method)
                 {
                     std::thread::spawn(move || {
                         wait_for_fixture_barrier(&fixture);
@@ -927,7 +927,7 @@ pub fn run() {
             ("camera-preview", "show" | "hide" | "update" | "setContentProtection")
             | (
                 "screen-recorder",
-                "pause" | "resume" | "setMicrophone" | "setCamera",
+                "pause" | "resume" | "setCamera",
             ) => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");

@@ -4,9 +4,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use poratake_daemon_common::contract::{
-    ScreenRecorderMicrophoneRequest, ScreenRecorderStartRequest,
-};
+#[cfg(not(target_os = "macos"))]
+use poratake_daemon_common::contract::ScreenRecorderMicrophoneRequest;
+use poratake_daemon_common::contract::ScreenRecorderStartRequest;
 
 use crate::config::store::ConfigStore;
 use crate::daemon::DaemonHandle;
@@ -274,6 +274,7 @@ pub fn force_idle() {
     store_state(RecorderState::Idle);
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn set_microphone(
     daemon: &DaemonHandle,
     enabled: bool,

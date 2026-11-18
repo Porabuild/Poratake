@@ -84,6 +84,8 @@ pub struct RecordingControl {
     system_audio: bool,
     #[cfg(target_os = "macos")]
     system_audio_pending: bool,
+    #[cfg(target_os = "macos")]
+    microphone_pending: bool,
     microphone: bool,
     camera: bool,
     camera_locked: bool,
@@ -143,6 +145,16 @@ impl RecordingControl {
     #[cfg(all(feature = "parity", target_os = "macos"))]
     pub(crate) fn parity_system_audio(&self) -> bool {
         self.system_audio
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_microphone(&self) -> bool {
+        self.microphone
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_microphone_selected(&self, device: &str) -> bool {
+        self.microphone && self.selected_mic_id.as_deref() == Some(device)
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
@@ -235,6 +247,8 @@ impl RecordingControl {
                         system_audio: toggles.system_audio,
                         #[cfg(target_os = "macos")]
                         system_audio_pending: false,
+                        #[cfg(target_os = "macos")]
+                        microphone_pending: false,
                         microphone: toggles.mic_enabled,
                         camera: toggles.camera_enabled,
                         camera_locked: false,
@@ -1165,6 +1179,26 @@ impl RecordingControl {
             }
         };
         self.system_audio_pending = true;
+        self.await_recording_setting(
+            wait,
+            move |this, accepted| {
+                this.system_audio_pending = false;
+                if accepted {
+                    this.system_audio = enabled;
+                }
+            },
+            cx,
+        );
+        true
+    }
+
+    #[cfg(target_os = "macos")]
+    fn await_recording_setting(
+        &mut self,
+        wait: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+        complete: impl FnOnce(&mut Self, bool) + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let generation = self.recording_error_generation;
         cx.spawn(async move |entity, cx| {
             let result = smol::unblock(wait).await;
@@ -1172,20 +1206,27 @@ impl RecordingControl {
                 if this.recording_error_generation != generation || this.mode != Mode::Recording {
                     return;
                 }
-                this.system_audio_pending = false;
-                match result {
-                    Ok(()) => this.system_audio = enabled,
-                    Err(error) => report_toggle_failure(cx, &error),
+                complete(this, result.is_ok());
+                if let Err(error) = result {
+                    report_toggle_failure(cx, &error);
                 }
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
-        true
     }
 
-    fn set_microphone(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn set_microphone(
+        &mut self,
+        enabled: bool,
+        device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.microphone_pending {
+            return false;
+        }
         if enabled
             && !crate::system::permissions::ensure_access(
                 crate::system::permissions::Device::Microphone,
@@ -1195,14 +1236,44 @@ impl RecordingControl {
         }
         if self.mode == Mode::Recording {
             let service = crate::state::state(cx);
-            let result =
-                recorder::set_microphone(&service.daemon, enabled, self.selected_mic_id.as_deref());
-            if let Err(error) = result {
+            #[cfg(target_os = "macos")]
+            {
+                let request = poratake_daemon_common::contract::ScreenRecorderMicrophoneRequest {
+                    enabled,
+                    device_id: device_id.clone(),
+                    device_name: None,
+                };
+                let wait = match service.daemon.screen_recorder().begin_microphone(request) {
+                    Ok(wait) => wait,
+                    Err(error) => {
+                        report_toggle_failure(cx, &error);
+                        return false;
+                    }
+                };
+                self.microphone_pending = true;
+                self.await_recording_setting(
+                    wait,
+                    move |this, accepted| {
+                        this.microphone_pending = false;
+                        if accepted {
+                            this.microphone = enabled;
+                            this.selected_mic_id = device_id;
+                        }
+                    },
+                    cx,
+                );
+                return true;
+            }
+            #[cfg(not(target_os = "macos"))]
+            if let Err(error) =
+                recorder::set_microphone(&service.daemon, enabled, device_id.as_deref())
+            {
                 report_toggle_failure(cx, &error);
                 return false;
             }
         }
         self.microphone = enabled;
+        self.selected_mic_id = device_id;
         self.persist_pre_recording_preference(RecordingPreference::Microphone(enabled), cx);
         cx.notify();
         true
@@ -1430,6 +1501,10 @@ impl RecordingControl {
                 recorder::state(),
                 recorder::RecorderState::Starting | recorder::RecorderState::Stopping
             );
+        #[cfg(target_os = "macos")]
+        let disabled = disabled
+            || (self.microphone_pending
+                && kind == DeviceMenuKind::Media(crate::system::devices::DeviceKind::Microphone));
         let trigger = herogpui::components::Button::new(owner)
             .aria_label(tooltip)
             .variant(herogpui::Variant::Ghost)
@@ -1551,7 +1626,7 @@ impl RecordingControl {
                         if let Some(entity) = toggle_entity.upgrade() {
                             entity.update(cx, |this, cx| match kind {
                                 DeviceKind::Microphone => {
-                                    this.set_microphone(!this.microphone, cx);
+                                    this.set_microphone(!this.microphone, this.selected_mic_id.clone(), cx);
                                 }
                                 DeviceKind::Camera => {
                                     this.set_camera(!this.camera, cx);
@@ -1718,11 +1793,7 @@ impl RecordingControl {
         let name = selection.as_ref().map(|(_, name)| name.clone());
         match kind {
             crate::system::devices::DeviceKind::Microphone => {
-                let previous = self.selected_mic_id.clone();
-                self.selected_mic_id = id.clone();
-                if !self.set_microphone(true, cx) {
-                    self.selected_mic_id = previous;
-                    cx.notify();
+                if !self.set_microphone(true, id.clone(), cx) {
                     return;
                 }
                 if self.mode == Mode::PreRecording {
@@ -3509,7 +3580,7 @@ mod tests {
                     assert!(!control.system_audio);
                     assert!(control.microphone);
                     assert!(control.set_system_audio(true, cx));
-                    assert!(control.set_microphone(false, cx));
+                    assert!(control.set_microphone(false, control.selected_mic_id.clone(), cx));
                 })
                 .unwrap();
             assert!(config.get().recording.system_audio);
@@ -3866,6 +3937,8 @@ mod tests {
                 system_audio: true,
                 #[cfg(target_os = "macos")]
                 system_audio_pending: false,
+                #[cfg(target_os = "macos")]
+                microphone_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
@@ -4037,6 +4110,8 @@ mod tests {
                 system_audio: true,
                 #[cfg(target_os = "macos")]
                 system_audio_pending: false,
+                #[cfg(target_os = "macos")]
+                microphone_pending: false,
                 microphone: true,
                 camera: false,
                 camera_locked: false,
