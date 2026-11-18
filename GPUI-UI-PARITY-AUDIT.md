@@ -6864,6 +6864,24 @@ passed, and all six timer workflow PNGs matched the previous build byte
 for byte. The native probe used one physical display, the authorized
 screen-only daemon and generated app-local input.
 
+### 2026-11-18 macOS selector handoff from an idle recording toolbar
+
+Changing from the pre-recording area toolbar to a screenshot selector
+previously waited on a native recording-overlay Hide call. GPUI now
+tracks whether it requested a native overlay. The idle toolbar path
+skips the call. A Show attempt dirties the state before the reply,
+and a failed Hide keeps cleanup pending for the next attempt.
+
+With the old idle Hide reply held for 650 ms, the area selector
+appeared after 790.8 ms. The revised build issued no Hide in the same
+idle scenario and showed the selector in 82.5–83.3 ms across light and
+dark. Both generated-window checks still issued Hide and removed the
+existing outline before showing the selector. The capture driver
+cancelled each selector without saving an image. The [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the individual samples. The light and dark recording workflows
+and all 1,170 runnable GPUI tests passed. The native measurements use
+app-local interactions on one Retina display.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

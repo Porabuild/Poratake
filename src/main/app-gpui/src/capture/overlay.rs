@@ -53,6 +53,8 @@ struct OverlaySession {
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
+    #[cfg(target_os = "macos")]
+    native_recording_overlay_requested: bool,
 }
 
 #[derive(Clone)]
@@ -266,6 +268,7 @@ pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
 
     #[cfg(target_os = "macos")]
     {
+        session(cx).native_recording_overlay_requested = true;
         let daemon = crate::state::state(cx).daemon;
         if daemon.recording_overlay().show(rect).ok() != Some(true) {
             return false;
@@ -301,8 +304,22 @@ pub fn end_recording_handoff(cx: &mut App) {
     session(cx).outlined_window_id = None;
     #[cfg(not(test))]
     {
-        let daemon = crate::state::state(cx).daemon;
-        let _ = daemon.recording_overlay().hide();
+        #[cfg(target_os = "macos")]
+        let should_hide = session(cx).native_recording_overlay_requested;
+        #[cfg(not(target_os = "macos"))]
+        let should_hide = true;
+        if should_hide {
+            let daemon = crate::state::state(cx).daemon;
+            let _hidden = daemon.recording_overlay().hide().is_ok();
+            #[cfg(target_os = "macos")]
+            if _hidden {
+                session(cx).native_recording_overlay_requested = false;
+            }
+        }
+    }
+    #[cfg(all(target_os = "macos", test))]
+    {
+        session(cx).native_recording_overlay_requested = false;
     }
     close_all(cx);
 }
@@ -319,6 +336,10 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
         return true;
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        session(cx).native_recording_overlay_requested = true;
+    }
     #[cfg(test)]
     let visible = true;
     #[cfg(not(test))]
@@ -4074,6 +4095,15 @@ mod tests {
             assert!(cx.windows().into_iter().any(|window| window
                 .downcast::<crate::windows::recording_control::RecordingControl>()
                 .is_some()));
+            #[cfg(target_os = "macos")]
+            {
+                assert!(super::session(cx).native_recording_overlay_requested);
+                assert!(
+                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx)
+                );
+                assert!(!super::session(cx).native_recording_overlay_requested);
+                assert_eq!(super::session(cx).outlined_window_id, None);
+            }
         });
     }
 

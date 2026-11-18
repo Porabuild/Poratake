@@ -548,3 +548,23 @@ opened in the screenshot editor. The fixed cancel run dismissed the
 selector with the show reply held, then observed the panel disappear
 and the output directory remain empty. The timings cover app-local
 dispatch and WindowServer visibility on one display.
+
+Selector handoff from a pre-recording toolbar
+
+The native GPUI fixture began with an idle area recording toolbar
+or with an outline around a disposable generated window. It then
+dispatched the area screenshot intent locally. The authorized daemon
+bridge held Hide replies for 650 ms when one was sent. The driver
+measured when WindowServer listed the new selector.
+
+Scenario                  Hide request       Selector visible
+Previous idle light       Issued and held       790.8 ms
+Fixed idle light          Skipped                82.5 ms
+Fixed idle dark           Skipped                83.3 ms
+Fixed outline light       Issued and held       735.0 ms
+Fixed outline dark        Issued and held       725.7 ms
+
+The outline was present before both fixed outline runs and gone
+at the selector handoff. All selectors closed on cancellation.
+The deliberate hold isolates the round-trip dependency. These are
+single-run observations per case with generated app-local input.
