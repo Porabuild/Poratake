@@ -1661,7 +1661,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             release.write_all(&[0]).unwrap();
             wait_for_recording_start(cx);
             let cleanup_started = std::time::Instant::now();
-            while cx.update(|cx| crate::intents::recording_outline_is_hiding(cx)) {
+            while cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
                 cx.run_until_parked();
                 assert!(cleanup_started.elapsed() < std::time::Duration::from_secs(10));
                 std::thread::yield_now();

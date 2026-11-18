@@ -370,7 +370,7 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
     #[cfg(target_os = "macos")]
     {
         if pending_recording_preparation(cx).is_some()
-            || crate::intents::recording_outline_is_hiding(cx)
+            || crate::intents::recording_cleanup_is_pending(cx)
         {
             return false;
         }

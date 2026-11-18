@@ -88,7 +88,8 @@ pub fn dispatch(intent: Intent, tray_rect: Option<TrayRect>, cx: &mut App) {
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct RecordingCaptureSwitch {
-    hiding_outline: bool,
+    cleaning_up: bool,
+    camera_hide: Option<smol::Task<anyhow::Result<()>>>,
     next: Option<Intent>,
 }
 
@@ -104,7 +105,7 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
         return false;
     }
     let switch = cx.default_global::<RecordingCaptureSwitch>();
-    if switch.hiding_outline {
+    if switch.cleaning_up {
         switch.next = Some(intent);
         set_pre_recording_escape(true, cx);
         return true;
@@ -124,9 +125,17 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn recording_outline_is_hiding(cx: &App) -> bool {
+pub(crate) fn recording_cleanup_is_pending(cx: &App) -> bool {
     cx.try_global::<RecordingCaptureSwitch>()
-        .is_some_and(|switch| switch.hiding_outline)
+        .is_some_and(|switch| switch.cleaning_up)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn begin_recording_camera_hide(cx: &mut App) {
+    let daemon = crate::state::state(cx).daemon;
+    let wait = daemon.camera_preview().begin_hide();
+    let hide = smol::spawn(async move { smol::unblock(wait?).await });
+    cx.default_global::<RecordingCaptureSwitch>().camera_hide = Some(hide);
 }
 
 #[cfg(target_os = "macos")]
@@ -134,49 +143,57 @@ pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool
     use crate::capture::overlay;
     use crate::windows::recording_control::{set_pre_recording_escape, RecordingControl};
 
-    if !overlay::recording_overlay_needs_hide(cx) {
-        return false;
-    }
-
-    if cx.default_global::<RecordingCaptureSwitch>().hiding_outline {
+    let switch = cx.default_global::<RecordingCaptureSwitch>();
+    if switch.cleaning_up {
         return true;
     }
+    let camera_hide = switch.camera_hide.take();
+    let hide_outline = overlay::recording_overlay_needs_hide(cx);
+    if !hide_outline && camera_hide.is_none() {
+        return false;
+    }
     let daemon = crate::state::state(cx).daemon;
-    if !daemon.is_running() {
+    if hide_outline && !daemon.is_running() {
         overlay::mark_recording_overlay_hidden(cx);
+    }
+    let hide_outline = hide_outline && daemon.is_running();
+    if !hide_outline && camera_hide.is_none() {
         return false;
     }
     let switch = cx.global_mut::<RecordingCaptureSwitch>();
-    switch.hiding_outline = true;
+    switch.cleaning_up = true;
     switch.next = next;
     set_pre_recording_escape(next.is_some(), cx);
     let preparing = overlay::pending_recording_preparation(cx);
     cx.spawn(async move |cx| {
-        if let Some(preparing) = preparing {
-            let _ = preparing.recv().await;
-        }
-        let result = smol::unblock(move || daemon.recording_overlay().hide()).await;
+        let outline = if hide_outline {
+            if let Some(preparing) = preparing {
+                let _ = preparing.recv().await;
+            }
+            smol::unblock(move || daemon.recording_overlay().hide()).await
+        } else {
+            Ok(())
+        };
+        let camera = match camera_hide {
+            Some(camera) => camera.await,
+            None => Ok(()),
+        };
         cx.update(|cx| {
             let switch = cx.global_mut::<RecordingCaptureSwitch>();
-            switch.hiding_outline = false;
+            switch.cleaning_up = false;
             let next = switch.next.take();
             let pre_recording = RecordingControl::refresh_after_outline_cleanup(cx);
             set_pre_recording_escape(pre_recording, cx);
-            match result {
-                Ok(()) => {
-                    overlay::mark_recording_overlay_hidden(cx);
-                    if let Some(intent) = next {
-                        dispatch(intent, None, cx);
-                    }
-                }
-                Err(error) if next.is_some() => {
-                    crate::windows::toast::Toast::show(
-                        cx,
-                        "Capture failed",
-                        format!("Could not close the recording outline: {error}"),
-                    );
-                }
-                Err(_) => {}
+            if hide_outline && outline.is_ok() {
+                overlay::mark_recording_overlay_hidden(cx);
+            }
+            let result = outline.map_err(|error| format!("Could not close the recording outline: {error}"))
+                .and(camera.map_err(|error| format!("Could not close the camera preview: {error}")));
+            match (result, next) {
+                (Ok(()), Some(intent)) => dispatch(intent, None, cx),
+                (Err(error), Some(_)) => crate::windows::toast::Toast::show(cx, "Capture failed", error),
+                (Err(error), None) => eprintln!("[recorder] {error}"),
+                (Ok(()), None) => {}
             }
         });
     })
@@ -440,7 +457,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            cx.default_global::<RecordingCaptureSwitch>().hiding_outline = true;
+            cx.default_global::<RecordingCaptureSwitch>().cleaning_up = true;
             assert!(switch_pre_recording_capture(Intent::CaptureArea, cx));
             assert!(switch_pre_recording_capture(Intent::TimerCapture, cx));
             assert_eq!(
@@ -450,7 +467,7 @@ mod tests {
             assert!(!switch_pre_recording_capture(Intent::History, cx));
             assert!(cancel_recording_capture_switch(cx));
             assert!(!cancel_recording_capture_switch(cx));
-            assert!(cx.global::<RecordingCaptureSwitch>().hiding_outline);
+            assert!(recording_cleanup_is_pending(cx));
             assert!(switch_pre_recording_capture(Intent::CaptureWindow, cx));
             assert_eq!(
                 cx.global_mut::<RecordingCaptureSwitch>().next.take(),

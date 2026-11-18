@@ -953,7 +953,19 @@ pub fn run() {
                 }
                 json!({"visible": true})
             }
-            ("camera-preview", "hide" | "update") => json!({}),
+            ("camera-preview", "hide") => {
+                if let Some(fixture) = optional_capture_fixture(&output)
+                    .filter(|fixture| fixture["recordingCameraHideBarrier"] == true)
+                {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({"visible": false}));
+                    });
+                    continue;
+                }
+                json!({"visible": false})
+            }
+            ("camera-preview", "update") => json!({}),
             (module, method) => {
                 panic!("unexpected visual fixture call: {module} {method}");
             }

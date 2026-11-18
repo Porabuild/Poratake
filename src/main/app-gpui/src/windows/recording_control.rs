@@ -629,6 +629,7 @@ impl RecordingControl {
                         return false;
                     }
                     if this.preference_scope != preference_scope {
+                        this.hide_camera_preview(cx);
                         this.close_pre_recording_toolbar(window, cx);
                         return false;
                     }
@@ -701,7 +702,7 @@ impl RecordingControl {
         #[cfg(target_os = "macos")]
         if self.camera_pending
             || self.camera_protection_pending
-            || crate::intents::recording_outline_is_hiding(cx)
+            || crate::intents::recording_cleanup_is_pending(cx)
             || crate::capture::overlay::pending_recording_preparation(cx).is_some()
         {
             return false;
@@ -1620,13 +1621,13 @@ impl RecordingControl {
         request
     }
 
-    fn hide_camera_preview(&mut self, cx: &mut Context<Self>) {
+    fn detach_camera_preview(&mut self) -> bool {
         if !self.camera_preview_visible {
             #[cfg(target_os = "macos")]
             {
                 self.camera_pending = false;
             }
-            return;
+            return false;
         }
         self.camera_preview_visible = false;
         self.camera_preview_subscription = None;
@@ -1636,6 +1637,13 @@ impl RecordingControl {
             None
         };
         self.camera_preview_position = Arc::new(parking_lot::Mutex::new(position));
+        true
+    }
+
+    fn hide_camera_preview(&mut self, cx: &mut Context<Self>) {
+        if !self.detach_camera_preview() {
+            return;
+        }
         #[cfg(target_os = "macos")]
         if self.mode == Mode::Recording {
             let daemon = crate::state::state(cx).daemon;
@@ -2585,6 +2593,11 @@ impl RecordingControl {
         self.countdown_remaining = None;
         #[cfg(target_os = "macos")]
         self.cancel_camera_protection(cx);
+        #[cfg(target_os = "macos")]
+        if self.detach_camera_preview() {
+            crate::intents::begin_recording_camera_hide(cx);
+        }
+        #[cfg(not(target_os = "macos"))]
         self.hide_camera_preview(cx);
         close_toolbar(window);
     }

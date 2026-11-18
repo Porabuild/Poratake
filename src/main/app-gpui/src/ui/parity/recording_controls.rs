@@ -739,6 +739,15 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
         click_measured(cx, window, "recording-controls", close_index);
         assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(target_os = "macos")]
+        {
+            let started = std::time::Instant::now();
+            while cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
+                cx.run_until_parked();
+                assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::yield_now();
+            }
+        }
         let hides_after = std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
             .unwrap()
             .lines()
@@ -749,8 +758,74 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             .count();
         assert_eq!(hides_after, hides_before + 1);
     }
+    #[cfg(target_os = "macos")]
+    check_camera_hide_handoff(cx, output);
 }
 
+#[cfg(target_os = "macos")]
+fn check_camera_hide_handoff(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::capture::overlay::{self, ScreenRect};
+    use crate::system::tray::Intent;
+    use crate::video::recorder::RecordingTarget;
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ready = super::workflows::accept_fixture_barrier(&listener);
+    let fixture = output.join("capture-fixture.json");
+    let previous = std::fs::read(&fixture).ok();
+    std::fs::write(
+        &fixture,
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live",
+            "recordingCameraHideBarrier": true,
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (window, original) = cx.update(|cx| {
+        let config = crate::state::state(cx).config;
+        let original = config.get();
+        config.update(|config| {
+            config.recording.camera.enabled = true;
+            config.screenshot.freeze_screen = false;
+            config.screenshot.hide_desktop_icons = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            ScreenRect { x: 40, y: 80, width: 640, height: 360 },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        (registry::handle(WindowKind::RecordingControl, cx).unwrap(), original)
+    });
+    wait_for_camera_change(cx, window);
+    cx.update(|cx| crate::intents::dispatch(Intent::CaptureArea, None, cx));
+    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    assert!(!cx.update(overlay::parity_is_active));
+    connection.write_all(&[1]).unwrap();
+    let started = Instant::now();
+    while !cx.update(overlay::parity_is_active) {
+        cx.run_until_parked();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    let picker = super::workflows::area_picker(cx);
+    escape(cx, picker);
+    cx.update(|cx| crate::state::state(cx).config.update(|config| *config = original));
+    if let Some(contents) = previous {
+        std::fs::write(&fixture, contents).unwrap();
+    } else {
+        std::fs::remove_file(&fixture).unwrap();
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn check_held_setting(

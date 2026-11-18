@@ -7594,6 +7594,21 @@ unchanged. Rejected replies cleared the pending state and allowed a
 retry. These measurements end at the GPUI signal, before native scroll
 cancellation completes.
 
+### 2026-11-18 macOS camera preview Hide when leaving recording setup
+
+Closing the pre-recording toolbar sends camera Hide and closes the
+toolbar while the daemon reply is pending. Capture switches wait for
+camera and outline cleanup. Escape can cancel a queued switch during
+the wait. The camera and outline requests can complete independently.
+
+Eight native runs used simulated replies in light and dark. Cancel and
+capture switch commands returned in 15–18 ms while Hide was held.
+WindowServer confirmed that the toolbar closed during the hold.
+The area selector opened only after release, and cancelling a queued
+switch kept it closed. The Metal recording-controls workflow also
+holds Hide and asserts that the toolbar has closed before the
+new selector opens. These tests used no live camera feed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
