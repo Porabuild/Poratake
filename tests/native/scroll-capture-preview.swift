@@ -125,13 +125,15 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
-    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false) -> CGImage {
+    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false, headerHeight: Int = 0) -> CGImage {
         var pixels = [UInt8]()
         pixels.reserveCapacity(width * height * 4)
         for y in 0..<height {
             for x in 0..<width {
                 var pixel: [UInt8]
-                if y >= height - footerHeight {
+                if y < headerHeight {
+                    pixel = [255, UInt8(truncatingIfNeeded: y), UInt8(truncatingIfNeeded: x), 255]
+                } else if y >= height - footerHeight {
                     let offset = changingFooter ? 10 + index : 0
                     pixel = blankTail
                         ? [0, 0, 0, 255]
@@ -164,7 +166,7 @@ struct ScrollCapturePreviewTest {
                         255
                     ]
                 }
-                if periodic && (1..<11).contains(x) && (32..<42).contains(y) {
+                if periodic && y >= headerHeight && (1..<11).contains(x) && (32..<42).contains(y) {
                     pixel[0] ^= UInt8(truncatingIfNeeded: 51 * index)
                 }
                 if changingTail && footerHeight == 0 && y >= height - 20 && x == width - 1 {
@@ -2049,6 +2051,47 @@ struct ScrollCapturePreviewTest {
         )
         precondition((noOverlapResult?["success"] as? Bool) == true)
         precondition((noOverlapResult?["frameCount"] as? Int) == 1, "A poor unique score must not discard rows when the frames have no true overlap")
+
+        let headerRows = 46
+        let bodyShift = 86
+        for footerRows in [0, 12] {
+            let viewportHeight = 160
+            let frameCount = 3
+            let frames = (0..<frameCount).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: width, height: viewportHeight,
+                    footerHeight: footerRows, step: bodyShift, headerHeight: headerRows
+                )
+            }
+            let expectedOverlap = viewportHeight - footerRows - bodyShift
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: frames[0], bottomFrame: frames[1], expectedOverlap: viewportHeight - bodyShift + 11
+            ) == expectedOverlap, "An exact body match below the fixed header must align the whole viewport")
+            let output = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-fixed-header-seam-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let (preview, saved, _, overlaps, count, estimatedHeight) = ScrollCaptureModule().testPreviewAndSave(
+                frames: frames, step: bodyShift - 11, outputPath: output.path
+            )
+            let expectedHeight = viewportHeight + (frameCount - 1) * bodyShift
+            let document = fixedFooterFrame(
+                index: 0, periodic: false, width: width, height: expectedHeight,
+                footerHeight: footerRows, step: bodyShift, headerHeight: headerRows
+            )
+            precondition(overlaps == Array(repeating: expectedOverlap, count: frameCount - 1))
+            precondition(count == frameCount && estimatedHeight == expectedHeight)
+            precondition(pixels(preview) == pixels(saved))
+            precondition(pixels(saved) == pixels(document), "The saved scroll capture must contain all body rows and one header")
+        }
+        let repeatedBodyFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: true, width: width, height: 160,
+                footerHeight: 0, step: 84, headerHeight: headerRows
+            )
+        }
+        precondition(ScrollCaptureModule().testFindOverlap(
+            topFrame: repeatedBodyFrames[0], bottomFrame: repeatedBodyFrames[1], expectedOverlap: 76
+        ) == nil, "A fixed header must not make multiple equally valid body overlaps acceptable")
 
         let footerWidth = 640
         let footerHeight = 160

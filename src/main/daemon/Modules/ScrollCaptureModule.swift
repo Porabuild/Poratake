@@ -1463,36 +1463,53 @@ class ScrollCaptureModule: NSObject, Module {
             let rightStart = rightRow * rowBytes
             return left[leftStart..<(leftStart + rowBytes)] == right[rightStart..<(rightStart + rowBytes)]
         }
-        var prefix = [Int](repeating: 0, count: contentHeight)
-        for index in 1..<contentHeight {
-            guard !isCancelled() else { return nil }
-            var matched = prefix[index - 1]
-            while matched > 0 {
+        func matchBody(startRow: Int) -> (overlap: Int, alternative: Int)? {
+            let rowCount = contentHeight - startRow
+            var prefix = [Int](repeating: 0, count: rowCount)
+            for index in 1..<rowCount {
                 guard !isCancelled() else { return nil }
-                if rowEquals(bottomPixels, index, bottomPixels, matched) { break }
-                matched = prefix[matched - 1]
+                var matched = prefix[index - 1]
+                while matched > 0 {
+                    guard !isCancelled() else { return nil }
+                    if rowEquals(bottomPixels, startRow + index, bottomPixels, startRow + matched) { break }
+                    matched = prefix[matched - 1]
+                }
+                if rowEquals(bottomPixels, startRow + index, bottomPixels, startRow + matched) {
+                    matched += 1
+                }
+                prefix[index] = matched
             }
-            if rowEquals(bottomPixels, index, bottomPixels, matched) {
-                matched += 1
+
+            var matched = 0
+            for row in startRow..<contentHeight {
+                guard !isCancelled() else { return nil }
+                while matched > 0 {
+                    guard !isCancelled() else { return nil }
+                    if rowEquals(topPixels, row, bottomPixels, startRow + matched) { break }
+                    matched = prefix[matched - 1]
+                }
+                if rowEquals(topPixels, row, bottomPixels, startRow + matched) {
+                    matched += 1
+                }
             }
-            prefix[index] = matched
+            return (matched, matched == 0 ? 0 : prefix[matched - 1])
         }
 
-        var matched = 0
+        guard contentHeight > minimumOverlap, let match = matchBody(startRow: 0) else { return nil }
+        if match.overlap >= minimumOverlap {
+            return match.overlap < contentHeight ? match : nil
+        }
+
+        var headerHeight = 0
         for row in 0..<contentHeight {
             guard !isCancelled() else { return nil }
-            while matched > 0 {
-                guard !isCancelled() else { return nil }
-                if matched < contentHeight && rowEquals(topPixels, row, bottomPixels, matched) { break }
-                matched = prefix[matched - 1]
-            }
-            if rowEquals(topPixels, row, bottomPixels, matched) {
-                matched += 1
-            }
+            guard rowEquals(topPixels, row, bottomPixels, row) else { break }
+            headerHeight += 1
         }
-
-        guard matched >= minimumOverlap, matched < contentHeight else { return nil }
-        return (matched, prefix[matched - 1])
+        guard headerHeight > 0, contentHeight - headerHeight > minimumOverlap,
+              let bodyMatch = matchBody(startRow: headerHeight),
+              bodyMatch.overlap >= minimumOverlap, bodyMatch.alternative == 0 else { return nil }
+        return (headerHeight + bodyMatch.overlap, 0)
     }
 
     private func fixedFooterHeight(
