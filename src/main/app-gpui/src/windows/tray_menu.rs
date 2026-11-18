@@ -130,6 +130,15 @@ pub struct TrayMenuWindow {
     window_handle: AnyWindowHandle,
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn dismiss_for_capture(window: &mut Window, cx: &mut App) {
+    #[cfg(not(test))]
+    crate::system::window_visibility::disable_macos_transitions(window);
+    crate::system::window_visibility::hide(window);
+    window.remove_window();
+    registry::forget(RegistryKind::TrayMenu, cx);
+}
+
 impl TrayMenuWindow {
     fn new(
         menu: Entity<MenuView>,

@@ -327,6 +327,9 @@ pub fn native_ui_probe() {
     assert!(matches!(theme.as_str(), "light" | "dark"));
     let normal_level = std::env::var_os("PORATAKE_NATIVE_UI_NORMAL_LEVEL").is_some();
     let preview_top = std::env::var_os("PORATAKE_NATIVE_UI_PREVIEW_TOP").is_some();
+    let tray_capture_freeze = std::env::var("PORATAKE_NATIVE_UI_TRAY_CAPTURE_FREEZE")
+        .ok()
+        .map(|value| value == "1");
     let native_shadow = std::env::var_os("PORATAKE_NATIVE_UI_NATIVE_SHADOW").is_some();
     let auto_dismiss = std::env::var_os("PORATAKE_NATIVE_UI_AUTO_DISMISS").is_some();
     let config_path = directory.join("config.json");
@@ -351,6 +354,14 @@ pub fn native_ui_probe() {
                 config.storage.screenshots_path = screenshots_path;
                 config.screenshot.format = "png".into();
                 config.screenshot.close_on_save = false;
+                if let Some(freeze) = tray_capture_freeze {
+                    config.screenshot.freeze_screen = freeze;
+                    config.screenshot.hide_desktop_icons = false;
+                    config.screenshot.capture_to_clipboard = false;
+                    config.screenshot.auto_copy_to_clipboard = false;
+                    config.general.play_sound_on_screenshot = false;
+                    config.history.enabled = false;
+                }
             });
             crate::state::set_test_state(cx, config);
             crate::ui::font::register(cx);
@@ -684,6 +695,56 @@ pub fn native_ui_probe() {
                             };
                             crate::windows::tray_menu::TrayMenuWindow::toggle(Some(rect), cx);
                             println!("tray menu toggled");
+                            return;
+                        }
+                        if command == "tray-select-area" {
+                            if let Some(handle) = registry::handle(WindowKind::TrayMenu, cx) {
+                                let position = point(px(92.), px(82.));
+                                for event in [
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        position, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(), first_mouse: false,
+                                    }),
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        position, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(),
+                                    }),
+                                ] {
+                                    let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                                }
+                            }
+                            println!("tray Capture Area clicked");
+                            return;
+                        }
+                        if command == "tray-selector-capture" {
+                            if let Some(handle) = crate::capture::overlay::parity_active_overlay(cx) {
+                                let start = point(px(1450.), px(100.));
+                                let end = point(px(1640.), px(260.));
+                                for event in [
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        position: start, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(), first_mouse: false,
+                                    }),
+                                    PlatformInput::MouseMove(MouseMoveEvent {
+                                        position: end, pressed_button: Some(MouseButton::Left),
+                                        modifiers: Modifiers::none(),
+                                    }),
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        position: end, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(),
+                                    }),
+                                ] {
+                                    let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                                }
+                            }
+                            println!("tray selector capture requested");
+                            return;
+                        }
+                        if command == "tray-selector-cancel" {
+                            if let Some(handle) = crate::capture::overlay::parity_active_overlay(cx) {
+                                let _ = handle.update(cx, |_, window, cx| crate::capture::overlay::dismiss(window, cx));
+                            }
+                            println!("tray selector cancel requested");
                             return;
                         }
                         if command == "tray-escape" {

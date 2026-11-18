@@ -7086,6 +7086,20 @@ Escape, toggle, and reopen sequence kept the replacement registered
 after the previous menu's delayed callback, so the new menu still
 closed on Escape. [Native tray evidence](tests/native/evidence/macos-ui/native-tray-dismissal-20261118.txt)
 
+### 2026-11-18 macOS capture actions from the status-bar menu
+
+Selecting Capture Area previously dispatched while the tray menu was
+still visible. The live selector appeared at about 22 ms and shared the
+screen with the menu. With Freeze Screen on, the menu was visible when
+the native freeze request reached the daemon.
+
+Tray capture actions now hide and remove their menu before dispatch.
+The revised live selector appeared in 33.5–39.9 ms with the menu gone.
+The frozen runs had no menu at the freeze request or when the selector
+appeared. Both appearances saved a 380×320 crop covering the former
+menu position in live and frozen modes. Every pixel matched the
+generated backdrop. [Native handoff evidence](tests/native/evidence/macos-ui/native-tray-capture-handoff-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

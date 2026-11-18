@@ -95,20 +95,7 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
     use crate::capture::overlay;
     use crate::windows::recording_control::{set_pre_recording_escape, RecordingControl};
 
-    if !matches!(
-        intent,
-        Intent::AllInOne
-            | Intent::CaptureArea
-            | Intent::CaptureScreen
-            | Intent::CaptureWindow
-            | Intent::CaptureText
-            | Intent::ScanQrCode
-            | Intent::TimerCapture
-            | Intent::ScrollCapture
-            | Intent::RecordArea
-            | Intent::RecordScreen
-            | Intent::RecordWindow
-    ) {
+    if !intent.starts_capture() {
         return false;
     }
     let switch = cx.default_global::<RecordingCaptureSwitch>();
