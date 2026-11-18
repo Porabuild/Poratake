@@ -737,9 +737,21 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("capture filter startup: start\n".utf8))
         let startupRegistry = RecordingCaptureWindowRegistry()
         startupRegistry.beginCaptureStart()
-        startupRegistry.register(windowID: 61)
+        startupRegistry.register(windowID: 60)
         var startupRefreshes: [[CGWindowID]] = []
-        startupRegistry.setFilterUpdater { ids in startupRefreshes.append(ids) }
+        startupRegistry.setFilterUpdater(initiallyExcluding: startupRegistry.currentWindowIDs()) { ids in
+            startupRefreshes.append(ids)
+        }
+        startupRegistry.finishCaptureStart()
+        try await startupRegistry.updateFilterIfNeeded()
+        precondition(startupRefreshes.isEmpty, "Startup must reuse the current exclusion filter")
+
+        startupRegistry.beginCaptureStart()
+        startupRegistry.setFilterUpdater(initiallyExcluding: startupRegistry.currentWindowIDs()) { ids in
+            startupRefreshes.append(ids)
+        }
+        startupRegistry.unregister(windowID: 60)
+        startupRegistry.register(windowID: 61)
         let startupRefresh = Task { @MainActor in
             try await startupRegistry.updateFilterIfNeeded()
         }
@@ -1612,6 +1624,7 @@ struct ScrollCapturePreviewTest {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.isOpaque = true
         window.hasShadow = false
         window.ignoresMouseEvents = true

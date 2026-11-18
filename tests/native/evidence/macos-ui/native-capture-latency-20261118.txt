@@ -193,3 +193,34 @@ confirmed startup. The earlier multi-second startup outlier and failed
 Stop did not recur in this sample. The paired probe used the previous
 screen-only Swift fixture and the same fixture with the startup gate
 change. It did not start microphone, system audio, camera, or key capture.
+
+Reusing the initial recording exclusion filter
+
+Six paired native runs used fresh app and daemon processes, the same
+generated static backdrop and the same display, crop and stop procedure
+as the preceding test. Light pairs ran previous then fixed, and dark
+pairs ran fixed then previous. The previous daemon included startup
+frame retention. The fixed daemon also reused the initial exclusion
+filter when the registered IDs had stayed the same.
+
+               Start RPC before / after     Start to confirm before / after
+Light pair 1           417.8 / 264.6                        455.2 / 282.1
+Dark pair 1            369.7 / 277.3                        406.4 / 313.4
+Light pair 2           394.6 / 246.7                        411.3 / 283.9
+Dark pair 2            284.3 / 298.7                        325.4 / 315.9
+Light pair 3           283.2 / 252.7                        319.8 / 286.7
+Dark pair 3            296.3 / 244.9                        333.1 / 280.4
+Median                 333.0 / 258.7                        369.8 / 285.3
+
+All times are milliseconds. All 12 clips decoded as 600x440 video-only.
+The updated daemon's clips contained 3 frames over 0.797–0.810 seconds
+with the expected uniform first frame. Stop to visible preview took
+54–67 ms. No live audio, camera, or physical input was involved. The
+previous multi-second startup outlier was outside the observed range.
+
+The native coordination test exercised both unchanged and replaced
+registered windows during startup. The already-authorized
+ScreenCaptureKit opt-in check also sampled a generated green source
+with a red control, verifying that the initially hidden control could
+appear later and still be excluded. A positive-control stream showed
+the red control without that exclusion.

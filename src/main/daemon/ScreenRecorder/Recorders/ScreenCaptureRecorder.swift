@@ -423,7 +423,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             }
             let requestedWindowIDs = config.excludedWindowIDs
             let captureDisplayID = display.displayID
-            RecordingCaptureWindowRegistry.shared.setFilterUpdater { windowIDs in
+            RecordingCaptureWindowRegistry.shared.setFilterUpdater(initiallyExcluding: registeredWindowIDs) { windowIDs in
                 try await Self.updateCaptureFilter(
                     on: captureStream,
                     displayID: captureDisplayID,

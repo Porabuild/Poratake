@@ -6462,6 +6462,32 @@ earlier startup outlier remain open. The
 [timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 includes the per-run durations.
 
+### 2026-11-18 macOS recording startup filter reuse
+
+Area and display recording startup now reuses the initial exclusion filter
+when it covers the current protected windows. With the previous logic the
+daemon always enumerated ScreenCaptureKit content again and replaced the
+filter before confirming startup. Registration changes during startup
+still require a refresh. Staged panels still wait for that refresh before
+appearing.
+
+Across six paired, fresh-process runs with the authorized screen-only
+daemon and a static generated backdrop, median Start-to-confirmation
+fell from 370 to 285 ms. The daemon's share fell from 333 to 259 ms.
+All twelve 600 × 440 video-only recordings decoded. The earlier
+multi-second startup outlier did not recur. The
+[timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+contains the individual results.
+
+The startup regression detected the redundant refresh with the old
+registry behavior. The fixed fixture skipped the unchanged refresh and
+waited for the updated filter after the window list changed. The native
+outline and scroll coordination tests passed. The authorized opt-in
+ScreenCaptureKit test verified the protected window's exclusion against
+a positive control. Its test-owned windows now close without releasing
+the Swift-owned reference. The production Swift daemon typechecked.
+Live production audio and mixed-display paths remain open.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

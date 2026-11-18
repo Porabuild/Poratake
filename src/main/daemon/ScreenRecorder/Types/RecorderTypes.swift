@@ -74,11 +74,11 @@ final class RecordingCaptureWindowRegistry {
         }
     }
 
-    func setFilterUpdater(_ updater: FilterUpdater?) {
+    func setFilterUpdater(initiallyExcluding windowIDs: [CGWindowID]? = nil, _ updater: FilterUpdater?) {
         invalidateRefresh()
         filterUpdater = updater
         revision &+= 1
-        appliedRevision = nil
+        appliedRevision = windowIDs == currentWindowIDs() ? revision : nil
     }
 
     func beginCaptureStart() {
