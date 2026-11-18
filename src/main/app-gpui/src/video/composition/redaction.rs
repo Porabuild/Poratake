@@ -265,18 +265,10 @@ fn batches(
 }
 
 fn camera_bounds(engine: &Engine, time: f64, frames: Frames<'_>) -> Option<Bounds> {
-    if frames.camera.is_none() || time < engine.first_frame_duration() {
+    if frames.camera.is_none() || !engine.camera_visible_at(time) {
         return None;
     }
     let state = &engine.config().state;
-    if !state.camera_style.visible
-        || !crate::video::sidecars::is_camera_visible_at(
-            Some(&state.camera_segments),
-            time - engine.first_frame_duration(),
-        )
-    {
-        return None;
-    }
     let (width, height) = engine.dimensions();
     let zoom = zoom::zoom_state(
         time - engine.first_frame_duration(),

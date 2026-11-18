@@ -132,7 +132,23 @@ impl Source {
             .unwrap_or(adjusted);
 
         let video = cached_frame(self.video.as_ref(), &mut self.video_frame, video_time);
-        let camera = cached_frame(self.camera.as_ref(), &mut self.camera_frame, video_time);
+        let camera = if self.engine.camera_visible_at(timeline_time) {
+            cached_frame(self.camera.as_ref(), &mut self.camera_frame, video_time)
+        } else {
+            let state = &self.engine.config().state;
+            if state.camera_style.visible
+                && state
+                    .camera_segments
+                    .iter()
+                    .any(|segment| segment.end_time > adjusted)
+            {
+                let _ = self
+                    .camera
+                    .as_ref()
+                    .and_then(|decoder| decoder.frame_at(video_time));
+            }
+            None
+        };
 
         let frames = Frames {
             video: video.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
@@ -296,5 +312,65 @@ mod tests {
         let mut cached = Some((2.0, frame.clone()));
         let reused = cached_frame(None, &mut cached, 2.0).expect("cached frame");
         assert!(Arc::ptr_eq(&frame, &reused));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[test]
+    fn preview_only_converts_visible_camera_frames() {
+        use crate::windows::video_editor::model::{CameraSegment, Segment};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("camera-preview.poratake");
+        std::fs::create_dir(&path).unwrap();
+        let video = include_bytes!("../../ui/parity/fixtures/capture.mov");
+        std::fs::write(project::recording_video_path(&path), video).unwrap();
+        std::fs::write(project::camera_video_path(&path), video).unwrap();
+
+        let mut state = VideoEditorState {
+            segments: vec![Segment::spanning(2.)],
+            camera_segments: vec![
+                CameraSegment {
+                    id: "first".into(),
+                    start_time: 0.,
+                    end_time: 0.5,
+                },
+                CameraSegment {
+                    id: "second".into(),
+                    start_time: 1.25,
+                    end_time: 2.,
+                },
+            ],
+            ..Default::default()
+        };
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+        state.camera_style.visible = true;
+
+        let mut source = Source::open(&path, state.clone()).unwrap();
+        let still = source.engine.first_frame_duration();
+        assert!(still > 0.);
+        let dimensions = Some((160, 90));
+        assert!(source.compose(0., dimensions).is_some());
+        assert!(source.camera_frame.is_none());
+        assert!(source.compose(still + 0.75, dimensions).is_some());
+        assert!(source.camera_frame.is_none());
+        assert!(source.compose(still + 0.25, dimensions).is_some());
+        let (_, first) = source.camera_frame.clone().unwrap();
+
+        let mut disabled = state.clone();
+        disabled.camera_style.visible = false;
+        source.set_state(disabled);
+        assert!(source.compose(still + 1.5, dimensions).is_some());
+        assert!(Arc::ptr_eq(
+            &first,
+            &source.camera_frame.as_ref().unwrap().1
+        ));
+
+        source.set_state(state);
+        assert!(source.compose(still + 1.5, dimensions).is_some());
+        let (time, resumed) = source.camera_frame.as_ref().unwrap();
+        assert!((time - 1.5).abs() < 0.001);
+        assert!(!Arc::ptr_eq(&first, resumed));
     }
 }
