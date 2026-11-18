@@ -524,6 +524,51 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-stack"));
         }
+        #[cfg(target_os = "macos")]
+        if corner == "bottom-right" {
+            let viewport = cx
+                .update_window(preview, |_, window, _| window.viewport_size())
+                .unwrap();
+            let resize = |cx: &mut HeadlessAppContext, height| {
+                cx.update_window(preview, |_, window, cx| {
+                    window.resize(size(viewport.width, height));
+                    window.bounds_changed(cx);
+                    window.set_scale_factor(scale);
+                })
+                .unwrap();
+                settle(cx, preview);
+            };
+            resize(cx, px(480.));
+            assert_eq!(measured("capture-previews", 0).bottom(), px(476.));
+            capture(cx, preview, output, "preview-short-work-area");
+
+            event(
+                cx,
+                preview,
+                PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: point(px(100.), px(240.)),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), px(240.))),
+                    touch_phase: gpui::TouchPhase::Moved,
+                    ..Default::default()
+                }),
+            );
+            settle(cx, preview);
+            let newest = measured("capture-previews", 3);
+            assert_eq!(newest.origin, point(px(4.), px(4.)));
+            let center = newest.center();
+            let rendered = cx.capture_screenshot(preview).unwrap();
+            assert_eq!(
+                rendered
+                    .get_pixel(
+                        (f32::from(center.x) * scale).round() as u32,
+                        (f32::from(center.y) * scale).round() as u32,
+                    )
+                    .0,
+                colors[4]
+            );
+            capture(cx, preview, output, "preview-short-work-area-scrolled");
+            resize(cx, viewport.height);
+        }
         let before = cx.update(|cx| cx.windows());
         let position = measured("capture-previews", 3).center();
         event(

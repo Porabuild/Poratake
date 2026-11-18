@@ -5742,8 +5742,30 @@ including 26 capture preview states. The hidden native popup probe also passed.
 
 Both GPUI and Electron currently use fixed card dimensions and margins. With
 four previews and a 600-point working height, their position calculations can
-put 20 points of a card outside the working area. That short-display geometry
-and physical mixed-DPI transitions remain open.
+put 20 points of a card outside the working area. The macOS GPUI follow-up
+below addresses the viewport. Electron placement and physical mixed-DPI
+transitions remain open.
+
+### 2026-11-18 macOS capture previews on short work areas
+
+The GPUI window now fits inside the selected work area. It reduces the margin
+when the normal stack would extend past an edge and scrolls when the viewport
+is smaller than the stack. The cards keep their 200×140-point size. The scroll
+viewport starts at the chosen corner and maintains that edge during a resize
+while the user is still at the edge. A user who scrolls away keeps their
+position within the available range.
+
+The geometry regression failed on the old build with a 610-point work area.
+It now passes for all four corners at offset and negative desktop coordinates.
+The interaction regression uses a short viewport, resizes it while anchored,
+scrolls to the initially clipped card and closes it. The capture file remains.
+All 1,154 arm64 GPUI tests passed with 23 marked ignored.
+
+The 480-point Metal viewport passed at 1× dark and 2× light. After scrolling,
+the entire revealed card matched the full-height reference pixel for pixel.
+Across both profiles, all 363 existing PNGs matched byte for byte. Physical
+short displays and Electron placement remain open. A newly added card can
+still start its auto-dismiss timer while outside an already-scrolling viewport.
 
 ## Review gate
 

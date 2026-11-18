@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 #[cfg(any(windows, test))]
 use gpui::Entity;
 use gpui::{
-    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
-    Styled, Window,
+    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Pixels,
+    Render, Size, Styled, Window,
 };
 use herogpui::components::TooltipPlacement;
 use herogpui::gpui;
@@ -298,6 +298,8 @@ pub struct CapturePreviewWindow {
     layout_generation: u64,
     #[cfg(target_os = "macos")]
     pointer_inside: bool,
+    #[cfg(target_os = "macos")]
+    viewport_scroll: Option<(PreviewCorner, gpui::ScrollHandle)>,
     display_menu: crate::ui::menu::MenuHandle,
     native_tooltip_status: NativeTooltipStatus,
     #[cfg(windows)]
@@ -732,6 +734,8 @@ impl CapturePreviewWindow {
                     layout_generation: 0,
                     #[cfg(target_os = "macos")]
                     pointer_inside: false,
+                    #[cfg(target_os = "macos")]
+                    viewport_scroll: None,
                     display_menu: crate::ui::menu::MenuHandle::new(),
                     native_tooltip_status: NativeTooltipStatus::default(),
                     #[cfg(windows)]
@@ -1306,6 +1310,13 @@ fn preview_stack_height(count: usize) -> f32 {
         + PREVIEW_SHADOW_PADDING * 2.0
 }
 
+fn preview_stack_size(count: usize) -> Size<Pixels> {
+    size(
+        px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
+        px(preview_stack_height(count)),
+    )
+}
+
 fn preview_bottom_aligned(cx: &mut App) -> bool {
     matches!(
         PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner),
@@ -1363,16 +1374,26 @@ fn preview_fitted_stack_bounds(
         index,
         corner,
     );
-    Bounds {
-        origin: gpui::point(
+    let bounds = Bounds::new(
+        gpui::point(
             px(x - PREVIEW_SHADOW_PADDING),
             px(y - PREVIEW_SHADOW_PADDING),
         ),
-        size: size(
-            px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
-            px(preview_stack_height(count)),
-        ),
+        preview_stack_size(count),
+    );
+    #[cfg(target_os = "macos")]
+    if display.size.width > px(0.) && display.size.height > px(0.) {
+        let viewport = bounds.size.min(&display.size);
+        let origin = bounds.origin.clamp(
+            &display.origin,
+            &gpui::point(
+                display.right() - viewport.width,
+                display.bottom() - viewport.height,
+            ),
+        );
+        return Bounds::new(origin, viewport);
     }
+    bounds
 }
 
 fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
@@ -2666,15 +2687,50 @@ impl CapturePreviewWindow {
         let mut needs_frame = false;
         let mut root = crate::ui::font::root().relative().size_full();
         #[cfg(target_os = "macos")]
-        {
+        let content = {
+            let content = preview_stack_size(self.window_preview_count());
+            let viewport = window.viewport_size();
+            let overflow_x = (content.width - viewport.width).max(px(0.));
+            let overflow_y = (content.height - viewport.height).max(px(0.));
+            if overflow_x == px(0.) && overflow_y == px(0.) {
+                self.viewport_scroll = None;
+            } else {
+                let (previous_corner, scroll) = self
+                    .viewport_scroll
+                    .get_or_insert_with(|| (corner, gpui::ScrollHandle::new()));
+                let corner_changed = std::mem::replace(previous_corner, corner) != corner;
+                let right_aligned =
+                    matches!(corner, PreviewCorner::TopRight | PreviewCorner::BottomRight);
+                let current = scroll.offset();
+                let limit = scroll.max_offset();
+                let anchored_offset = |offset, limit: Pixels, overflow: Pixels, end_aligned| {
+                    if end_aligned && (corner_changed || offset == -limit) {
+                        -overflow
+                    } else if corner_changed {
+                        px(0.)
+                    } else {
+                        offset
+                    }
+                };
+                scroll.set_offset(gpui::point(
+                    anchored_offset(current.x, limit.x, overflow_x, right_aligned),
+                    anchored_offset(current.y, limit.y, overflow_y, bottom_aligned),
+                ));
+            }
             let full_height = preview_stack_height(PREVIEW_MAX_STACK);
+            let content_height = if self.viewport_scroll.is_some() {
+                content.height
+            } else {
+                viewport.height
+            };
             let offset = if bottom_aligned {
-                (full_height - f32::from(window.viewport_size().height)).max(0.0)
+                (full_height - f32::from(content_height)).max(0.0)
             } else {
                 0.0
             };
             root = root.h(px(full_height)).top(px(-offset));
-        }
+            content
+        };
         let mut active_index = 0;
         for index in 0..self.previews.len() {
             let target_y = if self.previews[index].dismiss_animation.is_some() {
@@ -2720,6 +2776,24 @@ impl CapturePreviewWindow {
                 this.clear_native_tooltip(window);
                 cx.notify();
             }));
+        #[cfg(target_os = "macos")]
+        let root = if let Some((_, scroll)) = &self.viewport_scroll {
+            div()
+                .id("capture-preview-scroll")
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(scroll)
+                .child(
+                    div()
+                        .relative()
+                        .w(content.width)
+                        .h(content.height)
+                        .child(root),
+                )
+                .into_any_element()
+        } else {
+            root.into_any_element()
+        };
         crate::ui::window_root::focus_root(root, window, cx)
             .capture_key_down(cx.listener(|this, _, window, _| this.clear_native_tooltip(window)))
     }
@@ -2916,6 +2990,8 @@ mod tests {
                 layout_generation: 0,
                 #[cfg(target_os = "macos")]
                 pointer_inside: false,
+                #[cfg(target_os = "macos")]
+                viewport_scroll: None,
                 display_menu: crate::ui::menu::MenuHandle::new(),
                 native_tooltip_status: NativeTooltipStatus::default(),
                 #[cfg(windows)]
@@ -4101,6 +4177,117 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_capture_preview_viewport_fits_small_work_areas() {
+        for (width, height) in [(800., 610.), (800., 600.), (640., 480.), (180., 120.)] {
+            let display = Bounds::new(
+                gpui::point(px(-800.), px(-300.)),
+                size(px(width), px(height)),
+            );
+            for corner in [
+                PreviewCorner::TopLeft,
+                PreviewCorner::TopRight,
+                PreviewCorner::BottomLeft,
+                PreviewCorner::BottomRight,
+            ] {
+                let viewport = preview_fitted_stack_bounds(display, corner, PREVIEW_MAX_STACK);
+                assert!(
+                    viewport.left() >= display.left()
+                        && viewport.right() <= display.right()
+                        && viewport.top() >= display.top()
+                        && viewport.bottom() <= display.bottom(),
+                    "{corner:?} preview {viewport:?} must fit {display:?}"
+                );
+                assert_eq!(
+                    viewport.size,
+                    size(
+                        px(width.min(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.)),
+                        px(height.min(preview_stack_height(PREVIEW_MAX_STACK))),
+                    )
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn a_short_preview_viewport_scrolls_to_the_clipped_card_controls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+        });
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            for _ in 0..PREVIEW_MAX_STACK {
+                CapturePreviewWindow::open(cx, path.clone());
+            }
+        });
+        cx.run_until_parked();
+        let stack = stack_handle(cx).unwrap();
+        let handle = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let newest = handle
+            .update(cx, |view, _, _| view.previews.last().unwrap().id)
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let scroll_offset = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.viewport_scroll.as_ref().unwrap().1.offset().y
+                })
+                .unwrap()
+        };
+        assert_eq!(scroll_offset(&mut visual), px(-124.));
+        visual.simulate_resize(size(px(208.), px(360.)));
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(-244.));
+
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(320.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+
+        let close = gpui::point(px(25.), px(25.));
+        visual.simulate_mouse_move(close, None, gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.click_at(close);
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS + 1));
+        visual.settle();
+        handle
+            .update(&mut visual, |view, _, _| {
+                assert_eq!(view.previews.len(), PREVIEW_MAX_STACK - 1);
+                assert!(view.previews.iter().all(|preview| preview.id != newest));
+            })
+            .unwrap();
+        assert!(path.is_file());
+    }
+
     #[test]
     fn fitted_stack_keeps_each_card_at_the_same_screen_position() {
         let display = Bounds {
@@ -4296,6 +4483,8 @@ mod tests {
             layout_generation: 0,
             #[cfg(target_os = "macos")]
             pointer_inside: false,
+            #[cfg(target_os = "macos")]
+            viewport_scroll: None,
             display_menu: crate::ui::menu::MenuHandle::new(),
             native_tooltip_status: NativeTooltipStatus::default(),
             #[cfg(windows)]
