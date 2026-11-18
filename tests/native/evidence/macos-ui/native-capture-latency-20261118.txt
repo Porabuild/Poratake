@@ -747,3 +747,32 @@ Median paired improvement was 44.0 ms. All twelve clips decoded at
 clip contained only the generated panel color. The moving takes opened
 in the video editor. Stop to visible preview ranged from 62 to 119 ms
 across both builds. The fixtures excluded live audio and camera.
+
+Start followed by an immediate Stop on macOS
+
+The Stop command was sent upon observing the Start RPC request or
+immediately after its confirmation. Static and changing areas were
+300 × 220 points, and the window target was 320 × 240 points. Only
+the generated panel was recorded. The fixture disabled audio, camera
+and keystroke capture. Results below are from the revised recorder.
+
+Scene         Theme  Stop timing   Relative to Start reply  Stop to preview
+static        light  queued                   -177.3 ms          252.2 ms
+static        dark   queued                   -167.3 ms          234.9 ms
+static        light  confirmed                   0.0 ms          119.8 ms
+static        dark   confirmed                   0.0 ms           72.1 ms
+moving        light  queued                   -246.9 ms          324.1 ms
+moving        dark   queued                   -225.5 ms          320.5 ms
+moving        light  confirmed                   0.1 ms          128.5 ms
+moving        dark   confirmed                   0.0 ms           91.9 ms
+window        light  queued                   -188.1 ms          299.7 ms
+window        dark   queued                   -175.6 ms          282.6 ms
+window        light  confirmed                   0.0 ms          107.7 ms
+window        dark   confirmed                   0.3 ms          100.3 ms
+
+Before the fix, all eight area trials reported a video writer error.
+All four window trials decoded in both builds. One revised light-window
+trial returned a screen preflight denial before capture; its retry passed
+with no privacy settings changes. A separate static-area trial kept the
+AAC writer enabled while withholding all audio buffers. It also saved a
+two-frame, video-only file with no system-audio sidecar.

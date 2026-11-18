@@ -306,10 +306,17 @@ struct RecordingTimelineTests {
             let frame = sample(at: 100, size: 64, fill: 0x22)
             if droppedFirst { recorder.testSetVideoBackpressure(true) }
             try! await recorder.testStartScreenStream {
-                precondition(recorder.state == .idle, "The recorder must stay idle until startup completes")
-                recorder.testProcessSample(frame, type: .screen)
-                precondition(recorder.testTimeline.started, "Startup must retain the first screen frame")
+                if droppedFirst {
+                    Task { @MainActor in
+                        precondition(recorder.state == .idle, "Start must wait for the first screen frame")
+                        recorder.testProcessSample(frame, type: .screen)
+                    }
+                } else {
+                    precondition(recorder.state == .idle, "The recorder must stay idle until startup completes")
+                    recorder.testProcessSample(frame, type: .screen)
+                }
             }
+            precondition(recorder.testTimeline.started, "Startup must retain the first screen frame")
             if droppedFirst { recorder.testSetVideoBackpressure(false) }
             recorder.testProcessSample(audioSample(at: 120), type: .audio)
             recorder.testSetCameraClockTime(CMTime(value: 125, timescale: 1))

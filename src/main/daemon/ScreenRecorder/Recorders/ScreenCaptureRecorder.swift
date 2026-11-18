@@ -35,6 +35,7 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     private var lastMicWriteEndTime: CMTime?
 
     private var acceptingStartupFrames = false
+    private var startupFrame: AsyncThrowingStream<Void, Error>.Continuation?
     private var sessionStarted = false
     private var firstFrameTime: CMTime?
     private var lastFrameTime: CMTime = .zero
@@ -490,10 +491,32 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
     }
 
     @MainActor
-    private func startScreenStream(_ start: () async throws -> Void) async throws {
-        videoQueue.sync { acceptingStartupFrames = true }
-        defer { videoQueue.sync { acceptingStartupFrames = false } }
+    private func startScreenStream(_ start: @MainActor () async throws -> Void) async throws {
+        let (frames, signal) = AsyncThrowingStream<Void, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        videoQueue.sync {
+            startupFrame = signal
+            acceptingStartupFrames = true
+        }
+        defer {
+            videoQueue.sync {
+                startupFrame?.finish()
+                startupFrame = nil
+                acceptingStartupFrames = false
+            }
+        }
         try await start()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                var iterator = frames.makeAsyncIterator()
+                guard try await iterator.next() != nil else { throw CancellationError() }
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 8_000_000_000)
+                throw RecorderError.capture("Timed out waiting for the first screen frame")
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
         videoQueue.sync { state = .recording }
     }
 
@@ -1403,6 +1426,12 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
             return
         }
         guard state == .recording || state == .paused || lifecycle.isStarting else { return }
+        if lifecycle.isStarting {
+            videoQueue.sync {
+                startupFrame?.finish(throwing: classified)
+                startupFrame = nil
+            }
+        }
         onError?(
             sessionID,
             classified
@@ -1597,6 +1626,17 @@ extension ScreenCaptureRecorder: SCStreamOutput {
                 if !appendVideoFrame(imageBuffer, at: time, input: videoInput, adaptor: pixelBufferAdaptor) {
                     pendingVideoFrame = (imageBuffer, time)
                 }
+            }
+            if let startupFrame {
+                if let writer = assetWriter, writer.status == .failed {
+                    startupFrame.finish(throwing: RecorderError.capture(
+                        writer.error?.localizedDescription ?? "Failed to write the first screen frame"
+                    ))
+                } else {
+                    startupFrame.yield(())
+                    startupFrame.finish()
+                }
+                self.startupFrame = nil
             }
         } else if #available(macOS 13.0, *), type == .audio {
             if systemAudioActive {
@@ -1799,7 +1839,7 @@ extension ScreenCaptureRecorder: SCStreamOutput {
     }
 
     @MainActor
-    func testStartScreenStream(_ start: () async throws -> Void) async throws {
+    func testStartScreenStream(_ start: @MainActor () async throws -> Void) async throws {
         try await startScreenStream(start)
     }
 

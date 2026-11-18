@@ -4,7 +4,7 @@ import ScreenCaptureKit
 @main
 struct RecordingStartStreamErrorTests {
     @MainActor
-    static func main() {
+    static func main() async throws {
         let config = RecordingConfig(
             x: nil, y: nil, width: nil, height: nil, displayID: nil, windowID: 42,
             excludedWindowIDs: [], includeAudio: false, micEnabled: false,
@@ -17,6 +17,17 @@ struct RecordingStartStreamErrorTests {
         var reports: [(RecorderSessionID, Error)] = []
         recorder.onError = { reports.append(($0, $1)) }
         let closed = NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.noCaptureSource.rawValue)
+
+        let closedBeforeFrame = ScreenCaptureRecorder()
+        closedBeforeFrame.testBeginStreamStartup(config: config, sessionID: 72)
+        do {
+            try await closedBeforeFrame.testStartScreenStream {
+                closedBeforeFrame.testStreamFailure(closed, isCurrentStream: true)
+            }
+            fatalError("A closed target without a frame must fail Start")
+        } catch RecorderError.targetClosed {
+            precondition(closedBeforeFrame.state == .idle)
+        }
 
         recorder.testBeginStreamStartup(config: config, sessionID: 73)
         recorder.testStreamFailure(closed, isCurrentStream: false)

@@ -7363,6 +7363,24 @@ two static timeline cases under Rosetta, and all 53 Electron reference
 tests passed. Live system audio, microphone and camera were outside this
 comparison. [Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-18 macOS recording stopped before the first frame
+
+Start could confirm when ScreenCaptureKit had opened its stream without
+delivering a usable frame. An immediate Stop then finalized an empty
+video writer. Start now confirms after the first frame is either written
+or retained for finalization under writer backpressure. A stream failure
+before the first frame ends startup with the existing error classification.
+
+With app-local input and a preflight-gated screen-only daemon, all eight
+area trials previously returned an asset-writer error when Stop arrived
+during startup or immediately after confirmation. With the change, all
+eight area trials and four window trials decoded two frames of the
+generated panel. After Start confirmation, Stop to visible preview took
+72–129 ms. When Stop was queued during startup, it took 235–324 ms from
+the request to a visible preview, including the remaining startup time.
+These runs used one Retina display and disabled keystroke capture.
+Live audio and camera were outside the runs. [Short take timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
