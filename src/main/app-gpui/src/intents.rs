@@ -124,7 +124,7 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
     if dismissed {
         overlay::clear_recording_handoff(cx);
     }
-    let waiting = hide_pre_recording_outline(Some(intent), cx);
+    let waiting = hide_recording_outline(Some(intent), cx);
     if dismissed && !waiting {
         set_pre_recording_escape(false, cx);
     }
@@ -132,7 +132,7 @@ fn switch_pre_recording_capture(intent: Intent, cx: &mut App) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn hide_pre_recording_outline(next: Option<Intent>, cx: &mut App) -> bool {
+pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool {
     use crate::capture::overlay;
     use crate::windows::recording_control::set_pre_recording_escape;
 
@@ -140,19 +140,20 @@ pub(crate) fn hide_pre_recording_outline(next: Option<Intent>, cx: &mut App) -> 
         return false;
     }
 
-    let switch = cx.default_global::<RecordingCaptureSwitch>();
-    if switch.hiding_outline {
+    if cx.default_global::<RecordingCaptureSwitch>().hiding_outline {
         return true;
     }
+    let daemon = crate::state::state(cx).daemon;
+    if !daemon.is_running() {
+        overlay::mark_recording_overlay_hidden(cx);
+        return false;
+    }
+    let switch = cx.global_mut::<RecordingCaptureSwitch>();
     switch.hiding_outline = true;
     switch.next = next;
     set_pre_recording_escape(next.is_some(), cx);
-    let daemon = crate::state::state(cx).daemon;
-    let hide = cx
-        .background_executor()
-        .spawn(async move { daemon.recording_overlay().hide() });
     cx.spawn(async move |cx| {
-        let result = hide.await;
+        let result = smol::unblock(move || daemon.recording_overlay().hide()).await;
         cx.update(|cx| {
             let switch = cx.global_mut::<RecordingCaptureSwitch>();
             switch.hiding_outline = false;

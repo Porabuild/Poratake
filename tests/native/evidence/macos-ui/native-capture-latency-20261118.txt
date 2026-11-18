@@ -658,3 +658,26 @@ cancellation. The fourth run cancelled that queued timer during the
 hold and observed no selector afterward. Output stayed empty. Times
 are single observations that include app-local input and WindowServer
 polling overhead.
+
+Recording Stop while the native overlay Hide reply is held
+
+Native area recording from a generated moving backdrop, with the
+previously authorized screen-only daemon and an isolated app profile.
+The bridge supplied fixture replies for camera content protection and
+desktop wallpaper. It held the successful Hide acknowledgement for 650 ms.
+The revised driver verified the daemon overlay had disappeared, the
+toolbar was gone, and the first video preview frame and editor window
+were available while the acknowledgement was still held.
+
+                                   Previous (6d558e29)   Revised light   Revised dark
+App status during Hide hold        Blocked               0.79 ms         3.20 ms
+Stop to visible preview            709.8 ms              63.0 ms         58.7 ms
+Stop to first preview frame        Not timed             84.8 ms         76.8 ms
+Preview to visible video editor    61.6 ms               58.4 ms         59.5 ms
+
+In both revised cases a timer request during the hold opened its
+selector only after the acknowledgement was released. Both recorded
+files decoded as 600x440 video-only clips with nine frames. First-frame
+RGB ranges were uniform and matched the generated backdrop, with the
+toolbar and overlay excluded. These are individual observations on
+one Retina display with app-local input and WindowServer sampling.

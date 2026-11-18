@@ -31,7 +31,7 @@ fn optional_capture_fixture(output: &str) -> Option<serde_json::Value> {
     }
 }
 
-fn wait_for_scroll_barrier(fixture: &serde_json::Value) {
+fn wait_for_fixture_barrier(fixture: &serde_json::Value) {
     let Some(address) = fixture["barrier"].as_str() else {
         return;
     };
@@ -101,6 +101,7 @@ pub fn run() {
     let mut held_recording_start: Option<String> = None;
     let mut held_recording_stop: Option<String> = None;
     let mut recording_stop_was_held = false;
+    let mut recording_outline_hide_barrier = None;
     let desktop_icons_hidden = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
@@ -205,7 +206,7 @@ pub fn run() {
                     let hidden = desktop_icons_hidden.clone();
                     let id = request.id.clone();
                     std::thread::spawn(move || {
-                        wait_for_scroll_barrier(&fixture);
+                        wait_for_fixture_barrier(&fixture);
                         hidden.store(true, std::sync::atomic::Ordering::SeqCst);
                         protocol::respond_success(&id, json!({}));
                     });
@@ -230,7 +231,7 @@ pub fn run() {
                     if !capture_show_held {
                         desktop_show_held = true;
                     }
-                    wait_for_scroll_barrier(&fixture);
+                    wait_for_fixture_barrier(&fixture);
                 }
                 if fixture["desktopShowError"] == true {
                     protocol::respond_error(&request.id, "FIXTURE_ERROR", "Fixture show failed");
@@ -319,7 +320,7 @@ pub fn run() {
                 assert_eq!(params["maxHeight"], 1800);
                 assert_eq!(params["nativeControls"], !cfg!(target_os = "macos"));
                 if fixture["scroll"] == "start-held" {
-                    wait_for_scroll_barrier(&fixture);
+                    wait_for_fixture_barrier(&fixture);
                 }
                 if fixture["scroll"] == "start-failed" {
                     protocol::respond_error(
@@ -419,7 +420,7 @@ pub fn run() {
                         None,
                     );
                     std::thread::spawn(move || {
-                        wait_for_scroll_barrier(&fixture);
+                        wait_for_fixture_barrier(&fixture);
                         protocol::respond_success(
                             &request_id,
                             json!({
@@ -434,7 +435,7 @@ pub fn run() {
                     continue;
                 }
                 if fixture["scroll"] != "start-held" {
-                    wait_for_scroll_barrier(&fixture);
+                    wait_for_fixture_barrier(&fixture);
                 }
                 if fixture["scroll"] == "finish-partial-failed" {
                     let path = request.params.as_ref().unwrap()["outputPath"]
@@ -472,7 +473,7 @@ pub fn run() {
                 if fixture["scroll"] == "cancel-finishing-held" {
                     wait_for_scroll_cancel_barrier(&fixture);
                 } else {
-                    wait_for_scroll_barrier(&fixture);
+                    wait_for_fixture_barrier(&fixture);
                 }
                 json!({})
             }
@@ -789,7 +790,12 @@ pub fn run() {
                     protocol::respond_error(&request.id, "STOP_FAILED", "Fixture stop failure");
                     continue;
                 }
-                match optional_capture_fixture(&output) {
+                let fixture = optional_capture_fixture(&output);
+                recording_outline_hide_barrier = fixture
+                    .as_ref()
+                    .filter(|fixture| fixture["recordingHoldOutlineHide"] == true)
+                    .cloned();
+                match fixture {
                     Some(fixture) if fixture["recordingAreaFixtureVideo"] == true => {
                         json!({"duration": fixture["recordingAreaDuration"]})
                     }
@@ -872,8 +878,17 @@ pub fn run() {
                 );
                 json!({})
             }
-            ("recording-overlay", "hide")
-            | ("camera-preview", "show" | "hide" | "update" | "setContentProtection")
+            ("recording-overlay", "hide") => {
+                if let Some(fixture) = recording_outline_hide_barrier.take() {
+                    std::thread::spawn(move || {
+                        wait_for_fixture_barrier(&fixture);
+                        protocol::respond_success(&request.id, json!({}));
+                    });
+                    continue;
+                }
+                json!({})
+            }
+            ("camera-preview", "show" | "hide" | "update" | "setContentProtection")
             | (
                 "screen-recorder",
                 "pause" | "resume" | "setMicrophone" | "setSystemAudio" | "setCamera",

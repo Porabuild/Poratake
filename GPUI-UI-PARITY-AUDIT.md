@@ -6930,6 +6930,26 @@ no pixels. The [timing record](tests/native/evidence/macos-ui/native-capture-lat
 covers both appearances and both cancellation entry points on one
 Retina display.
 
+### 2026-11-18 macOS recording preview and editor during outline cleanup
+
+Leaving the recording toolbar after Stop, Discard or terminal failure
+now schedules outline cleanup off the UI thread, using the same queue
+as pre-recording cancellation. An already-finalized recording can open
+in the preview or editor during that wait. A new capture intent still
+waits for the daemon to acknowledge removal before opening a selector.
+
+In the native area recording probe, holding the successful Hide reply
+for 650 ms delayed the old preview to 709.8 ms after Stop and blocked
+the app through the hold. The revised preview appeared in 58.7–63.0 ms,
+and its first decoded frame was ready in 76.8–84.8 ms. The video editor
+opened from the preview during the hold in both appearances. A timer
+selector requested during the hold opened after release. Both recordings
+decoded as video-only with the generated backdrop and no toolbar or
+recording outline in the sampled frame. The recording parity workflow
+also holds the Hide reply and asserts that opening directly in the
+editor works while cleanup is pending. The [native timing record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+includes the individual samples for one Retina display.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

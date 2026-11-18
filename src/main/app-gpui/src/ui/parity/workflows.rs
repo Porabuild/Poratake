@@ -1318,7 +1318,7 @@ fn recording_stop_timeout_handoff(
 }
 
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use std::io::{Read, Write};
 
     use crate::windows::registry::{self, WindowKind};
@@ -1538,9 +1538,41 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
             cx.advance_clock(std::time::Duration::from_secs(2));
             settle(cx, control);
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            fixture["recordingHoldOutlineHide"] = true.into();
+            fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&fixture).unwrap(),
+            )
+            .unwrap();
+            let (ready, hide) = std::sync::mpsc::sync_channel(1);
+            let accept_hide = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                stream.read_exact(&mut [1]).unwrap();
+                ready.send(stream).unwrap();
+            });
             click_measured(cx, control, "recording-controls", 1);
             cx.run_until_parked();
             wait_for_recording_stop(cx);
+            let mut hide = hide
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            accept_hide.join().unwrap();
+            cx.run_until_parked();
+            assert!(
+                cx.update(|cx| registry::is_open(WindowKind::VideoEditor, cx)),
+                "the recording editor must open while outline cleanup is pending"
+            );
+            hide.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(hide.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the fixture must still be waiting for outline cleanup release"
+            );
+            hide.write_all(&[0]).unwrap();
             assert_eq!(
                 crate::video::recorder::state(),
                 crate::video::recorder::RecorderState::Idle

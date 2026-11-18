@@ -325,15 +325,15 @@ impl RecordingControl {
         if !Self::dismiss_pre_recording(false, cx) {
             return false;
         }
-        Self::finish_pre_recording_cancel(cx);
+        Self::finish_closed_handoff(cx);
         true
     }
 
-    fn finish_pre_recording_cancel(cx: &mut App) {
+    fn finish_closed_handoff(cx: &mut App) {
         #[cfg(target_os = "macos")]
         {
             crate::capture::overlay::clear_recording_handoff(cx);
-            if !crate::intents::hide_pre_recording_outline(None, cx) {
+            if !crate::intents::hide_recording_outline(None, cx) {
                 set_pre_recording_escape(false, cx);
             }
         }
@@ -1721,7 +1721,7 @@ impl RecordingControl {
 
         close_toolbar(window);
         registry::close(RegistryKind::RecordingControl, cx);
-        crate::capture::overlay::end_recording_handoff(cx);
+        Self::finish_closed_handoff(cx);
         crate::intents::refresh_shell(cx);
         crate::windows::toast::Toast::show(cx, "Recording failed", message);
     }
@@ -1876,7 +1876,7 @@ impl RecordingControl {
 
         close_toolbar(window);
         registry::close(RegistryKind::RecordingControl, cx);
-        crate::capture::overlay::end_recording_handoff(cx);
+        Self::finish_closed_handoff(cx);
         crate::intents::refresh_shell(cx);
 
         let Some(project) = project else {
@@ -1976,7 +1976,7 @@ impl RecordingControl {
         }
         self.close_pre_recording_toolbar(window, cx);
         registry::forget(RegistryKind::RecordingControl, cx);
-        Self::finish_pre_recording_cancel(cx);
+        Self::finish_closed_handoff(cx);
     }
 
     fn close_pre_recording_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
