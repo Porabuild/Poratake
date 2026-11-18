@@ -719,6 +719,8 @@ impl CapturePreviewWindow {
             |window, cx| {
                 window.set_window_title("Poratake capture preview");
                 super::remove_popup_frame(window);
+                #[cfg(all(target_os = "macos", not(test)))]
+                super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
                 #[cfg(windows)]
                 if !cfg!(test) {
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -1467,15 +1469,18 @@ fn preview_fitted_stack_bounds(
 fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
     let (bounds, display_id) = preview_stack_placement(cx, count);
     #[cfg(all(target_os = "macos", not(test)))]
-    if super::set_macos_window_bounds(window, bounds) {
-        window.bounds_changed(cx);
-    } else {
-        #[cfg(feature = "parity")]
-        {
-            let scale = window.scale_factor();
-            window.resize(bounds.size);
+    {
+        super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
+        if super::set_macos_window_bounds(window, bounds) {
             window.bounds_changed(cx);
-            window.set_scale_factor(scale);
+        } else {
+            #[cfg(feature = "parity")]
+            {
+                let scale = window.scale_factor();
+                window.resize(bounds.size);
+                window.bounds_changed(cx);
+                window.set_scale_factor(scale);
+            }
         }
     }
     #[cfg(windows)]

@@ -7054,6 +7054,23 @@ The baseline issue was intermittent. The window captured the expected
 microphone, camera, and empty iOS menus in both appearances using
 generated device data. [Native timing and pixel evidence](tests/native/evidence/macos-ui/recording-menu-compositing-20261118.txt)
 
+### 2026-11-18 macOS capture preview frames during native resize
+
+Growing the preview stack could stretch the previous preview frame
+to the height of the new AppKit window. A 280-pixel Retina card
+measured 566 pixels in the [old two-card transition](tests/native/evidence/macos-ui/preview-stack-resize-stretched-20261118.png).
+The capture preview now shares the recording toolbar's native
+layer alignment. It pins the previous frame to the selected top or
+bottom edge while the resized frame is drawn. The [revised transition](tests/native/evidence/macos-ui/preview-stack-resize-pinned-20261118.png)
+shows the retained card at its original scale and bottom edge.
+
+In the baseline bottom-right probe, stretching appeared in eight of
+12 growth transitions. The revised probe saw no stretched cards in
+24 growth and shrink transitions covering top-right and bottom-right
+in light and dark. The window stayed anchored and returned to one
+card after dismissal. [Native preview pixel evidence](tests/native/evidence/macos-ui/preview-stack-resize-20261118.txt)
+records the generated input and capture method.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

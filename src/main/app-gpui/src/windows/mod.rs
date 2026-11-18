@@ -197,6 +197,38 @@ pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixe
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+fn pin_macos_window_contents(window: &gpui::Window, bottom_aligned: bool) {
+    use cocoa::base::{id, nil, BOOL, YES};
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[link(name = "QuartzCore", kind = "framework")]
+    unsafe extern "C" {
+        static kCAGravityTop: id;
+        static kCAGravityBottom: id;
+    }
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let layer: id = msg_send![appkit.ns_view.as_ptr() as id, layer];
+        if layer != nil {
+            let flipped: BOOL = msg_send![layer, contentsAreFlipped];
+            let gravity = if bottom_aligned != (flipped == YES) {
+                kCAGravityBottom
+            } else {
+                kCAGravityTop
+            };
+            let _: () = msg_send![layer, setContentsGravity: gravity];
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn macos_window_id(window: &gpui::Window) -> Option<i64> {
     use cocoa::base::nil;
     use objc::{msg_send, sel, sel_impl};

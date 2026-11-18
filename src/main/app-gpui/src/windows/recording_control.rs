@@ -2182,35 +2182,8 @@ fn configure_toolbar_window(window: &Window) {
     super::remove_popup_frame(window);
     #[cfg(all(target_os = "macos", not(test)))]
     {
-        use cocoa::base::{id, nil, BOOL, YES};
-        use objc::{msg_send, sel, sel_impl};
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-        #[link(name = "QuartzCore", kind = "framework")]
-        unsafe extern "C" {
-            static kCAGravityTop: id;
-            static kCAGravityBottom: id;
-        }
-
         crate::system::window_visibility::disable_macos_transitions(window);
-        let Ok(handle) = HasWindowHandle::window_handle(window) else {
-            return;
-        };
-        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-            return;
-        };
-        unsafe {
-            let layer: id = msg_send![appkit.ns_view.as_ptr() as id, layer];
-            if layer != nil {
-                let flipped: BOOL = msg_send![layer, contentsAreFlipped];
-                let gravity = if flipped == YES {
-                    kCAGravityBottom
-                } else {
-                    kCAGravityTop
-                };
-                let _: () = msg_send![layer, setContentsGravity: gravity];
-            }
-        }
+        super::pin_macos_window_contents(window, false);
     }
     #[cfg(all(windows, not(test)))]
     {

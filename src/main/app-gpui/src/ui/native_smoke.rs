@@ -326,6 +326,7 @@ pub fn native_ui_probe() {
     let theme = std::env::var("PORATAKE_NATIVE_UI_THEME").unwrap_or_else(|_| "dark".into());
     assert!(matches!(theme.as_str(), "light" | "dark"));
     let normal_level = std::env::var_os("PORATAKE_NATIVE_UI_NORMAL_LEVEL").is_some();
+    let preview_top = std::env::var_os("PORATAKE_NATIVE_UI_PREVIEW_TOP").is_some();
     let native_shadow = std::env::var_os("PORATAKE_NATIVE_UI_NATIVE_SHADOW").is_some();
     let auto_dismiss = std::env::var_os("PORATAKE_NATIVE_UI_AUTO_DISMISS").is_some();
     let config_path = directory.join("config.json");
@@ -342,7 +343,7 @@ pub fn native_ui_probe() {
                 config.recording.system_audio = false;
                 config.recording.mic_enabled = false;
                 config.recording.camera.enabled = false;
-                config.preview.corner = "bottom-right".into();
+                config.preview.corner = if preview_top { "top-right" } else { "bottom-right" }.into();
                 config.preview.auto_dismiss = auto_dismiss;
                 config.preview.auto_dismiss_seconds = 4.0;
                 config.save_locations.screenshot = screenshots_path.clone();
@@ -402,11 +403,15 @@ pub fn native_ui_probe() {
                         let work_area: NSRect = unsafe { msg_send![screen, visibleFrame] };
                         let right = work_area.origin.x + work_area.size.width
                             - frame.origin.x - frame.size.width;
-                        let bottom = frame.origin.y - work_area.origin.y;
+                        let (edge, vertical) = if preview_top {
+                            ("top", work_area.origin.y + work_area.size.height - frame.origin.y - frame.size.height)
+                        } else {
+                            ("bottom", frame.origin.y - work_area.origin.y)
+                        };
                         let expected = f64::from(crate::ui::chrome::PREVIEW_MARGIN - crate::ui::chrome::PREVIEW_SHADOW_PADDING);
                         assert!((right - expected).abs() <= 0.5, "right margin {right}");
-                        assert!((bottom - expected).abs() <= 0.5, "bottom margin {bottom}");
-                        println!("capture preview: bottom and right AppKit work-area margins {bottom:.0},{right:.0} points");
+                        assert!((vertical - expected).abs() <= 0.5, "{edge} margin {vertical}");
+                        println!("capture preview: {edge} and right AppKit work-area margins {vertical:.0},{right:.0} points");
                     }
                 println!("{name}: visible, borderless, native shadow={}, level={level}; frame {:.0},{:.0} {:.0}x{:.0}", shadow == YES, frame.origin.x, frame.origin.y, frame.size.width, frame.size.height);
             }).unwrap();
@@ -661,6 +666,33 @@ pub fn native_ui_probe() {
                                 });
                             }
                             println!("record hover dispatched: {index}");
+                            return;
+                        }
+                        if command == "preview-stack-close" {
+                            if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
+                                let position = point(px(25.), px(25.));
+                                for event in [
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        position, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(), first_mouse: false,
+                                    }),
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        position, button: MouseButton::Left, click_count: 1,
+                                        modifiers: Modifiers::none(),
+                                    }),
+                                ] {
+                                    let _ = cx.update_window(handle, |_, window, cx| window.dispatch_event(event, cx));
+                                }
+                            }
+                            println!("preview stack close clicked");
+                            return;
+                        }
+                        if command == "preview-stack-add" {
+                            crate::windows::capture_preview::CapturePreviewWindow::open(
+                                cx,
+                                probe_directory.join("preview.png"),
+                            );
+                            println!("preview stack add requested");
                             return;
                         }
                         if matches!(command.as_str(), "preview-short-stack" | "preview-tiny-stack") {
