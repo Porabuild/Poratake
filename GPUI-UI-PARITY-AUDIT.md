@@ -5269,7 +5269,35 @@ added a history item. Compared with the rendered document, the mean RGB channel
 error was 0.410 before the seam and 15.116 after it. The latter fell to 0.456
 when the reference was shifted by eight pixels, confirming skipped rows at the
 seam. The live capture was stopped partway through the page. The exact fixture
-improvement is verified, and the live alignment error remains open.
+passed while that live run still skipped rows.
+
+### 2026-11-18 macOS short scroll overlaps with capture noise
+
+The same generated page was captured through ScreenCaptureKit at offsets of
+0, 266 and 532 points without moving the system pointer. Each 920×760 frame
+contains a 204-pixel stationary header. The known 228-pixel overlap leaves
+24 comparable body rows. With the original 40-row strip, part of each
+comparison came from the header. The matcher selected 236 for the first pair
+and rejected the second. On the comparable body rows, the mean RGB channel
+error at 228 was 0.465 and 0.464, versus 9.369 and 15.862 at 236.
+
+The matcher now scores only the visible body rows for short overlaps and
+checks competing offsets before accepting a short seam. It uses the existing
+minimum row count and color error limits. Fixtures cover slight capture noise
+in the header and body, with and without a footer, and reject repeating body
+patterns at two scroll offsets. Both seams between the three native frames aligned at 228.
+The reopened 920×1824 PNG matched the preview and the expected source rows
+pixel for pixel.
+
+A separate GPUI run used the same matching rules before the optimization
+that reuses the extracted strips. Auto-scroll reached the bottom of a shorter
+generated page. Done saved two frames as a 920×1292 PNG, opened the preview and
+added a history entry. Against the rendered reference, mean RGB channel error
+was 0.410 in the first frame and 0.456 in the appended rows. Over the full image,
+99.79% of channels were within two levels and the maximum difference was five.
+Foreground control was released, the test apps closed, and the existing editor
+stayed open. Cases where the same visible frames support distinct scroll histories
+remain open.
 
 ### 2026-11-18 unpressed pointer entry and exit on macOS
 
