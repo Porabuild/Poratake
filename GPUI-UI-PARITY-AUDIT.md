@@ -2497,7 +2497,8 @@ Bugs fixed in this pass:
 - The macOS GPUI scroll preview's rounded container did not clip the image
   corners. The image now has the same radius, and the Windows GPU harness samples
   all four corners and the center of the production preview at each matrix scale.
-  Native macOS rendering remains unverified.
+  A later [native macOS check](#2026-11-18-macos-scroll-preview-corner-clipping)
+  verified all four corners on Retina.
 - The macOS scroll-control tooltips painted above their 52px window and were
   clipped. They now use the native view tooltip, matching Electron's native
   tooltip behavior without enlarging the window. A headless test exercises all
@@ -7547,6 +7548,20 @@ in the editor. The first fixture retained its native window and tested
 hiding. Releasing it after the AppKit run loop started verified actual
 closure. The recorder passed with its existing close handling.
 [Native timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-18 macOS scroll preview corner clipping
+
+The native GPUI scroll fixture rendered a solid generated preview in
+light and dark. Both the regular placement and the 240-point-wide
+selection displayed a 240 × 180-point image at 2×. The four extreme
+corner pixels contained only the shadow, with alpha 6 at the top and
+16 at the bottom. Four device pixels inward, all corners matched
+the fully opaque interior. [Native preview capture](tests/native/evidence/macos-ui/scroll-preview-retina-corners-20261118.png)
+
+The 2-point preview radius follows the Electron renderer's
+`rounded-lg` token. The macOS Metal scroll workflow now runs the
+existing corner pixel and Finish/Cancel assertions. The native
+window captures used one physical Retina display.
 
 ## Review gate
 

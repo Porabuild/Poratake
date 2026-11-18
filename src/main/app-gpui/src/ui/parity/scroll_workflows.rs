@@ -15,7 +15,7 @@ impl Drop for ScrollThreadSpawnFailureGuard {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
     use base64::Engine;
 

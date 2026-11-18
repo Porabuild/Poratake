@@ -699,7 +699,7 @@ pub fn apply_progress(ui: &Entity<ScrollCaptureUi>, signal: ScrollSessionSignal,
     }
 }
 
-#[cfg(all(windows, feature = "parity"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "parity"))]
 pub(crate) fn preview_for_parity(
     cx: &mut App,
     encoded: String,

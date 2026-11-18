@@ -984,6 +984,7 @@ pub fn capture_editor_interaction_states() {
                 config.screenshot.show_preview = true;
             });
         });
+        scroll_workflows::preview_corners(&mut cx, &output, scale);
         scroll_workflows::run(&mut cx, &output, &scratch);
         cx.update(|cx| crate::state::state(cx).daemon.stop());
         return;
