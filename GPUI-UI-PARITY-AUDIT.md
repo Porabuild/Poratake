@@ -10019,6 +10019,23 @@ on arm64 and Rosetta x86_64, along with 27 Electron and daemon contract
 tests.
 [Countdown drag evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS countdown catch-up before the deadline
+
+A three-second AppKit countdown was sampled while its main loop
+was deliberately stalled for up to 2.65 s. On arm64 and Rosetta
+x86_64, the first observed caption after a 1.65 s stall was “2”.
+After a 2.65 s stall, it was “1”, with the expired “2” skipped.
+The corrected caption was first observed 11–32 ms after resuming.
+All eight runs dismissed the timer and emitted completion at
+3.002–3.007 s from the show reply.
+
+This verifies the countdown deadline and label state under partial
+stalls using a hidden AppKit panel and the production timer. The
+probe sampled labels about every 10 ms. Capture and display paint
+are outside these timings. All 27 related Electron and daemon
+contract tests passed.
+[Countdown timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

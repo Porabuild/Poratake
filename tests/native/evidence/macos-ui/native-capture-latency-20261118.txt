@@ -3534,3 +3534,27 @@ stayed visible after an outside release. A second drag left the
 panel and re-entered it. The caption then read Cancel and an inside
 release closed the countdown. The cursor-stack and accessibility
 checks still passed. No physical pointer input was used.
+
+2026-11-19 macOS countdown before-deadline resume at 1f620d0d
+
+A temporary variant of the AppKit lifecycle fixture used the
+current TimerControlModule and a hidden three-second countdown.
+After the show reply the probe stalled the main thread for the
+requested duration, then sampled the real NSTextField label about
+every ten milliseconds. Completion was accepted after the module
+had removed its timer view. All readings are seconds from the show
+reply. A dash means the value was skipped.
+
+Architecture  Stall   Resume    Caption 2  Caption 1  Completion
+arm           0        0.0002   1.0102        2.0100      3.0029
+arm           0.65     0.6523   1.0072        2.0032      3.0033
+arm           1.65     1.6503   1.6611        2.0034      3.0021
+arm           2.65     2.6507   -             2.6825      3.0016
+intel         0        0.0027   1.0093        2.0089      3.0066
+intel         0.65     0.6528   1.0054        2.0065      3.0024
+intel         1.65     1.6524   1.6816        2.0088      3.0028
+intel         2.65     2.6527   -             2.6778      3.0021
+
+The probe measured the AppKit timer lifecycle and label, excluding
+window composition and downstream screenshot work. No physical input
+was used. All 27 Electron and daemon contract tests passed.
