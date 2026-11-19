@@ -635,11 +635,11 @@ mod backend {
             std::time::Instant::now() + std::time::Duration::from_secs(10),
         );
         match frame {
-            Ok(frame) => {
+            Ok(Some(frame)) => {
                 *decoder = Some(process);
-                frame
+                Some(frame)
             }
-            Err(()) => None,
+            Ok(None) | Err(()) => None,
         }
     }
 
@@ -861,6 +861,10 @@ case "$*" in
       if kill -0 "$previous" 2>/dev/null; then exit 1; fi
     fi
     printf x >> "$0.count"
+    if [ -f "$0.fail-once" ]; then
+      rm "$0.fail-once"
+      exit 1
+    fi
     printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\n' >&2
     printf '\003\002\001\377\006\005\004\377'
     printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\n' >&2
@@ -1060,6 +1064,39 @@ esac
             .expect("replacement decoder must run after the old process exits");
 
             assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+        }
+
+        #[test]
+        fn an_empty_decoder_is_restarted_for_the_next_frame_request() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            let source = directory.path().join("source.mp4");
+            let media = describe(&ffmpeg, &source).expect("video metadata");
+            std::fs::write(directory.path().join("ffmpeg.fail-once"), []).unwrap();
+            let mut decoder = None;
+
+            let first = read_frame(
+                &ffmpeg,
+                &source,
+                0.25,
+                media.video,
+                media.start_time,
+                &mut decoder,
+            );
+            assert!(first.is_none());
+            assert!(decoder.is_none());
+
+            let recovered = read_frame(
+                &ffmpeg,
+                &source,
+                0.25,
+                media.video,
+                media.start_time,
+                &mut decoder,
+            )
+            .expect("decoder should restart after delivering no frames");
+            assert_eq!(recovered.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            assert_eq!(std::fs::read(directory.path().join("ffmpeg.count")).unwrap(), b"xx");
         }
 
         #[test]

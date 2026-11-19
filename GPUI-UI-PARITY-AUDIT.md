@@ -8647,6 +8647,22 @@ became visible. The real-FFmpeg camera visibility test and all
 1,186 GPUI tests passed.
 [Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS preview recovery after an empty FFmpeg stream
+
+A decoder process that closed before delivering any frame used to
+remain attached to the source, leaving subsequent requests empty.
+The Unix decoder now retires that process and starts a replacement
+on the next frame request. A decoder that has already delivered a valid
+frame still supplies that final frame at end of stream.
+
+The regression forces the first FFmpeg process to exit early and
+verifies two launches and the replacement's exact BGRA bytes. In
+native light and dark trials, a prerecorded camera track failed
+its first decode. The old app advanced the screen past 0.5 seconds
+with only the failed camera process. The revised app launched
+a second process and decoded camera frames during preview playback.
+All 1,187 GPUI tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
