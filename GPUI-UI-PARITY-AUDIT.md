@@ -8809,6 +8809,34 @@ files passed all 50 tests. Stitching remains open where different
 scroll histories produce the same frames.
 [Native fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 current macOS tooltip typography at 2×
+
+The current native tooltip was rendered over a bounded generated
+backdrop in Aqua and Dark Aqua. The twelve composited captures
+covered a single-line recording label, a wrapped English label,
+explicit truncation, right-to-left Arabic, a long unbroken device
+name, and emoji with combining marks. All panels maintained a
+four-point gap below the generated owner.
+
+| Text case                   | Panel size in points | Light ink margin top/bottom | Dark ink margin top/bottom |
+| --------------------------- | -------------------- | --------------------------- | -------------------------- |
+| Start recording             | 100×22               | 13/10 px                    | 13/10 px                   |
+| Wrapped English             | 376×36               | 13/13 px                    | 13/13 px                   |
+| Truncated explicit lines    | 94×64                | 14/13 px                    | 13/13 px                   |
+| Arabic                      | 353×64               | 13/8 px                     | 13/8 px                    |
+| Unbroken device name        | 375×64               | 13/13 px                    | 13/13 px                   |
+| Emoji and combining accents | 213×22               | 8/8 px                      | 8/8 px                     |
+
+The Arabic label wrapped right-to-left and truncated at the reading
+end. The unbroken token wrapped and truncated on line four. The
+emoji sequence and accents rendered intact. The measured margins
+describe the visible ink within equal AppKit label insets. The probe
+supplied the pointer position directly to the tooltip and checked
+WindowServer isolation before capturing each panel. The Swift
+fixture passed, including the rendered-label and tall-owner tests.
+The five Electron recording control and preview files passed
+132 tests.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
