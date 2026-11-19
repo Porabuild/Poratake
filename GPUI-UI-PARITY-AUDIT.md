@@ -10790,6 +10790,29 @@ generated media. All 190 targeted GPUI tests and 48 Electron
 reference tests passed.
 [Hidden editor memory and seek measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K seek after decoder release
+
+A cold FFmpeg seek can now discard frames before the nominal
+preceding interval inside the filter graph. This avoids reading
+those frames as raw BGRA. The editor still selects the last frame
+at or before the target. If the filter misses that frame, the
+decoder retries with full preroll.
+
+The app-local fixture hid a paused 4K editor, confirmed the old
+decoder exited, restored the retained preview, and sought from
+0.35 to 0.75 seconds. Across six pairs in light and dark, the
+raw frame payloads fell from 26 to four and all seek PNGs matched.
+Median seek readiness fell from 448 to 277 ms. The baseline's
+first pair ran during a test build. In the two later pairs, the
+baseline took 397–455 ms and the updated build took 274–289 ms.
+
+The fixture used generated H.264 footage with B frames. The
+decoder tests covered exact fractional timestamps, sparse
+screen and camera timelines, and a fallback that recovers a
+held frame on a track with a nonzero start timestamp. All 195
+targeted GPUI tests and 48 Electron reference tests passed.
+[Cold seek measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

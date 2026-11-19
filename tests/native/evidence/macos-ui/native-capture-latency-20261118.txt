@@ -4472,3 +4472,36 @@ An opaque fixture window covered the paused editor completely.
 The updated decoder remained resident at 883.44 MiB in light
 and 883.78 MiB in dark. Uncovering and seeking used the same
 process and preserved the paused preview.
+
+2026-11-19 macOS 4K seek after decoder release at 9938f1a5
+
+The generated 3840x2160, 30 fps H.264 recording used a 60-frame
+GOP and two B frames. The app-local probe opened the editor,
+paused at 0.35 s, hid its window and verified the screen decoder
+exited. Showing the retained image left the decoder off. The
+probe then sought to 0.75 s and waited for the complete frame
+update. Bundled FFmpeg and the fixture daemon were the same
+across variants. The second pair reversed run order.
+
+Pair  Theme  Baseline ms  Updated ms  Baseline payloads  Updated payloads
+1     light        800.6       278.6                 26                 4
+1     dark         788.6       274.8                 26                 4
+2     light        423.8       274.0                 26                 4
+2     dark         441.4       288.7                 26                 4
+3     light        455.4       275.4                 26                 4
+3     dark         397.3       280.7                 26                 4
+
+The first baseline ran during a test build. An unrelated build
+also ran on the host during the investigation. Times cover
+the app command and complete frame readiness. Trace payloads
+include bounded decoder lookahead. The baseline transferred
+timestamps 0.000000 through 0.833333 by the frame update.
+The updated trace transferred 0.733333 through 0.833333.
+The selected preview was byte-identical in all six comparisons.
+
+The optimized filter keeps frames from one nominal frame interval
+before the target. It operates on the source timestamps before
+BGRA conversion. A decoder regression with a five-second start
+offset makes the filtered stream deliver its first frame above
+the target, then verifies the unfiltered restart chooses the
+earlier held frame.

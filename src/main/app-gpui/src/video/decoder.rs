@@ -925,7 +925,7 @@ mod backend {
             return None;
         }
         drop(decoder.take());
-        let mut process = start(ffmpeg, path, media, 0.0)?;
+        let mut process = start(ffmpeg, path, media, 0.0, None)?;
         let frame = smol::block_on(wait_for_first_frame(&mut process, wait))?;
         *decoder = Some(process);
         Some(frame)
@@ -964,6 +964,7 @@ mod backend {
                 decoder.advance(next);
             }
         }
+        let cold_start = decoder.is_none();
         let restart = decoder.as_ref().is_none_or(|decoder| {
             let bracketed = decoder.current.as_ref().is_some_and(|current| {
                 current.timestamp <= time
@@ -983,8 +984,13 @@ mod backend {
             drop(decoder.take());
             let preroll_start = (time - STREAM_SEEK_PREROLL).max(0.0);
             let seek_start = if preroll_start > 0.0 { time } else { 0.0 };
-            let mut process = start(ffmpeg, path, media, seek_start)?;
-            process.fallback_seek_start = (preroll_start > 0.0).then_some(preroll_start);
+            let lookbehind = time - 1.0 / media.video.frame_rate();
+            let trim_start = (cold_start && lookbehind > 0.0)
+                .then_some(lookbehind + media.start_time)
+                .filter(|start| start.is_finite() && *start > 0.0);
+            let mut process = start(ffmpeg, path, media, seek_start, trim_start)?;
+            process.fallback_seek_start =
+                (preroll_start > 0.0 || trim_start.is_some()).then_some(preroll_start);
             process
         } else {
             decoder.take()?
@@ -995,7 +1001,7 @@ mod backend {
         }
         if let Some(preroll_start) = process.fallback_seek_start.filter(|_| frame.is_ok()) {
             drop(process);
-            process = start(ffmpeg, path, media, preroll_start)?;
+            process = start(ffmpeg, path, media, preroll_start, None)?;
             frame = smol::block_on(wait_for_frame(&mut process, time, wait));
         }
         if matches!(frame, Ok(Some(_)) | Err(FrameReadError::Cancelled)) {
@@ -1130,6 +1136,7 @@ mod backend {
         path: &Path,
         media: MediaInfo,
         seek_start: f64,
+        trim_start: Option<f64>,
     ) -> Option<DecoderProcess> {
         let MediaInfo {
             video: info,
@@ -1144,6 +1151,11 @@ mod backend {
             )
         } else {
             "showinfo=checksum=0".to_owned()
+        };
+        let filter = if let Some(trim_start) = trim_start {
+            format!("trim=start={trim_start:.9},{filter}")
+        } else {
+            filter
         };
         let seek_start = seek_start.max(0.0);
         let mut command = ProcessCommand::new(ffmpeg);
@@ -1767,6 +1779,51 @@ esac
 
                 assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
             }
+        }
+
+        #[test]
+        fn cold_seek_retries_when_the_trim_skips_the_held_frame() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                r#"#!/bin/sh
+case "$*" in
+  *'trim=start=5.650000000,showinfo=checksum=0'*)
+    printf t >> "$0.calls"
+    ;;
+  *)
+    printf p >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:5 pts_time:5\n' >&2
+    printf '\021\000\000\377'
+    ;;
+esac
+printf '[Parsed_showinfo] n:1 pts:6 pts_time:6\n' >&2
+printf '\042\000\000\377'
+"#,
+            )
+            .unwrap();
+            let media = MediaInfo {
+                video: VideoInfo {
+                    width: 1,
+                    height: 1,
+                    duration: 2.0,
+                    frame_rate: 10.0,
+                },
+                start_time: 5.0,
+                ..Default::default()
+            };
+            let frame = read_frame(
+                &ffmpeg,
+                &directory.path().join("source.mov"),
+                0.75,
+                media,
+                &mut None,
+                FrameWait::default(),
+            )
+            .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [17, 0, 0, 255]);
+            assert_eq!(std::fs::read(directory.path().join("ffmpeg.calls")).unwrap(), b"tp");
         }
 
         #[test]
