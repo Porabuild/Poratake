@@ -140,6 +140,9 @@ impl Source {
         let video = cached_frame(&mut self.video_frame, video_time, || {
             self.video.as_ref().and_then(|decoder| decoder.frame_at(video_time))
         });
+        if video.is_none() && timeline_time >= first_frame_duration {
+            return None;
+        }
         let camera = if self.engine.camera_visible_at(timeline_time) {
             cached_frame(&mut self.camera_frame, video_time, || {
                 self.camera.as_ref().and_then(|decoder| decoder.frame_at(video_time))
@@ -339,6 +342,43 @@ mod tests {
     fn opening_a_missing_project_yields_no_source() {
         let missing = crate::util::test_paths::unique_temp("poratake-missing.poratake");
         assert!(Source::open(&missing, VideoEditorState::default()).is_none());
+    }
+
+    #[test]
+    fn a_missing_screen_frame_does_not_produce_a_background_only_preview() {
+        let mut state = VideoEditorState::default();
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+
+        let mut intro = Pixmap::new(2, 2).unwrap();
+        intro.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let mut config = Config::new(2., 2., state);
+        config.first_frame_image = Some(intro);
+
+        let mut source = Source {
+            engine: Engine::new(config),
+            video: None,
+            camera: None,
+            video_segments: Vec::new(),
+            video_frame: None,
+            camera_frame: None,
+        };
+        let intro_duration = source.engine.first_frame_duration();
+        assert!(intro_duration > 0.);
+        let rendered_intro = source.compose(0., None).expect("intro preview");
+        assert!(rendered_intro.data().chunks_exact(4).any(|pixel| pixel == [10, 20, 30, 255]));
+
+        assert!(source.compose(intro_duration, None).is_none());
+        assert!(source.compose(intro_duration + 0.25, Some((1, 1))).is_none());
+
+        let video_time = 0.5;
+        cached_frame(&mut source.video_frame, video_time, || Some(DecodedFrame {
+            width: 2,
+            height: 2,
+            bgra: [220, 140, 50, 255].repeat(4).into(),
+        }));
+        let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
+        assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
     }
 
     #[test]

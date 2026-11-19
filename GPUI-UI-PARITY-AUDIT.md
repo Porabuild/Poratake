@@ -8579,6 +8579,18 @@ passed. The development FFmpeg camera visibility test and both narrow
 2× Metal profiles passed. The intermittent 4K60 decoder stall remains
 a separate open issue.
 
+### 2026-11-19 macOS video preview during a missing screen frame
+
+When a screen frame is unavailable, the video editor skips that
+preview update and keeps the last valid image in place. This avoids
+replacing the video with a background-only composition during the
+dropout. Intro stills can render independently of the screen frame.
+The regression covers the intro, missed updates at full and reduced
+preview sizes, and recovery when screen pixels become available.
+All 1,185 GPUI tests passed, along with the real-FFmpeg camera visibility
+test and both narrow 2× Metal profiles. Decoder stalls can still delay
+new frames.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
