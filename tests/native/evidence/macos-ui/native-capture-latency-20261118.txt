@@ -4375,3 +4375,27 @@ a second camera PID. A seek to 1.2 s reaped it. Every paused
 PNG matched the normal baseline for the same appearance and
 timestamp. The camera marker's RGB range covered 3,767 pixels
 at 0.45 s and zero pixels at 1.2 s.
+
+2026-11-19 macOS decoder cleanup at the timeline end at bd394334
+
+The generated 3840x2160, 30 fps H.264 recording lasted three
+seconds. The test trimmed the saved timeline to one second.
+A bundled FFmpeg wrapper recorded raw-video process IDs, and
+proc_pid_rusage sampled physical footprint after the app's
+final complete frame update and before the next command.
+
+Version   Theme   Play   Decoder status   Decoder MiB   Editor MiB
+Before    light   1      resident              881.94       454.81
+Before    light   2      resident              883.84       454.84
+Before    dark    1      resident              883.50       426.03
+Before    dark    2      resident              883.63       454.41
+Updated   light   1      exited                     —       454.81
+Updated   light   2      exited                     —       454.83
+Updated   dark    1      exited                     —       422.11
+Updated   dark    2      exited                     —       470.16
+
+The second Play opened a fresh raw-video process and produced
+an earlier preview frame. The final preview stayed visible
+after the process exited. All six before/after PNG comparisons
+of the two final images and the subsequent paused 0.35 s seek
+matched across light and dark.

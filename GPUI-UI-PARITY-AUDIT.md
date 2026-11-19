@@ -10725,6 +10725,26 @@ and app-local controls. All 191 targeted GPUI tests and 48 Electron
 reference tests passed.
 [Camera decoder lifetime measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS decoder cleanup at the timeline end
+
+The video editor releases the decoded source frames after composing
+the final paused image. The displayed image stays available while
+the editor is idle. Replay and subsequent seeks can open the frame
+stream again.
+
+A 4K H.264 fixture had three seconds of source video trimmed to a
+one-second timeline. After the timeline ended, the baseline screen
+decoder still held 882–884 MiB. The revised app reaped the FFmpeg
+process in both appearances after each of two Play runs. The
+editor process itself measured 422–470 MiB across the updated
+samples. Final frames and a paused seek after release matched
+baseline PNGs byte for byte. App-local replay also published
+frames earlier than the end frame and released the decoder again.
+
+These results used a generated clip and a fixture daemon. All
+190 targeted GPUI tests and 48 Electron reference tests passed.
+[End-of-timeline decoder measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

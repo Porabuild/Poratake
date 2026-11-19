@@ -901,6 +901,11 @@ impl VideoEditorWindow {
         self.compose_in_flight = true;
         self.queued_frame = None;
         let generation = self.preview_frame_generation;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let release_at_end = max_dimensions.is_none()
+            && self.preview_playhead.is_none()
+            && time > 0.0
+            && time >= self.total_duration();
 
         cx.spawn(async move |entity, cx| {
             let (composed, elapsed, decode_wait) = cx
@@ -919,6 +924,10 @@ impl VideoEditorWindow {
                         )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if release_at_end && !cancelled.is_closed() {
+                        guard.release_buffered_frames();
+                    }
                     (image, started.elapsed(), decode_wait)
                 })
                 .await;

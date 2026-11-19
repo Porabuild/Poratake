@@ -285,6 +285,15 @@ impl Source {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn release_buffered_frames(&mut self) {
+        if let Some(video) = &self.video {
+            video.release_frames();
+        }
+        self.video_frame = None;
+        self.release_inactive_camera();
+    }
+
     fn render(
         &mut self,
         timeline_time: f64,
@@ -522,6 +531,16 @@ mod tests {
         cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
         let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
         assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            source.release_buffered_frames();
+            assert!(source.video_frame.is_none());
+            assert!(source.compose(intro_duration + video_time, None).is_none());
+            assert!(recovered
+                .data()
+                .chunks_exact(4)
+                .any(|pixel| pixel == [50, 140, 220, 255]));
+        }
     }
 
     #[test]
