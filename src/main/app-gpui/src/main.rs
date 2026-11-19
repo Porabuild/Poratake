@@ -62,10 +62,12 @@ fn dispatch_native_event(event: NativeEvent, cx: &mut App) {
     }
 }
 
+#[cfg(any(test, feature = "parity"))]
 pub fn open_editor_for(cx: &mut App, path: &str) -> bool {
     open_editor_with_state(cx, path, None)
 }
 
+#[cfg(any(test, feature = "parity"))]
 pub(crate) fn open_editor_with_state(
     cx: &mut App,
     path: &str,
@@ -96,11 +98,16 @@ pub(crate) fn prepare_editor_open(
     })
 }
 
-pub(crate) fn open_editor_async(cx: &mut App, path: String) {
+pub(crate) fn open_editor_async(cx: &mut App, path: String, activate: bool) {
     let prepared = prepare_editor_open(cx, path.clone());
     cx.spawn(async move |cx| {
         let (state, image) = prepared.await;
-        cx.update(|cx| open_editor_with_image(cx, &path, state, image));
+        cx.update(|cx| {
+            open_editor_with_image(cx, &path, state, image);
+            if activate {
+                cx.activate(true);
+            }
+        });
     })
     .detach();
 }
@@ -432,10 +439,7 @@ fn main() {
                         );
                     }
                 }
-                Some(path) => {
-                    open_editor_for(cx, path);
-                    cx.activate(true);
-                }
+                Some(path) => open_editor_async(cx, path.to_owned(), true),
                 None => {}
             }
         });

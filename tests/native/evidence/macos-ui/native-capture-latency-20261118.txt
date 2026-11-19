@@ -4589,3 +4589,21 @@ The daemon suite also checked graceful shutdown, immediate exit
 before readiness, startup retries and recovery from a crash after
 readiness. Ten GPUI daemon tests, 121 GPUI capture tests and 42
 Electron reference tests passed.
+
+2026-11-19 macOS direct screenshot file loading at 7ab2475c
+
+The CLI opened a generated 3840x2160 PNG through its file argument.
+A temporary History FIFO blocked the read after the test connected
+its writer. The fixture then released the daemon's Ready event.
+The prewarm RPC acted as an observable app callback on the UI
+loop while the file-open operation was still outstanding.
+
+Theme   Baseline prewarm during 400 ms hold   Updated prewarm while held (ms)
+Light   absent                                                         13.7
+Dark    absent                                                         10.5
+
+After the FIFO released, each app opened the editor and the
+fixture recorded one prewarm. The timing runs from releasing Ready
+to the fixture receiving prewarm. Separate direct-capture
+editor probes held History, confirmed the 4K image was prepared,
+and opened the editor after release in both appearances.

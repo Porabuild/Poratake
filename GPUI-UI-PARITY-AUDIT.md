@@ -10889,6 +10889,26 @@ capture suites covered the existing restart and shutdown paths.
 All 131 GPUI tests and 42 Electron reference tests passed.
 [Startup cancellation verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS direct screenshot file loading
+
+Opening a screenshot through the file argument now uses the same
+background image and History loader as opening from the preview.
+The app creates and activates the editor after the prepared image
+and saved state are available.
+
+In light and dark, a generated 4K file opened with its History
+read deliberately held. The baseline could not process the
+startup prewarm callback during the 400 ms hold. The revised app
+processed it within 11–14 ms of the fixture releasing the daemon's
+Ready event, with History still held. Both editors opened after
+the History read completed.
+
+The direct-capture editor probe also passed in both appearances.
+The GPUI editor and capture-preview suites passed 425 tests, the
+Electron reference suites passed 59, and the non-parity GPUI
+check passed.
+[Background file-open measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

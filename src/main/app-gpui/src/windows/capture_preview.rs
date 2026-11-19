@@ -2064,7 +2064,7 @@ fn edit_preview(
         return;
     };
     match kind {
-        PreviewKind::Screenshot => crate::open_editor_async(cx, path),
+        PreviewKind::Screenshot => crate::open_editor_async(cx, path, false),
         PreviewKind::Video => crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path)),
     }
 }
