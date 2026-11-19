@@ -4357,7 +4357,7 @@ appearance.
 | P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                                                                                       |
 | P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.                                                                                |
 | P1       | Wayland screen and area recording                        | GPUI recording is currently disabled on Wayland: static tracing shows the recorder passes zero dimensions from zed-scap to FFmpeg and ignores the selected area. The portal can return a window, but the capturer does not expose its source type, position or size, so first-frame sizing alone cannot establish a correct area crop. Implement and verify source-aware capture on a real Wayland session before re-enabling it.                                                                                                                                                                                                        |
-| P1       | Native window/display highlighting and recording handoff | Simulated candidate highlights and a native live/frozen window screenshot pick are verified. Native overlay screenshots timed out. Verify physical pointer transitions on each display and no stale dim or duplicate outline when a recorded window moves/resizes/closes.                                                                                                                                                                                                                                                                                                                                                                |
+| P1       | Native window/display highlighting and recording handoff | Native Metal scene checks in both appearances verify the scrim, hover exit and recording toolbar handoff. A generated AppKit target retained one outline through move and resize and cleared it on closure. Physical pointer transitions across displays remain open.                                                                                                                                                                                                                                                                                                                                                                    |
 | P1       | Physical Windows DPI and monitor transitions             | Run both shells at OS 100/125/150/200%, mixed-DPI and negative-origin displays; verify cursor, crop pixels, bounds, caption hit targets and saved output.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | P1       | Preview display preference identity                      | Windows IDs match Electron 43 on the current monitor; simulated removal repositions the preview and retains the selected ID or falls back to primary. On the current single-display Mac, the GPUI preference ID, Electron ID and Core Graphics ID match; Electron and GPUI also agree on bounds and work area. See the [native comparison](tests/native/evidence/macos-ui/display-identity-20261116.txt). Arithmetic checks cover 125%/150% and negative origins. Unmarked legacy GPUI indexes may require reselection. Verify native multi-monitor transitions, mirroring and restarts, and cross-shell IDs on Linux.                   |
 | P1       | Complex framed screenshot preview versus export          | Single unbalanced frames with inset match the PNG in the tested light/dark cases at simulated 125% and 200%; one solid-background case also matches a reopened PNG at 73%, 100% and 150%. A 9:16 frame without inset, with or without shadow, matches a reopened PNG at 73%, 100% and 150% zoom in the local light/dark probes. At simulated 125%, pointer selection and dragging with a framed inset and an edge handle are checked. Balanced macOS frames with and without inset match in the matrix above. Verify more styles and zooms, transparent reopen, additional inset settings, attached layers and physical DPI transitions. |
@@ -9360,6 +9360,25 @@ another display remain outside this run.
 [Light compact grid](tests/native/evidence/macos-ui/history-tooltip-grid-light-20261119.png)
 [Dark compact list](tests/native/evidence/macos-ui/history-tooltip-list-dark-20261119.png)
 [Native fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-19 macOS native window and display picker rendering
+
+Both appearances passed the window and All-in-One display picker
+on the built-in 2× Retina display. In the native Metal scene,
+the window picker left a 720×480-pixel transparent hole over the
+generated target and dimmed the surrounding display at 50% opacity.
+Moving off the target or leaving the picker restored the scrim.
+The display picker cleared the scrim on entry, restored it on
+exit and left the retained handoff scene fully transparent
+after confirmation. Cancelling the recording controls removed it.
+
+Picking the generated window closed the selector and left one
+native AppKit outline. WindowServer verified the same outline ID
+at the resized target, two points outside each edge. Closing the
+target hid that outline. The probe used app-local input and stopped
+at the recording toolbar. Physical pointer delivery and movement
+across displays remain open.
+[Native selector and pixel evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 

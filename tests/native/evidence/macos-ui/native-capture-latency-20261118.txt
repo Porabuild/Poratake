@@ -2579,3 +2579,48 @@ dark-compact-grid    reveal bounds px (45,329)–(247,397) contrast 18.44:1 resi
 dark-compact-grid    delete bounds px (156,329)–(259,392) contrast 18.44:1 residual 0/6633
 dark-compact-list    reveal bounds px (44,333)–(234,382) contrast 18.44:1 residual 0/9538
 dark-compact-list    delete bounds px (100,333)–(203,382) contrast 18.44:1 residual 0/5188
+
+2026-11-19 macOS native window and display picker rendering
+
+The native GPUI smoke app used a temporary profile with Freeze Screen
+off and an app-local pointer. The daemon fixture supplied one window
+candidate with bounds taken from a generated AppKit window. It
+forwarded only outline show and hide calls to a helper built from the
+current Swift RecordingOverlayModule. The probe used no screen
+capture, media devices or privacy dialogs.
+
+The probe rendered each real AppKit selector's GPUI scene with
+Metal at 3456x2234. Horizontal and vertical scans matched the
+generated window boundaries at (650,1014)–(1370,1494) in pixels.
+The display samples were outside the toolbar and prompt. Every
+alpha byte in each confirmed display handoff scene was zero.
+
+light one native outline id=16609, (323, 505, 364, 244) -> (712, 350, 284, 324), hidden on target closure color=#5f6cd9
+light display recorded retained handoff scene and cleared on cancel
+light 11 native Metal selector scenes at 3456x2234; picker handoffs passed
+dark one native outline id=16618, (323, 505, 364, 244) -> (712, 350, 284, 324), hidden on target closure color=#8892ef
+dark display recorded retained handoff scene and cleared on cancel
+dark 11 native Metal selector scenes at 3456x2234; picker handoffs passed
+
+light window-idle center alpha 128, outside 128
+light window-hover center alpha 0, outside 128
+light window-leave-target center alpha 128, outside 128
+light window-hover-again center alpha 0, outside 128
+light window-exit center alpha 128, outside 128
+light record-window-hover center alpha 0, outside 128
+light display-idle display alpha 128 across 20 samples
+light display-hover display alpha 0 across 20 samples
+light display-exit display alpha 128 across 20 samples
+light display-hover-again display alpha 0 across 20 samples
+light display-confirmed display alpha 0 across 20 samples
+dark window-idle center alpha 128, outside 128
+dark window-hover center alpha 0, outside 128
+dark window-leave-target center alpha 128, outside 128
+dark window-hover-again center alpha 0, outside 128
+dark window-exit center alpha 128, outside 128
+dark record-window-hover center alpha 0, outside 128
+dark display-idle display alpha 128 across 20 samples
+dark display-hover display alpha 0 across 20 samples
+dark display-exit display alpha 128 across 20 samples
+dark display-hover-again display alpha 0 across 20 samples
+dark display-confirmed display alpha 0 across 20 samples

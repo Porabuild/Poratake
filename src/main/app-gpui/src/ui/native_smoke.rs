@@ -1534,14 +1534,31 @@ pub fn open(cx: &mut App) {
                         )
                         .is_ok();
                 }
+                #[cfg(not(test))]
+                if command == "selector scene" {
+                    let Some(handle) = cx
+                        .windows()
+                        .into_iter()
+                        .find(|window| window.downcast::<AreaOverlay>().is_some())
+                    else {
+                        return false;
+                    };
+                    return cx
+                        .update_window(handle, |_, window, _| {
+                            window.render_to_image().is_ok_and(|image| {
+                                image.save(output.join("selector-scene.png")).is_ok()
+                            })
+                        })
+                        .unwrap_or(false);
+                }
                 if matches!(
                     command.as_str(),
-                    "record all-in-one" | "record all-in-one window"
+                    "record all-in-one" | "record all-in-one window" | "record all-in-one screen"
                 ) {
-                    let target = if command.ends_with("window") {
-                        "window"
-                    } else {
-                        "area"
+                    let target = match command.as_str() {
+                        "record all-in-one window" => "window",
+                        "record all-in-one screen" => "screen",
+                        _ => "area",
                     };
                     crate::state::state(cx).config.update(|config| {
                         config.all_in_one.remember_choices = true;
@@ -1876,9 +1893,14 @@ pub fn open(cx: &mut App) {
                             modifiers: Modifiers::none(),
                             first_mouse: false,
                         }),
-                        "move" => PlatformInput::MouseMove(MouseMoveEvent {
+                        "move" | "hover" => PlatformInput::MouseMove(MouseMoveEvent {
                             position,
-                            pressed_button: Some(MouseButton::Left),
+                            pressed_button: (parts[0] == "move").then_some(MouseButton::Left),
+                            modifiers: Modifiers::none(),
+                        }),
+                        "exit" => PlatformInput::MouseExited(MouseExitEvent {
+                            position,
+                            pressed_button: None,
                             modifiers: Modifiers::none(),
                         }),
                         "up" => PlatformInput::MouseUp(MouseUpEvent {
