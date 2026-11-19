@@ -577,7 +577,7 @@ struct ScrollCapturePreviewTest {
             let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, ownerID) as? [[String: Any]]
             return rows?.first?[kCGWindowIsOnscreen as String] as? Bool == true
         }
-        let anchor = TooltipOwner(windowID: ownerID, fallbackFrame: initial)
+        let anchor = TooltipOwner(windowID: ownerID, fallbackFrame: nil)
 
         let registry = RecordingCaptureWindowRegistry()
         let tooltip = ProtectedTooltip(registry: registry)
@@ -629,6 +629,16 @@ struct ScrollCapturePreviewTest {
         let visibleAfterHide = try await pendingHide.value
         precondition(!visibleAfterHide && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
         print("tooltip owner hide: no reveal after screenshot barrier")
+
+        let hiddenAnchor = TooltipOwner(windowID: ownerID, fallbackFrame: moved)
+        precondition(tooltip.accept(sequence: 4, owner: ownerID, text: "Close preview"))
+        let visibleForHiddenOwner = try await tooltip.show(
+            sequence: 4, owner: ownerID, text: "Close preview", dark: true,
+            at: pointer, ownerFrame: hiddenAnchor.frame
+        )
+        print("tooltip owner already hidden: visible=\(visibleForHiddenOwner)")
+        fflush(stdout)
+        precondition(!visibleForHiddenOwner && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
     }
 
     static func verifyWideFixedHeaderSeam() {

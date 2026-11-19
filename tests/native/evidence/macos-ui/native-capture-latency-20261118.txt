@@ -3066,3 +3066,31 @@ above. The selector appearance numbers do not measure compositor
 paint. Both apps and the fixture daemon exited. The original pointer
 was restored and the pre-existing editor process remained running.
 The five Electron reference files passed all 145 tests.
+
+2026-11-19 macOS tooltip request for an already-hidden owner
+
+The native AppKit fixture ordered out its owner and waited for
+WindowServer to stop reporting it as visible. It then submitted a new
+show request with the owner ID, the last live frame, and an app-local
+pointer inside that frame. At 0a55ed6e the request exposed a tooltip.
+The revised fixture reported:
+
+tooltip owner move: visible=true
+tooltip owner hide: no reveal after screenshot barrier
+tooltip owner already hidden: visible=false
+
+The revised case also reads the live geometry for the moved owner
+without a submitted frame. The stale request creates no panel and
+adds no capture-exclusion ID. Both complete native suites and
+daemon typechecks passed, on arm64 and Rosetta x86_64. The three
+Electron and daemon contract test files passed all 70 tests.
+
+Desktop input control trial for the preceding capture shortcut run
+
+A separate blank AppKit window was registered as a temporary app.
+The desktop helper activated its exact window, and NSWorkspace
+reported its PID as frontmost. Both a CoreGraphics Escape and the
+desktop helper's Escape command left the local event log empty. The
+helper reported unverified delivery. The user ended desktop control
+and the probe apps were closed. This trial did not reproduce the
+missed Escape as a Poratake-specific issue.

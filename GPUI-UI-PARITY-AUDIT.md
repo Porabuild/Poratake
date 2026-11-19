@@ -9694,6 +9694,29 @@ input, and first composited frames remain unverified by this run.
 All 145 tests in the five related Electron reference files passed.
 [Per-trial results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltip requests after the owner hides
+
+The daemon now requires a visible WindowServer owner for each
+tooltip show request. It can still use the submitted geometry if
+the live owner has no readable bounds. It can also resolve a
+visible owner when the request omits the geometry.
+
+The native regression hid an AppKit owner before submitting a new
+tooltip request with its last frame. The old implementation showed the
+tooltip at that frame. The revised daemon suppressed it without
+creating a panel or registering an exclusion window. The existing
+cases for pointer movement, moving owners, and owners hidden
+during a screenshot wait still pass. The complete Swift fixtures and
+daemon typechecks passed on arm64 and x86_64, along with 70 targeted
+Electron and daemon contract tests.
+[Native tooltip results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+The overlay input check also tried Escape on a blank AppKit window
+whose PID was confirmed frontmost. The signed desktop helper
+reported unverified delivery and the window's local event monitor
+recorded no Escape. Physical Escape and drag behavior in the
+selector still need a session with verified input delivery.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -5,22 +5,21 @@ import QuartzCore
 @MainActor
 struct TooltipOwner {
     private let windowID: CGWindowID
-    private let fallbackFrame: NSRect
+    private let fallbackFrame: NSRect?
     private let processID: Int?
 
-    init(windowID: CGWindowID, fallbackFrame: NSRect) {
+    init(windowID: CGWindowID, fallbackFrame: NSRect?) {
         self.windowID = windowID
         self.fallbackFrame = fallbackFrame
         self.processID = Self.visibleWindow(windowID)?[kCGWindowOwnerPID as String] as? Int
     }
 
     var frame: NSRect {
-        guard let processID else { return fallbackFrame }
-        guard let window = Self.visibleWindow(windowID),
-              window[kCGWindowOwnerPID as String] as? Int == processID,
-              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+        guard let processID, let window = Self.visibleWindow(windowID),
+              window[kCGWindowOwnerPID as String] as? Int == processID else { return .null }
+        guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
               let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
-              let top = NSScreen.screens.first?.frame.maxY else { return .null }
+              let top = NSScreen.screens.first?.frame.maxY else { return fallbackFrame ?? .null }
         return NSRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
     }
 
