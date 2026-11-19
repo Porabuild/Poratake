@@ -163,9 +163,14 @@ impl Source {
             decode_frame(self.video.as_ref(), video_time, decode_wait)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
-            cached_frame(&mut self.camera_frame, video_time, || {
+            let had_camera_frame = self.camera_frame.is_some();
+            let camera = cached_frame(&mut self.camera_frame, video_time, || {
                 decode_frame(self.camera.as_ref(), video_time, decode_wait)
-            })
+            });
+            if had_camera_frame && camera.is_none() {
+                return None;
+            }
+            camera
         } else {
             let state = &self.engine.config().state;
             if state.camera_style.visible
@@ -250,10 +255,7 @@ fn cached_frame(
         );
     }
 
-    let Some(frame) = decoded else {
-        *cached = None;
-        return None;
-    };
+    let frame = decoded?;
     let decoded = Arc::downgrade(&frame.bgra);
     if let Some(cached) = cached.as_mut().filter(|cached| {
         cached.decoded.ptr_eq(&decoded)
@@ -263,12 +265,13 @@ fn cached_frame(
         cached.time = time;
         return Some(cached.pixmap.clone());
     }
-    *cached = to_pixmap(&frame).map(|pixmap| CachedFrame {
+    let pixmap = Arc::new(to_pixmap(&frame)?);
+    *cached = Some(CachedFrame {
         time,
         decoded,
-        pixmap: Arc::new(pixmap),
+        pixmap: pixmap.clone(),
     });
-    cached.as_ref().map(|cached| cached.pixmap.clone())
+    Some(pixmap)
 }
 
 /// A decoded BGRA frame as a tiny-skia RGBA pixmap. Decoded frames are opaque,
@@ -432,6 +435,60 @@ mod tests {
         cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
         let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
         assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
+    }
+
+    #[test]
+    fn a_missing_visible_camera_frame_holds_the_last_complete_preview() {
+        use crate::windows::video_editor::model::CameraSegment;
+
+        let mut state = VideoEditorState {
+            camera_segments: vec![CameraSegment {
+                id: "camera".into(),
+                start_time: 0.,
+                end_time: 1.,
+            }],
+            ..Default::default()
+        };
+        state.camera_style.visible = true;
+        let mut source = Source {
+            engine: Engine::new(Config::new(320., 180., state)),
+            video: None,
+            camera: None,
+            video_segments: Vec::new(),
+            video_frame: None,
+            camera_frame: None,
+            camera_warmup: None,
+        };
+        let screen = DecodedFrame {
+            width: 320,
+            height: 180,
+            bgra: [220, 140, 50, 255].repeat(320 * 180).into(),
+        };
+        let camera = DecodedFrame {
+            width: 32,
+            height: 32,
+            bgra: [12, 34, 240, 255].repeat(32 * 32).into(),
+        };
+        let has_camera_pixels = |frame: &Pixmap| {
+            frame.data().chunks_exact(4).any(|pixel| pixel == [240, 34, 12, 255])
+        };
+
+        cached_frame(&mut source.video_frame, 0., || Some(screen.clone())).unwrap();
+        assert!(!has_camera_pixels(&source.compose(0., None).unwrap()));
+        cached_frame(&mut source.camera_frame, 0., || Some(camera.clone())).unwrap();
+        assert!(has_camera_pixels(&source.compose(0., None).unwrap()));
+
+        for time in [0.25, 0.5] {
+            cached_frame(&mut source.video_frame, time, || Some(screen.clone())).unwrap();
+            assert!(source.compose(time, Some((160, 90))).is_none());
+        }
+
+        cached_frame(&mut source.video_frame, 0.75, || Some(screen.clone())).unwrap();
+        cached_frame(&mut source.camera_frame, 0.75, || Some(camera)).unwrap();
+        assert!(has_camera_pixels(&source.compose(0.75, None).unwrap()));
+
+        cached_frame(&mut source.video_frame, 1.25, || Some(screen)).unwrap();
+        assert!(!has_camera_pixels(&source.compose(1.25, None).unwrap()));
     }
 
     #[test]

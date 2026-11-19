@@ -8663,6 +8663,24 @@ with only the failed camera process. The revised app launched
 a second process and decoded camera frames during preview playback.
 All 1,187 GPUI tests passed.
 
+### 2026-11-19 macOS video preview during a missing visible camera frame
+
+After the editor has displayed a camera frame, a missing camera frame
+in a visible range now leaves the last complete preview in place. The
+cache retains its last valid frame through repeated misses. The screen
+can appear before the first camera frame, and an intentional camera
+gap still renders without a camera overlay.
+
+The regression checks initial screen-only playback, camera pixels
+on success, two consecutive misses at the reduced preview size,
+camera recovery and the screen-only gap. In native light and dark
+trials, a prerecorded camera decoded normally through one playback,
+then raw camera decode failed on the replay. Both missed updates
+left the previous preview available. Decoder delivery resumed
+after release. The attempted baseline used the rebuilt binary and
+was excluded. All 1,188 GPUI tests and the development FFmpeg
+camera visibility test passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
