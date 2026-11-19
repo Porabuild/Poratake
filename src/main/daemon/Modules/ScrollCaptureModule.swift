@@ -1433,23 +1433,43 @@ class ScrollCaptureModule: NSObject, Module {
         } else {
             hasAmbiguousMatches = false
         }
-        let requiresExactOverlap = hasAmbiguousMatches
+        let requiresExactOverlap = !footer.isExact
+            || hasAmbiguousMatches
             || bestScore / 3 > maxMeanOverlapChannelDifference
             || (headerHeight == 0 && bestMatch == minOverlap)
-        if !footer.isExact || requiresExactOverlap {
-            guard let (overlap, alternative) = exactFullImageOverlap(
+        var wideScore: Double?
+        if !requiresExactOverlap, stripWidth < topFrame.width,
+           scores.contains(where: { $0.overlap == bestMatch && $0.score == 0 }) {
+            let height = min(stripHeight, bestMatch - headerHeight)
+            guard !isCancelled(),
+                  let top = extractStrip(
+                      from: topFrame, y: contentHeight - height, height: height, width: topFrame.width
+                  ),
+                  !isCancelled(),
+                  let bottom = extractStrip(
+                      from: bottomFrame, y: bestMatch - height, height: height, width: bottomFrame.width
+                  ) else { return nil }
+            if top != bottom {
+                wideScore = compareStrips(top, bottom[...]) / 3
+            }
+        }
+        if requiresExactOverlap || wideScore != nil {
+            if let (overlap, alternative) = exactFullImageOverlap(
                 topFrame: topFrame,
                 bottomFrame: bottomFrame,
                 contentHeight: contentHeight,
                 minimumOverlap: minimumOverlapRows,
                 isCancelled: isCancelled
-            ), alternative < minimumOverlapRows else {
+            ) {
+                guard alternative < minimumOverlapRows else { return nil }
+                return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
+            }
+            guard !requiresExactOverlap, let wideScore, wideScore <= maxMeanOverlapChannelDifference else {
                 return nil
             }
-            return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
         }
 
-        guard bestMatch < contentHeight else { return nil }
+        guard !isCancelled(), bestMatch < contentHeight else { return nil }
         return ScrollFrameAlignment(overlap: bestMatch, footerHeight: footerHeight)
     }
 

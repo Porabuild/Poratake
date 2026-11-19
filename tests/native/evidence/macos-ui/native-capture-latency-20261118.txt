@@ -2624,3 +2624,33 @@ dark display-hover display alpha 0 across 20 samples
 dark display-exit display alpha 128 across 20 samples
 dark display-hover-again display alpha 0 across 20 samples
 dark display-confirmed display alpha 0 across 20 samples
+
+2026-11-19 macOS wide fixed-header scroll seam validation
+
+The optimized Swift fixture generated two 1280x160 frames
+86 rows apart, with one fixed 24-row header. The new area of
+the second frame repeats 40 rows in its center 800 pixels.
+The outer columns retain unique document rows. All pixels
+are generated in the fixture. No desktop pixels were sampled.
+
+Baseline at 0a2804cb selected 120 overlap rows and failed
+the new regression. The fixed matcher selected 74 and
+produced a 1280x246 preview and PNG matching the expected
+page byte for byte. The arm64 and Rosetta x86_64 fixture suites
+passed, including existing noisy, ambiguous and cancelled stitch
+checks. All 56 Electron scroll tests passed.
+
+The matcher-only timing used two generated 3456x640 frames
+with a fixed 56-row header and a 320-row translation. The
+expected overlap was always 320. Before and after runs alternated
+in six processes, with two warmups and eight measured samples
+per launch. Times are milliseconds.
+
+before 11.95, 11.96, 12.08, 11.74, 11.76, 11.49, 11.62, 11.44
+after 12.09, 12.44, 12.43, 12.13, 12.15, 12.06, 12.29, 11.97
+after 12.23, 12.30, 12.60, 12.44, 13.11, 12.87, 12.19, 12.45
+before 12.31, 12.15, 11.64, 11.36, 12.49, 11.85, 11.53, 11.54
+before 12.15, 12.36, 12.10, 12.47, 12.00, 12.25, 12.15, 12.20
+after 12.59, 12.83, 13.35, 12.88, 12.59, 12.55, 12.49, 12.45
+before: 24 samples, median 11.98 ms, range 11.36–12.49 ms
+after: 24 samples, median 12.45 ms, range 11.97–13.35 ms

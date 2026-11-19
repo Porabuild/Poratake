@@ -125,7 +125,7 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
-    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false, headerHeight: Int = 0) -> CGImage {
+    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false, headerHeight: Int = 0, bodyRow: ((Int, Int) -> Int)? = nil) -> CGImage {
         var pixels = [UInt8]()
         pixels.reserveCapacity(width * height * 4)
         for y in 0..<height {
@@ -158,7 +158,8 @@ struct ScrollCapturePreviewTest {
                         pixel = [UInt8((absoluteY % 8) * 30), 0, 0, 255]
                     }
                 } else {
-                    let absoluteY = UInt32(truncatingIfNeeded: y + index * step)
+                    let row = y + index * step
+                    let absoluteY = UInt32(truncatingIfNeeded: bodyRow?(x, row) ?? row)
                     let value = absoluteY &* 0x45d9f3b &+ UInt32(x) &* 0x119de1f3
                     pixel = [
                         UInt8(value % 200) + UInt8(index * bodyNoise),
@@ -487,8 +488,46 @@ struct ScrollCapturePreviewTest {
         print("tooltip pointer exit: no reveal after either capture barrier")
     }
 
+    static func verifyWideFixedHeaderSeam() {
+        let wideWidth = 1280
+        let wideViewport = 160
+        let wideShift = 86
+        let repeatedCenter: (Int, Int) -> Int = { x, row in
+            (240..<1040).contains(x) && (166..<206).contains(row) ? row - 46 : row
+        }
+        let wideFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: false, width: wideWidth, height: wideViewport,
+                footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
+            )
+        }
+        let wideOverlap = ScrollCaptureModule().testFindOverlap(
+            topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
+        )
+        print("wide fixed-header overlap:", wideOverlap as Any)
+        fflush(stdout)
+        precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
+        let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-wide-fixed-header-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: wideOutput) }
+        let (widePreview, wideSaved, _, wideOverlaps, wideCount, wideHeight) = ScrollCaptureModule().testPreviewAndSave(
+            frames: wideFrames, step: wideShift, outputPath: wideOutput.path
+        )
+        let wideDocument = fixedFooterFrame(
+            index: 0, periodic: false, width: wideWidth, height: wideViewport + wideShift,
+            footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
+        )
+        precondition(wideCount == 2 && wideHeight == wideViewport + wideShift)
+        precondition(wideOverlaps == [wideViewport - wideShift])
+        precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
+    }
+
     @MainActor
     static func main() {
+        if CommandLine.arguments.contains("--wide-fixed-header-seam") {
+            verifyWideFixedHeaderSeam()
+            return
+        }
         if CommandLine.arguments.contains("--tooltip-placement") {
             verifyTallTooltipPlacement()
             return
@@ -2566,6 +2605,7 @@ struct ScrollCapturePreviewTest {
                 topFrame: noisyFrames[0], bottomFrame: noisyFrames[1], expectedOverlap: viewportHeight - bodyShift + 11
             ) == expectedOverlap, "A short visible seam with capture noise must align below the header")
         }
+        verifyWideFixedHeaderSeam()
         for shift in [84, 85] {
             let repeatedBodyFrames = (0..<2).map { index in
                 fixedFooterFrame(

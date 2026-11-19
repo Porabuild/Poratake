@@ -9380,6 +9380,27 @@ at the recording toolbar. Physical pointer delivery and movement
 across displays remain open.
 [Native selector and pixel evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS wide fixed-header scroll seam validation
+
+A generated 1280-pixel-wide page repeated the same rows in
+its center while retaining distinct content at the sides.
+The old matcher chose a 120-pixel overlap and would have
+omitted 46 rows. The revised matcher checks the full-width
+strip when its center matches exactly. When the sides differ,
+the existing whole-image matcher can recover an exact seam.
+When it finds no exact seam, the full-width difference must meet
+the existing confidence threshold.
+
+The revised overlap was 74 pixels. Both the preview and saved
+1280×246 PNG matched the generated document pixel for pixel,
+including one fixed header. The complete native fixture passed
+on arm64 and x86_64 under Rosetta, and 56 Electron scroll tests
+passed. A 3456×640 ordinary seam took a median 11.98 ms before
+and 12.45 ms after, across 24 samples per build. This measures
+the matcher. Histories that produce identical complete frames
+remain ambiguous.
+[Native seam and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
