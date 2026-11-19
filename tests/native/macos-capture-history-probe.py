@@ -182,6 +182,28 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening == "standalone-pin":
+                capture_area()
+                eventually("preview ready")
+                source, = captured_files(1)
+                png = source.read_bytes()
+                target = captures / "standalone-pin.png"
+                os.mkfifo(target)
+                send("pin fixture")
+                with held_read(target, png):
+                    start = monotonic()
+                    send("status")
+                    assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
+                    reply_ms = (monotonic() - start) * 1000
+                    assert not command("pin ready")
+                eventually("pin ready")
+                assert not command("editor ready")
+                assert target.read_bytes() == png
+                print(f"app status replied in {reply_ms:.1f} ms while the pin image read was held")
+                print("the standalone pin opened after release")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
             if opening == "direct-editor":
                 os.mkfifo(history_path)
                 capture_area()
@@ -433,6 +455,7 @@ if __name__ == "__main__":
         ["--recording"],
         ["--editor-open"],
         ["--direct-editor"],
+        ["--standalone-pin"],
         ["--annotation-save"],
         ["--editor-print"],
         ["--history-open"],
@@ -453,10 +476,10 @@ if __name__ == "__main__":
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
                 next(
-                    (mode for mode in ("direct-editor", "annotation-save", "editor-print") if sys.argv[1:] == [f"--{mode}"]),
+                    (mode for mode in ("direct-editor", "annotation-save", "editor-print", "standalone-pin") if sys.argv[1:] == [f"--{mode}"]),
                     None,
                 ),
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

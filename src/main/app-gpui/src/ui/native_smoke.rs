@@ -1653,6 +1653,15 @@ pub fn open(cx: &mut App) {
                         .update_window(handle, |_, window, cx| window.dispatch_event(event, cx))
                         .is_ok();
                 }
+                if command == "pin fixture" {
+                    crate::windows::pin::PinWindow::open_file(cx, output.join("standalone-pin.png"));
+                    return true;
+                }
+                if command == "pin ready" {
+                    return cx.windows().iter().any(|handle| {
+                        handle.downcast::<crate::windows::pin::PinWindow>().is_some()
+                    });
+                }
                 if command == "editor ready" {
                     return cx.windows().iter().any(|handle| {
                         handle.downcast::<crate::editor::EditorWindow>().is_some()

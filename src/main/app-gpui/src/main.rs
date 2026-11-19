@@ -362,10 +362,7 @@ fn main() {
                             eprintln!("[cli] --preview-window pin needs an image path");
                             return;
                         };
-                        match std::fs::read(&path) {
-                            Ok(bytes) => windows::pin::PinWindow::open(cx, bytes),
-                            Err(error) => eprintln!("[cli] cannot read {path}: {error}"),
-                        }
+                        windows::pin::PinWindow::open_file(cx, path.into());
                     }
                     Some("toast") => {
                         windows::toast::Toast::show(cx, "Capture failed", "No display available")

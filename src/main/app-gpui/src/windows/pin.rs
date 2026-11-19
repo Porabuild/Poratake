@@ -1,6 +1,7 @@
 //! Pin window — a borderless always-on-top image viewer, port of the Electron
 //! `pin-window` (screenshot pinned to desktop).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{div, img, prelude::*, px, size, App, Bounds, Context, Render, Styled, Window};
@@ -16,10 +17,33 @@ pub struct PinWindow {
 }
 
 impl PinWindow {
-    pub fn open(cx: &mut App, png_bytes: Vec<u8>) {
-        if let Ok(decoded) = crate::render::images::decode(&png_bytes) {
-            Self::open_with_restore(cx, Self::prepare_image(decoded.into_rgba8()), None);
-        }
+    pub(crate) fn open_file(cx: &mut App, path: PathBuf) {
+        cx.spawn(async move |cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = (|| {
+                        let bytes = std::fs::read(&path)?;
+                        let decoded = crate::render::images::decode(&bytes)?;
+                        Ok::<_, anyhow::Error>(Self::prepare_image(decoded.into_rgba8()))
+                    })();
+                    result.map_err(|error| format!("{}: {error}", path.display()))
+                })
+                .await;
+            cx.update(|cx| match prepared {
+                Ok(image) => {
+                    if !Self::open_with_restore(cx, image, None) {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Pin failed",
+                            "Could not open the pinned screenshot",
+                        );
+                    }
+                }
+                Err(error) => crate::windows::toast::Toast::show(cx, "Pin failed", error),
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn open_for_editor(
@@ -332,11 +356,12 @@ mod tests {
                 .unwrap(),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
-        let mut bytes = std::io::Cursor::new(Vec::new());
+        let path = directory.path().join("standalone.png");
         image::RgbaImage::from_pixel(320, 180, image::Rgba([64, 112, 192, 255]))
-            .write_to(&mut bytes, image::ImageFormat::Png)
+            .save(&path)
             .unwrap();
-        cx.update(|cx| PinWindow::open(cx, bytes.into_inner()));
+        cx.update(|cx| PinWindow::open_file(cx, path));
+        cx.run_until_parked();
         let pin = cx.read(|cx| cx.windows()[0]);
         let mut visual = gpui::VisualTestContext::from_window(pin, cx);
         assert!(visual.simulate_close());

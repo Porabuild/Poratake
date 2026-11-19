@@ -391,15 +391,9 @@ fn open_picked_image(cx: &mut App) {
 }
 
 fn pin_picked_image(cx: &mut App) {
-    pick_file(
-        "Pin Image",
-        IMAGE_EXTENSIONS,
-        cx,
-        |path, cx| match std::fs::read(&path) {
-            Ok(bytes) => crate::windows::pin::PinWindow::open(cx, bytes),
-            Err(error) => eprintln!("[intent] failed to read {}: {error}", path.display()),
-        },
-    );
+    pick_file("Pin Image", IMAGE_EXTENSIONS, cx, |path, cx| {
+        crate::windows::pin::PinWindow::open_file(cx, path);
+    });
 }
 
 fn open_picked_video(cx: &mut App) {

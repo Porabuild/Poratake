@@ -8444,6 +8444,23 @@ export, with and without a history entry. All 1,183 GPUI tests passed.
 PORATAKE_PARITY_PIN_ONLY=1 PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 src/main/target/debug/poratake-gpui --parity
 ```
 
+### 2026-11-19 macOS standalone pin file loading
+
+The tray picker and the development pin command both use the same
+background image loader. It reads the file, decodes the color-managed
+image and prepares its pixels before the app opens the pin window.
+Read and decode failures now display a Pin failed notification.
+
+With the selected PNG read deliberately held, the native probe
+received app status in 0.8 ms in light mode and 0.4 ms in dark mode.
+The pin opened after the read completed. The focused light and dark
+Metal pin workflows passed, including standalone layout and close
+and the editor-backed round trip.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --standalone-pin
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
