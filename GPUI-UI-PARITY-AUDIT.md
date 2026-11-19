@@ -8546,6 +8546,22 @@ part of the stalled updates. FFmpeg decode, raw pipe delivery and
 host scheduling within that wait remain open. All 1,183 GPUI tests passed.
 [Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K60 decoder timestamp and payload timing
+
+The opt-in playback trace now records the FFmpeg process ID, frame
+timestamp, wait for the timestamp channel and time to read the
+pixel payload. Four unthrottled 4K60 runs delivered 176–180
+preview updates in the three-second measurement interval. The
+largest completed decoded-frame wait in that interval was 24 ms.
+
+Two controlled runs exercised different parts of the trace.
+Pacing FFmpeg input at 0.6× made timestamp wait dominate a 686 ms
+request. Pacing the raw payload relay with an added 20 ms per frame
+made payload acquisition dominate a 1,299 ms request. This
+distinguishes timestamp and payload stalls in a future recurrence.
+The unthrottled tests did not reproduce the earlier long stall.
+[Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

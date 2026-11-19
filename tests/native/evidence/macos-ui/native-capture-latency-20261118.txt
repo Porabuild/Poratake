@@ -1270,3 +1270,36 @@ interval. In the light stall, the preview had already reduced to
 480x270. Decoder wait dominated all samples that stalled. The
 evidence does not isolate FFmpeg processing from raw pipe transport
 or scheduling within that wait.
+
+2026-11-19 macOS 4K60 decoder pipe phase calibration
+
+The opt-in native playback trace logs per-process frame PTS,
+time waiting for showinfo via the timestamp channel, and time from
+receiving that timestamp through allocating and reading the complete
+BGRA buffer. These times include host scheduling in the respective
+phase. The reader then forwards the frame to the decoder, and that
+queue wait is outside the two pipe fields.
+
+A generated six-second 3840x2160 H.264 60 fps clip played in the
+fixture app. The interval was 0.5–3.5 seconds after the app-local
+play command. Slowest wait is the longest completed VideoDecoder
+frame request associated with an update in that interval. Pipe sums
+include completed frame reads whose trace appeared during that wait.
+A read may start before the request window or complete after it,
+so the sums are diagnostic and may differ from the request total.
+
+Run                   Updates  Slowest wait     Frames in wait  Timestamp sum/max  Payload sum/max
+Light normal              180          0.0 ms         0             –                  –
+Dark normal               176         24.2 ms         2           0.0/0.0 ms        39.0/21.6 ms
+Light normal              180          0.0 ms         0             –                  –
+Dark normal               180          0.0 ms         0             –                  –
+Dark paced input           28        685.8 ms        25         445.9/23.3 ms      247.9/10.1 ms
+Dark paced payload          2       1298.6 ms        31           0.1/0.0 ms      1306.1/45.6 ms
+
+For the two controlled runs the FFmpeg wrapper was selected through
+PORATAKE_FFMPEG_PATH. The input wrapper inserted -readrate 0.6;
+the payload wrapper relayed unmodified raw stdout bytes and waited
+20 ms before the first chunk per frame. The relay also adds its own
+pipe overhead. The ordinary app configuration did not change.
+The artificial stalls calibrate the trace for both phases; the
+original intermittent stall remains unclassified inside the decoder.

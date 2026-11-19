@@ -739,14 +739,35 @@ mod backend {
             let _ = child.wait();
             return None;
         }
+        #[cfg(all(feature = "parity", target_os = "macos"))]
+        let trace_pid = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
+            .map(|_| child.id());
         let (frame_tx, frames) = mpsc::sync_channel(1);
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
-                while let Ok(timestamp) = timestamp_rx.recv() {
+                loop {
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let timestamp_started = trace_pid.map(|_| std::time::Instant::now());
+                    let Ok(timestamp) = timestamp_rx.recv() else {
+                        break;
+                    };
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
                     let mut bytes = vec![0; frame_size];
                     if output.read_exact(&mut bytes).is_err() {
                         break;
+                    }
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    if let (Some(pid), Some(started), Some(received)) =
+                        (trace_pid, timestamp_started, timestamp_received)
+                    {
+                        println!(
+                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3}",
+                            timestamp - start_time,
+                            received.duration_since(started).as_secs_f64() * 1000.,
+                            received.elapsed().as_secs_f64() * 1000.,
+                        );
                     }
                     if frame_tx
                         .send(Some(TimedFrame {
