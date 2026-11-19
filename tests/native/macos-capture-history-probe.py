@@ -10,7 +10,7 @@ from queue import Queue
 from struct import pack, unpack
 from subprocess import PIPE, Popen
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Lock, Thread
 from time import monotonic, sleep
 from zlib import compress, crc32
 
@@ -32,7 +32,22 @@ def fixture_daemon():
         + chunk(b"IDAT", compress(row * height))
         + chunk(b"IEND", b"")
     )
-    print(json.dumps({"event": "system:ready", "data": {"pid": os.getpid()}}), flush=True)
+    output = Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"])
+    reply_lock = Lock()
+
+    def emit(message):
+        with reply_lock:
+            print(json.dumps(message), flush=True)
+
+    def reject_held_camera_retry(request_id):
+        deadline = monotonic() + 12
+        while not (output / "camera-retry.release").exists() and monotonic() < deadline:
+            sleep(.01)
+        emit({"id": request_id, "success": False,
+              "error": {"code": "CAPTURE_ERROR", "message": "Fixture rejected the late preview retry"}})
+        (output / "camera-retry.replied").touch()
+
+    emit({"event": "system:ready", "data": {"pid": os.getpid()}})
     for line in sys.stdin:
         request = json.loads(line)
         method = request["module"], request["method"]
@@ -41,17 +56,16 @@ def fixture_daemon():
         result = {}
         if method == ("screenshot", "capture-area"):
             path = Path(request["params"]["path"])
-            assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
+            assert path.is_relative_to(output)
             path.write_bytes(png)
             result = {"path": str(path), "width": width, "height": height}
         elif method == ("print", "image"):
-            output = Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"])
             printed = output / "printed.tmp"
             printed.write_bytes(b64decode(request["params"]["imageBase64"], validate=True))
             printed.replace(output / "printed.png")
         elif method == ("screen-recorder", "start"):
             path = Path(request["params"]["outputPath"])
-            assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
+            assert path.is_relative_to(output)
             shutil.copyfile(clip, path)
         elif method == ("screen-recorder", "stop"):
             result = {"duration": 2.0}
@@ -60,10 +74,15 @@ def fixture_daemon():
         elif method == ("camera-preview", "setContentProtection"):
             result = {"protected": request["params"]["enabled"]}
         elif camera_retry and method == ("camera-preview", "show"):
-            output = Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"])
             with (output / "camera-preview-requests.jsonl").open("a") as log:
                 log.write(json.dumps(request["params"]) + "\n")
+            if (output / "camera-retry.hold").exists():
+                Thread(target=reject_held_camera_retry, args=(request["id"],), daemon=True).start()
+                continue
             result = {"visible": True}
+        elif camera_retry and method == ("camera-preview", "hide"):
+            (output / "camera-preview.hidden").touch()
+            result = {"visible": False}
         else:
             assert method in {
                 ("freeze-screen", "prewarm"),
@@ -72,7 +91,7 @@ def fixture_daemon():
                 ("desktop-icons", "show"),
             }, method
         response = {"id": request["id"], "success": True, "result": result}
-        print(json.dumps(response), flush=True)
+        emit(response)
 
 
 @contextmanager
@@ -206,11 +225,27 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 device_ids = [json.loads(line).get("deviceId") for line in requests.read_text().splitlines()]
                 assert device_ids == ["generated-camera", "generated-camera"], device_ids
                 assert command("camera-state")
+                (captures / "camera-retry.hold").touch()
+                assert command("camera-select generated-camera")
+                eventually("camera-pending")
+                assert not (captures / "camera-preview.hidden").exists()
+                stop_started = monotonic()
                 command("stop")
                 eventually("video preview ready")
+                preview_ms = (monotonic() - stop_started) * 1000
+                assert (captures / "camera-preview.hidden").exists()
+                assert not (captures / "camera-retry.replied").exists()
+                device_ids = [json.loads(line).get("deviceId") for line in requests.read_text().splitlines()]
+                assert device_ids == ["generated-camera"] * 3, device_ids
+                (captures / "camera-retry.release").touch()
+                deadline = monotonic() + 5
+                while not (captures / "camera-retry.replied").exists():
+                    assert monotonic() < deadline, "held camera reply did not return"
+                    sleep(.01)
+                assert command("video preview ready")
                 assert command("quit")
                 assert app.wait(timeout=6) == 0
-                print("camera selection during recording retried the locked preview and preserved the recording")
+                print(f"recording stopped and preview opened in {preview_ms:.1f} ms before the held camera retry returned")
                 return
             if opening == "standalone-pin":
                 capture_area()

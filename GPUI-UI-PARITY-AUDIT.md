@@ -10251,6 +10251,20 @@ preview recovery is still unverified. All 97 related Electron and
 daemon contract tests passed.
 [Toolbar camera retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Stop while a camera preview retry is pending
+
+The native GPUI smoke fixture held a camera-preview Show reply
+during an active recording, then sent Stop. GPUI issued the camera
+preview Hide request and opened the decoded recording preview while
+the retry was still pending. The fixture then released a rejected retry and
+verified that the recording preview remained available.
+
+Stop to decoded preview took 148.2 ms in light and 61.9 ms in dark.
+These are app-local smoke timings with bundled video and a simulated
+daemon. They exclude hardware startup and compositor presentation.
+All 97 related Electron and daemon contract tests passed.
+[Stop and camera retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

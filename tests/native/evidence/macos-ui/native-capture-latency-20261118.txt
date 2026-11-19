@@ -3791,3 +3791,20 @@ No camera-preview hide was sent during the retry. The recording
 preview opened after Stop. The accepted path is also covered by
 the retained --camera-retry native smoke mode. No camera hardware
 was opened. All 97 Electron and daemon contract tests passed.
+
+2026-11-19 macOS Stop with a held camera retry at cb301ae0
+
+The GPUI camera retry smoke mode selected the locked source during
+recording, waited for pending state, and held the daemon reply.
+Stop sent the preview Hide request and produced a decoded recording
+preview before the held reply was released. The fixture then returned
+a camera-preview Show error. The recording preview stayed ready.
+
+Appearance   Stop to decoded recording preview
+light        148.2 ms
+dark          61.9 ms
+
+The test used the development GPUI app, isolated profiles and a
+simulated daemon that supplied a bundled recording. It exercised
+no camera device and posted no system input. All 97 related
+Electron and daemon contract tests passed.
