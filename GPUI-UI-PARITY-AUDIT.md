@@ -10668,6 +10668,25 @@ It exercised a scrub in progress and timeline hover. All 190
 targeted GPUI tests and 48 Electron reference tests passed.
 [Scrub and hover measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS playback past delayed camera metadata
+
+Playback and composition share the same camera visibility check.
+If the playhead reaches a screen-only section while camera
+metadata is pending, the editor releases that wait and renders the
+latest request. The decoder stays available when the camera returns.
+
+A generated 320×180 clip played through a camera segment ending
+at 0.8 seconds in light and dark. With the metadata gate still
+closed, the updated editor resumed at a playhead around 0.801 s.
+In the repeat after the build finished, the resumed frame arrived
+804–805 ms after Play. The baseline held its previous frame until
+the probe released metadata at 1.2 seconds. Paused screen and
+camera frames matched the baseline byte for byte after release.
+
+The times measure ready frames in the app using a fixture daemon.
+All 178 GPUI tests and 48 Electron reference tests passed.
+[Playback and delayed camera evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

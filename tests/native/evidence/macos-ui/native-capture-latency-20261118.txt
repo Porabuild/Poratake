@@ -4296,3 +4296,31 @@ build. The 320x180 run fits every preview quality tier.
 A repeat with the final development binary returned in 57.3 ms
 for light scrub, 58.9 ms for dark scrub, 55.6 ms for light hover
 and 45.1 ms for dark hover. PNG comparison passed again.
+
+2026-11-19 macOS playback past delayed camera metadata at dfcec62f
+
+The fixture used a generated 320x180 H.264 screen recording
+at 30 fps and a 160x90 camera sidecar. The camera was visible
+from 0.3 to 0.8 s. The fixture withheld the camera metadata
+probe and waited for an on-time screen decode from within that
+segment. Baseline playback published no complete screen-only
+frame after the segment until the gate opened at 1.2 s after
+Play. The updated probe waited for that frame before opening
+the gate. Both builds were still playing when the gate opened.
+
+Run                Theme   First screen-only playhead (s)   Time from Play (ms)
+Baseline           light                          1.3019                  1341.6
+Baseline           dark                           1.3677                  1398.9
+Updated            light                          0.8010                  1090.4
+Updated            dark                           0.8016                  1003.5
+Baseline repeat    light                          1.3669                  1417.5
+Baseline repeat    dark                           1.3017                  1329.0
+Updated repeat     light                          0.8009                   804.4
+Updated repeat     dark                           0.8014                   804.8
+
+The first run shared the host with Rust compilation. The repeat
+started after it finished. Times stop at the app's frame update
+signal. After the gate released and playback ended, snapshots
+from paused seeks to 0.45 s and 1.2 s matched the baseline bytes
+in each appearance in both runs. The segment boundary regression
+also covers the first-frame still's timeline offset.

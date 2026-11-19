@@ -874,15 +874,29 @@ impl VideoEditorWindow {
         let max_dimensions =
             (self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some())
                 .then_some(ACTIVE_PREVIEW_SIZES[self.preview_quality]);
+        let camera_visible_in_playback = self.is_playing
+            && crate::video::sidecars::editor_camera_visible_at(
+                &self.state,
+                time,
+                first_frame_duration(&self.state),
+            );
         if self.compose_in_flight || self.preview_commit_pending {
             self.queued_frame = Some(time);
+            if self.is_playing && !camera_visible_in_playback {
+                self.supersede_camera_wait();
+            }
             return;
         }
         let (cancellation, cancelled) = smol::channel::bounded(1);
         self.preview_frame_cancellation = Some(cancellation);
-        let (camera_wait, camera_wait_superseded) = (!self.is_playing || self.is_scrubbing)
-            .then(|| smol::channel::bounded(1))
-            .unzip();
+        let interruptible_camera_wait = !self.is_playing
+            || self.is_scrubbing
+            || (camera_visible_in_playback
+                && source
+                    .try_lock()
+                    .is_none_or(|source| source.camera_metadata_pending()));
+        let (camera_wait, camera_wait_superseded) =
+            interruptible_camera_wait.then(|| smol::channel::bounded(1)).unzip();
         self.preview_camera_wait = camera_wait;
         self.compose_in_flight = true;
         self.queued_frame = None;

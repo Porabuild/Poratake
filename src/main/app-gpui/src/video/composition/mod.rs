@@ -147,14 +147,11 @@ impl Engine {
     }
 
     pub(crate) fn camera_visible_at(&self, timeline_time: f64) -> bool {
-        let camera_time = timeline_time - self.first_frame_duration();
-        let state = &self.config.state;
-        camera_time >= 0.0
-            && state.camera_style.visible
-            && crate::video::sidecars::is_camera_visible_at(
-                Some(&state.camera_segments),
-                camera_time,
-            )
+        crate::video::sidecars::editor_camera_visible_at(
+            &self.config.state,
+            timeline_time,
+            self.first_frame_duration(),
+        )
     }
 
     /// `getCompositionDimensions`.

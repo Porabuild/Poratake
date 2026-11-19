@@ -104,6 +104,10 @@ impl Source {
             .unwrap_or_default()
     }
 
+    pub(super) fn camera_metadata_pending(&self) -> bool {
+        self.camera_opening.is_some()
+    }
+
     /// Applies edited state to the engine so the next composed frame reflects
     /// it. Backgrounds are reloaded only when their source changed.
     pub fn set_state(&mut self, state: VideoEditorState) {
