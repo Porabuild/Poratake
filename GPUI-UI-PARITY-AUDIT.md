@@ -10768,6 +10768,28 @@ under encoding load remains open. Nineteen GPUI decoder tests
 and 48 Electron reference tests passed.
 [Decoder memory and stage measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS decoder cleanup for a hidden paused editor
+
+The paused video editor retires its preview decoder when an
+onscreen window is hidden or minimized. It keeps the composed
+preview. AppKit reports a covered window as still onscreen,
+so the editor keeps its decoder available through ordinary
+occlusion. [AppKit visibility documentation](https://developer.apple.com/documentation/appkit/nswindow/isvisible)
+
+In light and dark 4K fixtures, hiding and minimizing each
+released an FFmpeg process that held 882–884 MiB in the baseline.
+Showing the window presented the existing preview without
+starting another decoder. The displayed image and the next
+seek matched the baseline bytes. The repeat measured the first
+seek after release at 547–731 ms, compared with 181–204 ms
+while the baseline decoder was warm. A separate opaque fixture
+covered the editor and confirmed that its decoder stayed open.
+
+The tests measured app-local visibility and readiness with
+generated media. All 190 targeted GPUI tests and 48 Electron
+reference tests passed.
+[Hidden editor memory and seek measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

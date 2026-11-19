@@ -4446,3 +4446,29 @@ The automatic and four-thread FFmpeg framehash manifests
 matched all 180 full BGRA frames and timestamps. The matching
 manifest SHA-256 was
 33dc4c4014c2aeae2c68dbeea985188e4cb2ec637fdc709406f70df317456a8a.
+
+2026-11-19 macOS decoder cleanup for a hidden paused editor at 7c821eb5
+
+The development app opened a generated 3840x2160 H.264 clip
+at 30 fps and paused at 0.35 s. The probe hid or minimized
+the temporary editor. The baseline FFmpeg process remained
+resident. The updated process exited in both appearances.
+The app showed the retained image at restore, then sought to
+0.75 s. The table covers the repeat after the build was done.
+
+Gesture  Theme   Baseline decoder MiB   Show before/after ms   Seek before/after ms
+Hide     light                 882.64             24.5 / 16.3          200.7 / 605.9
+Hide     dark                  883.92             23.4 / 30.4          195.4 / 730.5
+Minimize light                 882.24           555.6 / 537.4          203.9 / 590.8
+Minimize dark                  883.56           558.0 / 553.2          180.6 / 547.2
+
+Show times include the native visibility transition. Seek
+times end at the app's complete frame update. Restoring
+the editor started no decoder in either variant. The updated
+build started a fresh decoder for the next seek. All eight
+retained-image and seek PNG pairs matched byte for byte.
+
+An opaque fixture window covered the paused editor completely.
+The updated decoder remained resident at 883.44 MiB in light
+and 883.78 MiB in dark. Uncovering and seeking used the same
+process and preserved the paused preview.

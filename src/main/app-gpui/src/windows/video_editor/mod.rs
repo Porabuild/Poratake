@@ -221,6 +221,10 @@ pub struct VideoEditorWindow {
     sidebar_animation_generation: u64,
     sidebar_closing: bool,
     bounds_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_visibility_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_window_hidden: bool,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
@@ -289,6 +293,19 @@ impl VideoEditorWindow {
                         .show();
                 });
                 view.update(cx, |editor, cx| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        editor.preview_window_hidden =
+                            crate::system::window_visibility::is_minimized_or_hidden(window);
+                        editor.preview_visibility_sub = Some(cx.observe_window_visibility(
+                            window,
+                            |editor, visibility, window, _| {
+                                editor.preview_window_hidden = !visibility.is_visible()
+                                    && crate::system::window_visibility::is_minimized_or_hidden(window);
+                                editor.release_hidden_preview_buffers();
+                            },
+                        ));
+                    }
                     let mut last_size = window.bounds().size;
                     editor.bounds_sub =
                         Some(cx.observe_window_bounds(window, move |_, window, _| {
@@ -450,6 +467,10 @@ impl VideoEditorWindow {
             sidebar_animation_generation: 0,
             sidebar_closing: false,
             bounds_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_visibility_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_window_hidden: false,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
@@ -865,6 +886,16 @@ impl VideoEditorWindow {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn release_hidden_preview_buffers(&mut self) {
+        if !self.preview_window_hidden || self.is_playing || self.compose_in_flight {
+            return;
+        }
+        if let Some(mut source) = self.source.as_ref().and_then(|source| source.try_lock()) {
+            source.release_buffered_frames();
+        }
+    }
+
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else {
@@ -970,6 +1001,8 @@ impl VideoEditorWindow {
                 if this.queued_frame.take().is_some() {
                     this.request_frame(cx);
                 }
+                #[cfg(target_os = "macos")]
+                this.release_hidden_preview_buffers();
             });
         })
         .detach();

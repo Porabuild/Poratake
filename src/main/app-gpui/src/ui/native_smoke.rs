@@ -1750,7 +1750,9 @@ pub fn open(cx: &mut App) {
                     || matches!(
                         command.as_str(),
                         "video editor export" | "video editor export done" | "video editor snapshot"
-                            | "video editor scrub begin"
+                            | "video editor scrub begin" | "video editor hide"
+                            | "video editor show" | "video editor minimize"
+                            | "video editor visible"
                     )
                 {
                     let Some(handle) =
@@ -1761,7 +1763,7 @@ pub fn open(cx: &mut App) {
                         return false;
                     };
                     return handle
-                        .update(cx, |editor, _, cx| {
+                        .update(cx, |editor, window, cx| {
                             if let Some(time) = command.strip_prefix("video editor cut ")
                                 .and_then(|value| value.parse::<f64>().ok())
                                 .filter(|time| time.is_finite())
@@ -1784,6 +1786,19 @@ pub fn open(cx: &mut App) {
                                 return true;
                             }
                             match command.as_str() {
+                                "video editor hide" => {
+                                    crate::system::window_visibility::hide(window);
+                                    true
+                                }
+                                "video editor show" => {
+                                    crate::system::window_visibility::show(window);
+                                    true
+                                }
+                                "video editor minimize" => {
+                                    window.minimize_window();
+                                    true
+                                }
+                                "video editor visible" => window.is_visible(),
                                 "video editor scrub begin" => {
                                     editor.begin_scrub();
                                     true
