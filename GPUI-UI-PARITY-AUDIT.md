@@ -10582,6 +10582,30 @@ which rounds to 183 px as in Electron. Twenty-four GPUI tests
 and 58 Electron reference tests passed.
 [Video display geometry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS recording thumbnail borrowing experiment
+
+A candidate resized recording thumbnails directly from the decoder's
+BGRA buffer. Idle, hover and exit screenshots matched the current
+path byte for byte in 18 offscreen pairs. The fixtures covered 4K,
+non-square-pixel landscape and rotated portrait in light and dark
+at 2×. The recording thumbnail uses the shared video decoder.
+
+At compile optimization level 3 the isolated candidate saved 31.6
+MiB in peak footprint and cut resize time by about 5 ms. With the
+development app's optimization level 1, the isolated borrowed resize
+took about 95–98 ms against 35–38 ms for the existing path. A separate
+size-optimized caller also regressed. These standalone variants
+linked the same optimized development image dependency.
+
+In four paired app-local 4K Stop tests, the candidate delayed first
+thumbnail readiness by 46–92 ms. The second pair per appearance
+reversed test order and traced FFmpeg delivery. Initial frame
+payloads finished in about 13–16 ms in both variants. The known
+performance cost is in the thumbnail stage. The app kept its
+existing resizer. All 47 GPUI capture-preview tests, four still-image
+pin tests and 54 Electron reference tests passed.
+[Recording thumbnail experiment](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

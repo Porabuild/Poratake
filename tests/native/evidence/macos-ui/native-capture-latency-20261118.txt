@@ -4174,3 +4174,41 @@ sources locally, then checks frame dimensions and storage size,
 selects a later frame, and verifies that seeking back recovers
 the original bytes. Existing sparse screen and camera timing
 fixtures also passed.
+
+2026-11-19 macOS recording thumbnail borrowing experiment at 0e3bc623
+
+The candidate used a borrowed image buffer with the same triangle
+filter and centered crop. The isolated tests used generated
+3840x2160 and 2160x3840 BGRA buffers. Each sample alternated run order
+across 20 measured pairs after warm-up. Every pixel matched.
+
+Caller opt   Frame       Before min/median/max (ms)   Borrowed min/median/max (ms)
+3            3840x2160        19.47 / 19.99 / 21.18         14.99 / 15.29 / 15.99
+3            2160x3840        21.58 / 22.47 / 22.94         16.23 / 16.88 / 17.24
+1            3840x2160        32.96 / 35.22 / 43.19        86.07 / 95.48 / 112.97
+1            2160x3840        33.36 / 37.77 / 50.01        91.46 / 98.03 / 123.69
+z            3840x2160        19.53 / 20.04 / 29.99        80.06 / 82.26 / 110.94
+z            2160x3840        21.47 / 22.21 / 23.04         84.88 / 86.59 / 88.02
+
+All six samples linked the same cached development image library.
+For the optimization-3 isolated run, macOS time -l measured peak
+physical footprint of 89,211,336 and 56,033,712 bytes, respectively.
+
+The GPUI offscreen renderer used static H.264 checkerboards at 4K,
+non-square-pixel landscape and rotated non-square-pixel portrait.
+Idle, hover and exit PNGs matched across both variants, in light
+and dark at 2x. The app-local probe stopped a fixture recording
+with the 4K checkerboard and waited for its first video thumbnail.
+History persistence was held during the probe. Times below include
+the Stop and thumbnail command paths.
+
+Appearance   Pair   Before Stop to ready (ms)   Borrowed Stop to ready (ms)
+light           1                        123.0                        214.5
+dark            1                        126.5                        208.7
+light           2                        150.2                        196.3
+dark            2                        138.7                        187.3
+
+Pair two ran the candidate first. The first two decoder payloads
+took 12.77–15.59 ms each across both variants. This measures
+readiness in the app, before display presentation. The production
+thumbnail code used for the worktree remains the existing path.
