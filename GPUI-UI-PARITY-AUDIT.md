@@ -10745,6 +10745,29 @@ These results used a generated clip and a fixture daemon. All
 190 targeted GPUI tests and 48 Electron reference tests passed.
 [End-of-timeline decoder measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K decoder thread and memory measurements
+
+A four-input-thread FFmpeg candidate lowered parked decoder
+footprint from about 908 MiB to 632 MiB in a generated 4K60
+H.264 test. It improved the first-two-frame time in the standalone
+socket test. Slice-only decoding used less memory and was slower
+over the full batch.
+
+The candidate saved roughly 278 MiB in the GPUI development
+editor too. Across six app-local pairs, it tied the baseline
+frame count twice and presented fewer frames in four pairs.
+Its opening PNG matched the baseline in every pair. The thread
+limit remained an experiment because steady playback did not improve.
+
+A stage trace put the slowest request at 1,304 ms in the decoder
+wait and 12 ms in the rest of composition. Twelve raw frames came
+through during that wait, with the longest payload taking 234 ms.
+These measurements cover a generated clip through the app and
+measure applied preview images. Sustained 4K60 editor playback
+under encoding load remains open. Nineteen GPUI decoder tests
+and 48 Electron reference tests passed.
+[Decoder memory and stage measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
