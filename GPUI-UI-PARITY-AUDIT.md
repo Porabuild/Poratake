@@ -8013,6 +8013,30 @@ ScreenCaptureKit exclusion probe was outside this run. The camera
 fixture uses a stand-in panel. Physical mixed-DPI transitions,
 live camera and physical input remain separate checks.
 
+### 2026-11-19 live macOS area capture at `42ff7eab`
+
+The current GPUI development app used the previously authorized
+screen-only daemon fixture on the built-in Retina display. The
+probe used a bounded generated AppKit panel and app-local input.
+All six 600×440 PNGs in the final timing run matched the generated
+reference in every pixel. Each capture preview opened an editor.
+
+The warm median area-to-window switch was 129 ms in light and
+54 ms in dark. Cancel-to-hidden was 36 and 23 ms. Confirmation to
+thumbnail readiness was 217 and 249 ms, and opening the editor
+from the preview was 132 and 66 ms. Window timings come from
+WindowServer visibility. The check covers live area confirmation
+and cancellation of the window selector at this revision.
+
+The first attempt used a location partly covered by another
+window. WindowServer confirmed that obstruction. The repeat used
+an unobstructed location and a persistent stacking check. The
+per-capture guard took 4–20 ms on that repeat. An intermediate
+run reached 2.36 seconds to thumbnail readiness with a fresh
+guard process for each capture. The cause of that tail remains
+unclassified.
+[Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -1059,3 +1059,30 @@ Separate verification runs hashed all raw bytes and compared all
 180 timestamps for default and direct buffering. Both matched.
 The probe measures decode, scaling where applicable, and pipe
 transport. GPUI rendering and the display were outside the run.
+
+2026-11-19 live area capture at 42ff7eab
+
+The parity development build used the authorized screen-only fixture,
+a bounded generated AppKit panel, and app-local capture commands.
+Freeze was off. Each appearance used a fresh app process for one
+first and two warm samples. All six 600×440 PNGs matched the isolated
+reference exactly. The persistent stacking guard rejected covered
+capture regions. A separate position was chosen after WindowServer
+identified an obstruction in the first location.
+
+Theme Trial  Area open  Area→window  Cancel  Area reopen  Confirm→hidden  Preview visible  Thumbnail ready  Editor visible
+Light   1      252.1       50.1        83.9      49.5          40.3           439.6            453.8            111.7
+Light   2       64.1       98.9        23.3      44.1          65.8           201.4            210.7            186.7
+Light   3       64.7      158.5        48.1      55.7          64.1           212.9            223.6             77.7
+Dark    1      360.5       51.7        27.5      34.5          27.0           283.3            289.6             97.1
+Dark    2       40.0       64.6        14.6      55.9          23.1           266.0            287.3             65.1
+Dark    3       66.0       42.5        31.8      41.3          16.4           201.2            211.4             67.6
+
+All times are in ms. Editor visible measures from the preview action.
+The per-capture stacking guard took 12.2, 8.9, and 12.3 ms in light
+and 15.9, 19.5, and 3.6 ms in dark. The capture-area RPC after the
+guard took a median 158.1 ms in light and 156.8 ms in dark across
+all three samples per appearance. An earlier guarded run with one
+new checker process per capture matched all six reference images
+but reached a worst 2364.5 ms to thumbnail readiness. Host load and
+checker process launch varied between the runs.
