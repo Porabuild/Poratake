@@ -3678,3 +3678,22 @@ captured fixed-header retry: 920x1824, all replay pixels match
 
 Both used production alignment and no wheel input. The Retina replay
 did not capture fresh screenshots.
+
+2026-11-19 macOS Auto Scroll scheduling while alignment is held at 652b6ceb
+
+The Swift fixture started Auto Scroll over generated frames and held the
+alignment worker at the second image. It counted scroll steps scheduled
+before releasing that worker.
+
+Baseline
+scroll step while alignment is held: scheduled=2
+
+Revised
+scroll step while alignment is held: scheduled=1
+scroll alignment gate: verified step resumes during encoding, rejected frame schedules no step
+
+The revised path reached two scheduled steps after the second image
+aligned, while the preview encoder was still held. A third, rejected
+image emitted no-overlap with two accepted frames and scheduled no
+additional step. The test used app-local scheduling without moving the
+desktop pointer.

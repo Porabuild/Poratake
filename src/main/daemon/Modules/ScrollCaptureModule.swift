@@ -150,6 +150,12 @@ private final class ScrollPreviewSession {
         }
     }
 
+    func afterPendingAlignment(_ completion: @escaping () -> Void) {
+        alignmentQueue.async {
+            DispatchQueue.main.async { completion() }
+        }
+    }
+
     func resumeAlignment() {
         alignmentQueue.sync {
             lock.lock()
@@ -1171,7 +1177,17 @@ class ScrollCaptureModule: NSObject, Module {
                     return
                 }
                 let index = appendCapturedFrame(image, comparison: comparison, countsDuplicate: countsDuplicate)
-                completion(index == nil ? .duplicate : .captured)
+                guard !comparison.isDuplicate, let session = previewSession else {
+                    completion(index == nil ? .duplicate : .captured)
+                    return
+                }
+                session.afterPendingAlignment { [weak self] in
+                    guard let self, self.canAcceptFrame(generation: generation) else {
+                        completion(nil)
+                        return
+                    }
+                    completion(.captured)
+                }
             }
         }
     }

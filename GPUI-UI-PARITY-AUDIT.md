@@ -10143,6 +10143,23 @@ app-local scheduling. The native suite passed on arm64 and Rosetta
 x86_64, along with 62 Electron and daemon contract tests.
 [Real-matcher retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Auto Scroll waits for the current seam
+
+Auto Scroll could schedule its next wheel event while the previous
+frame's alignment was still pending. If the seam failed, that extra
+step could move the page farther away from the last verified image.
+
+The daemon now schedules the next step after the alignment queue
+has handled the frame. The native fixture held alignment and observed
+one scheduled step in the revised code, compared with two before
+the fix. After accepting the seam, the scheduler resumed while PNG
+encoding was still held. A rejected seam then stopped Auto Scroll
+with two accepted frames and no additional step. The fixture uses
+injected frames and scroll scheduling. Native Swift suites and
+daemon typechecks passed on arm64 and Rosetta x86_64, along with
+62 Electron and daemon contract tests.
+[Scroll scheduling evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

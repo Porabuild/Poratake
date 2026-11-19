@@ -2401,6 +2401,63 @@ struct ScrollCapturePreviewTest {
         precondition(pixels(retryImage) == pixels(expectedRetry))
         print("scroll seam retry: recovered third frame, saved pixels match")
 
+        let gatedModule = ScrollCaptureModule()
+        gatedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        gatedModule.testStopAutoScroll()
+        var gatedCaptures: [(CGImage?) -> Void] = []
+        var gatedSteps = 0
+        var gatedEnds: [[String: Any]] = []
+        let alignmentEntered = DispatchSemaphore(value: 0)
+        let releaseAlignment = DispatchSemaphore(value: 0)
+        let previewEntered = DispatchSemaphore(value: 0)
+        let releasePreview = DispatchSemaphore(value: 0)
+        let outsidePage = frame(start: 60_000, width: footerWidth, height: footerHeight)
+        gatedModule.testSetCaptureProvider { gatedCaptures.append($0) }
+        gatedModule.testSetScheduleAutoScroll { gatedSteps += 1 }
+        gatedModule.testSetScrollEndedResponder { gatedEnds.append($0) }
+        gatedModule.testSetPreviewAlignment { _, bottom, _, _ in
+            if bottom === outsidePage { return nil }
+            alignmentEntered.signal()
+            releaseAlignment.wait()
+            return footerHeight - footerStep
+        }
+        gatedModule.testSetPreviewEncoder { image in
+            if image.height == 96 {
+                previewEntered.signal()
+                releasePreview.wait()
+            }
+            return "preview"
+        }
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("The gated scroll did not request a baseline") { gatedCaptures.count == 1 }
+        gatedCaptures[0](frames[0])
+        await waitUntil("The gated scroll did not schedule its first step") { gatedSteps == 1 }
+        let gatedGeneration = gatedModule.testCaptureGeneration()
+        gatedModule.testCaptureAfterScroll(generation: gatedGeneration)
+        precondition(gatedCaptures.count == 2)
+        gatedCaptures[1](frames[1])
+        await waitUntil("The alignment worker did not reach its gate") {
+            alignmentEntered.wait(timeout: .now()) == .success
+        }
+        print("scroll step while alignment is held: scheduled=\(gatedSteps)")
+        fflush(stdout)
+        precondition(gatedSteps == 1 && gatedEnds.isEmpty)
+        releaseAlignment.signal()
+        await waitUntil("The verified preview did not reach its encoder") {
+            previewEntered.wait(timeout: .now()) == .success
+        }
+        await waitUntil("The verified frame did not resume scrolling") { gatedSteps == 2 }
+        gatedModule.testCaptureAfterScroll(generation: gatedGeneration)
+        precondition(gatedCaptures.count == 3)
+        gatedCaptures[2](outsidePage)
+        await waitUntil("A rejected alignment did not stop scrolling") { gatedEnds.count == 1 }
+        precondition(gatedEnds[0]["reason"] as? String == "no-overlap")
+        precondition(gatedEnds[0]["frameCount"] as? Int == 2)
+        precondition(!gatedModule.testIsAutoScrolling() && gatedSteps == 2)
+        releasePreview.signal()
+        gatedModule.testWaitForPreviewWork()
+        print("scroll alignment gate: verified step resumes during encoding, rejected frame schedules no step")
+
         let asyncCaptureModule = ScrollCaptureModule()
         asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
         asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
