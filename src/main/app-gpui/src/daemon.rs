@@ -148,6 +148,30 @@ fn find_daemon_binary() -> PathBuf {
     PathBuf::from(format!("src/main/daemon/{BINARY}"))
 }
 
+#[cfg(target_os = "macos")]
+fn wait_for_child_exit(pid: u32) -> std::io::Result<bool> {
+    let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+    loop {
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                status.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ECHILD) => return Ok(false),
+            _ => return Err(error),
+        }
+    }
+}
+
 impl DaemonHandle {
     pub fn new() -> Self {
         Self::with_binary(find_daemon_binary())
@@ -245,6 +269,7 @@ impl DaemonHandle {
             .spawn()
             .map_err(|error| anyhow!("failed to spawn daemon: {error}"))?;
 
+        let pid = child.id();
         let stdin = child.stdin.take().expect("daemon stdin");
         let stdout = child.stdout.take().expect("daemon stdout");
 
@@ -259,7 +284,7 @@ impl DaemonHandle {
         }));
 
         self.spawn_reader(stdout);
-        self.watch_child_by_pid(Self::pid_of_current(&self.inner));
+        self.watch_child_by_pid(pid);
 
         let ready = ready_rx.recv_timeout(Duration::from_secs(10));
         drop(ready_subscription);
@@ -281,10 +306,6 @@ impl DaemonHandle {
         }
     }
 
-    fn pid_of_current(inner: &Arc<DaemonInner>) -> Option<u32> {
-        inner.child.lock().as_ref().map(|child| child.id())
-    }
-
     fn spawn_reader(&self, stdout: std::process::ChildStdout) {
         let inner = self.inner.clone();
         thread::Builder::new()
@@ -304,16 +325,20 @@ impl DaemonHandle {
             .ok();
     }
 
-    fn watch_child_by_pid(&self, pid: Option<u32>) {
-        let Some(pid) = pid else {
-            return;
-        };
+    fn watch_child_by_pid(&self, pid: u32) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-watchdog".into())
             .spawn(move || {
-                // Poll for exit; std has no async wait without blocking a
-                // dedicated thread, which is exactly what this is.
+                #[cfg(target_os = "macos")]
+                match wait_for_child_exit(pid) {
+                    Ok(true) => {
+                        inner.handle_exit(pid);
+                        return;
+                    }
+                    Ok(false) => return,
+                    Err(error) => eprintln!("[daemon] failed to watch child exit: {error}"),
+                }
                 loop {
                     thread::sleep(Duration::from_millis(250));
                     let status = {
@@ -329,7 +354,7 @@ impl DaemonHandle {
                         break;
                     };
                     if exited {
-                        inner.handle_exit();
+                        inner.handle_exit(pid);
                         break;
                     }
                 }
@@ -349,7 +374,11 @@ impl DaemonHandle {
 
         let mut guard = self.inner.child.lock();
         if let Some(child) = guard.as_mut() {
-            let _ = child.kill();
+            if child.kill().is_ok() {
+                let _ = child.wait();
+            } else {
+                let _ = child.try_wait();
+            }
         }
         *guard = None;
         *self.inner.stdin.lock() = None;
@@ -1399,10 +1428,19 @@ impl DaemonInner {
         }
     }
 
-    fn handle_exit(self: &Arc<Self>) {
-        *self.child.lock() = None;
-        *self.stdin.lock() = None;
-        self.reject_all_pending("Daemon exited");
+    fn handle_exit(self: &Arc<Self>, pid: u32) {
+        {
+            let mut child = self.child.lock();
+            let Some(exited) = child.as_mut().filter(|child| child.id() == pid) else {
+                return;
+            };
+            if !matches!(exited.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            *self.stdin.lock() = None;
+            self.reject_all_pending("Daemon exited");
+            *child = None;
+        }
         self.dispatch_event(
             poratake_daemon_common::contract::SYSTEM_EXIT_EVENT,
             &Value::Null,
@@ -1532,6 +1570,64 @@ mod tests {
             &Value::Null,
         );
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_crash_rejects_pending_request_and_restarts() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"crash"'*) exit 42 ;;
+        *'"method":"quit"'*) exit 0 ;;
+    esac
+    id=${request#*'"id":"'}
+    id=${id%%'"'*}
+    printf '{"id":"%s","success":true,"result":"pong"}\n' "$id"
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let daemon = DaemonHandle::with_binary(fixture);
+        let (events, received) = std::sync::mpsc::channel();
+        let _subscription = daemon.subscribe(Arc::new(move |event, _| {
+            let _ = events.send(event.to_owned());
+        }));
+        let timeout = Duration::from_secs(5);
+
+        daemon.start().unwrap();
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        let old_pid = daemon.inner.child.lock().as_ref().unwrap().id();
+        let (_, pending) = daemon.begin_call("fixture", "crash", None).unwrap();
+        let error = pending.recv_timeout(timeout).unwrap().unwrap_err();
+        assert_eq!(error.code, "DAEMON_UNAVAILABLE");
+        assert_eq!(
+            received.recv_timeout(timeout).unwrap(),
+            poratake_daemon_common::contract::SYSTEM_EXIT_EVENT
+        );
+        assert!(!wait_for_child_exit(old_pid).unwrap());
+
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        let restarted = daemon.inner.child.lock().as_ref().unwrap().id();
+        assert_ne!(old_pid, restarted);
+        assert_eq!(
+            daemon
+                .call_with_timeout("fixture", "ping", None, timeout)
+                .unwrap(),
+            json!("pong")
+        );
+        daemon.stop();
+        assert!(!daemon.is_running());
+        assert!(!wait_for_child_exit(restarted).unwrap());
     }
 
     #[test]

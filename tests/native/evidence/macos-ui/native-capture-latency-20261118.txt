@@ -3929,3 +3929,27 @@ allocations. In a separate process, freeing three touched buffers
 with a total allocation of 87.0 MiB left the process footprint at
 88.36 MiB. Calling malloc_zone_pressure_relief(NULL, 0) returned
 zero bytes and left the footprint unchanged in all three trials.
+
+2026-11-19 macOS daemon exit notifications and idle wakeups at 2c528036
+
+The M5 Pro GPUI development app ran with a fresh profile and the
+fixture daemon used by macos-capture-history-probe.py. The app-local
+command dismissed the recording controls, followed by three seconds
+to settle. proc_pid_rusage measured consecutive eight-second samples.
+
+Variant     Interrupt wakes    Package wakes   % of one CPU   Physical footprint (MiB)
+Poll                     37                0          0.0006                     23.00
+Poll                     33                0          0.0003                     22.75
+Poll                     35                0          0.0003                     22.75
+Kernel wait               7                0          0.0005                     22.52
+Kernel wait               2                0          0.0001                     21.47
+Kernel wait               3                0          0.0000                     21.47
+
+The GPUI regression test made a child exit with status 42 while an
+RPC was pending. The pending call reported DAEMON_UNAVAILABLE,
+the exit event arrived, and the old process had been reaped. The
+replacement replied to a new RPC and was also reaped at shutdown.
+All eight GPUI daemon tests passed. A standalone waitid and waitpid
+fixture passed on arm64 and under Rosetta x86_64. The 112 related
+Electron tests passed. The direct 4K screenshot editor fixture
+opened 55.3 ms after History release in light and 40.3 ms in dark.

@@ -194,6 +194,7 @@ The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) an
 | `gtk`                      |    0.18.2 | MIT                       |
 | `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |   0.25.10 | MIT OR Apache-2.0         |
+| `libc`                     |   0.2.189 | MIT OR Apache-2.0         |
 | `lyon`                     |    1.0.19 | MIT OR Apache-2.0         |
 | `md-5`                     |    0.11.0 | MIT OR Apache-2.0         |
 | `objc`                     |     0.2.7 | MIT                       |

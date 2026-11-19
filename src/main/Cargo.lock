@@ -5514,6 +5514,7 @@ dependencies = [
  "herogpui",
  "hmac 0.13.0",
  "image",
+ "libc",
  "lyon",
  "md-5 0.11.0",
  "moxcms",

@@ -10374,11 +10374,33 @@ after-close sample, 87 MiB remained in empty large malloc regions.
 A standalone trial of the public allocator pressure-relief call
 returned zero bytes against freed 4K-sized buffers on this host.
 
-The 250 ms daemon watchdog still polls during app idle. The editor
-memory measurements used a generated capture and the timings
-exclude physical input. The theme change measured here was scoped
-to the test process.
+The editor memory measurements used a generated capture and the
+timings exclude physical input. The theme change measured here was
+scoped to the test process.
 [Idle process measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-19 macOS daemon exit notifications and idle wakeups
+
+The GPUI watchdog now waits for the macOS kernel to signal daemon
+exit. The existing 250 ms process poll serves as a fallback if the
+kernel wait reports an unexpected error. The watchdog reaps the
+matching child, rejects pending RPCs, and keeps the restart backoff.
+
+Across three eight-second idle samples on the M5 Pro, GPUI
+registered 33–37 interrupt wakeups before the change and 2–7 after.
+CPU use and idle physical footprint stayed near zero and 22 MiB,
+respectively. Both builds used a fixture daemon and dismissed the
+recording controls before sampling. These results measure idle
+process activity. The post-editor memory finding above remains open.
+
+The crash fixture verified that an in-flight call failed promptly,
+the daemon was reaped, the restart used a new PID, and a fresh RPC
+succeeded. All eight GPUI daemon tests and 112 Electron reference
+tests passed. An independent kernel wait and reaping probe passed
+on Apple Silicon and Rosetta. The light and dark GPUI workflows
+opened the 4K screenshot editor 40–56 ms after the fixture released
+its History read.
+[Daemon watchdog measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 
