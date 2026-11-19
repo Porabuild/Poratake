@@ -9052,12 +9052,29 @@ increasing decoded timestamps.
 
 Stop to decoded preview took 200–202 ms. The editor then reported
 its first image in 196–220 ms, and exports took 3.27–4.27 seconds.
-The dark movie was 227 ms shorter than elapsed time from recording
-status to Stop. An early single-change run also ended near its last
-update despite an additional quiet hold. The duration discrepancy
-and a live full-display run with the regular exclusion filter remain
+The earlier duration comparison used GPUI's busy status, which
+includes startup before the first frame. The follow-up below times
+from the first-frame callback and verifies the static tail.
+A live full-display run with the regular exclusion filter remains
 open. All 85 Electron reference tests passed.
 [Live stream and export evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-19 macOS recording duration after the first frame
+
+The native recorder fixture timed from the first screen frame to
+Stop using the host clock. Four 3456×2234 takes changed from red
+to green and held the final color for 901–954 ms. In light and
+dark, it also paused and resumed one take. After subtracting the
+measured pause, the decoded durations matched elapsed recording
+time within 11.2 ms, and the final decoded frame stayed green.
+
+The first-frame callback arrived 439–476 ms after the request.
+The earlier GPUI timing observed busy status, which can arrive
+during that startup interval. The native smoke probe now exposes
+a separate active-recording status. An isolated test held the
+Start acknowledgement and verified that the two states differed
+until recording became active.
+[Clock and duration evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 

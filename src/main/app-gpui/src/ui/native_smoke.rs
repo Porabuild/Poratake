@@ -1854,6 +1854,9 @@ pub fn open(cx: &mut App) {
                 if command == "status" {
                     return recorder::is_recording();
                 }
+                if command == "recording-active" {
+                    return recorder::state() == recorder::RecorderState::Recording;
+                }
                 let Some(handle) = registry::handle(WindowKind::RecordingControl, cx)
                     .and_then(|handle| handle.downcast::<RecordingControl>())
                 else {

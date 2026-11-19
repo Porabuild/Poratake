@@ -1938,15 +1938,45 @@ Both source and export were 3456x2234. The comparison used the
 editor's preview image from the same output-frame timestamp.
 Timing values below measure app-local requests and readiness.
 
-Theme  Start to status  Stop to decoded preview  Edit to image    Export
+Theme    Start to busy  Stop to decoded preview  Edit to image    Export
 Light          23.4 ms                 200.0 ms       195.5 ms   3.272 s
 Dark           19.3 ms                 202.4 ms       220.4 ms   4.273 s
 
 The dark run held the final appearance for 1.010 s and reached
-Stop 2.155 s after reported recording status. The native recorder
-had a synchronization clock, reported a 1.9286 s duration and
-wrote a 1.9283 s movie. A separate initial run with one color
-change and a 750 ms quiet hold wrote a 0.700 s movie. These are
-observations from the restricted screen-only configuration.
-The timestamp and duration discrepancy has not been isolated.
-The regular full-display exclusion filter is outside this probe.
+Stop 2.155 s after busy status. The native recorder reported a
+1.9286 s duration and wrote a 1.9283 s movie. The busy status
+included recorder startup, so that interval alone cannot measure
+the recorded duration. The follow-up below verifies duration
+starting at the first frame. The regular full-display exclusion
+filter is outside this probe.
+
+
+2026-11-19 macOS recording duration after the first frame
+
+The current Swift recorder ran four live full-display takes with
+a ScreenCaptureKit allowlist containing only a generated window.
+The probe preflighted the existing capture grant. Audio, camera,
+keyboard and cursor tracking were disabled. The generated window
+changed from red to green and stayed still until Stop. Both paused
+takes changed color during a roughly 0.5 s pause before resuming.
+
+First-frame time was recorded in the native callback with the
+Core Media host clock. Active elapsed time is first frame to
+Stop minus the measured pause. The separate Start-return timestamp
+was 1.0–2.0 ms after the callback. Each movie decoded at 3456x2234.
+
+Run           Request to first frame   Final hold   Active elapsed   Movie duration   Difference
+Light static                 476.2 ms     940.7 ms       1.622174 s       1.633333 s    +11.16 ms
+Dark static                  467.6 ms     928.9 ms       1.592651 s       1.593333 s     +0.68 ms
+Light paused                 443.3 ms     900.6 ms       1.591440 s       1.591667 s     +0.23 ms
+Dark paused                  439.0 ms     953.9 ms       1.611865 s       1.613333 s     +1.47 ms
+
+The ScreenCaptureKit synchronization clock was present at Stop
+in all four takes. The first decoded frame contained the red
+target and the final decoded frame contained the green target.
+
+The GPUI development smoke probe also ran with a held Start reply.
+The existing status command returned true while starting. The new
+recording-active command stayed false until acknowledgement, then
+turned true. Both returned false after Stop and decoded thumbnail
+handoff. The held-reply workflow used fixture media.
