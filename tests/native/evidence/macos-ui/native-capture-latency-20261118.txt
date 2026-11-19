@@ -1349,3 +1349,24 @@ when the editor reports its intro preview image. The FFmpeg marker
 confirmed no raw decode request had been made before that image.
 After Play reached the recording and the hold was released, the
 trace reported a successful decoded frame in both runs.
+
+2026-11-19 macOS screen preview while a hidden camera decode is held
+
+The native development app opened a generated recording from the
+fixture daemon. A prerecorded camera sidecar became visible at
+1.1 seconds. The FFmpeg wrapper held raw camera-frame decoding
+in the initial timeline gap and allowed screen decoding. This
+exercise used prerecorded files and app-local commands.
+
+Theme   Before, no preview during hold   After, screen preview ready during hold
+Light            224.8 ms                               221.4 ms
+Dark             215.6 ms                               209.6 ms
+
+The before column measures the observed blocked startup after the
+wrapper signaled that camera decode had started. The after column
+ends at screen preview-image availability from the same Edit action.
+The revised editor also delivered a later screen preview update
+inside the gap while the hold was active. The camera decoded after
+release and arrival at its visible range. These checks measure
+editor updates and decoder delivery. They do not measure display
+presentation or camera transition latency.

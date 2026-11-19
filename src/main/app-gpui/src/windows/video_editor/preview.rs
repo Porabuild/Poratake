@@ -3,6 +3,7 @@
 //! hand the result to GPUI as an image.
 
 use std::path::Path;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,7 @@ pub struct Source {
     video_segments: Vec<VideoSegment>,
     video_frame: Option<CachedFrame>,
     camera_frame: Option<CachedFrame>,
+    camera_warmup: Option<Receiver<()>>,
 }
 
 struct CachedFrame {
@@ -76,6 +78,7 @@ impl Source {
             video_segments,
             video_frame: None,
             camera_frame: None,
+            camera_warmup: None,
         })
     }
 
@@ -171,7 +174,7 @@ impl Source {
                     .iter()
                     .any(|segment| segment.end_time > adjusted)
             {
-                let _ = decode_frame(self.camera.as_ref(), video_time, decode_wait);
+                self.warm_camera(video_time);
             }
             None
         };
@@ -184,6 +187,15 @@ impl Source {
                 camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
             },
         )
+    }
+
+    fn warm_camera(&mut self, time: f64) {
+        if self.camera_warmup.as_ref().is_some_and(|pending| {
+            matches!(pending.try_recv(), Err(TryRecvError::Empty))
+        }) {
+            return;
+        }
+        self.camera_warmup = self.camera.as_ref().and_then(|decoder| decoder.request_warmup(time));
     }
 
     fn render(
@@ -399,6 +411,7 @@ mod tests {
             video_segments: Vec::new(),
             video_frame: None,
             camera_frame: None,
+            camera_warmup: None,
         };
         let video_time = 0.5;
         let decoded = DecodedFrame {
@@ -501,6 +514,10 @@ mod tests {
         assert!(source.camera_frame.is_none());
         assert!(source.compose(still + 0.75, dimensions).is_some());
         assert!(source.camera_frame.is_none());
+        assert!(source.camera_warmup.is_some());
+        let mut decode_wait = Duration::ZERO;
+        assert!(source.compose_measured(still + 0.75, dimensions, &mut decode_wait).is_some());
+        assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.compose(still + 0.25, dimensions).is_some());
         let first = source.camera_frame.as_ref().unwrap().pixmap.clone();
 

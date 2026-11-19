@@ -8630,6 +8630,23 @@ at preview-image availability. All 1,186 GPUI tests and the
 separate development FFmpeg camera visibility test passed.
 [Timing details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS screen preview during a camera gap
+
+The editor keeps the camera decoder warm during a gap by submitting
+at most one asynchronous request. The camera worker reports completion
+without retaining a raw frame in the preview. Screen composition
+continues while that request runs, and visible camera ranges still use
+the decoder and the shared composition engine.
+
+In the native development probe, the old build had no editor preview
+while the camera decode was held during a gap. The revised build
+published the screen preview in 221 ms in light mode and 210 ms in
+dark mode, and playback advanced while the hold was active. After
+release, the decoder supplied a camera frame when the camera range
+became visible. The real-FFmpeg camera visibility test and all
+1,186 GPUI tests passed.
+[Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

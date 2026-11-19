@@ -35,11 +35,27 @@ pub struct DecodedFrame {
     pub bgra: Arc<Vec<u8>>,
 }
 
-enum Command {
-    Seek {
-        time: f64,
-        reply: Sender<Option<DecodedFrame>>,
-    },
+struct Command {
+    time: f64,
+    reply: Reply,
+}
+
+enum Reply {
+    Frame(Sender<Option<DecodedFrame>>),
+    Warmup(Sender<()>),
+}
+
+impl Reply {
+    fn send(self, frame: Option<DecodedFrame>) {
+        match self {
+            Self::Frame(reply) => {
+                let _ = reply.send(frame);
+            }
+            Self::Warmup(reply) => {
+                let _ = reply.send(());
+            }
+        }
+    }
 }
 
 pub struct VideoDecoder {
@@ -81,14 +97,25 @@ impl VideoDecoder {
     pub fn frame_at(&self, time: f64) -> Option<DecodedFrame> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.commands
-            .send(Command::Seek {
+            .send(Command {
                 time: time.max(0.0),
-                reply: reply_tx,
+                reply: Reply::Frame(reply_tx),
             })
             .ok()?;
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .ok()?
+    }
+
+    pub(crate) fn request_warmup(&self, time: f64) -> Option<Receiver<()>> {
+        let (reply, completion) = mpsc::channel();
+        self.commands
+            .send(Command {
+                time: time.max(0.0),
+                reply: Reply::Warmup(reply),
+            })
+            .ok()?;
+        Some(completion)
     }
 }
 
@@ -134,13 +161,9 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(command) = commands.recv() {
-                match command {
-                    Command::Seek { time, reply } => {
-                        let frame = read_frame(&reader, time, info, &mut cursor);
-                        let _ = reply.send(frame);
-                    }
-                }
+            while let Ok(Command { time, reply }) = commands.recv() {
+                let frame = read_frame(&reader, time, info, &mut cursor);
+                reply.send(frame);
             }
 
             drop(reader);
@@ -486,9 +509,9 @@ mod backend {
         let info = media.video;
         let _ = info_tx.send(Some(info));
         let mut decoder = None;
-        while let Ok(Command::Seek { time, reply }) = commands.recv() {
+        while let Ok(Command { time, reply }) = commands.recv() {
             let frame = read_frame(&ffmpeg, &path, time, info, media.start_time, &mut decoder);
-            let _ = reply.send(frame);
+            reply.send(frame);
         }
     }
 
@@ -1114,7 +1137,7 @@ mod backend {
 
     pub fn run(_path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
         let _ = info_tx.send(None);
-        while let Ok(Command::Seek { time, reply }) = commands.recv() {
+        while let Ok(Command { time, reply }) = commands.recv() {
             let _ = time;
             drop(reply);
         }
