@@ -1657,3 +1657,69 @@ hold every 40 frames through frame 240. The relay introduced its
 own overhead. The unmodified runs with the revised trace did not
 reproduce the long stalls in the earlier batch. The original
 payload delay has not yet been isolated to an FFmpeg or host phase.
+
+2026-11-19 macOS decoded pixel conversion in the editor
+
+The comparison ran on Apple M5 Pro. The microbenchmark rotated
+the three strategies across 30 iterations at each size. It used
+patterned bytes across all four channels. Both candidates produced
+the same complete buffer as the existing conversion.
+The existing conversion allocates a zeroed pixmap and copies the
+channels in RGBA order. The mapping candidate writes the reordered
+bytes directly to an owned buffer. The copy-and-swap candidate
+copies the source buffer with its original order before swapping
+red and blue in place. Microbenchmark values are median milliseconds.
+
+Optimization  Input       Existing   Single-pass mapping   Copy and swap
+1             1920x1080      1.790                 1.265           0.995
+1             3840x2160      7.076                 5.087           4.010
+z             1920x1080      1.770                 1.190           0.988
+z             3840x2160      7.083                 4.845           4.013
+
+The native development app used a fixture daemon with four-second
+generated testsrc2 clips in H.264 at 60 fps. Both used yuv420p, the
+ultrafast encoder preset and a 60-frame GOP. Both app builds used
+bundled FFmpeg 9.0.1 for decode. Each trial used a temporary profile.
+The probe counted applied preview images from 0.5 to 2.5 seconds
+after Play. The Other column is the median compose-update duration
+minus the measured decoder request, in milliseconds. It includes
+pixel conversion, composition and image preparation. First is
+the same subtraction for the initial full-resolution update.
+It does not measure when the initial image reached the display.
+Wall-clock pacing and host load can vary across trials.
+
+4K60, alternating copy and swap with the existing conversion
+
+Run                         Updates   Preview sizes       Other      First
+Existing light                  120   384x216             9.177    148.922
+Copy and swap light             120   384x216            12.038    140.765
+Copy and swap dark              120   384x216            12.906    139.199
+Existing dark                   120   384x216             9.196    138.661
+Existing dark                   120   384x216             9.785    137.309
+Copy and swap dark               11   384x216            19.347    119.318
+Copy and swap light              53   384x216            19.439    120.226
+Existing light                  122   384x216             9.748    115.130
+
+4K60, alternating single-pass mapping with the existing conversion
+
+Run                         Updates   Preview sizes       Other      First
+Existing light                    1   480x270            16.597    116.761
+Single-pass light                 2   384x216            11.516    117.688
+Single-pass dark                  3   384x216            10.927    116.221
+Existing dark                    10   384x216            12.821    124.345
+Existing dark                    13   384x216            12.170    121.406
+Single-pass dark                 88   384x216             8.927    120.402
+Single-pass light                61   384x216             7.399    129.908
+Existing light                   69   384x216            11.465    124.062
+
+1080p60, alternating single-pass mapping with the existing conversion
+
+Run                    Updates   Preview size and count            Other     First
+Existing light             120   640x360 (120)                     4.666    20.633
+Single-pass light          120   480x270 (120)                     4.498    25.494
+Single-pass dark           120   480x270 (108), 640x360 (12)        3.003    30.196
+Existing dark              120   640x360 (91), 853x480 (29)         4.881    20.143
+
+The native sample did not establish an end-to-end improvement that
+preserves preview quality. The product paths retain the existing
+conversion. These runs measured preview updates inside GPUI.

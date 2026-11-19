@@ -8906,6 +8906,25 @@ remains open. All 1,189 GPUI tests and both sparse-timeline
 development FFmpeg tests passed.
 [Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video frame conversion and playback quality
+
+Two alternative BGRA-to-RGBA conversions matched the existing
+output byte for byte. In an isolated 4K test the existing conversion
+took 7.08 ms, the single-pass mapping 5.09 ms, and the copy-and-swap
+version 4.01 ms at the development optimization level.
+
+The app-level results led to retaining the existing conversion.
+At the same 384×216 playback preview size, the copy-and-swap
+build took longer to compose, excluding measured decoder wait.
+The single-pass converter showed lower composition costs in
+several 4K60 runs, during a batch in which decoder stalls affected
+both builds. All four 1080p60 runs applied 120 updates over two
+seconds. The single-pass build spent most of that interval at a
+lower preview size and its initial full-resolution update took
+more work outside the decoder. Playback update counts, preview
+resolution and first-frame cost are recorded separately.
+[Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
