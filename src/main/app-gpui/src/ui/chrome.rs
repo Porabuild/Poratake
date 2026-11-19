@@ -617,10 +617,10 @@ mod tests {
         assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP, 96.0);
         assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 128.0);
         if is_macos() {
-            assert_eq!(overlay_prompt_top(true), 112.0);
+            assert_eq!(overlay_prompt_top(true), OVERLAY_PROMPT_TOOLBAR_TOP_MAC);
             assert_eq!(overlay_prompt_top(false), 48.0);
         } else {
-            assert_eq!(overlay_prompt_top(true), 96.0);
+            assert_eq!(overlay_prompt_top(true), OVERLAY_PROMPT_TOOLBAR_TOP);
             assert_eq!(overlay_prompt_top(false), 32.0);
         }
         assert_eq!(RECORDING_TARGET_CHIP_MAX_W, 128.0);

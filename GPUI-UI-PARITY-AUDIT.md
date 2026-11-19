@@ -7991,6 +7991,28 @@ matched byte for byte. These runs cover fixture device menus and
 toolbar rendering. Physical input and media permissions were
 outside the run.
 
+### 2026-11-19 macOS full regression checks
+
+The full GPUI run on `b0fefc2f` found a stale assertion for the
+all-in-one selection hint. The Rust and Electron implementations
+already place the macOS hint 128 points from the top. The routing
+assertion now uses the same platform constant whose value the test
+checks separately. The rerun passed 1,178 tests with 23 ignored.
+
+The repository checks passed on the same source, including 2,414
+Vitest cases with three skipped, contract generation, TypeScript,
+lint, formatting and React Compiler. The Windows-native check
+skipped on macOS. The arm64 AppKit fixtures passed for scroll
+preview and protected tooltip lifecycle, timer lifecycle and
+accessibility, recording outline cleanup, and recording target
+closure. Tall-tooltip placement and pointer exit while a filter
+update is held also passed under Rosetta.
+
+Only the built-in 1728×1117 display was online. The optional
+ScreenCaptureKit exclusion probe was outside this run. The camera
+fixture uses a stand-in panel. Physical mixed-DPI transitions,
+live camera and physical input remain separate checks.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
