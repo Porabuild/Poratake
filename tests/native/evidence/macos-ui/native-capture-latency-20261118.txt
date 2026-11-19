@@ -5161,3 +5161,37 @@ pixels in each decoded export frame was zero. Start, Stop and
 editing were app-local. The system pointer was left in place.
 
 The 82 Electron reference and daemon contract tests passed.
+
+2026-11-20 macOS target closure during a paused window recording
+================================================================
+
+The current GPUI development executable at 34532f4d used the earlier
+screen-only Swift fixture from the live window-closure test. A start
+request without an output path verified that the existing Screen
+Recording preflight passed before validation rejected it. The
+broker checked that actual Start used only the generated window ID
+and disabled microphone, camera, system audio and keyboard input.
+
+The generated AppKit window changed colors as it moved and resized.
+After Pause returned and GPUI reported the paused state, the fixture
+closed and released the actual window while its process stayed
+running. The outline and toolbar had still been present at Pause.
+Each run reported one TARGET_CLOSED event and sent an automatic
+Stop without a Resume or manual Stop command. Both windows cleared
+before the recording preview was shown.
+
+Theme  Pause RPC ms  Close to Stop request ms  Close to visible preview ms  Edit to ready ms
+Light            0.3                    272.4                       1117.2             82.2
+Dark             0.5                    265.2                       1117.8             75.6
+
+The 720x480 light and dark clips had four and five decoded source
+frames respectively, covering the red, green and blue phases.
+Both editors preserved a split at 0.45 s in state.json and exported
+58 frames at 720x480. The independently decoded exports retained
+the same color order. All four files had strictly increasing
+frame timestamps and one video stream.
+
+The 82 Electron reference and daemon contract tests passed. The
+probe measured app-local commands and WindowServer visibility,
+without moving the desktop pointer. It used an earlier authorized
+daemon build for capture.

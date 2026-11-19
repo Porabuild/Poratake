@@ -11185,6 +11185,27 @@ earlier authorized screen-only fixture. All 82 Electron reference
 and daemon contract tests passed.
 [Window recording and export evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS target closure during a paused window recording
+
+On the built-in Retina display, the current GPUI development app
+recorded a generated AppKit window in light and dark using the
+earlier authorized screen-only daemon. It paused before the target
+closed and released its actual window object.
+
+Each closure produced one target-closed event. GPUI sent Stop
+automatically within 265–272 ms, removed the toolbar and outline,
+and showed the recording preview about 1.12 s after closure. The
+recordings opened in the editor, saved a split at 0.45 s, and
+exported 58 frames each at the original 720×480 resolution. Both
+source movies and both exports retained the three scene stages
+with strictly increasing decoded timestamps.
+
+The fixture used app-local commands, an existing screen grant and
+generated content. It supplied neither microphone nor camera nor
+system audio. All 82 Electron reference and daemon contract tests
+passed.
+[Paused target-closure evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
