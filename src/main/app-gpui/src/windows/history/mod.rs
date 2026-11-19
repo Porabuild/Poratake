@@ -55,6 +55,7 @@ pub struct HistoryWindow {
     revealing: bool,
     closing: bool,
     opening_screenshot: bool,
+    mutation_status: Option<&'static str>,
     loading: bool,
 }
 
@@ -80,6 +81,7 @@ impl HistoryWindow {
             revealing: cfg!(windows),
             closing: false,
             opening_screenshot: false,
+            mutation_status: None,
             loading: true,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
@@ -342,7 +344,7 @@ impl HistoryWindow {
     }
 
     pub fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closing || self.opening_screenshot {
+        if self.closing || self.opening_screenshot || self.mutation_status.is_some() {
             return;
         }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
@@ -382,109 +384,155 @@ impl HistoryWindow {
         cx.notify();
     }
 
+    fn can_mutate(&self) -> bool {
+        !self.closing && !self.loading && !self.opening_screenshot && self.mutation_status.is_none()
+    }
+
     pub fn delete_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.can_mutate() {
+            return;
+        }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
-        match history_store::delete_item(&item.id) {
-            history_store::DeleteOutcome::Deleted => {}
-            history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "History recovery copy remains",
-                    format!("Could not remove the saved recovery copy at {path}"),
-                );
-            }
-            history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "History update failed",
-                    format!(
-                        "The capture was deleted, but its history entry may return after restart: {error}"
-                    ),
-                );
-            }
-            history_store::DeleteOutcome::SourceDeletionFailed
-            | history_store::DeleteOutcome::HistoryUnavailable
-            | history_store::DeleteOutcome::NotFound => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Delete failed",
-                    "The capture could not be deleted",
-                );
-                return;
-            }
-        }
-        self.media.remove(&item.id);
-        self.items.retain(|candidate| candidate.id != item.id);
-
-        let remaining = self.visible().len();
-        self.selected_index = match remaining {
-            0 => 0,
-            count if self.selected_index >= count => count - 1,
-            _ => self.selected_index,
-        };
+        self.mutation_status = Some("Deleting capture…");
         cx.notify();
+        let id = item.id;
+        cx.spawn(async move |entity, cx| {
+            let delete_id = id.clone();
+            let outcome = cx.background_executor()
+                .spawn(async move { history_store::delete_item(&delete_id) })
+                .await;
+            let deleted = cx.update(|cx| {
+                match outcome {
+                    history_store::DeleteOutcome::Deleted => {}
+                    history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "History recovery copy remains",
+                            format!("Could not remove the saved recovery copy at {path}"),
+                        );
+                    }
+                    history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "History update failed",
+                            format!(
+                                "The capture was deleted. Its history entry may return after restart. {error}"
+                            ),
+                        );
+                    }
+                    history_store::DeleteOutcome::SourceDeletionFailed
+                    | history_store::DeleteOutcome::HistoryUnavailable
+                    | history_store::DeleteOutcome::NotFound => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Delete failed",
+                            "The capture could not be deleted",
+                        );
+                        return false;
+                    }
+                }
+                true
+            });
+            let _ = entity.update(cx, |this, cx| {
+                this.mutation_status = None;
+                if !deleted {
+                    cx.notify();
+                    return;
+                }
+                this.media.remove(&id);
+                this.items.retain(|candidate| candidate.id != id);
+
+                let remaining = this.visible().len();
+                this.selected_index = match remaining {
+                    0 => 0,
+                    count if this.selected_index >= count => count - 1,
+                    _ => this.selected_index,
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        let outcome = match history_store::clear_history() {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Clear history failed",
-                    format!("History could not be read; no captures were deleted: {error}"),
-                );
-                return;
-            }
-        };
-        let retained_ids: std::collections::HashSet<_> = outcome
-            .retained
-            .iter()
-            .map(|item| item.id.clone())
-            .collect();
-        self.items = outcome.retained;
-        self.media.retain(|id, _| retained_ids.contains(id));
-        self.selected_index = 0;
+        if !self.can_mutate() {
+            return;
+        }
+        self.mutation_status = Some("Clearing history…");
         cx.notify();
-        if !outcome.history_updated || outcome.source_deletion_failures > 0 {
-            let source_failure = if outcome.source_deletion_failures == 0 {
-                String::new()
-            } else {
-                format!(
-                    "{} capture(s) could not be deleted. ",
-                    outcome.source_deletion_failures
-                )
-            };
-            let history_failure = if outcome.history_updated {
-                String::new()
-            } else {
-                format!(
-                    "Deleted captures may return in history after restart: {}.",
-                    outcome
-                        .history_error
-                        .as_deref()
-                        .unwrap_or("history write failed")
-                )
-            };
-            crate::windows::toast::Toast::show(
-                cx,
-                if outcome.history_updated {
-                    "Clear history incomplete"
-                } else {
-                    "History update failed"
-                },
-                format!("{source_failure}{history_failure}"),
-            );
-        }
-        if let Some(path) = outcome.backup_warning.as_deref() {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History recovery copy remains",
-                format!("Could not remove the saved recovery copy at {path}"),
-            );
-        }
+        cx.spawn(async move |entity, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { history_store::clear_history() })
+                .await;
+            let retained = cx.update(|cx| {
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Clear history failed",
+                            format!("History could not be read. No captures were deleted. {error}"),
+                        );
+                        return None;
+                    }
+                };
+                if !outcome.history_updated || outcome.source_deletion_failures > 0 {
+                    let source_failure = if outcome.source_deletion_failures == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            "{} capture(s) could not be deleted. ",
+                            outcome.source_deletion_failures
+                        )
+                    };
+                    let history_failure = if outcome.history_updated {
+                        String::new()
+                    } else {
+                        format!(
+                            "Deleted captures may return in history after restart: {}.",
+                            outcome
+                                .history_error
+                                .as_deref()
+                                .unwrap_or("history write failed")
+                        )
+                    };
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        if outcome.history_updated {
+                            "Clear history incomplete"
+                        } else {
+                            "History update failed"
+                        },
+                        format!("{source_failure}{history_failure}"),
+                    );
+                }
+                if let Some(path) = outcome.backup_warning.as_deref() {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "History recovery copy remains",
+                        format!("Could not remove the saved recovery copy at {path}"),
+                    );
+                }
+                Some(outcome.retained)
+            });
+            let _ = entity.update(cx, |this, cx| {
+                this.mutation_status = None;
+                let Some(retained) = retained else {
+                    cx.notify();
+                    return;
+                };
+                let retained_ids: std::collections::HashSet<_> =
+                    retained.iter().map(|item| item.id.clone()).collect();
+                this.items = retained;
+                this.media.retain(|id, _| retained_ids.contains(id));
+                this.selected_index = 0;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -735,6 +783,17 @@ impl Render for HistoryWindow {
             .bg(background)
             .text_color(theme.foreground)
             .child(toolbar::header(has_items, columns == 1, &theme, cx))
+            .children(self.mutation_status.map(|status| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
+                    .text_size(px(crate::ui::chrome::TEXT_SM))
+                    .text_color(theme.muted_foreground)
+                    .child(crate::ui::icon::spinner_element("history-mutation", px(14.)))
+                    .child(status)
+            }))
             .when(has_items, |el| {
                 el.child(toolbar::toolbar(
                     self.filter,
@@ -917,6 +976,7 @@ mod tests {
                 revealing: false,
                 closing: false,
                 opening_screenshot: false,
+                mutation_status: None,
                 loading: false,
             }
         });

@@ -8213,6 +8213,26 @@ deletion checks at 2×.
 python3 tests/native/macos-capture-history-probe.py --history-open
 ```
 
+### 2026-11-19 macOS History deletion and clearing
+
+Delete and Clear History previously read history, removed files and
+updated history on the app thread. Both now run on the background
+executor. The panel retains its rows and shows progress until it
+receives the result. It updates the rows on completion and reports
+the existing filesystem and history errors.
+
+The isolated native probes hold the history read for each action.
+The old build missed both four-second status deadlines. The revised
+app replied in 0.4 ms for Delete and 0.7 ms for Clear during the hold.
+Both actions removed the file and its entry after release. The arm64
+GPUI suite passed 1,179 tests with 23 ignored. Light and dark Metal
+History checks passed at 2× for the 140-, 200- and 240-point panels.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --history-delete
+python3 tests/native/macos-capture-history-probe.py --history-clear
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

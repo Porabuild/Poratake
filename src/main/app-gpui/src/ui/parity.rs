@@ -683,6 +683,7 @@ fn capture_history(
     );
     let windows_before = cx.update(|cx| cx.windows());
     click_measured(cx, handle, "history-row-actions", 1);
+    cx.run_until_parked();
     let deleted = std::path::Path::new(&items[2].original_path);
     assert!(!deleted.exists());
     assert!(!crate::thumbnails::thumbnail_path(deleted).exists());

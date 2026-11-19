@@ -1553,14 +1553,34 @@ pub fn open(cx: &mut App) {
                     crate::intents::dispatch(Intent::History, None, cx);
                     return true;
                 }
-                if matches!(command.as_str(), "history open" | "history ready") {
-                    let Some(history) = registry::handle(WindowKind::History, cx)
-                        .and_then(|handle| handle.downcast::<crate::windows::history::HistoryWindow>())
+                if matches!(
+                    command.as_str(),
+                    "history open"
+                        | "history ready"
+                        | "history empty"
+                        | "history delete"
+                        | "history clear"
+                ) {
+                    let Some(history) =
+                        registry::handle(WindowKind::History, cx).and_then(|handle| {
+                            handle.downcast::<crate::windows::history::HistoryWindow>()
+                        })
                     else {
                         return false;
                     };
-                    return command == "history open"
-                        || history.read(cx).is_ok_and(|view| view.has_items_for_parity());
+                    return match command.as_str() {
+                        "history open" => true,
+                        "history ready" => history
+                            .read(cx)
+                            .is_ok_and(|view| view.has_items_for_parity()),
+                        "history empty" => history
+                            .read(cx)
+                            .is_ok_and(|view| !view.has_items_for_parity()),
+                        "history delete" => history
+                            .update(cx, |view, _, cx| view.delete_index(0, cx))
+                            .is_ok(),
+                        _ => history.update(cx, |view, _, cx| view.clear_all(cx)).is_ok(),
+                    };
                 }
                 if command == "video preview ready" {
                     let Some(handle) =

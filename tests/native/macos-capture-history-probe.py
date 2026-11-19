@@ -89,7 +89,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable, recording=False, opening=None):
+def verify(executable, recording=False, opening=None, mutation=None):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -169,13 +169,18 @@ def verify(executable, recording=False, opening=None):
         history_path = profile / "history.json"
         try:
             wait("NATIVE_SMOKE ready")
-            if opening:
+            if opening or mutation:
                 capture_area()
                 eventually("preview ready")
+                if mutation:
+                    assert command("open history")
+                    eventually("history ready")
                 contents = history_path.read_text()
                 history_path.unlink()
                 os.mkfifo(history_path)
-                if opening == "editor":
+                if mutation:
+                    send(f"history {mutation}")
+                elif opening == "editor":
                     assert command("preview editor")
                 else:
                     send("open history")
@@ -188,7 +193,15 @@ def verify(executable, recording=False, opening=None):
                     if opening == "history":
                         assert command("history open")
                         assert not command("history ready")
-                if opening == "editor":
+                    if mutation:
+                        assert command("history ready")
+                        captured_files(1)
+                if mutation:
+                    eventually("history empty")
+                    assert not list(captures.glob("*.png"))
+                    assert json.loads(history_path.read_text()) == []
+                    print(f"history {mutation} removed the capture and its entry after release")
+                elif opening == "editor":
                     eventually("close editor")
                     print("the screenshot editor opened after history was released")
                 else:
@@ -248,15 +261,21 @@ def verify(executable, recording=False, opening=None):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
-    elif sys.argv[1:] in ([], ["--recording"], ["--editor-open"], ["--history-open"]):
+    elif sys.argv[1:] in (
+        [], ["--recording"], ["--editor-open"], ["--history-open"], ["--history-delete"], ["--history-clear"]
+    ):
         root = Path(__file__).resolve().parents[2]
         verify(
             root / "src/main/target/debug/poratake-gpui",
             recording=sys.argv[1:] == ["--recording"],
+            mutation=next(
+                (mode for mode in ("delete", "clear") if sys.argv[1:] == [f"--history-{mode}"]),
+                None,
+            ),
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
                 None,
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear]")
