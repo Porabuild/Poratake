@@ -12,7 +12,9 @@ use tiny_skia::Pixmap;
 
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
-use crate::video::decoder::{DecodedFrame, FrameCancellation, VideoDecoder, VideoInfo};
+use crate::video::decoder::{
+    needs_stream_seek, DecodedFrame, FrameCancellation, VideoDecoder, VideoInfo,
+};
 use crate::video::{project, sidecars};
 use crate::windows::video_editor::model::VideoEditorState;
 
@@ -26,7 +28,13 @@ pub struct Source {
     video_segments: Vec<VideoSegment>,
     video_frame: Option<CachedFrame>,
     camera_frame: Option<CachedFrame>,
-    camera_warmup: Option<Receiver<()>>,
+    camera_warmup: Option<CameraWarmup>,
+}
+
+struct CameraWarmup {
+    time: f64,
+    completed: Receiver<()>,
+    cancel: smol::channel::Sender<()>,
 }
 
 struct CachedFrame {
@@ -163,6 +171,13 @@ impl Source {
             .or_else(|| self.video_segments.last().map(|segment| segment.end_time))
             .unwrap_or(adjusted);
 
+        if let Some(warmup) = self
+            .camera_warmup
+            .take_if(|warmup| needs_stream_seek(warmup.time, video_time))
+        {
+            warmup.cancel.close();
+        }
+
         let video = cached_frame(&mut self.video_frame, video_time, || {
             decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled)
         })?;
@@ -200,11 +215,19 @@ impl Source {
 
     fn warm_camera(&mut self, time: f64) {
         if self.camera_warmup.as_ref().is_some_and(|pending| {
-            matches!(pending.try_recv(), Err(TryRecvError::Empty))
+            matches!(pending.completed.try_recv(), Err(TryRecvError::Empty))
         }) {
             return;
         }
-        self.camera_warmup = self.camera.as_ref().and_then(|decoder| decoder.request_warmup(time));
+        self.camera_warmup = self.camera.as_ref().and_then(|decoder| {
+            let (cancel, cancelled) = smol::channel::bounded(1);
+            let completed = decoder.request_warmup(time, cancelled)?;
+            Some(CameraWarmup {
+                time,
+                completed,
+                cancel,
+            })
+        });
     }
 
     fn render(

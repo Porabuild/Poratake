@@ -9152,6 +9152,24 @@ reference at 4.5 seconds in every RGB channel. Four ordinary 4K60
 playback runs applied 120 images each over two seconds.
 [Seek and playback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera warmup during a distant seek
+
+The prerecorded camera warmup could hold the camera decoder after
+a seek moved to a visible interval. A request beyond the existing
+decoder seek window now cancels the old warmup. A decoder awaiting
+its first frame can use the start of its current stream to decide
+whether to reposition. Nearby requests can continue using the
+warmup.
+
+In a native probe the original editor produced no new frame within
+1.5 seconds of the distant seek while camera output was held. The
+revised editor applied the camera overlay in 149 ms in light and
+143 ms in dark with the hold still active. A nearby seek used the
+same camera process. All 1,191 GPUI tests and four development
+FFmpeg preview, seek and export tests passed. Live camera hardware
+was outside this fixture.
+[Camera seek evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

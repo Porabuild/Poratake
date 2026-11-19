@@ -2174,3 +2174,31 @@ Original       Dark               120           2.99 ms
 
 The unit regression verifies that canceling a pending frame wait
 still allows the same decoder to return its next available frame.
+
+2026-11-19 macOS camera warmup during a distant seek
+
+The development app opened a generated six-second 1280x720 screen
+recording with a green 640x360 camera sidecar. The camera became
+visible at 3.0 s. The test let the initial screen preview apply
+while holding the camera warmup before its first frame, then
+sent an app-local seek to 4.5 s. The later FFmpeg seek process
+could read the selected range without the hold.
+
+Build          Theme   Seek to applied image         Green camera pixels
+Original       Light   No frame in the 1,500 ms observation            –
+Revised        Light                                149.0 ms      61,645
+Revised        Dark                                 143.3 ms      61,645
+
+The revised samples applied the overlay while the hold remained
+active. The 1280x720 editor output showed both the original screen
+and the camera image. A separate light fixture exposed the camera
+at 1.0 s and sought to 1.5 s, within the decoder's existing seek
+window. It released the useful warmup, applied a visible camera
+frame 42.9 ms after the seek request, and recorded exactly one
+camera decoder launch.
+
+The decoder lifecycle regression also tests that a far seek
+replaces a stream with no buffered frame. The complete GPUI suite
+passed with 1,191 tests. The four separate development FFmpeg
+tests covered camera preview conversion, sparse screen and
+camera timing, and delayed camera visibility through edit/export.

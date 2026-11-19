@@ -37,6 +37,12 @@ pub struct DecodedFrame {
 
 pub(crate) type FrameCancellation = smol::channel::Receiver<()>;
 
+const STREAM_SEEK_PREROLL: f64 = 2.0;
+
+pub(crate) fn needs_stream_seek(previous: f64, requested: f64) -> bool {
+    requested < previous || requested - previous > STREAM_SEEK_PREROLL
+}
+
 struct Command {
     time: f64,
     reply: Reply,
@@ -119,13 +125,17 @@ impl VideoDecoder {
             .ok()?
     }
 
-    pub(crate) fn request_warmup(&self, time: f64) -> Option<Receiver<()>> {
+    pub(crate) fn request_warmup(
+        &self,
+        time: f64,
+        cancelled: FrameCancellation,
+    ) -> Option<Receiver<()>> {
         let (reply, completion) = mpsc::channel();
         self.commands
             .send(Command {
                 time: time.max(0.0),
                 reply: Reply::Warmup(reply),
-                cancelled: None,
+                cancelled: Some(cancelled),
             })
             .ok()?;
         Some(completion)
@@ -506,6 +516,7 @@ mod backend {
     struct DecoderProcess {
         child: Child,
         frames: smol::channel::Receiver<Option<TimedFrame>>,
+        seek_start: f64,
         current: Option<TimedFrame>,
         next: Option<TimedFrame>,
     }
@@ -643,18 +654,22 @@ mod backend {
                         .as_ref()
                         .is_some_and(|next| time < next.timestamp)
             });
-            !bracketed
-                && decoder
-                    .current
-                    .as_ref()
-                    .or(decoder.next.as_ref())
-                    .is_some_and(|current| {
-                        time < current.timestamp || time - current.timestamp > 2.0
-                    })
+            let position = decoder
+                .current
+                .as_ref()
+                .or(decoder.next.as_ref())
+                .map_or(decoder.seek_start, |frame| frame.timestamp);
+            !bracketed && needs_stream_seek(position, time)
         });
         let mut process = if restart {
             drop(decoder.take());
-            start(ffmpeg, path, info, start_time, (time - 2.0).max(0.0))?
+            start(
+                ffmpeg,
+                path,
+                info,
+                start_time,
+                (time - STREAM_SEEK_PREROLL).max(0.0),
+            )?
         } else {
             decoder.take()?
         };
@@ -938,6 +953,7 @@ mod backend {
         Some(DecoderProcess {
             child,
             frames,
+            seek_start,
             current: None,
             next: None,
         })
@@ -1013,6 +1029,7 @@ esac
             let mut decoder = DecoderProcess {
                 child: ProcessCommand::new("/bin/sh").args(["-c", ":"]).spawn().unwrap(),
                 frames,
+                seek_start: 0.0,
                 current: None,
                 next: None,
             };
@@ -1194,47 +1211,50 @@ esac
 
         #[test]
         fn a_seek_retires_the_old_decoder_before_launching_its_replacement() {
-            let directory = fake_ffmpeg();
-            let ffmpeg = directory.path().join("ffmpeg");
-            let source = directory.path().join("source.mp4");
-            let media = describe(&ffmpeg, &source).expect("video metadata");
-            let child = ProcessCommand::new("sleep")
-                .arg("30")
-                .spawn()
-                .expect("stand-in for the active decoder");
-            let (_, frames) = smol::channel::bounded(1);
-            let mut decoder = Some(DecoderProcess {
-                child,
-                frames,
-                current: Some(TimedFrame {
-                    timestamp: 10.0,
-                    frame: DecodedFrame {
-                        width: 2,
-                        height: 1,
-                        bgra: vec![9, 8, 7, 255, 12, 11, 10, 255].into(),
-                    },
-                }),
-                next: None,
-            });
-            let old_pid = decoder.as_ref().unwrap().child.id();
-            std::fs::write(
-                directory.path().join("ffmpeg.previous"),
-                old_pid.to_string(),
-            )
-            .expect("decoder PID for the replacement to check");
+            for (last_frame, requested) in [(Some(10.0), 0.25), (None, 4.5)] {
+                let directory = fake_ffmpeg();
+                let ffmpeg = directory.path().join("ffmpeg");
+                let source = directory.path().join("source.mp4");
+                let media = describe(&ffmpeg, &source).expect("video metadata");
+                let child = ProcessCommand::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .expect("stand-in for the active decoder");
+                let (_, frames) = smol::channel::bounded(1);
+                let mut decoder = Some(DecoderProcess {
+                    child,
+                    frames,
+                    seek_start: 0.0,
+                    current: last_frame.map(|timestamp| TimedFrame {
+                        timestamp,
+                        frame: DecodedFrame {
+                            width: 2,
+                            height: 1,
+                            bgra: vec![9, 8, 7, 255, 12, 11, 10, 255].into(),
+                        },
+                    }),
+                    next: None,
+                });
+                let old_pid = decoder.as_ref().unwrap().child.id();
+                std::fs::write(
+                    directory.path().join("ffmpeg.previous"),
+                    old_pid.to_string(),
+                )
+                .expect("decoder PID for the replacement to check");
 
-            let frame = read_frame(
-                &ffmpeg,
-                &source,
-                0.25,
-                media.video,
-                media.start_time,
-                &mut decoder,
-                None,
-            )
-            .expect("replacement decoder must run after the old process exits");
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    requested,
+                    media.video,
+                    media.start_time,
+                    &mut decoder,
+                    None,
+                )
+                .expect("replacement decoder must run after the old process exits");
 
-            assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+                assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            }
         }
 
         #[test]
