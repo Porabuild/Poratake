@@ -10070,6 +10070,24 @@ passed on arm64 and Rosetta x86_64, along with 62 Electron and daemon
 contract tests. No desktop input was posted.
 [Auto Scroll boundary evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Auto Scroll input failures preserve captures
+
+Auto Scroll now checks its existing event-posting grant when a run
+starts, before moving the pointer or taking another baseline. If
+Core Graphics cannot create a wheel event during a run, Auto Scroll
+stops and reports an input error. GPUI and Electron show an input
+failure with no Save suggestion when zero frames are available.
+
+The native regression rejected a wheel event after a valid image.
+The previous code kept scrolling. The revised code reported the
+failure and saved the accepted image byte for byte. A separate
+simulated preflight denial stopped before requesting another frame.
+The 200-call preflight probe measured a 9.1 ms median and 9.8 ms p95
+on this host. Production checks the grant once per run. Swift
+fixtures and daemon typechecks passed on arm64 and Rosetta x86_64.
+The 14 GPUI scroll tests and 62 Electron and contract tests passed.
+[Auto Scroll input evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

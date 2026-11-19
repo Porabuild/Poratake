@@ -384,7 +384,9 @@ async function runScrollCapture(): Promise<void> {
             break;
           case 'input-error':
             message =
-              'Scrolling could not be continued. You can save the captured portion.';
+              (data as { frameCount?: unknown } | null)?.frameCount === 0
+                ? 'Auto Scroll could not send input.'
+                : 'Scrolling could not be continued. You can save the captured portion.';
             break;
         }
         if (message) showNotification('Scroll Capture Stopped', message);

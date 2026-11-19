@@ -752,6 +752,14 @@ describe('scroll-capture', () => {
             'Scroll Capture Stopped',
             'The first frame could not be captured. Try auto-scroll again.'
           );
+          daemonHandler?.('scroll-capture:scroll-ended', {
+            reason: 'input-error',
+            frameCount: 0,
+          });
+          expect(mockShowNotification).toHaveBeenLastCalledWith(
+            'Scroll Capture Stopped',
+            'Auto Scroll could not send input.'
+          );
           expect(mockDaemonCall).not.toHaveBeenCalledWith(
             'scroll-capture',
             'cancel'
@@ -775,7 +783,7 @@ describe('scroll-capture', () => {
           daemonHandler?.('scroll-capture:scroll-ended', {
             reason: 'no-overlap',
           });
-          expect(mockShowNotification).toHaveBeenCalledTimes(4);
+          expect(mockShowNotification).toHaveBeenCalledTimes(5);
           finish({ success: true });
           await capture;
           expect(mockPublishScreenshot).toHaveBeenCalled();

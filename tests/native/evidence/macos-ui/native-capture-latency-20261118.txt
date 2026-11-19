@@ -3594,3 +3594,24 @@ The next simulated point at x=64 was inside. The posted event used x=64
 and the cursor prompt had cleared, despite the monitor having been
 outside on the previous step. The other scroll restart checks still
 saved the retained frame exactly. No real pointer input was used.
+
+2026-11-19 macOS Auto Scroll input refusal at 88c9315a
+
+The fixture held one verified frame and restarted Auto Scroll using
+the retained image. It intercepted the first wheel step and returned
+failure from the event creation stand-in.
+
+Baseline
+scroll input failure: still scrolling=true
+
+Revised
+scroll input failure: still scrolling=false
+scroll input preflight denial: no new capture requested
+
+Both failures reported input-error with one accepted frame. The PNG
+matched that frame byte for byte. A 200-call stand-alone
+CGPreflightPostEventAccess probe measured 9.121 ms median and
+9.758 ms p95. The grant is checked once per Auto Scroll run. The
+fixture posted no wheel event and requested no permission. Core
+Graphics event delivery after successful creation was outside this
+run.

@@ -387,7 +387,8 @@ class ScrollCaptureModule: NSObject, Module {
     private var testPreviewResponder: ((Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
     private var testCursorLocation: NSPoint?
-    private var testScrollResponder: ((CGPoint) -> Void)?
+    private var testScrollResponder: ((CGPoint) -> Bool)?
+    private var testAutoScrollInputAllowed = true
     private var testCursorResponder: ((Bool) -> Void)?
     private var testBeforeFrameComparison: (() -> Void)?
     private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
@@ -829,6 +830,10 @@ class ScrollCaptureModule: NSObject, Module {
     @discardableResult
     private func startAutoScroll() -> Bool {
         guard !isAutoScrolling else { return true }
+        guard canPostAutoScrollInput() else {
+            emitScrollEnded(reason: "input-error", frameCount: capturedFrames.count)
+            return false
+        }
 
         isAutoScrolling = true
         autoButton?.title = "Stop"
@@ -877,7 +882,11 @@ class ScrollCaptureModule: NSObject, Module {
         let stepsPerFrame = scrollStepsPerFrame
         let isFinalStep = currentScrollStep == stepsPerFrame - 1
         let delta = isFinalStep ? scrollDeltaPerStep + scrollStepRemainder : scrollDeltaPerStep
-        simulateScroll(delta: delta, at: location)
+        guard postScroll(delta: delta, at: location) else {
+            stopAutoScroll()
+            emitScrollEnded(reason: "input-error", frameCount: capturedFrames.count)
+            return
+        }
         currentScrollStep += 1
 
         guard currentScrollStep >= stepsPerFrame else { return }
@@ -922,6 +931,15 @@ class ScrollCaptureModule: NSObject, Module {
         autoScrollTimer = Timer.scheduledTimer(withTimeInterval: autoScrollSpeed.stepInterval, repeats: true) { [weak self] _ in
             self?.performAutoScrollStep()
         }
+    }
+
+    private func canPostAutoScrollInput() -> Bool {
+#if SCROLL_CAPTURE_TEST
+        if testCaptureProvider != nil || testScheduleAutoScroll != nil || testCoordinatedCaptureProvider != nil {
+            return testAutoScrollInputAllowed
+        }
+#endif
+        return CGPreflightPostEventAccess()
     }
 
     private func warpCursorToCaptureCenter() {
@@ -976,24 +994,23 @@ class ScrollCaptureModule: NSObject, Module {
         emit(event: "cursor", data: ["outside": outside])
     }
 
-    private func simulateScroll(delta: Int32, at location: NSPoint) {
+    private func postScroll(delta: Int32, at location: NSPoint) -> Bool {
         let cgPoint = CGPoint(x: location.x, y: primaryScreenHeight() - location.y)
 #if SCROLL_CAPTURE_TEST
         if let testScrollResponder {
-            testScrollResponder(cgPoint)
-            return
+            return testScrollResponder(cgPoint)
         }
 #endif
 
-        if let scrollEvent = CGEvent(scrollWheelEvent2Source: nil,
-                                      units: .pixel,
-                                      wheelCount: 1,
-                                      wheel1: delta,
-                                      wheel2: 0,
-                                      wheel3: 0) {
-            scrollEvent.location = cgPoint
-            scrollEvent.post(tap: .cghidEventTap)
-        }
+        guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil,
+                                         units: .pixel,
+                                         wheelCount: 1,
+                                         wheel1: delta,
+                                         wheel2: 0,
+                                         wheel3: 0) else { return false }
+        scrollEvent.location = cgPoint
+        scrollEvent.post(tap: .cghidEventTap)
+        return true
     }
 
     private func continueAfterCapture(_ result: FrameCaptureResult) -> Bool {
@@ -2525,7 +2542,11 @@ class ScrollCaptureModule: NSObject, Module {
         testCursorLocation = nil
     }
 
-    func testPerformAutoScrollStep(at point: NSPoint, post: @escaping (CGPoint) -> Void) {
+    func testSetAutoScrollInputAllowed(_ allowed: Bool) {
+        testAutoScrollInputAllowed = allowed
+    }
+
+    func testPerformAutoScrollStep(at point: NSPoint, post: @escaping (CGPoint) -> Bool) {
         testCursorLocation = point
         testScrollResponder = post
         performAutoScrollStep()

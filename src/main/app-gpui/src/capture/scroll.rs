@@ -139,6 +139,11 @@ impl ScrollSessionSignal {
                     Some("capture-error") => Some(Self::Stopped(
                         "A frame could not be captured. You can save the captured portion.",
                     )),
+                    Some("input-error")
+                        if payload.get("frameCount").and_then(|v| v.as_u64()) == Some(0) =>
+                    {
+                        Some(Self::Stopped("Auto Scroll could not send input."))
+                    }
                     Some("input-error") => Some(Self::Stopped(
                         "Scrolling could not be continued. You can save the captured portion.",
                     )),
@@ -413,6 +418,15 @@ mod tests {
             ),
             Some(ScrollSessionSignal::Stopped(
                 "The first frame could not be captured. Try auto-scroll again."
+            ))
+        ));
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                &serde_json::json!({ "reason": "input-error", "frameCount": 0 }),
+            ),
+            Some(ScrollSessionSignal::Stopped(
+                "Auto Scroll could not send input."
             ))
         ));
         assert!(ScrollSessionSignal::from_daemon_event(

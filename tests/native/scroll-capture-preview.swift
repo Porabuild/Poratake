@@ -2289,11 +2289,17 @@ struct ScrollCapturePreviewTest {
         var postedSteps: [CGPoint] = []
         resumedModule.testSetCursorResponder { cursorTransitions.append($0) }
         resumedModule.testCheckCursor(inside: true)
-        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: -1, y: 48)) { postedSteps.append($0) }
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: -1, y: 48)) {
+            postedSteps.append($0)
+            return true
+        }
         print("scroll step with pointer outside: posts=\(postedSteps.count)")
         fflush(stdout)
         precondition(postedSteps.isEmpty && cursorTransitions == [true])
-        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) { postedSteps.append($0) }
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) {
+            postedSteps.append($0)
+            return true
+        }
         precondition(postedSteps.count == 1 && postedSteps[0].x == 64 && cursorTransitions == [true, false])
         print("scroll step after pointer returns: posts=\(postedSteps.count), prompt cleared")
         let resumedGeneration = resumedModule.testCaptureGeneration()
@@ -2308,6 +2314,27 @@ struct ScrollCapturePreviewTest {
         }
         precondition(resumedSteps == 3 && resumedEnds.count == 2)
         precondition(resumedEnds.last?["reason"] as? String == "duplicate")
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Input failure test did not request a baseline") { resumedCaptures.count == 5 }
+        resumedCaptures[4](frames[0])
+        await waitUntil("Input failure test did not schedule a scroll") { resumedSteps == 4 }
+        var rejectedPosts = 0
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) { _ in
+            rejectedPosts += 1
+            return false
+        }
+        print("scroll input failure: still scrolling=\(resumedModule.testIsAutoScrolling())")
+        fflush(stdout)
+        precondition(rejectedPosts == 1 && !resumedModule.testIsAutoScrolling())
+        precondition(resumedEnds.count == 3 && resumedEnds.last?["reason"] as? String == "input-error")
+        precondition(resumedEnds.last?["frameCount"] as? Int == 1 && resumedCaptures.count == 5)
+        resumedModule.testSetAutoScrollInputAllowed(false)
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Missing input access did not report a stop") { resumedEnds.count == 4 }
+        precondition(!resumedModule.testIsAutoScrolling() && resumedCaptures.count == 5)
+        precondition(resumedEnds.last?["reason"] as? String == "input-error")
+        precondition(resumedEnds.last?["frameCount"] as? Int == 1)
+        print("scroll input preflight denial: no new capture requested")
         let resumedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("poratake-scroll-resume-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: resumedOutput) }
