@@ -3356,3 +3356,36 @@ fixture began a second screenshot during that refresh and verified
 that the panel stayed transparent until the screenshot finished.
 The test simulated capture and filter completion. It did not record
 a real stream or use a camera.
+
+2026-11-19 live ScreenCaptureKit startup after a window screenshot at 5beab427
+
+The native test used the current capture coordinator, exclusion
+registry and AppKit tooltip under the existing Screen Recording
+grant. The screenshot used a desktop-independent window filter.
+A continuation held completion in the registry after the real
+screenshot callback. The test began recording startup before
+releasing that continuation. After the screenshot completed, a
+real ScreenCaptureKit stream started with a display filter scoped
+to a generated blue backdrop. The filter updater resolved real
+ScreenCaptureKit window IDs and excluded the current tooltip from
+the allowlist before calling updateContentFilter. The popup kept
+its ID and stayed at alpha zero until the updater returned.
+
+Appearance   Screenshot     Blue samples   Stream       Protected pixels   Filter and reveal
+light        370x340         9/9            1728x1117    5704/5704 blue        65.75 ms
+dark         370x340         9/9            1728x1117    5704/5704 blue        61.46 ms
+
+The stream sample was taken after a backdrop color change made
+after the tooltip became visible. The sampled rectangle expanded
+the panel bounds by 12 points on each side at 1x stream resolution.
+After tooltip dismissal, the updater applied an empty exclusion
+list. A generated ordinary red window at the former tooltip
+position was added to the stream's allowlist. All nine sampled
+positions were red in each appearance. Screen Recording was
+preflighted. Audio, cursor and desktop input were disabled.
+The stream did not encode or export a file.
+
+An earlier display-filter screenshot returned 1728x1117 but none
+of nine tested positions matched the expected blue. No conclusion
+was drawn about its screenshot pixels. The window-filter retry
+above passed. The 70 Electron and daemon contract tests passed.

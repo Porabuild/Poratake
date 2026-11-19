@@ -9871,6 +9871,32 @@ preview lifecycle fixture passed, along with 70 Electron and daemon
 contract tests.
 [Overlapping capture results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 live macOS tooltip during screenshot and stream startup
+
+With the existing Screen Recording grant, a temporary AppKit
+probe took a real, window-only screenshot of a generated backdrop.
+It held the screenshot's registry completion until recording
+startup had begun. The production tooltip stayed transparent until
+a live ScreenCaptureKit stream had started and its updated filter
+included the tooltip's exclusion ID.
+
+In light and dark, the 370×340 screenshots showed the blue backdrop
+at all nine sampled positions. After the tooltip appeared, the
+1728×1117 stream showed the backdrop at all 5,704 sampled pixels
+around the tooltip in each appearance. A separate ordinary red
+window at the same position appeared in nine of nine positive-control
+samples per appearance. Filter refresh and reveal took 65.8 ms in
+light and 61.5 ms in dark, measured from release of the startup
+barrier. These times do not include stream startup or display paint.
+
+The stream used an allowlist limited to generated windows. This
+probe checked live frames before encoding, without a GPUI editor
+handoff. A preliminary display-filter screenshot did not yield the
+expected backdrop samples. The accepted screenshot check used the
+window-only filter. All 70 related Electron and daemon contract
+tests passed.
+[Live overlap evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
