@@ -9956,6 +9956,21 @@ were off. These timings exclude physical input and first display
 paint. All 87 related Electron tests passed.
 [GPUI handoff and decoded frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS countdown hit testing
+
+The countdown exposed a single accessible button, but AppKit hit
+testing selected its image view over the timer icon. The countdown
+now receives pointer input across the full control.
+
+The lifecycle fixture lays out the native panel and checks hit targets
+across the margins, icon and text. It sends the cancellation click
+through the actual AppKit window at the icon position and verifies
+that the panel disappears. The following countdown completes and
+the last panel hides through RPC. The native fixtures passed on
+arm64 and Rosetta x86_64, and 27 Electron and daemon contract tests
+passed. The pointer check used app-local events.
+[Timer hit-testing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

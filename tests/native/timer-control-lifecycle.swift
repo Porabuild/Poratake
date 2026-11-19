@@ -172,13 +172,26 @@ final class Fixture {
         if id == "cleanup" {
             module.handle(method: "hide", params: nil, requestId: "hidden")
         } else if index == 0 {
-            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 70, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1),
-                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: 70, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0) else {
+            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 49, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1),
+                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: 49, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0) else {
                 fail("could not construct cancellation events")
                 return
             }
-            button.mouseDown(with: down)
-            button.mouseUp(with: up)
+            button.layoutSubtreeIfNeeded()
+            for x in [10, 49, 70, 91, 130] {
+                let point = NSPoint(x: x, y: 26)
+                let hit = button.hitTest(point)
+                guard hit === button else {
+                    fail("timer click at x=\(x) hit \(String(describing: hit.map { type(of: $0) }))")
+                    return
+                }
+            }
+            guard button.hitTest(NSPoint(x: -1, y: 26)) == nil else {
+                fail("timer button captured a click outside the panel")
+                return
+            }
+            panel.sendEvent(down)
+            panel.sendEvent(up)
         }
     }
 

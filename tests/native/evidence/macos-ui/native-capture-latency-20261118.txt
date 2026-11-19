@@ -3473,3 +3473,14 @@ dark        217.9                               11.1       79.9            113.1
 The startup and screenshot waits were deliberately coordinated in the fixture.
 Input was app-local and first compositor paint was outside the measurement.
 The 87 related Electron reference tests passed.
+
+2026-11-19 macOS countdown icon hit testing at 6a1e0813
+
+The native timer lifecycle fixture laid out the 140x52 AppKit panel.
+The baseline returned an NSImageView at x=49, y=26. The revised
+hit test returned the timer button at all five tested points from
+x=10 to x=130, and returned no target outside the panel. The
+fixture sent a mouse down and up through NSWindow at the former
+icon hit and observed cancellation and removal from WindowServer.
+A second countdown completed and explicit hide dismissed the last
+panel. These events were app-local and did not move the pointer.
