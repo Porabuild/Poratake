@@ -1802,3 +1802,41 @@ frozen crop replied before the release request. A setup retry
 waited for the thumbnail window before dispatching its Edit action.
 Separate Swift regressions check transparent and partial-alpha pixels,
 opaque color preservation, and the missing- or wrong-size fallback.
+
+2026-11-19 macOS frozen screenshot color and crop time
+
+A preflight-granted AppKit fixture captured only its own 340x240
+point Display P3 window by its WindowServer ID. Scale was 2x. The
+source was 680x480 and carried an ICC space. The original and new
+FrozenFrameStore implementations received the same image. A
+20-point inset on each side produced a 600x400 crop, compared to an
+independent Core Graphics subimage. The source-space pixel at the
+first coordinate was RGBA (31,224,56,255). The Device RGB crop
+came back as (104,225,67,255) in the source profile. In total,
+720,000 color bytes differed across 240,000 pixels. The revised
+crop and the encoded PNG each matched the reference exactly.
+ImageIO identified the encoded profile as Display P3.
+
+The GPUI native development app exercised area selection, preview
+and editor output in temporary light and dark profiles. Its fixture
+daemon supplied the actual native-derived P3 crop. ColorSync's
+conversion to the system sRGB profile produced (0,228,0,255).
+Both editor outputs matched the ColorSync PNG at every pixel.
+The display capture in this probe was bounded to the fixture.
+
+A separate benchmark alternated both implementations for ten runs
+each on the Apple M5 Pro. The input was a generated 3960x2280 P3
+frame and the output crop was 3840x2160. The crop stage timed the
+call that produces the CGImage. The combined stage also finalized
+a PNG in memory. Output dimensions and successful serialization
+were checked in each run.
+
+Median timing              Original      Revised
+Crop call                    34.30 ms       0.01 ms
+Crop and encode              93.71 ms      53.80 ms
+
+The revised crop can defer pixel materialization until PNG encoding,
+so the combined stage is the comparison for end-to-end backend work.
+The benchmark excludes capture acquisition, file I/O and UI.
+Synthetic Swift cases check the common P3 profile at a 2x/1x seam,
+an sRGB/P3 seam, and the exact aligned subimage at a nonzero origin.

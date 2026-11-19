@@ -263,6 +263,7 @@ jobs:
         run: |
           swiftc -target "$(uname -m)-apple-macosx13.0" \
             src/main/daemon/Core/ScreenshotCaptureGeometry.swift \
+            src/main/daemon/Core/FrozenFrameStore.swift \
             tests/native/screenshot-capture-geometry.swift \
             -o "$RUNNER_TEMP/screenshot-capture-geometry-test"
           "$RUNNER_TEMP/screenshot-capture-geometry-test"

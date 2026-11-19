@@ -8970,6 +8970,30 @@ typechecking, window-ID validation and 77 Electron reference tests
 passed.
 [Native frozen-window evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS frozen screenshot color and crop time
+
+The frozen frame store used a Device RGB bitmap for every crop.
+The new path uses the original image directly for an aligned crop
+contained by one display. Composited crops keep a shared RGB
+profile and use Display P3 when the source profiles differ. A
+generated fixture verifies both mixed-scale and mixed-profile seams.
+
+A native 2× capture of a bounded Display P3 test window verified
+the change. The old crop changed the source green sample from
+(31, 224, 56) to (104, 225, 67) after conversion back to the
+source profile. The revised 600×400 PNG preserved Display P3 and
+matched the source crop in every channel. The GPUI screenshot
+workflow reopened that PNG in light and dark and exported exactly
+the same sRGB pixels as ColorSync.
+
+In an isolated 4K benchmark, median crop-plus-PNG time fell from
+94 ms to 54 ms. This measures the Swift backend and in-memory
+encoding. Full-display presentation and mixed physical displays
+remain open. Geometry passed on Apple Silicon and Rosetta, along
+with Swift typechecking, four GPUI color tests and 77 Electron
+reference tests.
+[Color and crop timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
