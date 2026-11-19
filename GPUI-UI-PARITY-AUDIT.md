@@ -10356,6 +10356,30 @@ and typechecks for both daemon architectures. The native fixture used
 a generated panel without live camera imagery.
 [Camera movement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS idle wakeups and editor memory
+
+GPUI now follows macOS appearance changes through the AppKit observer
+on its hidden keepalive window. The redundant two-second polling
+thread is gone. With the recording controls dismissed, four
+app-local appearance changes reached the system-mode theme. Explicit
+Light and Dark held across the same changes.
+
+In two before-and-after development runs, GPUI went from 40–42 to
+37 interrupt wakeups per eight seconds at idle. CPU use measured
+at most 0.001% of a core in both builds. The standalone Swift daemon
+was near 8 MiB of physical footprint at idle. GPUI stayed near
+22 MiB before capture and 115–116 MiB after closing the 4K screenshot
+editor. The app released its large allocations on close. In one
+after-close sample, 87 MiB remained in empty large malloc regions.
+A standalone trial of the public allocator pressure-relief call
+returned zero bytes against freed 4K-sized buffers on this host.
+
+The 250 ms daemon watchdog still polls during app idle. The editor
+memory measurements used a generated capture and the timings
+exclude physical input. The theme change measured here was scoped
+to the test process.
+[Idle process measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -26,7 +26,7 @@ use crate::system::native::NativeCommand;
 use crate::system::native::{self, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 use crate::theme::watcher;
 use crate::ui::chrome;
 
@@ -221,10 +221,7 @@ fn main() {
             // the first `init_theme` below publishes the app's resolved tokens.
             herogpui::init(cx);
             theme::vars::init_theme(cx, mode, &settings.appearance.theme);
-            // Electron's `nativeTheme.on('updated', ...)` follows the OS light/dark
-            // switch live; the watcher reports the same switches so open windows
-            // repaint when the user's appearance mode is `system`.
-            #[cfg(any(windows, target_os = "macos"))]
+            #[cfg(windows)]
             {
                 let system_theme = watcher::spawn();
                 cx.spawn(async move |cx| {

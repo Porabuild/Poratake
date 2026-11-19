@@ -1688,6 +1688,27 @@ pub fn open(cx: &mut App) {
                         _ => history.update(cx, |view, _, cx| view.clear_all(cx)).is_ok(),
                     };
                 }
+                if let Some(mode) = command.strip_prefix("set test appearance ") {
+                    use cocoa::base::id;
+                    use objc::{class, msg_send, sel, sel_impl};
+
+                    let appearance = match mode {
+                        "light" => "NSAppearanceNameAqua",
+                        "dark" => "NSAppearanceNameDarkAqua",
+                        _ => return false,
+                    };
+                    let name = objc2_foundation::NSString::from_str(appearance);
+                    unsafe {
+                        let app: id = msg_send![class!(NSApplication), sharedApplication];
+                        let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: &*name];
+                        let _: () = msg_send![app, setAppearance: appearance];
+                    }
+                    return true;
+                }
+                if let Some(mode) = command.strip_prefix("applied test appearance ") {
+                    return crate::theme::vars::active_mode(cx)
+                        == crate::theme::presets::ThemeMode::parse(mode);
+                }
                 if command == "video preview ready" {
                     let Some(handle) =
                         registry::handle(WindowKind::CapturePreview, cx).and_then(|handle| {

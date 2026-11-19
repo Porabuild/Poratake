@@ -3895,3 +3895,37 @@ On arm64 and under Rosetta x86_64, the window fit inside the work area
 and both Update replies for the final request reported (1458,847),
 matching the position events on each architecture. No camera device
 was opened.
+
+2026-11-19 macOS idle wakeups and editor memory at deca5b7f
+
+GPUI development builds ran on an M5 Pro with fresh profiles.
+The capture fixture returned a generated 3840x2160 PNG. The editor
+opened directly, and the app-local close command closed it.
+The standalone Swift daemon waited on stdin without capture
+requests. GPUI called its fixture daemon, which kept the ordinary
+app watchdog active.
+
+Each sample is eight seconds, measured with proc_pid_rusage.
+CPU usage ranged from 0.000% to 0.001% of one core. The daemon
+measured 7.69–7.78 MiB physical footprint and 0–1 interrupt wakes.
+GPUI figures follow. Memory is physical footprint in MiB.
+
+Build/sample         Idle wakes/MiB     4K editor wakes/MiB     After close wakes/MiB
+Baseline 1               42 / 22.22              45 / 228.00             41 / 115.95
+No theme poll 1          37 / 24.49              40 / 252.38             36 / 115.74
+No theme poll 2          37 / 21.67              38 / 251.49             36 / 114.78
+Baseline 2               40 / 21.64              44 / 251.50             40 / 115.05
+
+The first no-poll sample applied four AppKit appearance changes
+locally before starting the timer. The active theme was ready at
+the first successful query in 0.11–2.78 ms. Those times end at app
+state and omit display presentation. The separate appearance probe
+covered system, explicit Light and explicit Dark.
+
+vmmap -summary after closing the editor reported 87.0 MiB resident
+in three empty large malloc regions, against 114.8 MiB total
+physical footprint. All malloc zones together had 8124 KiB of live
+allocations. In a separate process, freeing three touched buffers
+with a total allocation of 87.0 MiB left the process footprint at
+88.36 MiB. Calling malloc_zone_pressure_relief(NULL, 0) returned
+zero bytes and left the footprint unchanged in all three trials.

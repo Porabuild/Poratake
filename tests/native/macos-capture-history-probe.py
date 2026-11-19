@@ -215,6 +215,17 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening == "system-appearance":
+                assert command("cancel pre-recording")
+                selected = os.environ.get("PORATAKE_HISTORY_PROBE_THEME", "system")
+                for appearance in ("dark", "light", "dark", "light"):
+                    assert command("set test appearance " + appearance)
+                    expected = appearance if selected == "system" else selected
+                    eventually("applied test appearance " + expected)
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                print(f"app-local appearance changes respected the {selected} setting")
+                return
             if opening == "camera-retry":
                 requests = captures / "camera-preview-requests.jsonl"
                 assert command("camera-select generated-camera")
@@ -522,6 +533,7 @@ if __name__ == "__main__":
         [],
         ["--recording"],
         ["--camera-retry"],
+        ["--system-appearance"],
         ["--editor-open"],
         ["--direct-editor"],
         ["--standalone-pin"],
@@ -545,10 +557,10 @@ if __name__ == "__main__":
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
                 next(
-                    (mode for mode in ("direct-editor", "annotation-save", "editor-print", "standalone-pin", "camera-retry") if sys.argv[1:] == [f"--{mode}"]),
+                    (mode for mode in ("direct-editor", "annotation-save", "editor-print", "standalone-pin", "camera-retry", "system-appearance") if sys.argv[1:] == [f"--{mode}"]),
                     None,
                 ),
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --camera-retry | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --camera-retry | --system-appearance | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
