@@ -175,6 +175,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
             if copy:
                 capture_area()
                 eventually("preview ready")
+                eventually("preview finalizing", expected=False)
                 source, = captured_files(1)
                 original = source.read_bytes()
                 source.unlink()
@@ -198,6 +199,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
             if opening or mutation:
                 capture_area()
                 eventually("preview ready")
+                eventually("preview finalizing", expected=False)
                 if mutation and not preview_delete:
                     assert command("open history")
                     eventually("history ready")
@@ -240,6 +242,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                     if preview_delete:
                         capture_area()
                         eventually("preview ready")
+                        eventually("preview finalizing", expected=False)
                         files = captured_files(1)
                         contents = history_path.read_text()
                         history_path.unlink()
@@ -281,16 +284,22 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 capture_area()
             with held_read(history_path):
                 start = monotonic()
-                send(preview)
-                assert wait(f"NATIVE_SMOKE {preview} ", timeout=4).endswith(" false")
-                elapsed_ms = (monotonic() - start) * 1000
-                print(f"preview status replied in {elapsed_ms:.1f} ms while history was held")
                 if recording:
+                    send(preview)
+                    assert wait(f"NATIVE_SMOKE {preview} ", timeout=4).endswith(" false")
+                    elapsed_ms = (monotonic() - start) * 1000
+                    print(f"preview status replied in {elapsed_ms:.1f} ms while history was held")
                     first, = captures.glob("*.poratake")
                     state = json.loads((first / "state.json").read_text())
                     assert state["sourceDuration"] == 2.0 and len(state["segments"]) == 1
                 else:
+                    eventually(preview)
+                    elapsed_ms = (monotonic() - start) * 1000
+                    assert command("preview finalizing")
+                    assert command("preview delete")
+                    assert not command("preview deleting")
                     first, = captured_files(1)
+                    print(f"thumbnail ready in {elapsed_ms:.1f} ms while history was held")
                 capture_area()
                 second, = captured_files(1 if recording else 2) - {first}
 
@@ -308,7 +317,15 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
             saved_order = [Path(item["originalPath"]) for item in history]
             assert saved_order == [second, first], saved_order
             eventually(preview)
+            eventually("preview finalizing", expected=False)
             print("both captures reached history in newest-first order; preview became ready")
+            if not recording:
+                assert command("preview delete")
+                assert captured_files(1) == {first}
+                eventually("preview deleting", expected=False)
+                history = json.loads(history_path.read_text())
+                assert [Path(item["originalPath"]) for item in history] == [first]
+                print("the newest preview could be deleted after finalization")
             assert command("quit")
             assert app.wait(timeout=6) == 0
         finally:

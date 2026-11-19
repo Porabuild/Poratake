@@ -1536,7 +1536,7 @@ pub fn open(cx: &mut App) {
                         })
                         .is_ok();
                 }
-                if command == "preview ready" {
+                if matches!(command.as_str(), "preview ready" | "preview finalizing") {
                     let Some(handle) =
                         registry::handle(WindowKind::CapturePreview, cx).and_then(|handle| {
                             handle
@@ -1546,7 +1546,13 @@ pub fn open(cx: &mut App) {
                         return false;
                     };
                     return handle
-                        .update(cx, |preview, _, _| preview.thumbnails_ready_for_parity())
+                        .update(cx, |preview, _, _| {
+                            if command == "preview ready" {
+                                preview.thumbnails_ready_for_parity()
+                            } else {
+                                preview.finalizing_for_parity()
+                            }
+                        })
                         .unwrap_or(false);
                 }
                 if command == "open history" {

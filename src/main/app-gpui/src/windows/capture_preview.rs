@@ -208,6 +208,7 @@ struct CapturePreview {
     busy: bool,
     deleting: bool,
     copying: bool,
+    finalizing: bool,
     completed: Option<Instant>,
     export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
@@ -386,6 +387,11 @@ impl CapturePreviewWindow {
         })
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn finalizing_for_parity(&self) -> bool {
+        self.previews.iter().any(|preview| preview.finalizing)
+    }
+
     #[cfg(feature = "parity")]
     pub(crate) fn thumbnails_ready_for_parity(&self) -> bool {
         self.previews.iter().all(|preview| {
@@ -426,6 +432,14 @@ impl CapturePreviewWindow {
     }
 
     pub fn open(cx: &mut App, path: PathBuf) {
+        Self::open_screenshot(cx, path, None);
+    }
+
+    pub(crate) fn open_screenshot(
+        cx: &mut App,
+        path: PathBuf,
+        finalization: Option<smol::channel::Receiver<()>>,
+    ) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
         let (thumbnail_cancel, thumbnail_canceled) = smol::channel::bounded(1);
@@ -457,6 +471,7 @@ impl CapturePreviewWindow {
                 busy: false,
                 deleting: false,
                 copying: false,
+                finalizing: finalization.is_some(),
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -477,6 +492,27 @@ impl CapturePreviewWindow {
             thumbnail_ready_sender,
             cx,
         );
+        let Some(finalization) = finalization else {
+            return;
+        };
+        let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
+            .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+        else {
+            return;
+        };
+        cx.spawn(async move |cx| {
+            let _ = finalization.recv().await;
+            cx.update(|cx| {
+                let _ = handle.update(cx, |view, _, cx| {
+                    if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    {
+                        preview.finalizing = false;
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     /// Recording counterpart of `open`: the stack shows the project's video
@@ -509,6 +545,7 @@ impl CapturePreviewWindow {
                 busy: false,
                 deleting: false,
                 copying: false,
+                finalizing: false,
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -1082,6 +1119,7 @@ fn dismiss_verdict(
                 view.preview_window_hovered(window),
                 view.keyboard_controls_visible(window)
                     || preview.thumbnail_loading
+                    || preview.finalizing
                     || preview.is_busy()
                     || preview.completed.is_some()
                     || view
@@ -1833,6 +1871,7 @@ fn copy_screenshot(
         let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
         if preview.kind != PreviewKind::Screenshot
             || preview.is_busy()
+            || preview.finalizing
             || preview.completed.is_some()
             || preview.dismiss_animation.is_some()
         {
@@ -1898,7 +1937,11 @@ fn delete_preview(
 ) {
     let Ok(Some((path, kind))) = preview_entity.update(cx, |view, cx| {
         let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
-        if preview.is_busy() || preview.completed.is_some() || preview.dismiss_animation.is_some() {
+        if preview.finalizing
+            || preview.is_busy()
+            || preview.completed.is_some()
+            || preview.dismiss_animation.is_some()
+        {
             return None;
         }
         preview.deleting = true;
@@ -1989,7 +2032,11 @@ fn edit_preview(
 ) {
     let edited = preview_entity.update(cx, |view, cx| {
         let preview = view.previews.iter().find(|preview| preview.id == id)?;
-        if preview.dismiss_animation.is_some() || preview.is_busy() || preview.completed.is_some() {
+        if preview.dismiss_animation.is_some()
+            || preview.finalizing
+            || preview.is_busy()
+            || preview.completed.is_some()
+        {
             return None;
         }
         let source = (preview.kind, preview.path.to_string_lossy().into_owned());
@@ -2263,7 +2310,8 @@ impl CapturePreviewWindow {
         let export_progress = preview.export_progress.clone();
         let deleting = preview.deleting;
         let copying = preview.copying;
-        let gated = preview.is_busy() || finished.is_some();
+        let finalizing = preview.finalizing;
+        let gated = finalizing || preview.is_busy() || finished.is_some();
         let (show_controls, progress, animating) =
             Self::control_frame(preview, window_hovered, menu_open, keyboard_controls, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
@@ -2410,7 +2458,7 @@ impl CapturePreviewWindow {
                             {
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
-                                    if gated {
+                                    if gated && !finalizing {
                                         return;
                                     }
                                     let _ = preview_entity.update(cx, |view, cx| {
@@ -2503,6 +2551,18 @@ impl CapturePreviewWindow {
                                     cx.stop_propagation();
                                 },
                             ))
+                        })
+                        .when(finalizing, |el| {
+                            el.child(
+                                div()
+                                    .text_sm()
+                                    .px(px(10.))
+                                    .py(px(4.))
+                                    .rounded_full()
+                                    .bg(theme.popover)
+                                    .text_color(theme.popover_foreground)
+                                    .child("Saving capture…"),
+                            )
                         })
                         .when_some(polish.filter(|_| !gated && !stack_copying), |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
@@ -3288,6 +3348,7 @@ mod tests {
             busy: false,
             deleting: false,
             copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -5448,6 +5509,7 @@ mod tests {
             busy: false,
             deleting: false,
             copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -5492,6 +5554,7 @@ mod tests {
             busy: false,
             deleting: false,
             copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),

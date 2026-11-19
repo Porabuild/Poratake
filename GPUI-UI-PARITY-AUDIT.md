@@ -8275,6 +8275,28 @@ The arm64 GPUI suite passed 1,180 tests with 23 ignored.
 python3 tests/native/macos-capture-history-probe.py --preview-copy
 ```
 
+### 2026-11-19 macOS screenshot preview handoff before history persistence
+
+GPUI now starts thumbnail preparation as soon as screenshot output is
+saved, matching Electron's earlier preview handoff. The preview shows a
+saving label on hover while finalization is in progress. Actions that
+depend on the history entry or automatic clipboard publication become
+available when finalization completes. The card can be closed meanwhile.
+Automatic clipboard reads also run in the background. A superseded
+automatic copy cannot overwrite the newest requested capture.
+
+With the history read held, the old build reached the probe's 10-second
+thumbnail deadline. Across the light and dark repeats, the revised app
+reported a ready thumbnail within 16.7 ms of starting the hold check.
+The probe confirmed that Delete remained gated during the hold, both
+files reached history in newest-first order after release, and deleting
+the newest card then removed only its own file and history entry. This
+measures thumbnail readiness after the capture file was written. The earlier 2.36-second live capture tail remains unclassified.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

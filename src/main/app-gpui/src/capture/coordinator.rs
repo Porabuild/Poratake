@@ -18,6 +18,7 @@ pub struct Coordinator {
     pub service: CaptureService,
     pending_attach: Option<PendingEditorAttach>,
     analysis_generation: u64,
+    clipboard_generation: u64,
     pending_capture_history: Option<smol::channel::Receiver<()>>,
     #[cfg(feature = "parity")]
     pending_analyses: usize,
@@ -116,6 +117,7 @@ impl Coordinator {
             service,
             pending_attach: None,
             analysis_generation: 0,
+            clipboard_generation: 0,
             pending_capture_history: None,
             #[cfg(feature = "parity")]
             pending_analyses: 0,
@@ -389,6 +391,37 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     #[cfg(not(target_os = "macos"))]
     let _ = (play_sound, silent);
 
+    let copy = screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard;
+    let show_preview = screenshot.show_preview && !screenshot.capture_to_clipboard;
+    let (finalization, pending) = if show_preview && (history.is_some() || copy) {
+        let (sender, receiver) = smol::channel::bounded(1);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
+    if show_preview {
+        cx.update(|cx| {
+            crate::windows::capture_preview::CapturePreviewWindow::open_screenshot(
+                cx,
+                path.clone(),
+                pending,
+            );
+        });
+    }
+    let clipboard = copy.then(|| {
+        let generation = cx.update(|cx| {
+            crate::state::coordinator(cx).update(cx, |coordinator, _| {
+                coordinator.clipboard_generation = coordinator.clipboard_generation.wrapping_add(1);
+                coordinator.clipboard_generation
+            })
+        });
+        let path = path.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { std::fs::read(path) });
+        (generation, read)
+    });
+
     if let Some(write) = history {
         let item = crate::history_store::HistoryItem {
             id: uuid_simple(),
@@ -405,26 +438,22 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
         }
     }
 
-    if screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard {
-        let clipboard_path = path.clone();
+    if let Some((generation, read)) = clipboard {
+        if let Ok(bytes) = read.await {
+            cx.update(|cx| {
+                let coordinator = crate::state::coordinator(cx);
+                if coordinator.read(cx).clipboard_generation == generation {
+                    crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                }
+            });
+        }
+    }
+    drop(finalization);
+    if !screenshot.capture_to_clipboard && !show_preview {
         cx.update(|cx| {
-            if let Ok(bytes) = std::fs::read(&clipboard_path) {
-                crate::system::clipboard::ClipboardService::write_png(cx, bytes);
-            }
+            crate::open_editor_async(cx, path.to_string_lossy().into_owned());
         });
     }
-    if screenshot.capture_to_clipboard {
-        return;
-    }
-
-    let open_preview = screenshot.show_preview;
-    cx.update(|cx| {
-        if open_preview {
-            crate::windows::capture_preview::CapturePreviewWindow::open(cx, path.clone());
-        } else {
-            crate::open_editor_async(cx, path.to_string_lossy().into_owned());
-        }
-    });
 }
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
