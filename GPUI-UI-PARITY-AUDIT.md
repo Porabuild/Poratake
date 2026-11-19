@@ -10178,6 +10178,23 @@ x86_64, along with 62 Electron and daemon contract tests. The fixture
 supplies frames and holds alignment without desktop input.
 [Scroll restart scheduling evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera preview completion ordering
+
+A camera startup could install its preview layer after the user
+selected another device or closed the panel. Camera capture sessions
+now belong to the serial camera queue, and AppKit accepts preview
+layers and errors only for the current request.
+
+The native fixture generated an A → B → A selection sequence. The
+previous implementation accepted both older completions and a
+callback after Stop. The revised implementation accepted only the
+latest A. The test used inputless AVFoundation sessions. A read-only
+authorization check returned not determined, so live camera startup
+and switching remain unverified. Recording-outline fixtures and
+daemon typechecks passed on arm64 and Rosetta x86_64, along with
+97 Electron and daemon contract tests.
+[Camera completion evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

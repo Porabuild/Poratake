@@ -348,6 +348,22 @@ class CameraPreviewModule: Module {
 
     #if RECORDING_OUTLINE_TEST
     @MainActor
+    static func testCameraCompletionOrdering() -> [Bool] {
+        let view = CameraPreviewContentView(frame: NSRect(x: 0, y: 0, width: 270, height: 270),
+                                            flipped: false, padding: 20)
+        view.updateCamera(CameraPreviewSource(deviceName: "A"))
+        let first = view.testPreviewCompletion()
+        view.updateCamera(CameraPreviewSource(deviceName: "B"))
+        let second = view.testPreviewCompletion()
+        view.updateCamera(CameraPreviewSource(deviceName: "A"))
+        let latest = view.testPreviewCompletion()
+        let results = [first(), second(), latest()]
+        let pending = view.testPreviewCompletion()
+        view.stopCamera()
+        return results + [pending()]
+    }
+
+    @MainActor
     static func testErrorView(messages: [String], retry: Bool = false) -> NSView {
         let content = CameraPreviewContentView(frame: NSRect(x: 0, y: 0, width: 270, height: 270),
                                                flipped: false, padding: 20)
@@ -402,7 +418,7 @@ private class CameraPreviewContentView: NSView {
     private let cornerRadius: CGFloat = 65
     
     private let cameraQueue = DispatchQueue(label: "com.porabuild.poratake.camera-preview")
-    private var isStopped: Bool = false
+    private var cameraGeneration = WindowPresentationGeneration()
 
     #if RECORDING_OUTLINE_TEST
     private(set) var testStartedCameras: [String?] = []
@@ -449,79 +465,75 @@ private class CameraPreviewContentView: NSView {
         addSubview(containerView)
     }
     
-    private func startCamera(_ source: CameraPreviewSource) {
+    private func startCamera(_ source: CameraPreviewSource, generation: UInt64) {
         #if RECORDING_OUTLINE_TEST
         testStartedCameras.append(source.deviceName)
         alphaValue = 0
         #else
         cameraQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            self.stopCameraInternal()
-            self.isStopped = false
-            
+            guard let self else { return }
+            self.stopCaptureSession()
+
             guard let camera = CameraDeviceLookup.find(deviceId: source.deviceId, deviceName: source.deviceName) else {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.source == source else { return }
-                    self.showError("No camera found")
-                }
+                self.reportCameraError("No camera found", generation: generation)
                 return
             }
-            
-            guard !self.isStopped else { return }
-            
+
             let session = AVCaptureSession()
             session.sessionPreset = .high
-            
             do {
                 let input = try AVCaptureDeviceInput(device: camera)
                 if session.canAddInput(input) {
                     session.addInput(input)
                 }
             } catch {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.source == source else { return }
-                    self.showError("Camera access denied")
-                }
+                self.reportCameraError("Camera access denied", generation: generation)
                 return
             }
-            
-            guard !self.isStopped else {
-                self.cleanupSession(session)
-                return
-            }
-            
+
             session.startRunning()
-            
-            guard !self.isStopped else {
-                self.cleanupSession(session)
-                return
-            }
-            
+            self.captureSession = session
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, !self.isStopped else {
-                    self?.cleanupSession(session)
-                    return
-                }
-                
-                self.captureSession = session
-                self.clearError()
-                
-                let previewLayer = AVCaptureVideoPreviewLayer(session: session)
-                previewLayer.videoGravity = .resizeAspectFill
-                previewLayer.frame = self.containerView.bounds
-                previewLayer.setAffineTransform(
-                    CGAffineTransform(scaleX: self.isMirrored ? -1 : 1, y: 1)
-                )
-                
-                self.containerView.layer?.addSublayer(previewLayer)
-                self.previewLayer = previewLayer
+                self?.installPreview(session, generation: generation)
             }
         }
         #endif
     }
-    
-    private func cleanupSession(_ session: AVCaptureSession) {
+
+    private func reportCameraError(_ message: String, generation: UInt64) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.cameraGeneration.isCurrent(generation) else { return }
+            self.showError(message)
+        }
+    }
+
+    private func installPreview(_ session: AVCaptureSession, generation: UInt64) {
+        guard cameraGeneration.isCurrent(generation) else { return }
+        clearError()
+        clearPreview()
+
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        previewLayer.videoGravity = .resizeAspectFill
+        previewLayer.frame = containerView.bounds
+        previewLayer.setAffineTransform(CGAffineTransform(scaleX: isMirrored ? -1 : 1, y: 1))
+        containerView.layer?.addSublayer(previewLayer)
+        self.previewLayer = previewLayer
+    }
+
+    #if RECORDING_OUTLINE_TEST
+    func testPreviewCompletion() -> () -> Bool {
+        let session = AVCaptureSession()
+        let generation = cameraGeneration.value
+        return { [self] in
+            installPreview(session, generation: generation)
+            return previewLayer?.session === session
+        }
+    }
+    #endif
+
+    private func stopCaptureSession() {
+        guard let session = captureSession else { return }
+        captureSession = nil
         if session.isRunning {
             session.stopRunning()
         }
@@ -532,31 +544,24 @@ private class CameraPreviewContentView: NSView {
             session.removeOutput(output)
         }
     }
-    
-    private func stopCameraInternal() {
-        isStopped = true
-        
-        if let session = captureSession {
-            cleanupSession(session)
-        }
-        captureSession = nil
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.previewLayer?.removeFromSuperlayer()
-            self?.previewLayer = nil
-        }
+
+    private func clearPreview() {
+        previewLayer?.removeFromSuperlayer()
+        previewLayer = nil
     }
-    
+
     func stopCamera() {
-        cameraQueue.async {
-            self.stopCameraInternal()
-        }
+        cameraGeneration.cancel()
+        clearPreview()
+        cameraQueue.async { self.stopCaptureSession() }
     }
-    
+
     func updateCamera(_ source: CameraPreviewSource) {
+        let generation = cameraGeneration.begin()
         self.source = source
         clearError()
-        startCamera(source)
+        clearPreview()
+        startCamera(source, generation: generation)
     }
 
     private func clearError() {

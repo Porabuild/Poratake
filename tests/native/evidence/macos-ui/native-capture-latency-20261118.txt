@@ -3715,3 +3715,22 @@ The fixture had scheduled three earlier steps. Releasing alignment
 produced only the fourth, current-run step. The final 640x352 PNG
 matched the expected three-frame composite exactly. These checks used
 app-local scheduling and did not post wheel events.
+
+2026-11-19 macOS camera preview startup completions at b3e97cab
+
+The native fixture requested generated sources A, B, then A again.
+It delivered completion callbacks using distinct inputless
+AVCaptureSessions, followed by a fourth completion after Stop.
+Each Boolean records whether the callback installed its session
+in the AppKit preview layer.
+
+Baseline
+camera completion ordering: [true, true, true, true]
+
+Revised
+camera completion ordering: [false, false, true, false]
+
+Capture startup and cleanup now own the session on the camera queue.
+Preview and error callbacks verify the current request on the main
+thread. No session in this fixture had a camera input or was started.
+The host's read-only video authorization check returned not determined.

@@ -293,6 +293,10 @@ struct RecordingOutlineLifecycleTest {
         verifyCameraSelection()
         verifyCameraPreviewPlacement()
         verifyCameraPreviewError()
+        let cameraCompletions = CameraPreviewModule.testCameraCompletionOrdering()
+        print("camera completion ordering: \(cameraCompletions)")
+        fflush(stdout)
+        precondition(cameraCompletions == [false, false, true, false])
         try await verifyRecordingOverlayHideReply()
         try await verifyCameraPreviewHideReply()
         guard NSScreen.screens.first != nil else {
