@@ -3521,3 +3521,16 @@ side of the display. The default lifecycle check still cancelled
 on a fresh click and verified completion and explicit hide. Both
 accessibility checks remained available. No physical pointer input
 was used.
+
+2026-11-19 macOS countdown cancellation while dragging at 2b4d0989
+
+The native fixture sent a mouse-down at x=49, y=26 in the AppKit
+panel and dragged to x=-5 through NSWindow. The baseline failed:
+
+fixture failure: dragging outside left the countdown caption at Cancel
+
+The revised panel displayed 30 while the drag was outside and
+stayed visible after an outside release. A second drag left the
+panel and re-entered it. The caption then read Cancel and an inside
+release closed the countdown. The cursor-stack and accessibility
+checks still passed. No physical pointer input was used.

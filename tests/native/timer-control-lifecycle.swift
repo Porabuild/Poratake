@@ -177,8 +177,16 @@ final class Fixture {
         if id == "cleanup" {
             module.handle(method: "hide", params: nil, requestId: "hidden")
         } else if index == 0 {
-            guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 49, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1),
-                  let up = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: 49, y: 26), modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0) else {
+            func event(_ type: NSEvent.EventType, _ x: CGFloat, _ number: Int) -> NSEvent? {
+                NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 26), modifierFlags: [],
+                    timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+                    eventNumber: number, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
+            }
+            guard let down = event(.leftMouseDown, 49, 1),
+                  let dragOutside = event(.leftMouseDragged, -5, 2),
+                  let upOutside = event(.leftMouseUp, -5, 3),
+                  let dragInside = event(.leftMouseDragged, 49, 4),
+                  let up = event(.leftMouseUp, 49, 5) else {
                 fail("could not construct cancellation events")
                 return
             }
@@ -203,11 +211,31 @@ final class Fixture {
                 fail("could not construct a countdown hover event")
                 return
             }
+            panel.sendEvent(down)
+            panel.sendEvent(dragOutside)
+            guard caption(of: button) == "30" else {
+                fail("dragging outside left the countdown caption at \(caption(of: button) ?? "missing")")
+                return
+            }
+            panel.sendEvent(upOutside)
+            guard panel.isVisible, caption(of: button) == "30" else {
+                fail("releasing outside changed the countdown")
+                return
+            }
+
             let previousCursor = NSCursor.current
             let sentinel = previousCursor == NSCursor.crosshair ? NSCursor.pointingHand : NSCursor.crosshair
             sentinel.push()
             button.mouseEntered(with: entered)
             panel.sendEvent(down)
+            panel.sendEvent(dragOutside)
+            panel.sendEvent(dragInside)
+            guard caption(of: button) == "Cancel" else {
+                NSCursor.pop()
+                previousCursor.set()
+                fail("dragging back inside did not restore Cancel")
+                return
+            }
             panel.sendEvent(up)
             NSCursor.pop()
             guard NSCursor.current == previousCursor else {
@@ -217,6 +245,11 @@ final class Fixture {
             }
             print("hover dismissal: cursor stack restored without a mouse-exit event")
         }
+    }
+
+    func caption(of button: TimerButton) -> String? {
+        button.subviews.compactMap { $0 as? NSStackView }.first?
+            .arrangedSubviews.compactMap { $0 as? NSTextField }.first?.stringValue
     }
 
 #if TIMER_CONTROL_TEST
@@ -243,9 +276,7 @@ final class Fixture {
             show(1, duration: 30)
             return
         }
-        let label = button.subviews.compactMap { $0 as? NSStackView }.first?
-            .arrangedSubviews.compactMap { $0 as? NSTextField }.first
-        let caption = label?.stringValue
+        let caption = caption(of: button)
         print("restart caption: \(caption ?? "missing")")
         fflush(stdout)
         panel.sendEvent(event)

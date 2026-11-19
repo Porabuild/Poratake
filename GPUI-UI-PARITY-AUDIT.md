@@ -10004,6 +10004,21 @@ Rosetta x86_64, along with 27 Electron and daemon contract tests.
 The fixture used app-local events.
 [Countdown restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS countdown feedback while dragging
+
+Dragging a pressed countdown outside its panel could leave the
+Cancel caption visible. The countdown now updates its hover and
+pressed appearance from drag and release positions.
+
+An AppKit mouse-down and drag outside restored the countdown
+caption, and releasing there kept the panel visible. In a second
+gesture, dragging back inside restored Cancel and releasing there
+dismissed the timer. The default CI lifecycle fixture covers both
+gestures with app-local events. The native lifecycle fixtures passed
+on arm64 and Rosetta x86_64, along with 27 Electron and daemon contract
+tests.
+[Countdown drag evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

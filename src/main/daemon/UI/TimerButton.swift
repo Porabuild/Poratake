@@ -133,9 +133,15 @@ class TimerButton: NSView {
     
     func resetInteraction() {
         isPressed = false
-        isHovered = window.map {
-            bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil))
-        } ?? false
+        updateHover(window.map { containsWindowPoint($0.mouseLocationOutsideOfEventStream) } ?? false)
+    }
+
+    private func containsWindowPoint(_ point: NSPoint) -> Bool {
+        bounds.contains(convert(point, from: nil))
+    }
+
+    private func updateHover(_ hovered: Bool) {
+        isHovered = hovered
         applyTheme()
         updateDisplay()
     }
@@ -173,16 +179,12 @@ class TimerButton: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        isHovered = true
-        applyTheme()
-        updateDisplay()
+        updateHover(true)
     }
     
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        isHovered = false
-        applyTheme()
-        updateDisplay()
+        updateHover(false)
     }
     
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -191,17 +193,22 @@ class TimerButton: NSView {
 
     override func mouseDown(with event: NSEvent) {
         isPressed = true
-        isHovered = true
-        applyTheme()
-        updateDisplay()
+        updateHover(true)
     }
     
+    override func mouseDragged(with event: NSEvent) {
+        guard isPressed else { return }
+        let hovered = containsWindowPoint(event.locationInWindow)
+        if hovered != isHovered {
+            updateHover(hovered)
+        }
+    }
+
     override func mouseUp(with event: NSEvent) {
         guard isPressed else { return }
         isPressed = false
-        applyTheme()
-        let point = convert(event.locationInWindow, from: nil)
-        if bounds.contains(point) {
+        updateHover(containsWindowPoint(event.locationInWindow))
+        if isHovered {
             onCancel?()
         }
     }
