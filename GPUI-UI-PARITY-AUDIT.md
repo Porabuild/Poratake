@@ -9586,6 +9586,21 @@ matching the reference. The fixture captured only its own window
 by ID and advanced the page with app-local commands.
 [Live tied-seam evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS visible tooltips beside tall preview owners
+
+The tall-owner regression now shows the real AppKit tooltip panel
+beside a visible generated owner. WindowServer reported a four-point
+gap on the open side in light and dark. Both tooltips fit the
+visible frame, ignored pointer events and stayed registered for
+capture exclusion while shown. Dismissal removed the window and
+its registry entry.
+
+The focused probe and full arm64 and Rosetta x86_64 Swift fixtures
+passed. All 56 Electron scroll tests passed. The probe supplied
+app-local pointer coordinates on the built-in Retina display.
+Physical hover and mixed-display placement remain open.
+[Visible-tooltip evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -11,10 +11,6 @@ final class ProtectedTooltip {
     private var panel: NSPanel?
     #if SCROLL_CAPTURE_TEST
     var testPanel: NSPanel? { panel }
-
-    func testMakePanel(text: String, dark: Bool, point: NSPoint, ownerFrame: NSRect, screen: NSScreen) -> NSPanel {
-        makePanel(text: text, dark: dark, point: point, ownerFrame: ownerFrame, screen: screen)
-    }
     #endif
 
     init(registry: RecordingCaptureWindowRegistry = .shared) {

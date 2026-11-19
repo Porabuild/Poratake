@@ -319,26 +319,61 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
-    static func verifyTallTooltipPlacement() {
-        _ = NSApplication.shared
+    static func verifyTallTooltipPlacement() async throws {
         guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 640 else {
             print("SKIP tall tooltip placement: no suitable AppKit display")
             return
         }
+        func visibleBounds(_ number: CGWindowID) -> CGRect? {
+            let entries = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]] ?? []
+            guard let entry = entries.first,
+                  entry[kCGWindowIsOnscreen as String] as? Bool == true,
+                  entry[kCGWindowAlpha as String] as? Double == 1,
+                  let bounds = entry[kCGWindowBounds as String] as? [String: Any] else { return nil }
+            return CGRect(dictionaryRepresentation: bounds as CFDictionary)
+        }
+
         let work = screen.visibleFrame
-        let tooltip = ProtectedTooltip()
         for rightEdge in [false, true] {
             let x = rightEdge ? work.maxX - 240 : work.minX
-            let owner = NSRect(x: x, y: work.minY + 2, width: 240, height: work.height - 4)
-            let point = NSPoint(x: owner.midX, y: owner.midY)
+            let ownerFrame = NSRect(x: x, y: work.minY + 2, width: 240, height: work.height - 4)
+            let owner = NSPanel(
+                contentRect: ownerFrame, styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false
+            )
+            owner.animationBehavior = .none
+            owner.backgroundColor = .windowBackgroundColor
+            owner.ignoresMouseEvents = true
+            owner.orderFrontRegardless()
+            defer { owner.orderOut(nil) }
+            let ownerID = CGWindowID(owner.windowNumber)
+            await waitUntil("The tall fixture owner was not visible") { visibleBounds(ownerID) != nil }
+
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            let point = NSPoint(x: ownerFrame.midX, y: ownerFrame.midY)
             let text = rightEdge ? String(repeating: "Preview action ", count: 14) : "Close preview"
-            let panel = tooltip.testMakePanel(text: text, dark: rightEdge, point: point, ownerFrame: owner, screen: screen)
-            precondition(!panel.isVisible)
+            precondition(tooltip.accept(sequence: 1, owner: ownerID, text: text))
+            let shown = try await tooltip.show(
+                sequence: 1, owner: ownerID, text: text, dark: rightEdge,
+                at: point, ownerFrame: ownerFrame
+            )
+            guard shown, let panel = tooltip.testPanel else { preconditionFailure("The tall tooltip was not shown") }
+            let tooltipID = CGWindowID(panel.windowNumber)
+            await waitUntil("The tall tooltip was not visible") { visibleBounds(tooltipID) != nil }
+            let parent = visibleBounds(ownerID)!
+            let tip = visibleBounds(tooltipID)!
+            let gap = rightEdge ? parent.minX - tip.maxX : tip.minX - parent.maxX
+            precondition(registry.currentWindowIDs() == [tooltipID])
+            precondition(panel.ignoresMouseEvents)
             precondition(work.contains(panel.frame), "Tooltip must fit the visible frame")
-            precondition(!owner.intersects(panel.frame), "Tooltip overlaps the tall owner despite room beside it")
-            precondition(rightEdge ? panel.frame.maxX <= owner.minX - 4 : panel.frame.minX >= owner.maxX + 4)
+            precondition(!parent.intersects(tip) && gap == 4, "The visible tooltip must stay four points beside its owner")
+            precondition(!tooltip.accept(sequence: 2, owner: ownerID, text: nil))
+            await waitUntil("The tall tooltip was not dismissed") {
+                visibleBounds(tooltipID) == nil && registry.currentWindowIDs().isEmpty
+            }
+            print("visible tall tooltip: \(rightEdge ? "dark" : "light"), \(gap)-point side gap, dismissed")
         }
-        print("tall tooltip placement: light and dark panels fit beside their owners")
     }
 
     @MainActor
@@ -572,17 +607,14 @@ struct ScrollCapturePreviewTest {
             verifyWideFixedHeaderSeam()
             return
         }
-        if CommandLine.arguments.contains("--tooltip-placement") {
-            verifyTallTooltipPlacement()
-            return
-        }
         if CommandLine.arguments.contains("--scroll-color-profile") {
             verifyScrollColorProfiles()
             return
         }
         let strictFrame = CommandLine.arguments.dropFirst().first == "--strict-scroll-frame"
         let tooltipPointerExit = CommandLine.arguments.contains("--tooltip-pointer-exit")
-        if !strictFrame && !tooltipPointerExit {
+        let tooltipPlacement = CommandLine.arguments.contains("--tooltip-placement")
+        if !strictFrame && !tooltipPointerExit && !tooltipPlacement {
             FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
             runExistingScrollChecks()
             verifyScrollColorProfiles()
@@ -597,6 +629,8 @@ struct ScrollCapturePreviewTest {
                     await captureStrictScrollFrame(Array(CommandLine.arguments.dropFirst(2)))
                 } else if tooltipPointerExit {
                     try await verifyTooltipPointerExit()
+                } else if tooltipPlacement {
+                    try await verifyTallTooltipPlacement()
                 } else {
                     await verifyAsyncScrollComparison()
                     try await runRecordingCoordinationChecks()
@@ -1053,7 +1087,7 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
         try await verifyTooltipPointerExit()
         try await verifyTooltipControlReplacement()
-        verifyTallTooltipPlacement()
+        try await verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
             let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)

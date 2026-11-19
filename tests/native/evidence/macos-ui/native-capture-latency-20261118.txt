@@ -2958,3 +2958,21 @@ The full reference retains the corresponding row from frame zero.
 
 captured changed pixels (row, column) [(52, 0)]
 saved PNG exactly matches 1269760 decoded RGBA bytes
+
+2026-11-19 macOS visible tooltips beside tall preview owners
+
+The production ProtectedTooltip show and retire paths drove a
+visible AppKit panel beside a generated 240-point owner. Each
+owner occupied all but four points of the display work-area height.
+The light owner was on the left and the dark owner on the right.
+The test supplied an app-local point at the center of the owner.
+WindowServer queries used the generated window IDs. There were no
+screen captures, input posts or permission requests.
+
+visible tall tooltip: light, 4.0-point side gap, dismissed
+visible tall tooltip: dark, 4.0-point side gap, dismissed
+
+The AppKit panel stayed in the visible frame and ignored mouse
+events. The tooltip window ID was registered until dismissal.
+Both complete native suites on arm64 and Rosetta x86_64 passed.
+The three Electron scroll cases covered 56 passing tests.
