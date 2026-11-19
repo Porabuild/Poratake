@@ -10212,6 +10212,25 @@ passed on arm64 and Rosetta x86_64, along with 97 Electron and daemon
 contract tests. Live startup and switching remain unverified.
 [Camera startup queue evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera preview retry after startup or runtime errors
+
+A failed camera preview could leave its selected source marked as
+already applied. Showing the same source again returned success
+while leaving the error on screen. Camera preview now reports
+startup failure when the session cannot attach its input or start.
+A runtime error clears the stopped layer and releases the session.
+The current source can then be selected again.
+
+The native fixture delivered a startup error and an AVFoundation
+runtime notification from an inputless session. Before the fix,
+the same-source startup retry left the start count at one. The
+revised fixture started the same source again after each error
+and cleared the error text. Live camera startup and switching
+remain unverified on this host. The native lifecycle fixtures and
+daemon typechecks passed on arm64 and Rosetta x86_64, along with
+97 Electron and daemon contract tests.
+[Camera preview retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -111,6 +111,29 @@ struct RecordingOutlineLifecycleTest {
             camera.testShowResults["repeated-camera"] == true
         }
         precondition(camera.testStartup.starts == ["generated camera"], "unchanged preview restarted the camera")
+        camera.testReportStartupFailure()
+        try await waitFor("Camera startup error did not appear") {
+            camera.testCameraError == "Could not start camera preview"
+        }
+        show("generated camera", requestId: "retry-camera")
+        try await waitFor("Same-source preview retry did not finish") {
+            camera.testShowResults["retry-camera"] == true
+        }
+        print("camera same-source retry after startup failure: starts=\(camera.testStartup.starts.count)")
+        fflush(stdout)
+        precondition(camera.testStartup.starts == ["generated camera", "generated camera"])
+        precondition(camera.testCameraError == nil)
+        camera.testPostRuntimeError()
+        try await waitFor("Camera runtime error did not appear") {
+            camera.testCameraError == "Camera preview stopped"
+        }
+        show("generated camera", requestId: "retry-runtime-camera")
+        try await waitFor("Same-source retry after a runtime error did not finish") {
+            camera.testShowResults["retry-runtime-camera"] == true
+        }
+        precondition(camera.testStartup.starts == Array(repeating: "generated camera", count: 3))
+        precondition(camera.testCameraError == nil)
+        print("camera runtime error: same source retried")
         await camera.testHidePanel()
 
         let registry = RecordingCaptureWindowRegistry.shared

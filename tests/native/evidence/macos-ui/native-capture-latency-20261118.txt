@@ -3752,3 +3752,22 @@ The generation check is shared by the main thread and camera queue.
 The queue checks again around AVFoundation startup and releases any
 session that became obsolete while startup was running. The previous
 completion-ordering fixture also passed. No camera input was opened.
+
+2026-11-19 macOS retrying the same camera preview after an error at c1f5222a
+
+The generated AppKit fixture showed a source, delivered a startup
+error, and repeated the same show request.
+
+Baseline
+camera same-source retry after startup failure: starts=1
+
+Revised
+camera same-source retry after startup failure: starts=2
+camera runtime error: same source retried
+
+The runtime check used the production notification observer with
+an inputless AVCaptureSession. Posting the runtime error displayed
+the stopped message, and a repeated show request cleared it and
+started the same generated source for a third time. The camera
+device was never opened. These checks cover the AppKit and session
+lifecycle, with live device recovery still unverified.

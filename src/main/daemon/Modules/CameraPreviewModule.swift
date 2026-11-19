@@ -394,6 +394,19 @@ class CameraPreviewModule: Module {
     }
 
     @MainActor
+    var testCameraError: String? { contentView?.testErrorMessage }
+
+    @MainActor
+    func testReportStartupFailure() {
+        contentView?.testReportStartupFailure()
+    }
+
+    @MainActor
+    func testPostRuntimeError() {
+        contentView?.testPostRuntimeError()
+    }
+
+    @MainActor
     func testStartedCameras(in panel: NSPanel) -> [String?]? {
         (panel.contentView as? CameraPreviewContentView)?.testStartedCameras
     }
@@ -416,6 +429,7 @@ class CameraPreviewModule: Module {
 
 private class CameraPreviewContentView: NSView {
     private var captureSession: AVCaptureSession?
+    private var captureErrorObserver: NSObjectProtocol?
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var containerView: NSView!
     private var errorLabel: NSTextField?
@@ -498,19 +512,27 @@ private class CameraPreviewContentView: NSView {
             session.sessionPreset = .high
             do {
                 let input = try AVCaptureDeviceInput(device: camera)
-                if session.canAddInput(input) {
-                    session.addInput(input)
+                guard session.canAddInput(input) else {
+                    self.reportCameraError("Could not start camera preview", generation: generation)
+                    return
                 }
+                session.addInput(input)
             } catch {
                 self.reportCameraError("Camera access denied", generation: generation)
                 return
             }
 
             guard self.isCurrentCamera(generation) else { return }
-            session.startRunning()
             self.captureSession = session
+            self.observeCaptureErrors(session, generation: generation)
+            session.startRunning()
             guard self.isCurrentCamera(generation) else {
                 self.stopCaptureSession()
+                return
+            }
+            guard session.isRunning else {
+                self.stopCaptureSession()
+                self.reportCameraError("Could not start camera preview", generation: generation)
                 return
             }
             DispatchQueue.main.async { [weak self] in
@@ -524,9 +546,24 @@ private class CameraPreviewContentView: NSView {
         cameraGeneration.withLock { $0.isCurrent(generation) }
     }
 
+    private func observeCaptureErrors(_ session: AVCaptureSession, generation: UInt64) {
+        captureErrorObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil
+        ) { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.cameraQueue.async { [weak self] in
+                guard let self, self.captureSession === session else { return }
+                self.stopCaptureSession()
+                self.reportCameraError("Camera preview stopped", generation: generation)
+            }
+        }
+    }
+
     private func reportCameraError(_ message: String, generation: UInt64) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isCurrentCamera(generation) else { return }
+            self.source = nil
+            self.clearPreview()
             self.showError(message)
         }
     }
@@ -545,6 +582,24 @@ private class CameraPreviewContentView: NSView {
     }
 
     #if RECORDING_OUTLINE_TEST
+    var testErrorMessage: String? { errorLabel?.stringValue }
+
+    func testReportStartupFailure() {
+        let generation = cameraGeneration.withLock { $0.value }
+        reportCameraError("Could not start camera preview", generation: generation)
+    }
+
+    func testPostRuntimeError() {
+        let session = AVCaptureSession()
+        let generation = cameraGeneration.withLock { $0.value }
+        cameraQueue.sync {
+            stopCaptureSession()
+            captureSession = session
+            observeCaptureErrors(session, generation: generation)
+        }
+        NotificationCenter.default.post(name: AVCaptureSession.runtimeErrorNotification, object: session)
+    }
+
     func testStartupQueue() -> [String] {
         var started: [String] = []
         testCameraStartWork = { started.append($0 ?? "") }
@@ -577,6 +632,10 @@ private class CameraPreviewContentView: NSView {
     private func stopCaptureSession() {
         guard let session = captureSession else { return }
         captureSession = nil
+        if let captureErrorObserver {
+            NotificationCenter.default.removeObserver(captureErrorObserver)
+            self.captureErrorObserver = nil
+        }
         if session.isRunning {
             session.stopRunning()
         }
