@@ -11097,6 +11097,21 @@ at the reading end. Disabling truncation in the test panel makes
 the check fail, so the result verifies the rendered glyphs.
 [Native ellipsis verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS rapid recording device-menu toggles
+
+A second press of the same device button now cancels a menu that
+is waiting for the macOS toolbar resize. The old path opened the
+menu when the 300-point viewport acknowledgement arrived.
+
+The regression delivers the late resize and verifies that the
+menu stays closed and sends no device list request. A later single
+press still opens it after the resize. All 36 recording-control
+scene PNGs matched byte for byte between builds across light and
+dark at 2× on the macOS Metal renderer. The fixtures used generated
+devices. All 21 targeted GPUI and 82 Electron reference and
+daemon contract tests passed.
+[Device menu evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

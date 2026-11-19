@@ -1916,11 +1916,15 @@ impl RecordingControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let opening = !self.menu.is_open_for(owner.as_ref(), cx);
-        if !opening {
+        let pending_for_owner = self
+            .pending_device_menu
+            .as_ref()
+            .is_some_and(|(_, pending_owner)| pending_owner == &owner);
+        if pending_for_owner || self.menu.is_open_for(owner.as_ref(), cx) {
             self.pending_device_menu = None;
             self.menu.close(window, cx);
             self.sync_window_bounds(window, cx, false);
+            cx.notify();
             return;
         }
 
@@ -4662,18 +4666,38 @@ mod tests {
             ));
             control
         });
+        let toggle_camera = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                control.update(cx, |control, cx| {
+                    control.toggle_device_menu(
+                        DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
+                        "recording-camera".into(),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        };
         cx.simulate_resize(size(px(332.0), px(52.0)));
 
-        cx.update(|window, cx| {
-            control.update(cx, |control, cx| {
-                control.toggle_device_menu(
-                    DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
-                    "recording-camera".into(),
-                    window,
-                    cx,
-                );
-            });
-        });
+        toggle_camera(cx);
+        assert!(control.read_with(cx, |control, cx| {
+            control.pending_device_menu.is_some() && !control.menu.is_open(cx)
+        }));
+
+        toggle_camera(cx);
+        cx.simulate_resize(size(px(332.0), px(300.0)));
+        assert!(
+            control.read_with(cx, |control, cx| {
+                control.pending_device_menu.is_none() && !control.menu.is_open(cx)
+            }),
+            "a second press must cancel the pending menu before the resize arrives"
+        );
+        assert_eq!(control.read_with(cx, |control, _| control.device_request), 0);
+
+        cx.simulate_resize(size(px(332.0), px(52.0)));
+
+        toggle_camera(cx);
         assert!(control.read_with(cx, |control, cx| {
             control.pending_device_menu.is_some() && !control.menu.is_open(cx)
         }));
@@ -4689,16 +4713,7 @@ mod tests {
         }));
 
         cx.simulate_resize(size(px(332.0), px(52.0)));
-        cx.update(|window, cx| {
-            control.update(cx, |control, cx| {
-                control.toggle_device_menu(
-                    DeviceMenuKind::Media(crate::system::devices::DeviceKind::Camera),
-                    "recording-camera".into(),
-                    window,
-                    cx,
-                );
-            });
-        });
+        toggle_camera(cx);
         cx.simulate_resize(size(px(332.0), px(300.0)));
         assert!(control.read_with(cx, |control, cx| {
             control.pending_device_menu.is_none()

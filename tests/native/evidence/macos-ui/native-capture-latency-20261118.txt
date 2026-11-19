@@ -5049,3 +5049,24 @@ Focused --tooltip-placement and complete Swift fixtures passed
 on Apple Silicon and Rosetta. The six Electron reference and
 daemon contract files passed all 138 tests. The probe used
 app-local coordinates and captured only the generated label.
+
+2026-11-20 macOS recording device menus during rapid presses
+=============================================================
+
+The regression started with a 52-point recording toolbar viewport
+and held the 300-point resize notification. It invoked the camera
+button twice, then delivered the resize. The baseline opened the
+camera menu. The updated build kept it closed and issued no device
+list request. The existing explicit dismissal and later single
+press still passed.
+
+The macOS Metal recording control fixture at 2x rendered 18 scenes
+per theme, including the default microphone menu, configured
+camera and microphone menus, and active recording device menus.
+All corresponding scene PNGs matched byte for byte. The light
+camera menu and dark microphone menu were inspected with long
+device names and a checked system-default row. The device names
+came from the fixture daemon.
+
+The GPUI recording-control tests passed all 21 cases. Electron
+recording-control and daemon contract tests passed all 82 cases.
