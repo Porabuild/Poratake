@@ -8562,6 +8562,23 @@ distinguishes timestamp and payload stalls in a future recurrence.
 The unthrottled tests did not reproduce the earlier long stall.
 [Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS reuse of decoded video preview frames
+
+Nearby playhead positions can resolve to the same decoded frame. The
+video editor now reuses that frame's converted pixmap for both screen
+and camera tracks. The cache uses decoded buffer identity and dimensions,
+while the decoder still selects the frame for each new time. A weak
+reference lets the decoder release the raw bytes when it moves on.
+
+The regression checks that nearby times sharing a decoded buffer reuse
+the same pixmap, a new buffer produces distinct pixels, and the cache
+holds no extra strong reference to the decoded data. The optimization
+removes repeat conversion when frames are shared, including a 31.6 MiB
+pixmap allocation for each reused 3840×2160 frame. All 1,184 GPUI tests
+passed. The development FFmpeg camera visibility test and both narrow
+2× Metal profiles passed. The intermittent 4K60 decoder stall remains
+a separate open issue.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

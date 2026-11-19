@@ -3,7 +3,7 @@
 //! hand the result to GPUI as an image.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use tiny_skia::Pixmap;
@@ -22,8 +22,14 @@ pub struct Source {
     video: Option<VideoDecoder>,
     camera: Option<VideoDecoder>,
     video_segments: Vec<VideoSegment>,
-    video_frame: Option<(f64, Arc<Pixmap>)>,
-    camera_frame: Option<(f64, Arc<Pixmap>)>,
+    video_frame: Option<CachedFrame>,
+    camera_frame: Option<CachedFrame>,
+}
+
+struct CachedFrame {
+    time: f64,
+    decoded: Weak<Vec<u8>>,
+    pixmap: Arc<Pixmap>,
 }
 
 impl Source {
@@ -131,9 +137,13 @@ impl Source {
             .or_else(|| self.video_segments.last().map(|segment| segment.end_time))
             .unwrap_or(adjusted);
 
-        let video = cached_frame(self.video.as_ref(), &mut self.video_frame, video_time);
+        let video = cached_frame(&mut self.video_frame, video_time, || {
+            self.video.as_ref().and_then(|decoder| decoder.frame_at(video_time))
+        });
         let camera = if self.engine.camera_visible_at(timeline_time) {
-            cached_frame(self.camera.as_ref(), &mut self.camera_frame, video_time)
+            cached_frame(&mut self.camera_frame, video_time, || {
+                self.camera.as_ref().and_then(|decoder| decoder.frame_at(video_time))
+            })
         } else {
             let state = &self.engine.config().state;
             if state.camera_style.visible
@@ -165,21 +175,20 @@ impl Source {
 }
 
 fn cached_frame(
-    decoder: Option<&VideoDecoder>,
-    cached: &mut Option<(f64, Arc<Pixmap>)>,
+    cached: &mut Option<CachedFrame>,
     time: f64,
+    decode: impl FnOnce() -> Option<DecodedFrame>,
 ) -> Option<Arc<Pixmap>> {
     if let Some(frame) = cached
         .as_ref()
-        .filter(|(cached_time, _)| (*cached_time - time).abs() < f64::EPSILON)
-        .map(|(_, frame)| frame.clone())
+        .filter(|frame| (frame.time - time).abs() < f64::EPSILON)
     {
-        return Some(frame);
+        return Some(frame.pixmap.clone());
     }
     #[cfg(all(feature = "parity", target_os = "macos"))]
     let decode_started = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
         .map(|_| std::time::Instant::now());
-    let decoded = decoder.and_then(|decoder| decoder.frame_at(time));
+    let decoded = decode();
     #[cfg(all(feature = "parity", target_os = "macos"))]
     if let Some(started) = decode_started {
         println!(
@@ -188,9 +197,26 @@ fn cached_frame(
             decoded.is_some(),
         );
     }
-    let frame = decoded.as_ref().and_then(to_pixmap).map(Arc::new);
-    *cached = frame.clone().map(|frame| (time, frame));
-    frame
+
+    let Some(frame) = decoded else {
+        *cached = None;
+        return None;
+    };
+    let decoded = Arc::downgrade(&frame.bgra);
+    if let Some(cached) = cached.as_mut().filter(|cached| {
+        cached.decoded.ptr_eq(&decoded)
+            && cached.pixmap.width() == frame.width.max(1)
+            && cached.pixmap.height() == frame.height.max(1)
+    }) {
+        cached.time = time;
+        return Some(cached.pixmap.clone());
+    }
+    *cached = to_pixmap(&frame).map(|pixmap| CachedFrame {
+        time,
+        decoded,
+        pixmap: Arc::new(pixmap),
+    });
+    cached.as_ref().map(|cached| cached.pixmap.clone())
 }
 
 /// A decoded BGRA frame as a tiny-skia RGBA pixmap. Decoded frames are opaque,
@@ -317,10 +343,38 @@ mod tests {
 
     #[test]
     fn unchanged_times_reuse_the_composed_source_frame() {
-        let frame = Arc::new(Pixmap::new(1, 1).expect("pixmap"));
-        let mut cached = Some((2.0, frame.clone()));
-        let reused = cached_frame(None, &mut cached, 2.0).expect("cached frame");
+        let decoded = DecodedFrame {
+            width: 1,
+            height: 1,
+            bgra: vec![10, 20, 30, 255].into(),
+        };
+        let mut cached = None;
+        let frame = cached_frame(&mut cached, 2.0, || Some(decoded)).unwrap();
+        let reused = cached_frame(&mut cached, 2.0, || panic!("already cached")).unwrap();
         assert!(Arc::ptr_eq(&frame, &reused));
+    }
+
+    #[test]
+    fn nearby_times_reuse_the_same_decoded_frame_without_retaining_its_buffer() {
+        let decoded = DecodedFrame {
+            width: 1,
+            height: 1,
+            bgra: vec![10, 20, 30, 255].into(),
+        };
+        let mut cached = None;
+        let first = cached_frame(&mut cached, 0.0, || Some(decoded.clone())).unwrap();
+        let next = cached_frame(&mut cached, 0.01, || Some(decoded.clone())).unwrap();
+        assert!(Arc::ptr_eq(&first, &next));
+        assert_eq!(next.data(), &[30, 20, 10, 255]);
+        assert_eq!(Arc::strong_count(&decoded.bgra), 1);
+
+        let different = DecodedFrame {
+            bgra: vec![40, 50, 60, 255].into(),
+            ..decoded
+        };
+        let changed = cached_frame(&mut cached, 0.02, || Some(different)).unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(changed.data(), &[60, 50, 40, 255]);
     }
 
     #[cfg(any(windows, target_os = "macos"))]
@@ -365,7 +419,7 @@ mod tests {
         assert!(source.compose(still + 0.75, dimensions).is_some());
         assert!(source.camera_frame.is_none());
         assert!(source.compose(still + 0.25, dimensions).is_some());
-        let (_, first) = source.camera_frame.clone().unwrap();
+        let first = source.camera_frame.as_ref().unwrap().pixmap.clone();
 
         let mut disabled = state.clone();
         disabled.camera_style.visible = false;
@@ -373,13 +427,13 @@ mod tests {
         assert!(source.compose(still + 1.5, dimensions).is_some());
         assert!(Arc::ptr_eq(
             &first,
-            &source.camera_frame.as_ref().unwrap().1
+            &source.camera_frame.as_ref().unwrap().pixmap
         ));
 
         source.set_state(state);
         assert!(source.compose(still + 1.5, dimensions).is_some());
-        let (time, resumed) = source.camera_frame.as_ref().unwrap();
-        assert!((time - 1.5).abs() < 0.001);
-        assert!(!Arc::ptr_eq(&first, resumed));
+        let resumed = source.camera_frame.as_ref().unwrap();
+        assert!((resumed.time - 1.5).abs() < 0.001);
+        assert!(!Arc::ptr_eq(&first, &resumed.pixmap));
     }
 }
