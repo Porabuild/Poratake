@@ -55,6 +55,7 @@ pub struct HistoryWindow {
     revealing: bool,
     closing: bool,
     opening_screenshot: bool,
+    loading: bool,
 }
 
 impl HistoryWindow {
@@ -79,6 +80,7 @@ impl HistoryWindow {
             revealing: cfg!(windows),
             closing: false,
             opening_screenshot: false,
+            loading: true,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if this.revealing
@@ -89,7 +91,7 @@ impl HistoryWindow {
             }
             this.close(window, cx);
         }));
-        view.reload(cx);
+        Self::load_items(cx);
         view
     }
 
@@ -101,13 +103,20 @@ impl HistoryWindow {
     #[cfg(feature = "parity")]
     pub(crate) fn parity_state(&self) -> (bool, bool, usize, HistoryLayout) {
         (
-            self.items
-                .iter()
-                .all(|item| self.media.contains_key(&item.id)),
+            !self.loading
+                && self
+                    .items
+                    .iter()
+                    .all(|item| self.media.contains_key(&item.id)),
             self.keyboard_navigation,
             self.selected_index,
             self.layout,
         )
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn has_items_for_parity(&self) -> bool {
+        !self.loading && !self.items.is_empty()
     }
 
     #[cfg(feature = "parity")]
@@ -188,12 +197,25 @@ impl HistoryWindow {
         });
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        self.items = history_store::load_history();
-        self.now_ms = chrono::Local::now().timestamp_millis();
-        self.selected_index = 0;
-        self.load_media(cx);
-        cx.notify();
+    fn load_items(cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| {
+            let items = cx
+                .background_executor()
+                .spawn(async { history_store::load_history() })
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if this.closing || !this.loading {
+                    return;
+                }
+                this.loading = false;
+                this.items = items;
+                this.now_ms = chrono::Local::now().timestamp_millis();
+                this.selected_index = 0;
+                this.load_media(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -627,7 +649,23 @@ impl Render for HistoryWindow {
                 el.flex_col().gap(px(crate::ui::chrome::HISTORY_LIST_GAP))
             });
 
-        if !has_items {
+        if self.loading {
+            scroller = scroller.flex_col().child(
+                div()
+                    .debug_selector(|| "history-loading".to_string())
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .text_color(theme.muted_foreground)
+                    .text_center()
+                    .text_size(px(crate::ui::chrome::TEXT_SM))
+                    .child(crate::ui::icon::spinner_element("history-loading", px(16.)))
+                    .child(div().w_full().child("Loading recent captures…")),
+            );
+        } else if !has_items {
             scroller = scroller.flex_col().child(toolbar::empty_state(
                 crate::ui::chrome::HISTORY_EMPTY_ICON,
                 "No captures yet",
@@ -792,6 +830,7 @@ mod tests {
         cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
         let history = cx.add_window(|window, cx| {
             let mut history = HistoryWindow::new(store, window, cx);
+            history.loading = false;
             history.items = [(&missing, 2), (&path, 1)]
                 .into_iter()
                 .map(|(path, timestamp)| HistoryItem {
@@ -878,6 +917,7 @@ mod tests {
                 revealing: false,
                 closing: false,
                 opening_screenshot: false,
+                loading: false,
             }
         });
         visual.update(|_, cx| {
@@ -885,6 +925,22 @@ mod tests {
         });
         visual.simulate_scale_factor_change(2.0);
         visual.simulate_resize(size(px(400.0), px(500.0)));
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.loading = true;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("history-loading").is_some());
+        assert!(visual.debug_bounds("history-card-first").is_none());
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.loading = false;
+                cx.notify();
+            });
+        });
+        visual.settle();
         let first = visual.expect("history-card-first");
         let second = visual.expect("history-card-second");
         let third = visual.expect("history-card-third");

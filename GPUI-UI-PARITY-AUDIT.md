@@ -8191,6 +8191,28 @@ with 23 ignored.
 python3 tests/native/macos-capture-history-probe.py --editor-open
 ```
 
+### 2026-11-19 macOS Recent Captures loading
+
+Opening Recent Captures used to read the history file on the app
+thread before showing the panel. The read now runs on the background
+executor. The panel shows a loading indicator until the entries
+arrive, then switches to the existing grid, list or empty state.
+
+The native probe holds the history read in an isolated profile.
+The old build missed the status reply. The regression checks that
+the app responds, the panel is present while history is pending,
+and the entries appear after release. The light and dark runs
+answered in 0.3 and 0.2 ms during the hold. The screenshot,
+recording and editor history probes also passed. The arm64 GPUI
+suite passed 1,179 tests with 23 ignored, including the narrow
+loading-state check. The light and dark Metal profiles passed the
+140-, 200- and 240-point History grid, list, tooltip and isolated
+deletion checks at 2×.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --history-open
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

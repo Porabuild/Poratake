@@ -1549,6 +1549,19 @@ pub fn open(cx: &mut App) {
                         .update(cx, |preview, _, _| preview.thumbnails_ready_for_parity())
                         .unwrap_or(false);
                 }
+                if command == "open history" {
+                    crate::intents::dispatch(Intent::History, None, cx);
+                    return true;
+                }
+                if matches!(command.as_str(), "history open" | "history ready") {
+                    let Some(history) = registry::handle(WindowKind::History, cx)
+                        .and_then(|handle| handle.downcast::<crate::windows::history::HistoryWindow>())
+                    else {
+                        return false;
+                    };
+                    return command == "history open"
+                        || history.read(cx).is_ok_and(|view| view.has_items_for_parity());
+                }
                 if command == "video preview ready" {
                     let Some(handle) =
                         registry::handle(WindowKind::CapturePreview, cx).and_then(|handle| {

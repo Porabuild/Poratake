@@ -89,7 +89,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable, recording=False, opening_editor=False):
+def verify(executable, recording=False, opening=None):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -100,6 +100,7 @@ def verify(executable, recording=False, opening_editor=False):
             "onboarding": {"completed": True, "skipped": True},
             "general": {"autoCheckUpdates": False, "playSoundOnScreenshot": False},
             "shortcuts": {},
+            "appearance": {"mode": os.environ.get("PORATAKE_HISTORY_PROBE_THEME", "system")},
             "history": {"enabled": True},
         }))
         bridge = root / "daemon"
@@ -168,21 +169,31 @@ def verify(executable, recording=False, opening_editor=False):
         history_path = profile / "history.json"
         try:
             wait("NATIVE_SMOKE ready")
-            if opening_editor:
+            if opening:
                 capture_area()
                 eventually("preview ready")
                 contents = history_path.read_text()
                 history_path.unlink()
                 os.mkfifo(history_path)
-                assert command("preview editor")
+                if opening == "editor":
+                    assert command("preview editor")
+                else:
+                    send("open history")
                 with held_history(history_path, contents):
                     start = monotonic()
                     send("status")
                     assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
                     elapsed_ms = (monotonic() - start) * 1000
-                    print(f"app status replied in {elapsed_ms:.1f} ms while editor history was held")
-                eventually("close editor")
-                print("the screenshot editor opened after history was released")
+                    print(f"app status replied in {elapsed_ms:.1f} ms while the history read was held")
+                    if opening == "history":
+                        assert command("history open")
+                        assert not command("history ready")
+                if opening == "editor":
+                    eventually("close editor")
+                    print("the screenshot editor opened after history was released")
+                else:
+                    eventually("history ready")
+                    print("Recent Captures showed its entries after history was released")
                 assert command("quit")
                 assert app.wait(timeout=6) == 0
                 return
@@ -237,12 +248,15 @@ def verify(executable, recording=False, opening_editor=False):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
-    elif sys.argv[1:] in ([], ["--recording"], ["--editor-open"]):
+    elif sys.argv[1:] in ([], ["--recording"], ["--editor-open"], ["--history-open"]):
         root = Path(__file__).resolve().parents[2]
         verify(
             root / "src/main/target/debug/poratake-gpui",
             recording=sys.argv[1:] == ["--recording"],
-            opening_editor=sys.argv[1:] == ["--editor-open"],
+            opening=next(
+                (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
+                None,
+            ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open]")
