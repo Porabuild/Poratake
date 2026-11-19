@@ -5180,9 +5180,12 @@ Each run reported one TARGET_CLOSED event and sent an automatic
 Stop without a Resume or manual Stop command. Both windows cleared
 before the recording preview was shown.
 
-Theme  Pause RPC ms  Close to Stop request ms  Close to visible preview ms  Edit to ready ms
-Light            0.3                    272.4                       1117.2             82.2
-Dark             0.5                    265.2                       1117.8             75.6
+Theme  Pause RPC ms  Close to Stop request ms  Close to preview observation ms  Edit to ready ms
+Light            0.3                    272.4                            1117.2             82.2
+Dark             0.5                    265.2                            1117.8             75.6
+
+The initial preview observation followed a one-second diagnostic
+wait. The next section measures readiness with immediate polling.
 
 The 720x480 light and dark clips had four and five decoded source
 frames respectively, covering the red, green and blue phases.
@@ -5195,3 +5198,35 @@ The 82 Electron reference and daemon contract tests passed. The
 probe measured app-local commands and WindowServer visibility,
 without moving the desktop pointer. It used an earlier authorized
 daemon build for capture.
+
+2026-11-20 macOS paused Stop to preview timing
+==============================================
+
+The revised probe polled WindowServer and thumbnail readiness
+immediately after issuing the app-local Stop command or closing
+and releasing the target window. It recorded the Stop request and
+reply independently in the daemon bridge. Both paths began from
+an acknowledged paused recording of the same generated target.
+
+This run used the earlier preflight-authorized screen-only fixture.
+The desktop pointer stayed in place and audio and keyboard capture
+were disabled. Host scheduling varied. The system reported a
+one-minute load average of 546.84 during the run.
+
+All timings are milliseconds relative to the local trigger or the
+named previous event. Window visibility includes polling. Thumbnail
+ready means the app had a decoded preview image.
+
+Theme  Trigger  Trial  Trigger→Stop  Stop RPC  Reply→window  Trigger→window  Trigger→thumb  Window→thumb
+light manual      1           7.0      61.5         164.8           233.3          855.2         621.9
+light manual      2          26.0      40.5         173.8           240.2         1781.2        1541.0
+light closure     1         630.1      34.4         168.8           833.3         2841.4        2008.1
+light closure     2         656.2      48.9         148.8           853.8         2378.8        1525.0
+dark  manual      1          13.5      33.9         119.7           167.1         1766.3        1599.2
+dark  manual      2           3.4      22.5         103.9           129.8          837.4         707.6
+dark  closure     1         371.4      32.9         122.8           527.2         1236.5         709.3
+dark  closure     2         385.9      50.3         112.9           549.1         1033.9         484.8
+
+All eight runs cleared the toolbar and outline, opened the preview
+in the GPUI editor and decoded the three generated source phases.
+The 82 Electron reference and daemon contract tests passed.

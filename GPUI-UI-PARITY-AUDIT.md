@@ -11193,9 +11193,10 @@ earlier authorized screen-only daemon. It paused before the target
 closed and released its actual window object.
 
 Each closure produced one target-closed event. GPUI sent Stop
-automatically within 265–272 ms, removed the toolbar and outline,
-and showed the recording preview about 1.12 s after closure. The
-recordings opened in the editor, saved a split at 0.45 s, and
+automatically within 265–272 ms and removed the toolbar and outline.
+The first probe sampled the visible preview after waiting for a
+diagnostic. The immediate-polling follow-up below measures the
+handoff separately. The recordings opened in the editor, saved a split at 0.45 s, and
 exported 58 frames each at the original 720×480 resolution. Both
 source movies and both exports retained the three scene stages
 with strictly increasing decoded timestamps.
@@ -11205,6 +11206,29 @@ generated content. It supplied neither microphone nor camera nor
 system audio. All 82 Electron reference and daemon contract tests
 passed.
 [Paused target-closure evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-20 macOS paused Stop to preview timing
+
+The earlier closure probe waited for a one-second diagnostic
+before sampling WindowServer. Its 1.12 s value was an observation
+after that wait. This rerun starts polling immediately and measures
+the Stop request, reply, visible window and ready thumbnail
+separately.
+
+Across eight paused-window trials, the preview window appeared
+104–174 ms after the daemon's Stop reply. From the original
+trigger, manual Stop took 130–240 ms to show the window and
+target closure took 527–854 ms. The automatic Stop request
+itself followed closure by 371–656 ms.
+
+The first decoded thumbnail became available 485–2,008 ms after
+the window appeared. These results use app-local commands and
+WindowServer polling, with an earlier authorized screen-only
+daemon and generated content. Host load varied and reached a
+one-minute load average of 547 during the run. All eight previews
+opened in the editor, and all 82 Electron reference and contract
+tests passed.
+[Per-run Stop and preview timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 
