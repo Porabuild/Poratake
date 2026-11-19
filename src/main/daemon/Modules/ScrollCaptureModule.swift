@@ -1177,7 +1177,7 @@ class ScrollCaptureModule: NSObject, Module {
                     return
                 }
                 let index = appendCapturedFrame(image, comparison: comparison, countsDuplicate: countsDuplicate)
-                guard !comparison.isDuplicate, let session = previewSession else {
+                guard !comparison.isDuplicate || !countsDuplicate, let session = previewSession else {
                     completion(index == nil ? .duplicate : .captured)
                     return
                 }
@@ -2301,6 +2301,10 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testResumeAutoScroll() {
         isAutoScrolling = true
+    }
+
+    func testWaitForFrameComparison() {
+        frameComparisonQueue.sync {}
     }
 
     func testSetBeforeFrameComparison(_ hook: @escaping () -> Void) {

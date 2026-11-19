@@ -10160,6 +10160,24 @@ daemon typechecks passed on arm64 and Rosetta x86_64, along with
 62 Electron and daemon contract tests.
 [Scroll scheduling evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Auto Scroll restart during alignment
+
+A restart takes a baseline screenshot before sending the next
+wheel step. If that screenshot matched a frame still being
+aligned, the duplicate fast path could resume scrolling early.
+The restart now waits for pending alignment even when the
+baseline pixels match the previous capture.
+
+The native regression stopped Auto during a held alignment, then
+restarted with the same baseline image. The previous implementation
+scheduled an extra step before the alignment finished. The revised
+case waited, then scheduled exactly one step for the current run.
+The saved three-frame PNG matched the expected page pixel for pixel.
+The Swift fixtures and daemon typechecks passed on arm64 and Rosetta
+x86_64, along with 62 Electron and daemon contract tests. The fixture
+supplies frames and holds alignment without desktop input.
+[Scroll restart scheduling evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

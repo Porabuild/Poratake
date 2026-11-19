@@ -2458,6 +2458,43 @@ struct ScrollCapturePreviewTest {
         gatedModule.testWaitForPreviewWork()
         print("scroll alignment gate: verified step resumes during encoding, rejected frame schedules no step")
 
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("A retry did not request the accepted baseline") { gatedCaptures.count == 4 }
+        gatedCaptures[3](frames[1])
+        await waitUntil("The accepted baseline did not schedule a step") { gatedSteps == 3 }
+        let interruptedGeneration = gatedModule.testCaptureGeneration()
+        gatedModule.testCaptureAfterScroll(generation: interruptedGeneration)
+        precondition(gatedCaptures.count == 5)
+        let interrupted = frame(start: footerStep * 2, width: footerWidth, height: footerHeight)
+        gatedCaptures[4](interrupted)
+        await waitUntil("The interrupted run did not reach alignment") {
+            alignmentEntered.wait(timeout: .now()) == .success
+        }
+        gatedModule.testEnqueueAutoScrollStop()
+        precondition(!gatedModule.testIsAutoScrolling())
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("The restarted run did not request its baseline") { gatedCaptures.count == 6 }
+        gatedCaptures[5](interrupted)
+        gatedModule.testWaitForFrameComparison()
+        var restartedComparisonDrained = false
+        DispatchQueue.main.async { restartedComparisonDrained = true }
+        await waitUntil("The restart baseline comparison did not drain") { restartedComparisonDrained }
+        print("scroll restart while prior alignment is held: scheduled=\(gatedSteps)")
+        fflush(stdout)
+        precondition(gatedSteps == 3)
+        releaseAlignment.signal()
+        await waitUntil("The restarted run did not schedule after alignment") { gatedSteps == 4 }
+        let gatedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-gated-restart-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: gatedOutput) }
+        let gatedResult = await finish(gatedModule, output: gatedOutput)
+        precondition(gatedResult?["frameCount"] as? Int == 3 && gatedSteps == 4 && gatedEnds.count == 1)
+        let gatedSource = CGImageSourceCreateWithURL(gatedOutput as CFURL, nil)!
+        let gatedImage = CGImageSourceCreateImageAtIndex(gatedSource, 0, nil)!
+        let expectedGated = frame(start: 0, width: footerWidth, height: footerHeight + footerStep * 2)
+        precondition(pixels(gatedImage) == pixels(expectedGated))
+        print("scroll restart after alignment: one current step, saved pixels match")
+
         let asyncCaptureModule = ScrollCaptureModule()
         asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
         asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }

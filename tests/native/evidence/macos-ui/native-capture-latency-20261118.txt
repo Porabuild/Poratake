@@ -3697,3 +3697,21 @@ aligned, while the preview encoder was still held. A third, rejected
 image emitted no-overlap with two accepted frames and scheduled no
 additional step. The test used app-local scheduling without moving the
 desktop pointer.
+
+2026-11-19 macOS restart baseline during pending scroll alignment at a4a4445c
+
+Auto Scroll was stopped while the alignment worker held a distinct
+frame. The fixture restarted using an identical baseline image and
+drained the frame comparison before releasing alignment.
+
+Baseline
+scroll restart while prior alignment is held: scheduled=4
+
+Revised
+scroll restart while prior alignment is held: scheduled=3
+scroll restart after alignment: one current step, saved pixels match
+
+The fixture had scheduled three earlier steps. Releasing alignment
+produced only the fourth, current-run step. The final 640x352 PNG
+matched the expected three-frame composite exactly. These checks used
+app-local scheduling and did not post wheel events.
