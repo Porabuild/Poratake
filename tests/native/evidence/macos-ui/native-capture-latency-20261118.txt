@@ -3389,3 +3389,43 @@ An earlier display-filter screenshot returned 1728x1117 but none
 of nine tested positions matched the expected blue. No conclusion
 was drawn about its screenshot pixels. The window-filter retry
 above passed. The 70 Electron and daemon contract tests passed.
+
+2026-11-19 macOS screenshot overlap through encoding and GPUI export at aa35d2de
+
+The temporary arm64 harness used the current production ScreenCaptureRecorder,
+AVAssetWriter, screenshot coordinator and protected tooltip. It preflighted
+Screen Recording and used capture filters scoped to AppKit windows belonging
+to the probe. It disabled stream audio and cursor tracking, and set microphone,
+camera, keyboard and iOS recording off. The screenshot used a window-only
+filter. Its callback held registry completion until the recorder entered
+startup. The tooltip was transparent before release and became visible
+with its original window ID after startup and the exclusion update.
+
+The generated blue backdrop changed after the tooltip appeared. The second
+backdrop change marked an ordinary red window at the former tooltip bounds.
+Both video-only captures were 700x500. The tooltip rectangle in decoded
+pixels was (334,198) 196x44. The protected region sampled that rectangle
+plus eight pixels on each side. Frame timestamps increased strictly.
+FFmpeg used passthrough timestamps for the frame counts.
+
+Appearance   MOV frames   Protected   Ordinary   Maximum protected RGB delta
+light        26           16          9          0
+dark         24           15          8          0
+
+A test daemon supplied the live encoded clip to the GPUI recording preview.
+The editor opened the clip and persisted two segments split at 0.45 s.
+Each ordinary export path produced a video-only 700x500 MP4 with strictly
+increasing timestamps. Each export contained 65 decoded frames, including
+34 protected and 29 ordinary-window frames. The protected sample-region
+maximum RGB delta from the backdrop was 1 in both exports.
+
+Appearance   Protected frame 19 at 0.633333 s   Ordinary frame 50 at 1.666667 s
+light        100.0000% within five RGB levels   99.4177% within five RGB levels
+dark         100.0000% within five RGB levels   99.4189% within five RGB levels
+
+Preview and decoded MP4 samples were compared at the same export frame
+timestamps. Larger differences covered 2,038 light and 2,034 dark pixels,
+all within an eight-pixel band around the ordinary window edge. The direct
+recording harness and GPUI bridge ran as separate processes. Physical input,
+camera hardware, and the app's real start and stop RPC handoff were outside
+this run.

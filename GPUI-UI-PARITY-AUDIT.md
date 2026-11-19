@@ -9897,6 +9897,33 @@ window-only filter. All 70 related Electron and daemon contract
 tests passed.
 [Live overlap evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS capture overlap through recording and export
+
+A preflight-granted probe used the current macOS recorder to encode
+a generated area in light and dark. The screenshot callback was held
+in the exclusion registry until recording startup began. The native
+tooltip kept its window ID, stayed transparent during the wait, and
+was visible on screen during the protected phase. The probe limited
+ScreenCaptureKit to its own generated windows and disabled audio
+and input tracking.
+
+Both 700×500 MOVs preserved the backdrop in the 12,720-pixel region
+around the tooltip. Every protected-phase frame matched the backdrop
+at all tested pixels. An ordinary red window at the same position
+appeared in both files. A test bridge supplied the recorded files
+to the GPUI preview, which opened the editor. Each project saved a
+split at 0.45 s and exported a 700×500 MP4.
+
+At the matched export timestamp of 0.633333 s, every protected-frame
+pixel was within five RGB levels of the editor preview. At 1.666667 s,
+99.418% of the ordinary-window frame met the same tolerance.
+Larger differences were confined to an eight-pixel band around the
+ordinary window's edges. The probe exercised live capture, encoding,
+preview, saved edits and export in sequence. The GPUI app received
+the finished clip through the bridge. All 87 related Electron tests
+passed.
+[Encoded overlap evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
