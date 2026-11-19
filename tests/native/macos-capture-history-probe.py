@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import sys
+from base64 import b64decode
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
@@ -21,8 +22,8 @@ def fixture_daemon():
         body = name + data
         return pack(">I", len(data)) + body + pack(">I", crc32(body))
 
-    direct_editor = "PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR" in os.environ
-    width, height = (3840, 2160) if direct_editor else (300, 220)
+    large_capture = "PORATAKE_HISTORY_PROBE_LARGE_CAPTURE" in os.environ
+    width, height = (3840, 2160) if large_capture else (300, 220)
     row = b"\0" + bytes([64, 112, 192]) * width
     png = (
         b"\x89PNG\r\n\x1a\n"
@@ -42,6 +43,11 @@ def fixture_daemon():
             assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
             path.write_bytes(png)
             result = {"path": str(path), "width": width, "height": height}
+        elif method == ("print", "image"):
+            output = Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"])
+            printed = output / "printed.tmp"
+            printed.write_bytes(b64decode(request["params"]["imageBase64"], validate=True))
+            printed.replace(output / "printed.png")
         elif method == ("screen-recorder", "start"):
             path = Path(request["params"]["outputPath"])
             assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
@@ -126,6 +132,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 "PORATAKE_NATIVE_SMOKE_FREEZE": "0",
                 "PORATAKE_NATIVE_SMOKE_HISTORY": "1",
                 **direct_editor_env,
+                **({"PORATAKE_HISTORY_PROBE_LARGE_CAPTURE": "1"} if opening in {"direct-editor", "editor-print"} else {}),
             },
         )
         replies = Queue()
@@ -192,6 +199,32 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 assert Path(saved["originalPath"]) == source
                 print("4K editor image was prepared while history was held")
                 print(f"editor opened in {elapsed_ms:.1f} ms after history release")
+                assert command("close editor")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
+            if opening == "editor-print":
+                capture_area()
+                eventually("preview ready")
+                eventually("preview finalizing", expected=False)
+                assert command("preview editor")
+                eventually("editor ready")
+                assert command("editor annotate")
+                assert command("editor print reference")
+                start = monotonic()
+                assert command("editor print")
+                reply_ms = (monotonic() - start) * 1000
+                expected = (captures / "print-reference.png").read_bytes()
+                printed = captures / "printed.png"
+                deadline = monotonic() + 10
+                while not printed.is_file():
+                    if monotonic() >= deadline:
+                        raise RuntimeError("fixture daemon did not receive the print image")
+                    sleep(0.01)
+                assert printed.read_bytes() == expected
+                assert unpack(">II", expected[16:24]) == (3840, 2160)
+                print(f"editor print returned in {reply_ms:.1f} ms")
+                print("the fixture daemon received the exact annotated 4K screenshot PNG")
                 assert command("close editor")
                 assert command("quit")
                 assert app.wait(timeout=6) == 0
@@ -401,6 +434,7 @@ if __name__ == "__main__":
         ["--editor-open"],
         ["--direct-editor"],
         ["--annotation-save"],
+        ["--editor-print"],
         ["--history-open"],
         ["--history-delete"],
         ["--history-clear"],
@@ -419,10 +453,10 @@ if __name__ == "__main__":
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
                 next(
-                    (mode for mode in ("direct-editor", "annotation-save") if sys.argv[1:] == [f"--{mode}"]),
+                    (mode for mode in ("direct-editor", "annotation-save", "editor-print") if sys.argv[1:] == [f"--{mode}"]),
                     None,
                 ),
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --annotation-save | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

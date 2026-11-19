@@ -1668,6 +1668,26 @@ pub fn open(cx: &mut App) {
                         .update(cx, |editor, _, cx| editor.add_annotation_for_parity(cx))
                         .is_ok();
                 }
+                if matches!(command.as_str(), "editor print" | "editor print reference") {
+                    let Some(handle) = cx.windows().iter().find_map(|handle| {
+                        handle.downcast::<crate::editor::EditorWindow>()
+                    }) else {
+                        return false;
+                    };
+                    if command == "editor print" {
+                        return cx
+                            .update_window(handle.into(), |_, window, cx| {
+                                window.dispatch_action(Box::new(crate::editor::actions::PrintScreenshot), cx);
+                            })
+                            .is_ok();
+                    }
+                    let reference = output.join("print-reference.png");
+                    return handle
+                        .update(cx, |editor, _, _| {
+                            editor.export_png().is_ok_and(|png| std::fs::write(reference, png).is_ok())
+                        })
+                        .unwrap_or(false);
+                }
                 if command == "close editor" {
                     let Some(handle) = cx
                         .windows()

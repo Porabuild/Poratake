@@ -8393,6 +8393,24 @@ The regression uses GPUI's test clipboard. It checks that Copy returns
 before publication, that a later wallpaper edit does not affect the
 copied PNG, and that close-on-copy only closes after publication.
 
+### 2026-11-19 macOS screenshot editor Print responsiveness
+
+Print snapshots the current editor composition. The background
+executor now renders the image, encodes the PNG and base64 payload,
+and calls the daemon. The existing Print shortcut and daemon contract
+are preserved.
+
+The native probe opened a generated 3840×2160 screenshot and added
+an annotation. The Print command returned in 1.1 ms in light mode and
+0.4 ms in dark mode. In both cases the fixture daemon received a PNG
+that matched the editor export byte for byte. The real macOS print
+dialog and printer output remain unverified. The 4K direct-to-editor
+probe and all 1,182 GPUI tests passed.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --editor-print
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

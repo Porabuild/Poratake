@@ -4265,19 +4265,16 @@ impl EditorWindow {
             );
             return;
         }
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                eprintln!("[print] export failed: {error}");
-                return;
-            }
-        };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let composition = self.composition();
         let daemon = crate::state::state(cx).daemon;
-        let background = cx.background_executor().clone();
         cx.spawn(async move |_, cx| {
-            let result = background
-                .spawn(async move { daemon.print().image(encoded) })
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let png = composition.encode(false)?;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+                    daemon.print().image(encoded)
+                })
                 .await;
             if let Err(error) = result {
                 cx.update(|cx| {
