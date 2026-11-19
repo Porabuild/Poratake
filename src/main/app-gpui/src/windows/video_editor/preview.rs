@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tiny_skia::Pixmap;
@@ -126,10 +127,21 @@ impl Source {
     }
 
     /// Composes the frame at `timeline_time`.
+    #[cfg(any(test, feature = "parity"))]
     pub fn compose(
         &mut self,
         timeline_time: f64,
         max_dimensions: Option<(u32, u32)>,
+    ) -> Option<Pixmap> {
+        let mut decode_wait = Duration::ZERO;
+        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait)
+    }
+
+    pub(super) fn compose_measured(
+        &mut self,
+        timeline_time: f64,
+        max_dimensions: Option<(u32, u32)>,
+        decode_wait: &mut Duration,
     ) -> Option<Pixmap> {
         let first_frame_duration = self.engine.first_frame_duration();
         let adjusted = (timeline_time - first_frame_duration).max(0.0);
@@ -138,14 +150,14 @@ impl Source {
             .unwrap_or(adjusted);
 
         let video = cached_frame(&mut self.video_frame, video_time, || {
-            self.video.as_ref().and_then(|decoder| decoder.frame_at(video_time))
+            decode_frame(self.video.as_ref(), video_time, decode_wait)
         });
         if video.is_none() && timeline_time >= first_frame_duration {
             return None;
         }
         let camera = if self.engine.camera_visible_at(timeline_time) {
             cached_frame(&mut self.camera_frame, video_time, || {
-                self.camera.as_ref().and_then(|decoder| decoder.frame_at(video_time))
+                decode_frame(self.camera.as_ref(), video_time, decode_wait)
             })
         } else {
             let state = &self.engine.config().state;
@@ -155,10 +167,7 @@ impl Source {
                     .iter()
                     .any(|segment| segment.end_time > adjusted)
             {
-                let _ = self
-                    .camera
-                    .as_ref()
-                    .and_then(|decoder| decoder.frame_at(video_time));
+                let _ = decode_frame(self.camera.as_ref(), video_time, decode_wait);
             }
             None
         };
@@ -175,6 +184,18 @@ impl Source {
             None => self.engine.render_frame(timeline_time, frames),
         }
     }
+}
+
+fn decode_frame(
+    decoder: Option<&VideoDecoder>,
+    time: f64,
+    decode_wait: &mut Duration,
+) -> Option<DecodedFrame> {
+    let decoder = decoder?;
+    let started = Instant::now();
+    let frame = decoder.frame_at(time);
+    *decode_wait += started.elapsed();
+    frame
 }
 
 fn cached_frame(

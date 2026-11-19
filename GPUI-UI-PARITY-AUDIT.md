@@ -8591,6 +8591,26 @@ All 1,185 GPUI tests passed, along with the real-FFmpeg camera visibility
 test and both narrow 2× Metal profiles. Decoder stalls can still delay
 new frames.
 
+### 2026-11-19 macOS preview quality during slow decoding
+
+The editor now tracks decode wait separately from the rest of preview
+work. If decoding alone exhausts the quality budget, the resolution
+drops only when the remaining preview work also exceeds that budget.
+When decoding leaves time in the budget, the existing total-time rule
+still applies. Raising resolution still requires a run of fast updates.
+A missed frame resets that run.
+
+The regression covers a long decode with fast composition, a long
+decode with expensive composition, and a mixed cost that can benefit
+from downscaling. All 1,186 GPUI tests passed. In four native
+development runs with a deliberately paced 1080p60 input, the lowest
+observed preview size rose from 384×216 in each old run to 480×270
+in light and 432×243 in dark. The old and new runs each delivered
+23–26 updates across the three-second sample. This verifies quality
+selection under controlled decode delay. The intermittent 4K60
+stall cause remains open.
+[Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

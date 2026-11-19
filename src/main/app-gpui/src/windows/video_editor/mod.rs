@@ -870,29 +870,33 @@ impl VideoEditorWindow {
         let generation = self.preview_frame_generation;
 
         cx.spawn(async move |entity, cx| {
-            let (composed, elapsed) = cx
+            let (composed, elapsed, decode_wait) = cx
                 .background_executor()
                 .spawn(async move {
                     let started = std::time::Instant::now();
+                    let mut decode_wait = Duration::ZERO;
                     let mut guard = source.lock();
                     let image = guard
-                        .compose(time, max_dimensions)
+                        .compose_measured(time, max_dimensions, &mut decode_wait)
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
-                    (image, started.elapsed())
+                    (image, started.elapsed(), decode_wait)
                 })
                 .await;
 
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
                 if this.preview_frame_generation == generation {
-                    if max_dimensions.is_some() {
+                    if max_dimensions.is_some() && composed.is_some() {
                         (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
                             this.preview_quality,
                             this.preview_fast_frames,
                             elapsed,
+                            decode_wait,
                             active_preview_budget(this.source_frame_rate),
                         );
+                    } else if max_dimensions.is_some() {
+                        this.preview_fast_frames = 0;
                     }
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     if std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").is_some() {
@@ -4138,9 +4142,15 @@ fn adjust_preview_quality(
     index: usize,
     fast_frames: u16,
     elapsed: Duration,
+    decode_wait: Duration,
     budget: Duration,
 ) -> (usize, u16) {
-    if elapsed > budget && index > 0 {
+    let adjustable_elapsed = if decode_wait >= budget {
+        elapsed.saturating_sub(decode_wait)
+    } else {
+        elapsed
+    };
+    if adjustable_elapsed > budget && index > 0 {
         return (index - 1, 0);
     }
     if elapsed >= budget.mul_f32(0.65) {
@@ -7530,7 +7540,7 @@ mod keyboard_demo_tests {
     fn active_preview_quality_tracks_the_frame_budget() {
         let budget = active_preview_budget(60.0);
         assert_eq!(
-            adjust_preview_quality(3, 0, budget + Duration::from_millis(1), budget),
+            adjust_preview_quality(3, 0, budget + Duration::from_millis(1), Duration::ZERO, budget),
             (2, 0)
         );
         assert_eq!(
@@ -7538,17 +7548,37 @@ mod keyboard_demo_tests {
                 2,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
                 Duration::from_millis(1),
+                Duration::ZERO,
                 budget
             ),
             (3, 0)
         );
         assert_eq!(
-            adjust_preview_quality(0, 0, budget + Duration::from_millis(1), budget),
+            adjust_preview_quality(0, 0, budget + Duration::from_millis(1), Duration::ZERO, budget),
             (0, 0)
         );
         assert!(
             active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(1.0 / 60.0))
                 <= Duration::from_nanos(1)
+        );
+    }
+
+    #[test]
+    fn a_slow_decode_does_not_lower_quality_when_composition_fits() {
+        let budget = active_preview_budget(60.0);
+        let decode = Duration::from_millis(1500);
+        let render = Duration::from_millis(4);
+        assert_eq!(
+            adjust_preview_quality(3, PREVIEW_QUALITY_RAISE_FRAMES - 1, decode + render, decode, budget),
+            (3, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(3, 0, decode + budget + render, decode, budget),
+            (2, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(3, 0, budget + render, render, budget),
+            (2, 0)
         );
     }
 

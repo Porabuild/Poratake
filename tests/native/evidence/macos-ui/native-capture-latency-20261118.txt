@@ -1303,3 +1303,28 @@ the payload wrapper relayed unmodified raw stdout bytes and waited
 pipe overhead. The ordinary app configuration did not change.
 The artificial stalls calibrate the trace for both phases; the
 original intermittent stall remains unclassified inside the decoder.
+
+2026-11-19 macOS preview quality under paced input
+
+Both development builds played the same generated six-second
+1920x1080 H.264 60 fps fixture supplied by the recording stub.
+The FFmpeg wrapper inserted -readrate 0.6 ahead of the input,
+leaving the production decoder configuration alone. Native runs
+sampled completed preview updates from 0.5 to 3.5 seconds after
+the app-local Play command. These are queued preview images and
+do not count display presentations.
+
+Order          Updates  Preview sizes seen              Median decode/other (ms)
+Before light      25    384x216, 432x243, 480x270               0.1/5.2
+After light       23    480x270                                 0.1/5.3
+After dark        26    432x243, 480x270                        0.1/5.8
+Before dark       24    384x216, 432x243, 480x270               0.1/4.9
+
+The decoder often had a buffered frame and occasionally waited
+longer to catch up, so the median alone does not represent the
+delays that triggered quality changes. In the old dark sample the
+432x243-to-384x216 drop followed a request with about 10.8 ms of
+decode wait and 4.4 ms of other work. The new runs still lowered
+resolution following measured composition cost over the budget.
+The small paired sample illustrates the policy under paced input
+and does not establish a throughput improvement.
