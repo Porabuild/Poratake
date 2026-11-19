@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,8 @@ from zlib import compress, crc32
 
 
 def fixture_daemon():
+    root = Path(__file__).resolve().parents[2]
+    clip = root / "src/main/app-gpui/src/ui/parity/fixtures/capture.mov"
     def chunk(name, data):
         body = name + data
         return pack(">I", len(data)) + body + pack(">I", crc32(body))
@@ -38,6 +41,16 @@ def fixture_daemon():
             assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
             path.write_bytes(png)
             result = {"path": str(path), "width": width, "height": height}
+        elif method == ("screen-recorder", "start"):
+            path = Path(request["params"]["outputPath"])
+            assert path.is_relative_to(Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"]))
+            shutil.copyfile(clip, path)
+        elif method == ("screen-recorder", "stop"):
+            result = {"duration": 2.0}
+        elif method == ("recording-overlay", "show"):
+            result = {"visible": True}
+        elif method == ("camera-preview", "setContentProtection"):
+            result = {"protected": request["params"]["enabled"]}
         else:
             assert method in {
                 ("freeze-screen", "prewarm"),
@@ -76,7 +89,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable):
+def verify(executable, recording=False):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -155,17 +168,29 @@ def verify(executable):
         history_path = profile / "history.json"
         try:
             wait("NATIVE_SMOKE ready")
+            preview = "video preview ready" if recording else "preview ready"
             os.mkfifo(history_path)
-            capture_area()
+            if recording:
+                eventually("start-ready")
+                command("start")
+                eventually("status")
+                command("stop")
+            else:
+                capture_area()
             with held_history(history_path):
                 start = monotonic()
-                send("preview ready")
-                assert wait("NATIVE_SMOKE preview ready ", timeout=4).endswith(" false")
+                send(preview)
+                assert wait(f"NATIVE_SMOKE {preview} ", timeout=4).endswith(" false")
                 elapsed_ms = (monotonic() - start) * 1000
                 print(f"preview status replied in {elapsed_ms:.1f} ms while history was held")
-                first, = captured_files(1)
+                if recording:
+                    first, = captures.glob("*.poratake")
+                    state = json.loads((first / "state.json").read_text())
+                    assert state["sourceDuration"] == 2.0 and len(state["segments"]) == 1
+                else:
+                    first, = captured_files(1)
                 capture_area()
-                second, = captured_files(2) - {first}
+                second, = captured_files(1 if recording else 2) - {first}
 
             deadline = monotonic() + 10
             while True:
@@ -180,7 +205,7 @@ def verify(executable):
                 sleep(0.01)
             saved_order = [Path(item["originalPath"]) for item in history]
             assert saved_order == [second, first], saved_order
-            eventually("preview ready")
+            eventually(preview)
             print("both captures reached history in newest-first order; preview became ready")
             assert command("quit")
             assert app.wait(timeout=6) == 0
@@ -193,6 +218,11 @@ def verify(executable):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
-    else:
+    elif sys.argv[1:] in ([], ["--recording"]):
         root = Path(__file__).resolve().parents[2]
-        verify(root / "src/main/target/debug/poratake-gpui")
+        verify(
+            root / "src/main/target/debug/poratake-gpui",
+            recording=sys.argv[1:] == ["--recording"],
+        )
+    else:
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording]")

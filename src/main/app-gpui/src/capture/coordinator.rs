@@ -18,9 +18,50 @@ pub struct Coordinator {
     pub service: CaptureService,
     pending_attach: Option<PendingEditorAttach>,
     analysis_generation: u64,
-    pending_screenshot_history: Option<smol::channel::Receiver<()>>,
+    pending_capture_history: Option<smol::channel::Receiver<()>>,
     #[cfg(feature = "parity")]
     pending_analyses: usize,
+}
+
+pub(crate) struct CaptureHistoryWrite {
+    previous: Option<smol::channel::Receiver<()>>,
+    finished: smol::channel::Sender<()>,
+    max_items: usize,
+}
+
+impl CaptureHistoryWrite {
+    pub(crate) fn reserve(max_items: usize, cx: &mut gpui::App) -> Self {
+        let (finished, receiver) = smol::channel::bounded(1);
+        let previous = crate::state::coordinator(cx).update(cx, |coordinator, _| {
+            coordinator.pending_capture_history.replace(receiver)
+        });
+        Self {
+            previous,
+            finished,
+            max_items,
+        }
+    }
+
+    pub(crate) async fn persist(
+        self,
+        item: crate::history_store::HistoryItem,
+        cx: &mut gpui::AsyncApp,
+    ) -> crate::history_store::AddOutcome {
+        let Self {
+            previous,
+            finished,
+            max_items,
+        } = self;
+        if let Some(previous) = previous {
+            let _ = previous.recv().await;
+        }
+        let outcome = cx
+            .background_executor()
+            .spawn(async move { crate::history_store::add_item(item, max_items, true) })
+            .await;
+        drop(finished);
+        outcome
+    }
 }
 
 struct PendingEditorAttach {
@@ -75,7 +116,7 @@ impl Coordinator {
             service,
             pending_attach: None,
             analysis_generation: 0,
-            pending_screenshot_history: None,
+            pending_capture_history: None,
             #[cfg(feature = "parity")]
             pending_analyses: 0,
         }
@@ -323,13 +364,10 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     let (history, play_sound, screenshot) = cx.update(|cx| {
         let service = &cx.global::<crate::state::AppState>().service;
         let config = service.config.get();
-        let history = config.history.enabled.then(|| {
-            let (finished, receiver) = smol::channel::bounded(1);
-            let previous = crate::state::coordinator(cx).update(cx, |coordinator, _| {
-                coordinator.pending_screenshot_history.replace(receiver)
-            });
-            (config.history.max_items as usize, previous, finished)
-        });
+        let history = config
+            .history
+            .enabled
+            .then(|| CaptureHistoryWrite::reserve(config.history.max_items as usize, cx));
         (
             history,
             config.general.play_sound_on_screenshot,
@@ -350,7 +388,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     #[cfg(not(target_os = "macos"))]
     let _ = (play_sound, silent);
 
-    if let Some((max_items, previous, finished)) = history {
+    if let Some(write) = history {
         let item = crate::history_store::HistoryItem {
             id: uuid_simple(),
             timestamp: chrono::Local::now().timestamp_millis(),
@@ -359,15 +397,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
             editor_state: None,
             duration: None,
         };
-        if let Some(previous) = previous {
-            let _ = previous.recv().await;
-        }
-        let outcome = cx
-            .background_executor()
-            .spawn(async move { crate::history_store::add_item(item, max_items, true) })
-            .await;
-        drop(finished);
-        if let Some((title, message)) = outcome.warning("screenshot") {
+        if let Some((title, message)) = write.persist(item, cx).await.warning("screenshot") {
             cx.update(|cx| {
                 crate::windows::toast::Toast::show(cx, title, message);
             });

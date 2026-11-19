@@ -8060,7 +8060,34 @@ tests with 23 ignored.
 
 ```sh
 cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
-python3 tests/native/macos-screenshot-history-probe.py
+python3 tests/native/macos-capture-history-probe.py
+```
+
+### 2026-11-19 macOS recording history and project handoff
+
+Recording Stop could block the app thread after the recorder
+confirmed completion. The native regression held a history read
+with a generated clip and reproduced the missing status reply.
+
+Initial recording project state and cursor-based auto-zoom
+preparation now run on the background executor. Recordings and
+screenshots share one ordered history queue. The recording preview
+or editor opens after project preparation and history persistence.
+
+The fixture starts another screenshot while the recording history
+read is held. It checks that the recording state file is already
+valid, that both paths persist in newest-first order, and that the
+recording preview becomes ready after release. It uses a fixture
+daemon and app-local commands. In three runs the app answered
+during the hold in 0.3, 0.6 and 4.8 ms. The screenshot-only
+regression passed with the shared queue.
+
+The arm64 GPUI suite passed 1,178 tests with 23 ignored. Both
+light and dark Metal recording workflows passed the area, screen
+and window preview-to-decoded-export checks.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --recording
 ```
 
 ## Review gate

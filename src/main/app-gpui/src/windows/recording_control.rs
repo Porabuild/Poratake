@@ -2577,21 +2577,9 @@ impl RecordingControl {
                 duration,
             )];
         }
-        if recording.auto_zoom {
-            if let Some(cursor_data) = crate::video::sidecars::load_cursor(&project) {
-                state.zoom_segments = crate::video::auto_zoom::generate(
-                    &cursor_data,
-                    chrono::Utc::now().timestamp_millis(),
-                );
-                if !state.zoom_segments.is_empty() {
-                    state.ui.sidebar_open = true;
-                    state.ui.sidebar_tab = "zoom".to_string();
-                }
-            }
-        }
-        save_initial_recording_state(&project, &state);
-        let history_outcome = crate::history_store::add_item(
-            crate::history_store::HistoryItem {
+        let history = history_enabled.then(|| {
+            let write = crate::capture::coordinator::CaptureHistoryWrite::reserve(max_items, cx);
+            let item = crate::history_store::HistoryItem {
                 id: format!(
                     "{}",
                     chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
@@ -2601,25 +2589,46 @@ impl RecordingControl {
                 r#type: crate::history_store::HistoryItemType::Video,
                 editor_state: None,
                 duration: Some(duration),
-            },
-            max_items,
-            history_enabled,
-        );
-        if let Some((title, message)) = history_outcome.warning("recording") {
-            crate::windows::toast::Toast::show(cx, title, message);
-        }
+            };
+            (write, item)
+        });
+        cx.spawn(async move |_, cx| {
+            let state_project = project.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    if recording.auto_zoom {
+                        if let Some(cursor_data) =
+                            crate::video::sidecars::load_cursor(&state_project)
+                        {
+                            state.zoom_segments = crate::video::auto_zoom::generate(
+                                &cursor_data,
+                                chrono::Utc::now().timestamp_millis(),
+                            );
+                            if !state.zoom_segments.is_empty() {
+                                state.ui.sidebar_open = true;
+                                state.ui.sidebar_tab = "zoom".to_string();
+                            }
+                        }
+                    }
+                    save_initial_recording_state(&state_project, &state);
+                })
+                .await;
 
-        if show_preview {
-            let project = project.clone();
-            cx.defer(move |cx| {
-                crate::windows::capture_preview::CapturePreviewWindow::open_video(cx, project);
+            if let Some((write, item)) = history {
+                if let Some((title, message)) = write.persist(item, cx).await.warning("recording") {
+                    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, message));
+                }
+            }
+            cx.update(|cx| {
+                if show_preview {
+                    crate::windows::capture_preview::CapturePreviewWindow::open_video(cx, project);
+                } else {
+                    let path = project.to_string_lossy().into_owned();
+                    crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
+                }
             });
-        } else {
-            let path = project.to_string_lossy().to_string();
-            cx.defer(move |cx| {
-                crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
-            });
-        }
+        })
+        .detach();
         true
     }
 
