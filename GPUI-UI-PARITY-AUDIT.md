@@ -9772,6 +9772,26 @@ metadata and preserve color and timing across other formats.
 Fifty-six related Electron tests passed.
 [Decoder and Electron timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K packed RGB transport
+
+A standalone probe sent 24.9 MB of BGR per 4K frame and restored
+opaque alpha at the receiver. Both direct BGR and packing after
+the existing conversion to BGRA reproduced all pixels and
+timestamps in the five opaque fixtures tested. The partially
+transparent control lost alpha in both BGR paths.
+
+With two encoders running, median times for 180 frames were
+1.83 s for BGRA, 1.67 s for direct BGR and 1.71 s for packing
+after BGRA conversion. Each BGR variant won four of six paired
+runs. Restoring alpha took a median of 1.83 ms and 1.73 ms per
+frame respectively. Without competing encoders, the medians were
+0.85 s, 0.86 s and 0.93 s. These timings include alpha expansion
+and exclude editor composition. The comparison leaves a smaller
+benefit than the planar YUV result and requires a reliable
+opacity check for production use. Three development FFmpeg
+timeline tests and 56 Electron reference tests passed.
+[Packed RGB evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -3237,3 +3237,40 @@ two        2   120 /  0 / 18.5                              120 /  0 / 18.5
 two        3   120 /  0 / 25.8                              120 /  0 / 18.4
 
 Fifty-six Electron timeline, camera and export tests passed.
+
+2026-11-19 packed BGR transport on macOS at 946407a8
+
+The bundled FFmpeg 9.0.1 decoded a generated H.264 3840x2160
+60 fps clip through the GPUI-sized local stream socket. GPUI's
+BGRA layout uses 33,177,600 bytes per frame. Direct bgr24 and
+format=bgra,format=bgr24 each used 24,883,200 bytes. The standalone
+Rust receiver used reusable buffers and restored opaque alpha
+before digesting the frame. The samples timed the first 180
+frames. Two independent libx264 veryfast encoders continued
+processing frames in the loaded batch. Run order rotated and
+the sample digest and timestamp list matched in every timing run.
+
+A separate full-byte comparison covered 12 frames per source
+with alpha restored by FFmpeg. The two BGR arms matched the
+baseline for these opaque clips: 4K60 H.264, rotated H.264,
+full-range BT.709 H.264, 4:2:2 H.264 and Main 10 HEVC. Both
+changed the partially transparent QuickTime Animation clip
+from alpha 127 to 255. The timestamps also matched for that clip.
+
+Times in ms. Each cell is full transfer / read-and-expand p95.
+Load   Trial   BGRA                     Direct BGR               BGRA then BGR
+idle       1     837.6 /   5.1             866.6 /   5.5             971.1 /   6.0
+idle       2     886.8 /   5.9             863.0 /   5.0             923.8 /   6.1
+idle       3     851.0 /   4.9             862.4 /   5.3             930.0 /   6.4
+two        1    1671.9 /  11.3            1382.0 /   9.9            1973.9 /  13.4
+two        2    1572.3 /  10.9            1710.7 /  10.8            1715.3 /  11.8
+two        3    2016.5 /  13.8            1576.3 /  10.6            1723.7 /  10.6
+two        4    1854.1 /  11.8            1620.5 /  10.1            1514.9 /  10.5
+two        5    1808.6 /  12.0            1844.7 /  11.2            1712.9 /  12.1
+two        6    1852.5 /  12.6            1851.2 /  11.6            1510.2 /  10.2
+
+The first-frame time in the loaded batch had medians of 60.0,
+60.5 and 61.5 ms in the same order. Standalone results do not
+establish editor cadence or parity for untested formats.
+The three FFmpeg sparse timeline tests and the 56 related
+Electron tests passed.
