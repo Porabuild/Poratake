@@ -10832,6 +10832,26 @@ reference tests, and the Apple Silicon and Rosetta screenshot
 geometry fixtures passed.
 [Startup and live capture probe results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS editor startup after daemon exits before ready
+
+The native daemon's startup wait now observes both readiness
+and exit for the process it launched. An early exit releases
+the startup caller, so an editor opened from a file can appear
+while the watchdog retries. Each early-exit retry remains owned
+by the watchdog. A fixture that failed twice recovered on the
+third launch.
+
+Opening a generated screenshot with a daemon that exited on
+its first launch took 10.6–11.4 seconds to produce an onscreen
+editor window in the baseline. The revised build took
+259–265 ms in a repeat after compilation. The daemon recovered
+on its second launch in both appearances.
+
+This measures WindowServer visibility, using a fixture daemon.
+All 130 GPUI daemon and capture tests and 41 Electron reference
+tests passed.
+[Early daemon exit measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

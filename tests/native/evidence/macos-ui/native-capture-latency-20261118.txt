@@ -4523,3 +4523,27 @@ and cached=false. The fixture returned the same PNG bytes in
 all four pairs. The persistent --freeze-prewarm probe passed in
 both appearances. The fixture measures RPC selection and the
 capture handoff with generated pixels.
+
+2026-11-19 macOS editor startup after an early daemon exit at ad16403f
+
+A temporary GPUI profile opened a generated 640x420 PNG through
+the file argument. Freeze Screen was off. The fixture daemon
+exited with status 42 before sending readiness on its first
+launch, then sent system:ready on the second. The WindowServer
+probe polled window metadata for only the temporary editor PID.
+
+Build and run         Appearance   Launch to first onscreen window (ms)
+Baseline              light                                    11361.2
+Baseline              dark                                     10559.1
+Updated               light                                     1058.6
+Updated               dark                                       267.3
+Updated after build   light                                      259.3
+Updated after build   dark                                       265.4
+
+The baseline reported a ready timeout. The updated build
+reported exit before ready. Each probe saw two daemon launches
+and successful readiness from the replacement. The timing
+includes metadata polling and does not measure the first paint.
+A separate Rust regression failed the first two attempts,
+verified prompt return from startup, then observed the third
+attempt succeed without an extra restart.

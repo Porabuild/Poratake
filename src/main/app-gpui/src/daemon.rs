@@ -65,6 +65,22 @@ impl std::fmt::Display for DaemonRpcError {
 
 impl std::error::Error for DaemonRpcError {}
 
+enum DaemonStartup {
+    Ready,
+    Exited,
+}
+
+#[derive(Debug)]
+struct DaemonExitedBeforeReady;
+
+impl std::fmt::Display for DaemonExitedBeforeReady {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Daemon exited before ready")
+    }
+}
+
+impl std::error::Error for DaemonExitedBeforeReady {}
+
 #[derive(Clone)]
 pub struct DaemonHandle {
     inner: Arc<DaemonInner>,
@@ -276,37 +292,34 @@ impl DaemonHandle {
         *self.inner.child.lock() = Some(child);
         *self.inner.stdin.lock() = Some(stdin);
 
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(8);
-        let ready_subscription = self.subscribe(Arc::new(move |event, _| {
-            if event == "system:ready" {
-                ready_tx.send(()).ok();
-            }
-        }));
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
+        self.spawn_reader(stdout, startup_tx.clone());
+        self.watch_child_by_pid(pid, startup_tx);
 
-        self.spawn_reader(stdout);
-        self.watch_child_by_pid(pid);
-
-        let ready = ready_rx.recv_timeout(Duration::from_secs(10));
-        drop(ready_subscription);
-        match ready {
-            Ok(()) => {
+        match startup_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(DaemonStartup::Ready) => {
                 self.inner.restart_attempts.store(0, Ordering::SeqCst);
                 Ok(())
             }
+            Ok(DaemonStartup::Exited) => Err(DaemonExitedBeforeReady.into()),
             Err(_) => {
-                let mut child = self.inner.child.lock().take();
+                let Some(mut child) = self.inner.child.lock().take() else {
+                    return Err(DaemonExitedBeforeReady.into());
+                };
                 *self.inner.stdin.lock() = None;
-                if let Some(child) = child.as_mut() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+                let _ = child.kill();
+                let _ = child.wait();
                 self.inner.reject_all_pending("Daemon ready timeout");
                 Err(anyhow!("Daemon ready timeout"))
             }
         }
     }
 
-    fn spawn_reader(&self, stdout: std::process::ChildStdout) {
+    fn spawn_reader(
+        &self,
+        stdout: std::process::ChildStdout,
+        startup: SyncSender<DaemonStartup>,
+    ) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-reader".into())
@@ -315,7 +328,7 @@ impl DaemonHandle {
                 for line in reader.lines() {
                     match line {
                         Ok(line) if !line.trim().is_empty() => {
-                            inner.handle_line(&line);
+                            inner.handle_line(&line, Some(&startup));
                         }
                         Ok(_) => {}
                         Err(_) => break,
@@ -325,7 +338,7 @@ impl DaemonHandle {
             .ok();
     }
 
-    fn watch_child_by_pid(&self, pid: u32) {
+    fn watch_child_by_pid(&self, pid: u32, startup: SyncSender<DaemonStartup>) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-watchdog".into())
@@ -333,7 +346,7 @@ impl DaemonHandle {
                 #[cfg(target_os = "macos")]
                 match wait_for_child_exit(pid) {
                     Ok(true) => {
-                        inner.handle_exit(pid);
+                        inner.handle_exit(pid, &startup);
                         return;
                     }
                     Ok(false) => return,
@@ -354,7 +367,7 @@ impl DaemonHandle {
                         break;
                     };
                     if exited {
-                        inner.handle_exit(pid);
+                        inner.handle_exit(pid, &startup);
                         break;
                     }
                 }
@@ -1380,7 +1393,7 @@ impl DaemonInner {
         }
     }
 
-    fn handle_line(self: &Arc<Self>, line: &str) {
+    fn handle_line(self: &Arc<Self>, line: &str, startup: Option<&SyncSender<DaemonStartup>>) {
         let message: Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(_) => {
@@ -1390,6 +1403,9 @@ impl DaemonInner {
         };
 
         if let Some(event) = message.get("event").and_then(Value::as_str) {
+            if let Some(startup) = startup.filter(|_| event == "system:ready") {
+                let _ = startup.try_send(DaemonStartup::Ready);
+            }
             let data = message.get("data").cloned().unwrap_or(Value::Null);
             self.dispatch_event(event, &data);
             return;
@@ -1428,7 +1444,7 @@ impl DaemonInner {
         }
     }
 
-    fn handle_exit(self: &Arc<Self>, pid: u32) {
+    fn handle_exit(self: &Arc<Self>, pid: u32, startup: &SyncSender<DaemonStartup>) {
         {
             let mut child = self.child.lock();
             let Some(exited) = child.as_mut().filter(|child| child.id() == pid) else {
@@ -1441,6 +1457,7 @@ impl DaemonInner {
             self.reject_all_pending("Daemon exited");
             *child = None;
         }
+        let _ = startup.try_send(DaemonStartup::Exited);
         self.dispatch_event(
             poratake_daemon_common::contract::SYSTEM_EXIT_EVENT,
             &Value::Null,
@@ -1476,7 +1493,9 @@ impl DaemonInner {
         };
         if let Err(error) = handle.start() {
             eprintln!("[daemon] restart failed: {error}");
-            self.schedule_restart();
+            if !error.is::<DaemonExitedBeforeReady>() {
+                self.schedule_restart();
+            }
         } else {
             self.restart_attempts.store(0, Ordering::SeqCst);
         }
@@ -1545,12 +1564,12 @@ mod tests {
 
         daemon
             .inner
-            .handle_line(r#"{"event":"timer-control:cancel"}"#);
+            .handle_line(r#"{"event":"timer-control:cancel"}"#, None);
         assert_eq!(events.load(Ordering::Relaxed), 1);
         drop(subscription);
         daemon
             .inner
-            .handle_line(r#"{"event":"timer-control:cancel"}"#);
+            .handle_line(r#"{"event":"timer-control:cancel"}"#, None);
         assert_eq!(events.load(Ordering::Relaxed), 1);
         assert!(daemon.inner.event_handlers.lock().is_empty());
     }
@@ -1570,6 +1589,58 @@ mod tests {
             &Value::Null,
         );
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_before_ready_releases_startup_and_retries() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::Instant;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf x >> "$0.starts"
+if [ "$(wc -c < "$0.starts")" -lt 3 ]; then
+    exit 42
+fi
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"quit"'*) exit 0 ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = DaemonHandle::with_binary(fixture);
+        let (events, received) = std::sync::mpsc::channel();
+        let _subscription = daemon.subscribe(Arc::new(move |event, _| {
+            let _ = events.send(event.to_owned());
+        }));
+
+        let started = Instant::now();
+        assert!(daemon
+            .start()
+            .unwrap_err()
+            .is::<DaemonExitedBeforeReady>());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!daemon.is_running());
+
+        let timeout = Duration::from_secs(6);
+        for _ in 0..2 {
+            assert_eq!(
+                received.recv_timeout(timeout).unwrap(),
+                poratake_daemon_common::contract::SYSTEM_EXIT_EVENT
+            );
+        }
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        assert!(daemon.is_running());
+        assert_eq!(std::fs::read(directory.path().join("daemon.starts")).unwrap(), b"xxx");
+        daemon.stop();
     }
 
     #[cfg(target_os = "macos")]
@@ -1658,6 +1729,7 @@ done
 
         daemon.inner.handle_line(
             r#"{"id":"retryable-finish","success":false,"error":{"code":"STITCH_RETRYABLE","message":"could not start worker"}}"#,
+            None,
         );
 
         let error = rx.recv().unwrap().unwrap_err();
