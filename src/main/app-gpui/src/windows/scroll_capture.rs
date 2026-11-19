@@ -816,6 +816,7 @@ pub(crate) fn preview_for_parity(
 ) -> (
     gpui::AnyWindowHandle,
     smol::channel::Receiver<ScrollSessionSignal>,
+    Entity<ScrollCaptureUi>,
 ) {
     let (signal, events) = smol::channel::bounded(2);
     let ui = ScrollCaptureSession::open_on_display(
@@ -852,6 +853,7 @@ pub(crate) fn preview_for_parity(
             .find(|handle| handle.downcast::<ScrollPreviewPanel>().is_some())
             .unwrap(),
         events,
+        ui,
     )
 }
 
@@ -1085,7 +1087,11 @@ impl Render for ScrollControlBar {
             self.hovered_tooltip = Some((id, tooltip.into()));
             set_native_tooltip(window, Some(tooltip));
         }
-        let glyph_color = crate::ui::colors::white(0.85);
+        let glyph_color = if cfg!(target_os = "macos") {
+            theme.foreground.opacity(0.85)
+        } else {
+            crate::ui::colors::white(0.85)
+        };
         let toggle_glyph = if auto_scrolling {
             toolbar::filled_glyph(glyph_color, false)
         } else {

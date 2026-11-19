@@ -7960,6 +7960,20 @@ frames found pixel changes only in the Done icon region. All
 [Dark finishing control](tests/native/evidence/macos-ui/scroll-control-finishing-dark-20261119.png)
 [Light canceling control](tests/native/evidence/macos-ui/scroll-control-canceling-light-20261119.png)
 
+### 2026-11-19 macOS Auto-scroll icon contrast
+
+The scroll control bar hard-coded white play and stop glyphs. At 1×
+in the light Metal fixture, Stop Auto-scroll had 1.14:1 contrast
+against the toolbar. The macOS glyphs now use the theme foreground
+at the same opacity, matching the Electron toolbar treatment.
+
+The regression samples the painted glyph and nearby toolbar surface
+in each state, with a minimum contrast of 3:1. The light fixture
+measured 10.13:1 for Start and 9.99:1 for Stop. The dark fixture
+measured 13.56:1 and 13.43:1. The light comparison changed only
+the Auto-scroll icon pixels. Both full scroll workflows passed.
+[Light Auto-scroll control](tests/native/evidence/macos-ui/scroll-control-auto-scroll-contrast-light-20261119.png)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

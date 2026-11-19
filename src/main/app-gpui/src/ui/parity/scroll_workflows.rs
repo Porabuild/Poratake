@@ -27,7 +27,7 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
     ))
     .write_to(&mut encoded, image::ImageFormat::Png)
     .unwrap();
-    let (preview, controls) = cx.update(|cx| {
+    let (preview, controls, _ui) = cx.update(|cx| {
         crate::windows::scroll_capture::preview_for_parity(
             cx,
             base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
@@ -56,6 +56,36 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
             difference >= 60,
             "square preview corner at {x}, {y}: {corner:?}"
         );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use crate::capture::scroll::ScrollSessionSignal;
+        use crate::windows::scroll_capture::{apply_progress, native_control_for_probe};
+
+        let control = cx.update(native_control_for_probe).unwrap();
+        cx.update_window(control, |_, window, _| window.set_scale_factor(scale))
+            .unwrap();
+        let physical = |points: f32| (points * scale).round() as u32;
+        for (name, auto_scrolling) in [("stop", true), ("start", false)] {
+            cx.update(|cx| {
+                apply_progress(&_ui, ScrollSessionSignal::AutoScrolling(auto_scrolling), cx)
+            });
+            super::capture(
+                cx,
+                control,
+                output,
+                &format!("scroll-control-{name}-auto-scroll"),
+            );
+            let image = cx.capture_screenshot(control).unwrap();
+            let glyph = image.get_pixel(physical(50.), physical(26.));
+            let background = image.get_pixel(physical(61.), physical(26.));
+            let contrast = super::pixel_contrast(glyph, background);
+            println!("{name} auto-scroll icon contrast: {contrast:.2}:1");
+            assert!(
+                contrast >= 3.,
+                "{name} auto-scroll icon contrast: {contrast:.2}:1, {glyph:?} on {background:?}"
+            );
+        }
     }
     cx.update(|cx| {
         use crate::capture::scroll::ScrollSessionSignal;
