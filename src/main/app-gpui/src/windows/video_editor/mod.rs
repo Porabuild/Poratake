@@ -152,6 +152,7 @@ pub struct VideoEditorWindow {
     ruler_scroll: ScrollHandle,
     tracks_scroll: ScrollHandle,
     pane_scroll: ScrollHandle,
+    sidebar_scroll_tab: SidebarTab,
     panel_scroll: ScrollHandle,
     export_scroll: ScrollHandle,
     timeline_height: f32,
@@ -363,6 +364,7 @@ impl VideoEditorWindow {
             .unwrap_or_else(|| "Untitled".to_string());
         let rename_field =
             cx.new(|cx| herogpui::components::InputState::with_value(cx, initial_name));
+        let sidebar_scroll_tab = SidebarTab::parse(&state.ui.sidebar_tab);
         Self {
             path,
             state,
@@ -384,6 +386,7 @@ impl VideoEditorWindow {
             ruler_scroll: ScrollHandle::new(),
             tracks_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
+            sidebar_scroll_tab,
             panel_scroll: ScrollHandle::new(),
             export_scroll: ScrollHandle::new(),
             timeline_height,
@@ -3828,6 +3831,12 @@ impl Render for VideoEditorWindow {
         use herogpui::gpui;
 
         let sidebar_open = self.state.ui.sidebar_open;
+        let active_tab = self.active_tab();
+        if self.sidebar_scroll_tab != active_tab {
+            self.sidebar_scroll_tab = active_tab;
+            self.panel_scroll.set_offset(gpui::point(px(0.), px(0.)));
+            self.export_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        }
         let sidebar_width = self.sidebar_width;
         let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
         let mut sidebar_panel = div()
@@ -3841,7 +3850,7 @@ impl Render for VideoEditorWindow {
             .bg(theme.card);
         if sidebar_open || self.sidebar_closing {
             sidebar_panel = sidebar_panel.child(panels::render(
-                self.active_tab(),
+                active_tab,
                 self,
                 &self.state,
                 has_cursor_data,
@@ -6174,6 +6183,82 @@ mod keyboard_demo_tests {
         );
         cx.press("right");
         assert!(cx.update(|_, cx| editor.read(cx).state.wallpaper.padding) > 12.);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn switching_video_settings_tabs_starts_the_new_panel_at_the_top(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.wallpaper.enabled = true;
+            editor.state.music_tracks = (0..12)
+                .map(|index| model::MusicTrack {
+                    id: format!("track-{index}"),
+                    name: format!("Track {}", index + 1),
+                    ..Default::default()
+                })
+                .collect();
+            editor.open_tab_for_test(SidebarTab::Wallpaper, cx);
+            editor
+        });
+        cx.simulate_resize(size(px(950.), px(520.)));
+        cx.settle();
+        let scroll = cx.update(|_, cx| editor.read(cx).panel_scroll.clone());
+        let scroll_down = |cx: &mut gpui::VisualTestContext, scroll: &ScrollHandle, amount: f32| {
+            cx.simulate_event(gpui::ScrollEvent {
+                position: scroll.bounds().center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-amount))),
+                touch_phase: gpui::TouchPhase::Moved,
+                ..Default::default()
+            });
+            cx.settle();
+        };
+        scroll_down(cx, &scroll, 200.);
+        assert!(scroll.offset().y < px(0.), "Wallpaper should be scrolled");
+
+        let switch_to = |cx: &mut gpui::VisualTestContext, tab| {
+            cx.update(|_, cx| editor.update(cx, |editor, cx| editor.activate_tab(tab, cx)));
+            cx.settle();
+        };
+        switch_to(cx, SidebarTab::Audio);
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "Audio must overflow the viewport"
+        );
+        assert_eq!(
+            scroll.offset().y,
+            px(0.),
+            "Audio inherited the previous tab's position"
+        );
+
+        scroll_down(cx, &scroll, 120.);
+        let audio_offset = scroll.offset().y;
+        assert!(audio_offset < px(0.));
+        switch_to(cx, SidebarTab::Audio);
+        assert_eq!(
+            scroll.offset().y,
+            audio_offset,
+            "Re-selecting Audio should preserve its position"
+        );
+
+        switch_to(cx, SidebarTab::Export);
+        let export_scroll = cx.update(|_, cx| editor.read(cx).export_scroll.clone());
+        scroll_down(cx, &export_scroll, 120.);
+        assert!(
+            export_scroll.offset().y < px(0.),
+            "Export should be scrolled"
+        );
+        switch_to(cx, SidebarTab::Audio);
+        assert_eq!(scroll.offset().y, px(0.));
+        switch_to(cx, SidebarTab::Export);
+        assert!(export_scroll.max_offset().y > px(0.));
+        assert_eq!(export_scroll.offset().y, px(0.));
     }
 
     #[herogpui::test]

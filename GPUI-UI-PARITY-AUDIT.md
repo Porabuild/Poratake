@@ -7912,6 +7912,21 @@ frame-rate row. The editor suite passed 165 tests with five marked
 ignored. At 720×520 and 2×, all 176 PNGs per appearance matched the
 previous build byte for byte.
 
+### 2026-11-19 macOS video settings scroll when switching tabs
+
+In a 950×520 editor, scrolling Wallpaper and then opening Audio left
+the Audio pane 188.5 points below its top. The video editor now resets
+the settings and export scroll offsets when the active tab changes.
+Reselecting the current tab preserves its position.
+
+The regression switches between two overflowing panes and also scrolls
+Export, leaves it, and returns. The Electron fixture at 950×460 measured
+a 37-pixel Export scroll and confirmed that returning from Wallpaper
+opened Export at the top. The GPUI check uses a simulated viewport.
+The editor suite passed 166 tests with five marked ignored. The 950×520
+dark Metal profile matched all 201 previous PNGs byte for byte.
+The 720×520 light Metal profile passed at 2× with 176 PNGs.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
