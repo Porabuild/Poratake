@@ -8380,6 +8380,19 @@ editor opening probe passed. The GPUI suite passed 1,181 tests with
 python3 tests/native/macos-capture-history-probe.py --annotation-save
 ```
 
+### 2026-11-19 macOS screenshot editor Copy responsiveness
+
+Copy snapshots the current editor composition and renders and encodes
+it on the background executor. The toolbar shows progress until the
+app publishes the PNG to the clipboard. A later Copy from another
+screenshot editor supersedes an earlier request that has yet to publish.
+The close-on-copy setting still closes the window after the PNG is
+published.
+
+The regression uses GPUI's test clipboard. It checks that Copy returns
+before publication, that a later wallpaper edit does not affect the
+copied PNG, and that close-on-copy only closes after publication.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

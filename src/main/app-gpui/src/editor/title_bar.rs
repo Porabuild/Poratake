@@ -158,6 +158,7 @@ pub struct TitleBar {
     pub can_undo: bool,
     pub can_redo: bool,
     pub is_copied: bool,
+    pub is_copying: bool,
     pub is_uploading: bool,
     pub is_upload_done: bool,
     pub is_capture_mode: bool,
@@ -235,15 +236,16 @@ impl RenderOnce for TitleBar {
             &handlers,
             !self.can_redo,
         ));
-        tool_items.push(action_button(
+        tool_items.push(action_button_spinning(
             "action-copy",
             if self.is_copied { "check" } else { "copy" },
-            "Copy",
+            if self.is_copying { "Copying…" } else { "Copy" },
             accelerator::display("CommandOrControl+C"),
             EditorAction::Copy,
             &handlers,
-            false,
+            self.is_copying,
             |button| button.size(Size::Sm).is_icon_only(true),
+            self.is_copying,
         ));
         tool_items.push(action_button(
             "action-save",

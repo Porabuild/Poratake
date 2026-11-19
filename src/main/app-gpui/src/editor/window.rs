@@ -385,6 +385,8 @@ pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
     pub base_image: Option<Arc<image::DynamicImage>>,
     pub is_copied: bool,
+    copy_pending: bool,
+    copy_task: Option<gpui::Task<()>>,
     pub image_width: f32,
     pub image_height: f32,
     pub file_path: String,
@@ -593,6 +595,8 @@ impl EditorWindow {
             stage_scroll: gpui::ScrollHandle::new(),
             pan_origin: None,
             is_copied: false,
+            copy_pending: false,
+            copy_task: None,
             image_width: width,
             image_height: height,
             file_path: path.to_string(),
@@ -2894,6 +2898,7 @@ impl Render for EditorWindow {
                 can_undo: self.history.can_undo(),
                 can_redo: self.history.can_redo(),
                 is_copied: self.is_copied,
+                is_copying: self.copy_pending,
                 is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
                 is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
                 is_capture_mode: self.capture_mode,
@@ -4044,6 +4049,11 @@ fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> 
     ]))
 }
 
+#[derive(Default)]
+struct EditorCopyGeneration(u64);
+
+impl gpui::Global for EditorCopyGeneration {}
+
 struct ScreenshotComposition {
     base_image: Option<Arc<image::DynamicImage>>,
     width: u32,
@@ -4115,36 +4125,60 @@ impl EditorWindow {
     }
 
     pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.export_png() {
-            Ok(png) => {
-                crate::system::clipboard::ClipboardService::write_png(cx, png);
-                self.is_copied = true;
-                if crate::state::state(cx)
-                    .config
-                    .get()
-                    .screenshot
-                    .close_on_copy
-                {
-                    window.remove_window();
-                    return;
-                }
-                cx.notify();
-                let entity = cx.entity().downgrade();
-                cx.spawn(async move |_entity, cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(2))
-                        .await;
-                    if let Some(entity) = entity.upgrade() {
-                        entity.update(cx, |editor, cx| {
-                            editor.is_copied = false;
-                            cx.notify();
-                        });
-                    }
-                })
-                .detach();
-            }
-            Err(error) => eprintln!("[editor] copy failed: {error}"),
+        if self.copy_pending {
+            return;
         }
+
+        let generation = cx.default_global::<EditorCopyGeneration>();
+        generation.0 = generation.0.wrapping_add(1);
+        let generation = generation.0;
+        let composition = self.composition();
+        let close_on_copy = crate::state::state(cx).config.get().screenshot.close_on_copy;
+        let handle = window.window_handle();
+        self.copy_pending = true;
+        self.is_copied = false;
+        cx.notify();
+
+        self.copy_task = Some(cx.spawn(async move |editor, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { composition.encode(false) })
+                .await;
+            let Ok(copied) = editor.update(cx, |editor, cx| {
+                editor.copy_pending = false;
+                cx.notify();
+                if cx.global::<EditorCopyGeneration>().0 != generation {
+                    return false;
+                }
+                match result {
+                    Ok(png) => {
+                        crate::system::clipboard::ClipboardService::write_png(cx, png);
+                        editor.is_copied = true;
+                        true
+                    }
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(cx, "Copy failed", error.to_string());
+                        false
+                    }
+                }
+            }) else {
+                return;
+            };
+            if !copied {
+                return;
+            }
+            if close_on_copy {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                return;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let _ = editor.update(cx, |editor, cx| {
+                editor.is_copied = false;
+                cx.notify();
+            });
+        }));
     }
 
     /// Uploads the composed image to the user's own provider and copies the
@@ -4848,6 +4882,63 @@ mod tests {
                 Some(source_path.as_str())
             );
         });
+    }
+
+    #[herogpui::test]
+    fn editor_copy_publishes_the_requested_composition(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([72, 104, 224, 255]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_str().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
+
+        for close_on_copy in [false, true] {
+            config.update(|config| config.screenshot.close_on_copy = close_on_copy);
+            let (handle, expected) = cx.update(|cx| {
+                use crate::system::clipboard::ClipboardService;
+                ClipboardService::write_text(cx, String::new());
+                assert!(crate::open_editor_with_state(cx, path, Some(Default::default())));
+                let handle = cx
+                    .windows()
+                    .into_iter()
+                    .find_map(|handle| handle.downcast::<EditorWindow>())
+                    .unwrap();
+                let expected = handle
+                    .update(cx, |editor, window, cx| {
+                        editor.wallpaper.padding = 20.;
+                        let expected = editor.export_png().unwrap();
+                        editor.copy_to_clipboard(window, cx);
+                        assert!(editor.copy_pending);
+                        assert!(ClipboardService::read_image(cx).is_none());
+                        editor.wallpaper.padding = 40.;
+                        expected
+                    })
+                    .unwrap();
+                (handle, expected)
+            });
+
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                assert_eq!(copied.bytes, expected);
+                if close_on_copy {
+                    assert!(handle.update(cx, |_, _, _| ()).is_err());
+                } else {
+                    handle
+                        .update(cx, |editor, window, _| {
+                            assert!(!editor.copy_pending);
+                            assert!(editor.is_copied);
+                            window.remove_window();
+                        })
+                        .unwrap();
+                }
+            });
+        }
     }
 
     #[herogpui::test]
