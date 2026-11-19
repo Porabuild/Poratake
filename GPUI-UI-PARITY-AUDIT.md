@@ -9032,6 +9032,33 @@ samples. The physical Save button and native file confirmation
 remain outside this probe.
 [Per-trial Save timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 isolated live macOS full-display recording and export
+
+The GPUI development app requested the full 1728×1117-point
+Retina display and supplied the recording control's exclusion ID.
+A screen-only Swift fixture built from the current recorder used
+a ScreenCaptureKit allowlist containing one generated window.
+This exercised the actual display-resolution stream and video writer
+without admitting other desktop windows. The fixture used the
+existing Screen Recording grant.
+
+Both 3456×2234 takes decoded with the generated red and green
+phases. Samples outside the fixture bounds were black throughout.
+The GPUI preview opened each take, and the editor saved a split
+at 0.45 seconds before exporting an original-resolution MP4.
+At exact output frame timestamps, 99.909–100% of pixels were within
+five RGB levels of the editor preview. All four videos had strictly
+increasing decoded timestamps.
+
+Stop to decoded preview took 200–202 ms. The editor then reported
+its first image in 196–220 ms, and exports took 3.27–4.27 seconds.
+The dark movie was 227 ms shorter than elapsed time from recording
+status to Stop. An early single-change run also ended near its last
+update despite an additional quiet hold. The duration discrepancy
+and a live full-display run with the regular exclusion filter remain
+open. All 85 Electron reference tests passed.
+[Live stream and export evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

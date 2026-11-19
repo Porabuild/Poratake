@@ -1902,3 +1902,51 @@ later. In the GPUI probe the app acknowledges after it returns.
 This sample characterizes the native sheet and the editor state
 handoff. Physical input, confirmation and display presentation
 timestamps remain outside the measurement.
+
+2026-11-19 isolated live macOS full-display recording and export
+
+The GPUI development app requested one 1728x1117-point display
+at 2x, with no picked window or iOS device. The request supplied
+the GPUI recording control exclusion ID. A temporary daemon built
+from the current Swift recorder preflighted the existing Screen
+Recording grant. For isolation it used a ScreenCaptureKit display
+filter that included only its generated 440x300-point window.
+This allowlist persisted across filter refreshes. System audio,
+microphone, camera, keyboard and cursor capture were disabled.
+There was no synthetic input at the system pointer.
+
+The generated window changed from red to green, with small
+within-color changes to provide frames for both samples.
+Every decoded source frame was checked at 172x112 and samples
+outside the fixture bounds, including the control region, were
+black. Both original recordings and edited exports contained
+one video stream and no other tracks. All decoded frame
+timestamps were strictly increasing. The GPUI editor persisted
+two video segments after a split at 0.45 seconds.
+
+Theme  Source frames   Movie duration   Export frames   Export duration
+Light             12        1.456667 s              44       1.466667 s
+Dark              15        1.928333 s              58       1.933333 s
+
+Theme  Stage  Export frame  Timestamp  % pixels within 5 RGB levels
+Light  Red               6     0.2000                       99.9483
+Light  Green            24     0.8000                      100.0000
+Dark   Red               6     0.2000                       99.9999
+Dark   Green            30     1.0000                       99.9088
+
+Both source and export were 3456x2234. The comparison used the
+editor's preview image from the same output-frame timestamp.
+Timing values below measure app-local requests and readiness.
+
+Theme  Start to status  Stop to decoded preview  Edit to image    Export
+Light          23.4 ms                 200.0 ms       195.5 ms   3.272 s
+Dark           19.3 ms                 202.4 ms       220.4 ms   4.273 s
+
+The dark run held the final appearance for 1.010 s and reached
+Stop 2.155 s after reported recording status. The native recorder
+had a synchronization clock, reported a 1.9286 s duration and
+wrote a 1.9283 s movie. A separate initial run with one color
+change and a 750 ms quiet hold wrote a 0.700 s movie. These are
+observations from the restricted screen-only configuration.
+The timestamp and duration discrepancy has not been isolated.
+The regular full-display exclusion filter is outside this probe.
