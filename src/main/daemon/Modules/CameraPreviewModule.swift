@@ -1,6 +1,7 @@
 import AVFoundation
 import Cocoa
 import Foundation
+import os
 import QuartzCore
 
 private struct CameraPreviewSource: Equatable {
@@ -348,6 +349,13 @@ class CameraPreviewModule: Module {
 
     #if RECORDING_OUTLINE_TEST
     @MainActor
+    static func testCameraStartupQueue() -> [String] {
+        let view = CameraPreviewContentView(frame: NSRect(x: 0, y: 0, width: 270, height: 270),
+                                            flipped: false, padding: 20)
+        return view.testStartupQueue()
+    }
+
+    @MainActor
     static func testCameraCompletionOrdering() -> [Bool] {
         let view = CameraPreviewContentView(frame: NSRect(x: 0, y: 0, width: 270, height: 270),
                                             flipped: false, padding: 20)
@@ -418,10 +426,11 @@ private class CameraPreviewContentView: NSView {
     private let cornerRadius: CGFloat = 65
     
     private let cameraQueue = DispatchQueue(label: "com.porabuild.poratake.camera-preview")
-    private var cameraGeneration = WindowPresentationGeneration()
+    private let cameraGeneration = OSAllocatedUnfairLock(initialState: WindowPresentationGeneration())
 
     #if RECORDING_OUTLINE_TEST
     private(set) var testStartedCameras: [String?] = []
+    private var testCameraStartWork: ((String?) -> Void)?
     #endif
     
     init(frame: NSRect, flipped: Bool, padding: CGFloat) {
@@ -469,10 +478,16 @@ private class CameraPreviewContentView: NSView {
         #if RECORDING_OUTLINE_TEST
         testStartedCameras.append(source.deviceName)
         alphaValue = 0
-        #else
+        let testCameraStartWork = self.testCameraStartWork
+        #endif
         cameraQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrentCamera(generation) else { return }
+
+            #if RECORDING_OUTLINE_TEST
+            testCameraStartWork?(source.deviceName)
+            #else
             self.stopCaptureSession()
+            guard self.isCurrentCamera(generation) else { return }
 
             guard let camera = CameraDeviceLookup.find(deviceId: source.deviceId, deviceName: source.deviceName) else {
                 self.reportCameraError("No camera found", generation: generation)
@@ -491,24 +506,33 @@ private class CameraPreviewContentView: NSView {
                 return
             }
 
+            guard self.isCurrentCamera(generation) else { return }
             session.startRunning()
             self.captureSession = session
+            guard self.isCurrentCamera(generation) else {
+                self.stopCaptureSession()
+                return
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.installPreview(session, generation: generation)
             }
+            #endif
         }
-        #endif
+    }
+
+    private func isCurrentCamera(_ generation: UInt64) -> Bool {
+        cameraGeneration.withLock { $0.isCurrent(generation) }
     }
 
     private func reportCameraError(_ message: String, generation: UInt64) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.cameraGeneration.isCurrent(generation) else { return }
+            guard let self, self.isCurrentCamera(generation) else { return }
             self.showError(message)
         }
     }
 
     private func installPreview(_ session: AVCaptureSession, generation: UInt64) {
-        guard cameraGeneration.isCurrent(generation) else { return }
+        guard isCurrentCamera(generation) else { return }
         clearError()
         clearPreview()
 
@@ -521,9 +545,28 @@ private class CameraPreviewContentView: NSView {
     }
 
     #if RECORDING_OUTLINE_TEST
+    func testStartupQueue() -> [String] {
+        var started: [String] = []
+        testCameraStartWork = { started.append($0 ?? "") }
+        let release = DispatchSemaphore(value: 0)
+        cameraQueue.async { release.wait() }
+        for name in ["A", "B", "A"] {
+            updateCamera(CameraPreviewSource(deviceName: name))
+        }
+        release.signal()
+        cameraQueue.sync {}
+
+        cameraQueue.async { release.wait() }
+        updateCamera(CameraPreviewSource(deviceName: "closed"))
+        stopCamera()
+        release.signal()
+        cameraQueue.sync {}
+        return started
+    }
+
     func testPreviewCompletion() -> () -> Bool {
         let session = AVCaptureSession()
-        let generation = cameraGeneration.value
+        let generation = cameraGeneration.withLock { $0.value }
         return { [self] in
             installPreview(session, generation: generation)
             return previewLayer?.session === session
@@ -551,13 +594,13 @@ private class CameraPreviewContentView: NSView {
     }
 
     func stopCamera() {
-        cameraGeneration.cancel()
+        cameraGeneration.withLock { $0.cancel() }
         clearPreview()
         cameraQueue.async { self.stopCaptureSession() }
     }
 
     func updateCamera(_ source: CameraPreviewSource) {
-        let generation = cameraGeneration.begin()
+        let generation = cameraGeneration.withLock { $0.begin() }
         self.source = source
         clearError()
         clearPreview()

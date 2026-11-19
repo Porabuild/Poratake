@@ -297,6 +297,10 @@ struct RecordingOutlineLifecycleTest {
         print("camera completion ordering: \(cameraCompletions)")
         fflush(stdout)
         precondition(cameraCompletions == [false, false, true, false])
+        let queuedCameraStarts = CameraPreviewModule.testCameraStartupQueue()
+        print("camera queued startup work: \(queuedCameraStarts)")
+        fflush(stdout)
+        precondition(queuedCameraStarts == ["A"])
         try await verifyRecordingOverlayHideReply()
         try await verifyCameraPreviewHideReply()
         guard NSScreen.screens.first != nil else {

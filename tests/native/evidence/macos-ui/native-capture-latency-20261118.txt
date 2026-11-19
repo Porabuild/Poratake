@@ -3734,3 +3734,21 @@ Capture startup and cleanup now own the session on the camera queue.
 Preview and error callbacks verify the current request on the main
 thread. No session in this fixture had a camera input or was started.
 The host's read-only video authorization check returned not determined.
+
+2026-11-19 macOS camera startup queue at dbba3b47
+
+The AppKit fixture held the serial camera queue, selected A, B, and
+A, then released the queue. It separately held the queue for a new
+selection followed by Stop. The macOS test build substituted a
+recorded callback for actual camera startup.
+
+Baseline
+camera queued startup work: ["A", "B", "A", "closed"]
+
+Revised
+camera queued startup work: ["A"]
+
+The generation check is shared by the main thread and camera queue.
+The queue checks again around AVFoundation startup and releases any
+session that became obsolete while startup was running. The previous
+completion-ordering fixture also passed. No camera input was opened.

@@ -10195,6 +10195,23 @@ daemon typechecks passed on arm64 and Rosetta x86_64, along with
 97 Electron and daemon contract tests.
 [Camera completion evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS queued camera preview starts
+
+Rapid camera selection could queue startup work for sources that
+were already superseded. The serial camera queue now checks the
+current request before setting up a device and before starting it.
+If a request expires while AVFoundation is starting the device,
+the queue retires that session after startup returns.
+
+The native fixture held the queue through A → B → A and through
+a new selection followed by Stop. The previous code reached all
+four startup callbacks. The revised code reached only the latest
+A callback. The fixture simulated startup work without opening
+camera devices. Native lifecycle fixtures and daemon typechecks
+passed on arm64 and Rosetta x86_64, along with 97 Electron and daemon
+contract tests. Live startup and switching remain unverified.
+[Camera startup queue evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
