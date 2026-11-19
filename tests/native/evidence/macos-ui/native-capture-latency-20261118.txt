@@ -3484,3 +3484,20 @@ fixture sent a mouse down and up through NSWindow at the former
 icon hit and observed cancellation and removal from WindowServer.
 A second countdown completed and explicit hide dismissed the last
 panel. These events were app-local and did not move the pointer.
+
+2026-11-19 macOS countdown hover cursor lifetime at d3cef062
+
+The AppKit fixture pushed a cursor different from the one currently
+selected. It sent a synthetic mouse-enter event to the visible timer,
+then routed a click at the timer icon through NSWindow. After cancellation
+it popped the fixture cursor and checked the original selection.
+
+Baseline
+fixture failure: dismissing the hovered countdown left an extra cursor on the stack
+
+Revised
+hover dismissal: cursor stack restored without a mouse-exit event
+
+The mouse-enter and button events were app-local. The fixture verified
+cancellation without moving the desktop pointer. The cursor rectangle
+is scoped to the live countdown view.

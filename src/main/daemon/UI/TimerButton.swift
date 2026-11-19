@@ -157,10 +157,14 @@ class TimerButton: NSView {
         addTrackingArea(trackingArea!)
     }
     
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         isHovered = true
-        NSCursor.arrow.push()
         updateDisplay()
     }
     
@@ -168,7 +172,6 @@ class TimerButton: NSView {
         super.mouseExited(with: event)
         isHovered = false
         isPressed = false
-        NSCursor.pop()
         applyTheme()
         updateDisplay()
     }

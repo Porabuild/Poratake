@@ -9971,6 +9971,21 @@ arm64 and Rosetta x86_64, and 27 Electron and daemon contract tests
 passed. The pointer check used app-local events.
 [Timer hit-testing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS countdown cursor after dismissal
+
+Cancelling a hovered countdown could leave an extra arrow cursor on
+the daemon's AppKit cursor stack. The timer now registers its arrow
+as a window cursor rectangle. Hover still controls the Cancel label.
+
+The native fixture pushed a sentinel cursor, sent the countdown an
+app-local hover and then cancelled through the real AppKit window.
+The previous implementation left the sentinel on the stack after
+the fixture popped once. The revised implementation restored the
+original cursor. The native lifecycle fixtures passed on arm64
+and Rosetta x86_64, along with 27 Electron and daemon contract tests.
+The fixture did not move the physical pointer.
+[Countdown cursor evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

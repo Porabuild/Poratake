@@ -190,8 +190,27 @@ final class Fixture {
                 fail("timer button captured a click outside the panel")
                 return
             }
+            guard let entered = NSEvent.enterExitEvent(
+                with: .mouseEntered, location: NSPoint(x: 49, y: 26), modifierFlags: [],
+                timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+                eventNumber: 0, trackingNumber: 0, userData: nil
+            ) else {
+                fail("could not construct a countdown hover event")
+                return
+            }
+            let previousCursor = NSCursor.current
+            let sentinel = previousCursor == NSCursor.crosshair ? NSCursor.pointingHand : NSCursor.crosshair
+            sentinel.push()
+            button.mouseEntered(with: entered)
             panel.sendEvent(down)
             panel.sendEvent(up)
+            NSCursor.pop()
+            guard NSCursor.current == previousCursor else {
+                previousCursor.set()
+                fail("dismissing the hovered countdown left an extra cursor on the stack")
+                return
+            }
+            print("hover dismissal: cursor stack restored without a mouse-exit event")
         }
     }
 
