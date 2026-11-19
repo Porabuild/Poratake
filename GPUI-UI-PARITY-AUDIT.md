@@ -8037,6 +8037,32 @@ guard process for each capture. The cause of that tail remains
 unclassified.
 [Per-run timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS screenshot history persistence and responsiveness
+
+Screenshot finalization read, wrote and pruned history on the app
+thread. The native smoke probe held a history read in an isolated
+profile. The previous build stopped answering preview status
+requests until that read was released.
+
+History persistence now runs on the background executor. Screenshot
+finalizations enter the history writer in order, and each preview
+opens after its entry has been processed. The regression accepts
+another capture while the first history read is held, then verifies
+the history order and preview readiness after release.
+
+The probe uses generated pixels from a fixture daemon and app-local
+commands. Three revised runs answered preview status in 2.1, 21.1
+and 4.7 ms while history remained held. The older build missed the
+regression's four-second response window. This reproduces a UI
+stall during storage I/O. The earlier 2.36-second live thumbnail
+result remains unclassified. The full GPUI suite passed 1,178
+tests with 23 ignored.
+
+```sh
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+python3 tests/native/macos-screenshot-history-probe.py
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -1386,7 +1386,7 @@ pub fn open(cx: &mut App) {
             && std::env::var_os("PORATAKE_NATIVE_SMOKE_CAMERA").is_some();
         config.recording.auto_zoom = false;
         config.recording.show_preview = true;
-        config.history.enabled = false;
+        config.history.enabled = std::env::var_os("PORATAKE_NATIVE_SMOKE_HISTORY").is_some();
         config.preview.corner = "bottom-right".into();
         config.preview.display_id = None;
         config.preview.auto_dismiss = false;

@@ -18,6 +18,7 @@ pub struct Coordinator {
     pub service: CaptureService,
     pending_attach: Option<PendingEditorAttach>,
     analysis_generation: u64,
+    pending_screenshot_history: Option<smol::channel::Receiver<()>>,
     #[cfg(feature = "parity")]
     pending_analyses: usize,
 }
@@ -74,6 +75,7 @@ impl Coordinator {
             service,
             pending_attach: None,
             analysis_generation: 0,
+            pending_screenshot_history: None,
             #[cfg(feature = "parity")]
             pending_analyses: 0,
         }
@@ -318,12 +320,18 @@ impl Coordinator {
 /// Port of `capture/screenshot/finalize.ts`: record the capture in history,
 /// honour the clipboard settings, then open the preview or the editor.
 async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui::AsyncApp) {
-    let (history_enabled, max_items, play_sound, screenshot) = cx.update(|cx| {
+    let (history, play_sound, screenshot) = cx.update(|cx| {
         let service = &cx.global::<crate::state::AppState>().service;
         let config = service.config.get();
+        let history = config.history.enabled.then(|| {
+            let (finished, receiver) = smol::channel::bounded(1);
+            let previous = crate::state::coordinator(cx).update(cx, |coordinator, _| {
+                coordinator.pending_screenshot_history.replace(receiver)
+            });
+            (config.history.max_items as usize, previous, finished)
+        });
         (
-            config.history.enabled,
-            config.history.max_items as usize,
+            history,
             config.general.play_sound_on_screenshot,
             config.screenshot.clone(),
         )
@@ -342,22 +350,28 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     #[cfg(not(target_os = "macos"))]
     let _ = (play_sound, silent);
 
-    let history_outcome = crate::history_store::add_item(
-        crate::history_store::HistoryItem {
+    if let Some((max_items, previous, finished)) = history {
+        let item = crate::history_store::HistoryItem {
             id: uuid_simple(),
             timestamp: chrono::Local::now().timestamp_millis(),
             original_path: path.to_string_lossy().to_string(),
             r#type: crate::history_store::HistoryItemType::Screenshot,
             editor_state: None,
             duration: None,
-        },
-        max_items,
-        history_enabled,
-    );
-    if let Some((title, message)) = history_outcome.warning("screenshot") {
-        cx.update(|cx| {
-            crate::windows::toast::Toast::show(cx, title, message);
-        });
+        };
+        if let Some(previous) = previous {
+            let _ = previous.recv().await;
+        }
+        let outcome = cx
+            .background_executor()
+            .spawn(async move { crate::history_store::add_item(item, max_items, true) })
+            .await;
+        drop(finished);
+        if let Some((title, message)) = outcome.warning("screenshot") {
+            cx.update(|cx| {
+                crate::windows::toast::Toast::show(cx, title, message);
+            });
+        }
     }
 
     if screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard {
