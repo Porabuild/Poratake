@@ -8704,6 +8704,24 @@ visibility and decoded frame availability. Export and physical
 pointer input were outside this run.
 [Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 current live macOS window recording through export
+
+The current GPUI app and a screen-only fixture built from current
+Swift sources recorded a moving and resized generated window in
+both appearances. Closing the target finalized each take and
+opened a decoded recording preview. The app-local editor probe
+split the timeline at 0.45 seconds and verified two saved video
+segments. It then used the regular export worker with an isolated
+destination to produce a 720×480 MP4.
+
+At matching output-frame timestamps in each of the red, green
+and blue stages, 99.697–99.767% of decoded export pixels were
+within five RGB channel levels of the editor preview. A first
+comparison sampled a different timestamp in the encoded stream
+and exposed a mismatch around the moving cursor. The corrected
+comparison used the exact output-frame index on both sides.
+[Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

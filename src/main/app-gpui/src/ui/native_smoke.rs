@@ -1625,6 +1625,61 @@ pub fn open(cx: &mut App) {
                         })
                         .unwrap_or(false);
                 }
+                if command.starts_with("video editor cut ")
+                    || command.starts_with("video editor seek ")
+                    || matches!(
+                        command.as_str(),
+                        "video editor export" | "video editor export done" | "video editor snapshot"
+                    )
+                {
+                    let Some(handle) =
+                        registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {
+                            handle.downcast::<crate::windows::video_editor::VideoEditorWindow>()
+                        })
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |editor, _, cx| {
+                            if let Some(time) = command.strip_prefix("video editor cut ")
+                                .and_then(|value| value.parse::<f64>().ok())
+                                .filter(|time| time.is_finite())
+                            {
+                                editor.cut_at(time, None, cx);
+                                return true;
+                            }
+                            if let Some(time) = command.strip_prefix("video editor seek ")
+                                .and_then(|value| value.parse::<f64>().ok())
+                                .filter(|time| time.is_finite())
+                            {
+                                editor.set_playhead(time, cx);
+                                return true;
+                            }
+                            match command.as_str() {
+                                "video editor export" => {
+                                    editor.export_to_path_for_parity(output.join("export.mp4"), cx)
+                                }
+                                "video editor export done" => editor.is_export_complete(cx),
+                                "video editor snapshot" => {
+                                    let Some(frame) = editor.preview_image() else {
+                                        return false;
+                                    };
+                                    let size = frame.size(0);
+                                    let Some(mut image) = frame.as_bytes(0).and_then(|bytes| {
+                                        image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes.to_vec())
+                                    }) else {
+                                        return false;
+                                    };
+                                    for pixel in image.as_mut().as_chunks_mut::<4>().0 {
+                                        pixel.swap(0, 2);
+                                    }
+                                    image.save(output.join("preview-frame.png")).is_ok()
+                                }
+                                _ => false,
+                            }
+                        })
+                        .unwrap_or(false);
+                }
                 if command == "video editor ready" {
                     let Some(handle) =
                         registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {

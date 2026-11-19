@@ -1399,3 +1399,35 @@ sample, with black padding on both sides. Direct MOV packet
 inspection found strictly increasing presentation and decode
 timestamps in both recordings. A raw downsample timing warning
 in the light run was checked against those source timestamps.
+
+2026-11-19 current live macOS window recording through export
+
+The app-local probe edited the live generated window recording.
+The screen-only fixture enforced Screen Recording preflight and
+disabled all audio, camera and keyboard capture. As in the prior
+run, one native outline tracked movement and resize, and target
+release automatically stopped recording. The GPUI editor saved
+two segments after cutting at 0.45 seconds. The parity command
+passed a temporary MP4 destination to the production export worker;
+the Save panel and Finder reveal were outside this verification.
+
+Decoded exports were 720x480 and video-only, preserving the source
+dimensions. For each color stage, the probe sought the editor to a
+30 fps output timestamp and decoded the matching frame by index
+from the MP4. Results show the fraction of all RGB pixels within
+five levels in every channel.
+
+Theme Stage    Timestamp (s)    Within five levels
+Light Red          0.200000          99.766%
+Light Green        0.966667          99.718%
+Light Blue         2.266667          99.697%
+Dark  Red          0.266667          99.767%
+Dark  Green        0.966667          99.741%
+Dark  Blue         2.266667          99.718%
+
+Export completion took 484.7 ms in light mode and 2441.0 ms in
+dark mode. These are individual developer-app observations. An
+initial dark trial compared a preview at 2.214167 seconds against
+the next encoded frame. It found a cursor-region mismatch. The
+aligned rerun compared the same 30 fps frame index in preview and
+export and met the pixel tolerance in both themes.

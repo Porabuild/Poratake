@@ -2872,6 +2872,19 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn export_to_path_for_parity(&mut self, output: PathBuf, cx: &mut Context<Self>) -> bool {
+        let Some(project) = self.path.as_ref().map(PathBuf::from) else {
+            return false;
+        };
+        let mut state = self.state.clone();
+        state.export_settings.format = "mp4".into();
+        state.export_settings.resolution = "original".into();
+        state.export_settings.open_in_finder = false;
+        self.start_export_to_path(project, output, state, cx);
+        self.is_exporting
+    }
+
     fn schedule_export_completion_clear(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |entity, cx| {
             cx.background_executor()
