@@ -10339,6 +10339,23 @@ daemon contract tests. These cases use generated sessions and
 app-local controls.
 [Camera position handoff evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS fitted camera preview position after a move
+
+The Update reply now includes the panel’s actual coordinates after
+AppKit fits it to the display work area. Electron uses those coordinates
+when preserving preview placement for recording. A pending move reply
+is discarded if that preview has been closed or replaced.
+
+The AppKit fixture verified two position requests in sequence on the
+built-in display. On Apple Silicon and Rosetta x86_64, the final reply
+matched the position event and the panel stayed within the work area.
+The Electron regressions reproduced the off-screen saved coordinates
+and the closed preview becoming visible in app state. Both pass with
+the fix, along with 100 targeted Electron and daemon contract tests
+and typechecks for both daemon architectures. The native fixture used
+a generated panel without live camera imagery.
+[Camera movement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

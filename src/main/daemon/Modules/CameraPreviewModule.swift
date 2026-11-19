@@ -120,13 +120,16 @@ class CameraPreviewModule: Module {
                 self.flipped = flipped
                 self.contentView?.updateFlipped(flipped)
             }
-            if let x, let y {
+            var result: [String: Any] = ["updated": true]
+            if let x, let y, let panel = self.panel {
                 self.updatePosition(x: x, y: y)
+                let (actualX, actualY) = self.position(of: panel)
+                result["position"] = ["x": actualX, "y": actualY]
             }
             if self.panel?.alphaValue == 1 && (hasDeviceId || hasDeviceName || hasResolution) {
                 self.contentView?.updateCamera(self.source)
             }
-            self.respond(id: requestId, result: ["updated": true])
+            self.respond(id: requestId, result: result)
         }
     }
     

@@ -133,6 +133,33 @@ describe('camera-preview', () => {
     );
   });
 
+  it('stores the fitted position returned after moving the preview', async () => {
+    const m = await import('@/main/capture/video/camera-preview');
+    await m.showCameraPreview(sampleSettings);
+    mockDaemonCall.mockResolvedValueOnce({
+      updated: true,
+      position: { x: 24, y: 64 },
+    });
+
+    await m.updateCameraPreviewPosition({ x: -40, y: 64 });
+
+    expect(m.getCameraPreviewSettings()?.position).toEqual({ x: 24, y: 64 });
+  });
+
+  it('ignores a position reply after the preview is hidden', async () => {
+    const m = await import('@/main/capture/video/camera-preview');
+    await m.showCameraPreview(sampleSettings);
+    const reply = Promise.withResolvers<{ updated: boolean }>();
+    mockDaemonCall.mockReturnValueOnce(reply.promise);
+    const update = m.updateCameraPreviewPosition({ x: 300, y: 400 });
+
+    m.hideCameraPreview();
+    reply.resolve({ updated: true });
+    await update;
+
+    expect(m.isCameraPreviewVisible()).toBe(false);
+  });
+
   it('does not update a hidden camera preview position', async () => {
     const m = await import('@/main/capture/video/camera-preview');
 

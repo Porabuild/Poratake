@@ -3881,3 +3881,17 @@ The GPUI camera-retry probe also received the fixture event (24,64)
 before the Show reply and retained those coordinates in both light
 and dark. An Electron unit test verified that Show's returned
 position is stored. The native fixture opened no camera device.
+
+2026-11-19 macOS camera preview Update coordinates at 7b0591d6
+
+Baseline Electron regression: an Update requested at (-40,64) stored
+(-40,64) despite the reply giving (24,64). Completing an Update after
+Hide also restored the app’s visible preview flag. Both regressions
+passed after the fix.
+
+The actual AppKit panel fixture sent two Update requests. The second
+was beyond the fit range at the bottom right of the built-in display.
+On arm64 and under Rosetta x86_64, the window fit inside the work area
+and both Update replies for the final request reported (1458,847),
+matching the position events on each architecture. No camera device
+was opened.

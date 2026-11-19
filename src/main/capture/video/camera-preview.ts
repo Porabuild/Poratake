@@ -3,6 +3,10 @@ import { daemon } from '@/main/daemon';
 import { isWindows } from '@/main/utils/platform';
 import type { CameraSettings } from '@/types/settings';
 
+interface CameraPreviewPositionResult {
+  position?: { x: number; y: number };
+}
+
 let currentSettings: CameraSettings | null = null;
 let isContentProtected = false;
 let ipcHandlersRegistered = false;
@@ -29,25 +33,28 @@ export async function showCameraPreview(
     : undefined;
 
   try {
-    const result = await daemon.call<{
-      position?: { x: number; y: number };
-    } | null>('camera-preview', 'show', {
-      deviceId: settings.selectedDeviceId,
-      deviceName: settings.selectedDeviceName,
-      resolution: settings.resolution || '720p',
-      flipped: settings.flipped ?? false,
-      x: position?.x,
-      y: position?.y,
-    });
+    const result = await daemon.call<CameraPreviewPositionResult | null>(
+      'camera-preview',
+      'show',
+      {
+        deviceId: settings.selectedDeviceId,
+        deviceName: settings.selectedDeviceName,
+        resolution: settings.resolution || '720p',
+        flipped: settings.flipped ?? false,
+        x: position?.x,
+        y: position?.y,
+      }
+    );
 
     if (isContentProtected) {
       await daemon.call('camera-preview', 'setContentProtection', {
         enabled: true,
       });
     }
-    currentSettings = result?.position
-      ? { ...settings, position: fromNativePosition(result.position) }
-      : settings;
+    currentSettings = { ...settings };
+    if (result?.position) {
+      currentSettings.position = fromNativePosition(result.position);
+    }
   } catch (error) {
     currentSettings = null;
     await daemon.call('camera-preview', 'hide').catch(() => {});
@@ -67,10 +74,18 @@ export async function updateCameraPreviewPosition(position: {
   x: number;
   y: number;
 }): Promise<void> {
-  if (!currentSettings) return;
+  const settings = currentSettings;
+  if (!settings) return;
 
-  await daemon.call('camera-preview', 'update', toNativePosition(position));
-  currentSettings = { ...currentSettings, position };
+  const result = await daemon.call<CameraPreviewPositionResult | null>(
+    'camera-preview',
+    'update',
+    toNativePosition(position)
+  );
+  if (currentSettings !== settings) return;
+  settings.position = result?.position
+    ? fromNativePosition(result.position)
+    : position;
 }
 
 export function isCameraPreviewVisible(): boolean {
