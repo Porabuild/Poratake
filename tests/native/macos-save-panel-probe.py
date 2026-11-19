@@ -88,6 +88,7 @@ try:
     command("annotation-status")
     annotation = wait_for(lambda line: line.startswith("isolated annotation changed pixels="))
     assert int(annotation.rsplit("=", 1)[1]) > 0, annotation
+    started = time.monotonic()
     command("save-open")
     wait_for(lambda line: line == "isolated editor requested save dialog")
     deadline = time.monotonic() + 30
@@ -100,6 +101,7 @@ try:
         )
         if line.startswith("save panel directory="):
             break
+    print(f"save panel visible in {(time.monotonic() - started) * 1000:.1f} ms")
     directory, filename = line.removeprefix("save panel directory=").split(", name=", 1)
     expected = Path(tempfile.gettempdir()) / f"poratake-native-ui-probe-{process.pid}"
     assert Path(directory).resolve() == expected.resolve(), (directory, expected)
@@ -107,6 +109,7 @@ try:
     command("save-cancel")
     wait_for(lambda line: line == "isolated save panel canceled")
     wait_for_save_completion()
+    assert not (expected / filename).exists()
     command("save-to-fixture")
     wait_for(lambda line: line == "isolated fixture PNG saved")
     command("reopen-saved")
@@ -123,7 +126,7 @@ try:
     print(annotation)
     print(saved_status)
     print("native save panel uses the isolated directory and a separate PNG filename")
-    print("directly saved PNG and reopened editor match the annotated editor pixel for pixel")
+    print("PNG saved by the background writer and reopened editor match the annotated editor pixel for pixel")
 finally:
     if process.poll() is None:
         try:

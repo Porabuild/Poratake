@@ -518,11 +518,12 @@ pub fn native_ui_probe() {
                             };
                             let path = probe_directory.join("fixture-saved.png");
                             assert!(!path.exists());
-                            let _ = handle.update(cx, |editor, _, _| {
-                                let bytes = editor.export_png().unwrap();
-                                crate::editor::screenshot_save_unix::write(&path, &bytes).unwrap();
-                            });
-                            println!("isolated fixture PNG saved");
+                            let task = handle.update(cx, |editor, _, cx| editor.parity_save_to(path, cx))
+                                .expect("editor window");
+                            cx.spawn(async move |_| {
+                                task.await.expect("save generated editor composition");
+                                println!("isolated fixture PNG saved");
+                            }).detach();
                             return;
                         }
                         if command == "draw" {

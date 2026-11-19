@@ -27,15 +27,8 @@ use crate::ui::colors::Tool;
 use crate::ui::icon_button;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
-fn report_screenshot_save_failure(
-    cx: &mut App,
-    path: Option<&Path>,
-    error: &dyn std::fmt::Display,
-) {
-    let message = match path {
-        Some(path) => format!("{}: {error}", path.display()),
-        None => error.to_string(),
-    };
+fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fmt::Display) {
+    let message = format!("{}: {error}", path.display());
     eprintln!("[editor] screenshot save failed: {message}");
     crate::windows::toast::Toast::show(cx, "Screenshot Save Failed", message);
 }
@@ -4021,7 +4014,60 @@ fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> 
     ]))
 }
 
+struct ScreenshotComposition {
+    base_image: Option<Arc<image::DynamicImage>>,
+    width: u32,
+    height: u32,
+    annotations: Vec<Annotation>,
+    wallpaper: crate::editor::wallpaper::WallpaperSettings,
+    layers: Vec<crate::editor::layers::ImageLayer>,
+    scale: f64,
+}
+
+impl ScreenshotComposition {
+    fn encode(self, jpeg: bool) -> anyhow::Result<Vec<u8>> {
+        let image = crate::editor::export::compose_with_layers(
+            self.base_image.as_deref(),
+            self.width,
+            self.height,
+            &self.annotations,
+            &self.wallpaper.for_scale(self.scale),
+            &self.layers,
+            self.scale,
+        );
+        if !jpeg {
+            return crate::render::images::encode_srgb_png(&image);
+        }
+        let image = image::DynamicImage::ImageRgba8(image).into_rgb8();
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92)
+            .encode_image(&image)?;
+        Ok(bytes)
+    }
+
+    fn write(self, path: &Path, jpeg: bool) -> anyhow::Result<Option<String>> {
+        let bytes = self.encode(jpeg)?;
+        #[cfg(windows)]
+        let warning = crate::editor::screenshot_save::write(path, &bytes)?;
+        #[cfg(unix)]
+        let warning = crate::editor::screenshot_save_unix::write(path, &bytes)?;
+        Ok(warning)
+    }
+}
+
 impl EditorWindow {
+    fn composition(&self) -> ScreenshotComposition {
+        ScreenshotComposition {
+            base_image: self.base_image.clone(),
+            width: self.image_width as u32,
+            height: self.image_height as u32,
+            annotations: self.history.current().to_vec(),
+            wallpaper: self.wallpaper.clone(),
+            layers: self.layers.clone(),
+            scale: self.native_scale,
+        }
+    }
+
     /// Renders the current composition (base + annotations) to PNG bytes at
     /// natural size.
     pub fn export_png(&self) -> anyhow::Result<Vec<u8>> {
@@ -4256,40 +4302,26 @@ impl EditorWindow {
         self.save_dialog_open
     }
 
+    #[cfg(all(not(test), target_os = "macos", feature = "parity"))]
+    pub(crate) fn parity_save_to(
+        &self,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> gpui::Task<anyhow::Result<Option<String>>> {
+        let composition = self.composition();
+        cx.background_executor()
+            .spawn(async move { composition.write(&path, false) })
+    }
+
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.save_dialog_open {
             return;
         }
 
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                report_screenshot_save_failure(cx, None, &error);
-                return;
-            }
-        };
-
+        let composition = self.composition();
         let settings = crate::state::state(cx).config.get();
         let jpeg = settings.screenshot.format == "jpeg";
         let extension = if jpeg { "jpg" } else { "png" };
-        let bytes = if jpeg {
-            let decoded = match image::load_from_memory(&png) {
-                Ok(image) => image.to_rgb8(),
-                Err(error) => {
-                    report_screenshot_save_failure(cx, None, &error);
-                    return;
-                }
-            };
-            let mut bytes = Vec::new();
-            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92);
-            if let Err(error) = encoder.encode_image(&decoded) {
-                report_screenshot_save_failure(cx, None, &error);
-                return;
-            }
-            bytes
-        } else {
-            png
-        };
         let default_name = crate::editor::filename::generate_screenshot_export_name(extension);
         let saved_directory = std::path::PathBuf::from(&settings.save_locations.screenshot);
         let directory = if saved_directory.is_dir() {
@@ -4318,12 +4350,7 @@ impl EditorWindow {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    #[cfg(windows)]
-                    let cleanup_warning = crate::editor::screenshot_save::write(&path, &bytes)?;
-                    #[cfg(unix)]
-                    let cleanup_warning =
-                        crate::editor::screenshot_save_unix::write(&path, &bytes)?;
-                    Ok::<_, std::io::Error>((path, cleanup_warning))
+                    composition.write(&path, jpeg).map(|warning| (path, warning))
                 })
                 .await;
 
@@ -4347,10 +4374,7 @@ impl EditorWindow {
                     }
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    cx.update(|cx| {
-                        report_screenshot_save_failure(cx, Some(&failure_path), &message)
-                    });
+                    cx.update(|cx| report_screenshot_save_failure(cx, &failure_path, &error));
                     let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
                 }
             }
@@ -4363,6 +4387,31 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[test]
+    fn jpeg_save_matches_the_png_based_encoding() {
+        let base = Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(
+            32,
+            24,
+            |x, y| image::Rgba([x as u8 * 8, y as u8 * 10, 140, (x + y) as u8 * 4]),
+        )));
+        let snapshot = || ScreenshotComposition {
+            base_image: Some(base.clone()),
+            width: 32,
+            height: 24,
+            annotations: Vec::new(),
+            wallpaper: Default::default(),
+            layers: Vec::new(),
+            scale: 1.0,
+        };
+        let png = snapshot().encode(false).unwrap();
+        let rgb = image::load_from_memory(&png).unwrap().into_rgb8();
+        let mut expected = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 92)
+            .encode_image(&rgb)
+            .unwrap();
+        assert_eq!(snapshot().encode(true).unwrap(), expected);
+    }
 
     #[test]
     fn blackout_patch_covers_fractional_extents_and_clips_to_image() {
@@ -4396,7 +4445,7 @@ mod tests {
         let notifications = crate::system::notification::capture_for_test();
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected failure");
         cx.update(|cx| {
-            report_screenshot_save_failure(cx, Some(Path::new("capture.png")), &error);
+            report_screenshot_save_failure(cx, Path::new("capture.png"), &error);
         });
         assert_eq!(&*notifications.borrow(), &["Screenshot Save Failed"]);
     }

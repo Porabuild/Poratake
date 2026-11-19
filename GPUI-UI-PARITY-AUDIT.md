@@ -8317,6 +8317,32 @@ also passed.
 python3 tests/native/macos-capture-history-probe.py --recording
 ```
 
+### 2026-11-19 macOS screenshot editor Save responsiveness
+
+Save now opens the native destination panel before it composes and
+encodes the screenshot. The editor snapshots the current image,
+annotations, wallpaper and layers when Save is requested. After a
+destination is confirmed, the background task composes and writes the
+PNG or JPEG. Cancel exits before rendering the output. JPEG encoding
+uses the same pixels and quality as the previous PNG round trip.
+
+The native probe opened the panel in 660 ms on this trial and
+canceled it without creating a file. It then used the production
+background writer directly and reopened the 640×360 PNG. The saved
+and reopened pixels matched the annotated editor, including all
+1,790 changed pixels. A physical click on the native Save button
+remains unverified. The GPUI suite passed 1,181 tests with 23 ignored,
+including byte equality for JPEG output against the former encode path.
+
+The direct-to-editor capture route still waits for the history entry.
+Editor annotation persistence writes to that entry on debounce and
+close, so opening before history completes needs coordination with
+those writes.
+
+```sh
+python3 tests/native/macos-save-panel-probe.py
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
