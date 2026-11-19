@@ -9832,6 +9832,25 @@ full Swift fixtures and daemon typechecks passed on arm64 and Rosetta
 x86_64, along with 70 related Electron and contract tests.
 [Filter refresh results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS protected tooltips during recording restarts
+
+A tooltip awaiting an old recording filter could appear when the
+registry invalidated that refresh during a new recording start.
+Filter updates now recheck the startup barrier whenever a refresh
+resumes. A pending request also waits through a second start if
+it begins before the request resumes.
+
+The AppKit fixture held the old filter refresh and began a new
+recording startup. The old code revealed the panel immediately.
+The revised panel stayed transparent through two simulated starts
+and a held filter update for the new recording. A late error from
+the old filter did not interrupt the new request. The original panel
+and exclusion ID survived, and dismissing the panel released the ID.
+The native fixture simulated the recorder. The full Swift fixtures
+and daemon typechecks passed on arm64 and Rosetta x86_64, along with
+70 related Electron and contract tests.
+[Recording restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

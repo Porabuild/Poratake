@@ -99,22 +99,15 @@ final class RecordingCaptureWindowRegistry {
     }
 
     func waitForCaptureStartIfNeeded() async {
-        if captureStartInProgress {
-            await withCheckedContinuation { continuation in
-                if captureStartInProgress {
-                    captureStartWaiters.append(continuation)
-                    return
-                }
-                continuation.resume()
-            }
+        while captureStartInProgress {
+            await withCheckedContinuation { captureStartWaiters.append($0) }
         }
     }
 
     func updateFilterIfNeeded() async throws {
-        await waitForCaptureStartIfNeeded()
-
-        while appliedRevision != revision {
-            guard let updater = filterUpdater else { return }
+        while true {
+            await waitForCaptureStartIfNeeded()
+            guard appliedRevision != revision, let updater = filterUpdater else { return }
             if refreshID == nil {
                 let refreshID = nextRefreshID
                 nextRefreshID &+= 1

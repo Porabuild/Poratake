@@ -3317,3 +3317,24 @@ list and unregistered the panel.
 The current-revision filter failure test still reports its error
 to the caller. The fixture models the filter error and update
 ordering without starting a live recording.
+
+2026-11-19 tooltip filter refresh interrupted by macOS recording startup
+
+The Swift fixture held an exclusion refresh for a transparent
+AppKit tooltip. It invalidated the old refresh through the production
+registry's beginCaptureStart method.
+
+Baseline at 938af8f8
+tooltip filter restart: visible during startup=true
+
+Revised
+tooltip filter restart: visible during startup=false
+tooltip filter restart: visible after new filter=true
+
+The revised case finished the first simulated startup and began a
+second before the waiting task could resume. The tooltip waited again.
+After the second start, the fixture held the new filter, then released
+an error from the invalidated refresh. The same panel stayed
+transparent until the new filter completed with its ID. Dismissal
+removed the panel ID from the registry and the filter. The fixture
+uses AppKit and simulated filter updates without a live stream.
