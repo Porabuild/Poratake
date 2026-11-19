@@ -74,6 +74,14 @@ final class RecordingCaptureWindowRegistry {
         }
     }
 
+    func waitForWindowPresentation() async throws {
+        repeat {
+            try await updateFilterIfNeeded()
+            await waitForScreenshots()
+        } while activeScreenshots > 0 || captureStartInProgress
+            || (filterUpdater != nil && appliedRevision != revision)
+    }
+
     func setFilterUpdater(initiallyExcluding windowIDs: [CGWindowID]? = nil, _ updater: FilterUpdater?) {
         invalidateRefresh()
         filterUpdater = updater

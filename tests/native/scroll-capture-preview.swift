@@ -616,6 +616,58 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyTooltipWaitsForOverlappingCaptures() async throws {
+        guard let work = NSScreen.main?.visibleFrame else { return }
+        let owner = NSRect(x: work.midX - 80, y: work.midY, width: 160, height: 48)
+        let pointer = NSPoint(x: owner.midX, y: owner.midY)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Start recording"))
+        var visible: Bool?
+        let pending = Task { @MainActor in
+            visible = try await tooltip.show(sequence: 1, owner: 1, text: "Start recording", dark: false,
+                                             at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The tooltip did not wait for the first screenshot") {
+            registry.testPendingScreenshotWaiterCount == 1
+        }
+        let panel = tooltip.testPanel!
+        let id = CGWindowID(panel.windowNumber)
+        registry.beginCaptureStart()
+        registry.finishScreenshot()
+        await waitUntil("The tooltip did not resume after the screenshot") {
+            visible != nil || registry.testPendingCaptureStartWaiterCount == 1
+        }
+        print("tooltip after overlapping screenshot: visible during startup=\(panel.alphaValue != 0)")
+        fflush(stdout)
+        precondition(visible == nil && panel.alphaValue == 0)
+
+        var releaseFilter: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            if !ids.isEmpty {
+                precondition(ids == [id])
+                await withCheckedContinuation { releaseFilter = $0 }
+            }
+        }
+        registry.finishCaptureStart()
+        await waitUntil("The tooltip did not wait for the restarted filter") { releaseFilter != nil }
+        precondition(visible == nil && panel.alphaValue == 0)
+        precondition(registry.beginScreenshot() == [id])
+        releaseFilter?.resume()
+        await waitUntil("The tooltip did not wait for the second screenshot") {
+            registry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(visible == nil && panel.alphaValue == 0)
+        registry.finishScreenshot()
+        try await pending.value
+        precondition(visible == true && tooltip.testPanel === panel && panel.alphaValue == 1)
+        precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+        await waitUntil("The tooltip exclusion did not clear") { registry.currentWindowIDs().isEmpty }
+        print("tooltip after overlapping screenshot: visible after both barriers=true")
+    }
+
+    @MainActor
     static func verifyTooltipPointerExit() async throws {
         guard let screen = NSScreen.screens.first else {
             print("SKIP tooltip pointer exit: no AppKit display")
@@ -935,6 +987,7 @@ struct ScrollCapturePreviewTest {
                     try await verifyTooltipDisplayTransition()
                     try await verifyTooltipReplacesUnresolvedFilter()
                     try await verifyTooltipWaitsForRestart()
+                    try await verifyTooltipWaitsForOverlappingCaptures()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                 } else {
@@ -1398,6 +1451,7 @@ struct ScrollCapturePreviewTest {
         try await verifyTooltipControlReplacement()
         try await verifyTooltipReplacesUnresolvedFilter()
         try await verifyTooltipWaitsForRestart()
+        try await verifyTooltipWaitsForOverlappingCaptures()
         try await verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {

@@ -100,8 +100,7 @@ final class ProtectedTooltip {
             throw RecordingCaptureFilterError.unavailableWindowNumber
         }
         do {
-            try await registry.updateFilterIfNeeded()
-            await registry.waitForScreenshots()
+            try await registry.waitForWindowPresentation()
         } catch {
             guard self.panel === panel else { return false }
             self.panel = nil

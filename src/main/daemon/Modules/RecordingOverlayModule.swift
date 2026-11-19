@@ -144,7 +144,7 @@ class RecordingOverlayModule: Module {
             throw RecordingCaptureFilterError.unavailableWindowNumber
         }
         do {
-            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
         } catch {
             guard presentationGeneration.isCurrent(generation), highlightWindow === window else { return false }
             RecordingCaptureWindowRegistry.shared.unregister(window)
@@ -154,7 +154,6 @@ class RecordingOverlayModule: Module {
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
         }
-        await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
         guard presentationGeneration.isCurrent(generation), highlightWindow === window else {
             if highlightWindow !== window {
                 window.orderOut(nil)
@@ -291,14 +290,13 @@ class RecordingOverlayModule: Module {
         overlayViews = newOverlayViews
 
         do {
-            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
         } catch {
             guard presentationGeneration.isCurrent(generation), windows.elementsEqual(newWindows, by: { $0 === $1 }) else { return false }
             removeOverlayWindows()
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
         }
-        await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
         guard presentationGeneration.isCurrent(generation), windows.elementsEqual(newWindows, by: { $0 === $1 }) else {
             if !windows.elementsEqual(newWindows, by: { $0 === $1 }) {
                 for window in newWindows {

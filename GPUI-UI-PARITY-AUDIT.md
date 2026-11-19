@@ -9851,6 +9851,26 @@ and daemon typechecks passed on arm64 and Rosetta x86_64, along with
 70 related Electron and contract tests.
 [Recording restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS protected windows during overlapping captures
+
+A tooltip could become visible after a screenshot finished even
+when a new recording had started during the screenshot wait. The
+exclusion registry now checks both conditions again after waiting.
+The tooltip, recording overlay and outline, and camera preview use
+that shared check before becoming visible.
+
+The native tooltip fixture began a recording start while the panel
+was waiting for a screenshot. The old panel appeared as soon as
+the screenshot finished. The revised panel stayed transparent
+through startup, the new filter update, and a second screenshot
+that began during the update. It retained its original AppKit
+window and exclusion ID. The filter and capture waits were simulated.
+The complete Swift fixtures and daemon typechecks passed on arm64
+and Rosetta x86_64. The arm64 recording outline and generated camera
+preview lifecycle fixture passed, along with 70 Electron and daemon
+contract tests.
+[Overlapping capture results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

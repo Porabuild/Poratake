@@ -3338,3 +3338,21 @@ an error from the invalidated refresh. The same panel stayed
 transparent until the new filter completed with its ID. Dismissal
 removed the panel ID from the registry and the filter. The fixture
 uses AppKit and simulated filter updates without a live stream.
+
+2026-11-19 macOS tooltip while screenshot and recording waits overlap
+
+A real transparent AppKit tooltip was held by the screenshot wait.
+The fixture began recording startup, then completed the screenshot.
+
+Baseline at d0ca64e4
+tooltip after overlapping screenshot: visible during startup=true
+
+Revised
+tooltip after overlapping screenshot: visible during startup=false
+tooltip after overlapping screenshot: visible after both barriers=true
+
+The same panel waited for the new filter to include its ID. The
+fixture began a second screenshot during that refresh and verified
+that the panel stayed transparent until the screenshot finished.
+The test simulated capture and filter completion. It did not record
+a real stream or use a camera.

@@ -147,7 +147,7 @@ class CameraPreviewModule: Module {
         if let panel {
             if panel.alphaValue == 0 {
                 do {
-                    try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+                    try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
                 } catch {
                     guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
                     stopMoveTracking()
@@ -159,7 +159,6 @@ class CameraPreviewModule: Module {
                     try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
                     throw error
                 }
-                await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
                 guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
                 panel.alphaValue = 1
                 panel.ignoresMouseEvents = false
@@ -218,7 +217,7 @@ class CameraPreviewModule: Module {
             throw RecordingCaptureFilterError.unavailableWindowNumber
         }
         do {
-            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
         } catch {
             guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
             RecordingCaptureWindowRegistry.shared.unregister(panel)
@@ -229,7 +228,6 @@ class CameraPreviewModule: Module {
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
         }
-        await RecordingCaptureWindowRegistry.shared.waitForScreenshots()
         guard presentationGeneration.isCurrent(generation), self.panel === panel else {
             if self.panel !== panel {
                 panel.orderOut(nil)
