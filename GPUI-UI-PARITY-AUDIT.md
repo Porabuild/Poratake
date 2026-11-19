@@ -10300,6 +10300,25 @@ fixtures and daemon typechecks passed on arm64 and Rosetta x86_64,
 along with 97 Electron and daemon contract tests.
 [Display change evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera preview fit before reveal
+
+A camera preview waiting for capture protection could retain an
+off-screen location until after it became visible. The daemon now
+refits the staged panel to the current work area before revealing
+it. A newer Show request that reuses the hidden panel also applies
+its requested position before revealing.
+
+The AppKit fixture placed the transparent panel partly outside the
+work area while a screenshot held its reveal. After release, both
+a first Show request and a superseding Show request revealed the
+same protected window fully inside the work area. The window and
+exclusion ID survived. The fixture staged the bounds and display
+notification locally. Physical display changes and live camera
+output remain unverified. Native lifecycle fixtures and daemon
+typechecks passed on Apple Silicon and Rosetta x86_64, along with
+97 Electron and daemon contract tests.
+[Deferred camera placement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

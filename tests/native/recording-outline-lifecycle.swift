@@ -330,6 +330,44 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyCameraPreviewDeferredFit() async throws {
+        guard NSScreen.screens.count == 1, let work = NSScreen.screens.first?.visibleFrame,
+              work.width > 300, work.height > 300 else { return }
+        let registry = RecordingCaptureWindowRegistry.shared
+        for superseded in [false, true] {
+            let camera = CameraPreviewModule()
+            _ = registry.beginScreenshot()
+            camera.handle(method: "show", params: ["deviceName": AnyCodable("generated first")],
+                          requestId: "deferred-camera")
+            try await waitFor("The hidden camera panel was not staged") {
+                camera.testStartup.panel?.alphaValue == 0
+            }
+            let panel = camera.testStartup.panel!
+            let id = CGWindowID(panel.windowNumber)
+            let request = superseded ? "replacement-camera" : "deferred-camera"
+            if superseded {
+                camera.handle(method: "show", params: ["deviceName": AnyCodable("generated latest")],
+                              requestId: request)
+                try await waitFor("The replacement camera request did not reach the screenshot wait") {
+                    camera.testStartup.generation == 2
+                }
+            }
+            let origin = NSPoint(x: work.minX - 24, y: (work.midY - 135).rounded())
+            panel.setFrameOrigin(origin)
+            precondition(panel.frame.origin == origin && panel.alphaValue == 0)
+            NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp)
+            registry.finishScreenshot()
+            try await waitFor("The camera panel did not reveal") { camera.testShowResults[request] == true }
+            print("camera deferred fit: superseded=\(superseded), workAreaFit=\(work.contains(panel.frame))")
+            fflush(stdout)
+            precondition(panel.frame.origin == NSPoint(x: work.minX, y: origin.y))
+            precondition(camera.testStartup.panel === panel && registry.currentWindowIDs() == [id])
+            await camera.testHidePanel()
+            precondition(registry.currentWindowIDs().isEmpty)
+        }
+    }
+
+    @MainActor
     static func verifyCameraPreviewDisplayChange() async throws {
         guard NSScreen.screens.count == 1, let work = NSScreen.screens.first?.visibleFrame,
               work.width > 300, work.height > 300 else { return }
@@ -375,6 +413,7 @@ struct RecordingOutlineLifecycleTest {
         }
         try await verifyCameraPreviewStartup()
         try await verifyCameraPreviewDisplayChange()
+        try await verifyCameraPreviewDeferredFit()
         let module = RecordingOverlayModule()
         let screen = NSScreen.screens.first!
         if NSScreen.screens.count == 1 {

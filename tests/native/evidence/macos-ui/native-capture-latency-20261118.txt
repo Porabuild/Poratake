@@ -3843,3 +3843,22 @@ The panel moved to the work area's left edge and kept its vertical
 position and window ID. The exclusion registry retained the ID
 until dismissal. No display settings were changed and no camera
 was opened. The notification was posted by the test fixture.
+
+2026-11-19 macOS camera placement during a held reveal at 19fed821
+
+A generated camera panel remained transparent while the fixture held
+a screenshot. The fixture moved it 24 points outside the work area
+and posted the display-change notification before releasing the
+screenshot. It checked both initial and superseding requests.
+
+Baseline
+camera deferred fit: superseded=false, workAreaFit=false
+
+Revised
+camera deferred fit: superseded=false, workAreaFit=true
+camera deferred fit: superseded=true, workAreaFit=true
+
+The same AppKit window moved to the left work-area edge before the
+show reply and retained its capture-exclusion ID until dismissal.
+This test staged a stale panel frame locally. It changed no display
+settings and opened no camera device.

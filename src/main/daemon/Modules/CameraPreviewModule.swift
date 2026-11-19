@@ -147,7 +147,8 @@ class CameraPreviewModule: Module {
         await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
         guard presentationGeneration.isCurrent(generation) else { return false }
         if let panel {
-            if panel.alphaValue == 0 {
+            let needsReveal = panel.alphaValue == 0
+            if needsReveal {
                 do {
                     try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
                 } catch {
@@ -162,14 +163,15 @@ class CameraPreviewModule: Module {
                     throw error
                 }
                 guard presentationGeneration.isCurrent(generation), self.panel === panel else { return false }
-                panel.alphaValue = 1
-                panel.ignoresMouseEvents = false
             }
-            setupMoveTracking(for: panel)
-            contentView?.updateFlipped(flipped)
             if let x = x, let y = y {
                 updatePosition(x: x, y: y)
             }
+            if needsReveal {
+                revealPanel(panel)
+            }
+            setupMoveTracking(for: panel)
+            contentView?.updateFlipped(flipped)
             if let contentView, contentView.source != source {
                 contentView.updateCamera(source)
             }
@@ -239,14 +241,29 @@ class CameraPreviewModule: Module {
             }
             return false
         }
-        panel.alphaValue = 1
-        panel.ignoresMouseEvents = false
-        
+        revealPanel(panel)
+
         setupMoveTracking(for: panel)
         contentView.updateCamera(source)
         return true
     }
     
+    @MainActor
+    private func revealPanel(_ panel: NSPanel) {
+        refitPanel(panel)
+        panel.alphaValue = 1
+        panel.ignoresMouseEvents = false
+    }
+
+    @MainActor
+    private func refitPanel(_ panel: NSPanel) {
+        let frame = panel.frame
+        let position = fittedPanelOrigin(frame.origin, size: frame.size)
+        if position != frame.origin {
+            panel.setFrameOrigin(position)
+        }
+    }
+
     @MainActor
     private func hidePanel() {
         presentationGeneration.cancel()
@@ -361,11 +378,7 @@ class CameraPreviewModule: Module {
         ) { [weak self, weak panel] _ in
             Task { @MainActor in
                 guard let self, let panel, self.panel === panel else { return }
-                let frame = panel.frame
-                let position = self.fittedPanelOrigin(frame.origin, size: frame.size)
-                if position != frame.origin {
-                    panel.setFrameOrigin(position)
-                }
+                self.refitPanel(panel)
             }
         }
     }
