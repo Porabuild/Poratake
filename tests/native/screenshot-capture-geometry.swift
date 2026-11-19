@@ -42,6 +42,42 @@ struct ScreenshotCaptureGeometryTest {
         precondition(unresolvedVisibleScreenshotExclusions(requested: [1, 2], available: [1], onScreen: [2, 3]) == [2])
         precondition(unresolvedVisibleScreenshotExclusions(requested: [1, 2], available: [1], onScreen: [1, 3]).isEmpty)
         precondition(unresolvedVisibleScreenshotExclusions(requested: [1, 2], available: [1, 2], onScreen: [1, 2]).isEmpty)
+        verifyFrozenWindowAlpha()
         print("Screenshot capture geometry passed")
+    }
+
+    private static func verifyFrozenWindowAlpha() {
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let layout = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        func image(width: Int, height: Int, bytes: [UInt8]) -> CGImage {
+            CGImage(
+                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: width * 4, space: space,
+                bitmapInfo: layout, provider: CGDataProvider(data: Data(bytes) as CFData)!,
+                decode: nil, shouldInterpolate: false, intent: .defaultIntent
+            )!
+        }
+        let frozen = image(width: 2, height: 2, bytes: [
+            200, 0, 0, 255, 160, 0, 0, 255,
+            0, 0, 200, 255, 120, 0, 0, 255,
+        ])
+        let mask = image(width: 2, height: 2, bytes: [
+            0, 0, 0, 0, 0, 255, 0, 255,
+            0, 128, 0, 128, 0, 255, 0, 255,
+        ])
+        let composed = applyFrozenWindowAlpha(frozen, mask: mask)
+        let expected: [[UInt8]] = [
+            [0, 0, 0, 0], [160, 0, 0, 255],
+            [0, 0, 100, 128], [120, 0, 0, 255],
+        ]
+        let data = composed.dataProvider!.data!
+        let pixels = CFDataGetBytePtr(data)!
+        for (index, pixel) in expected.enumerated() {
+            let offset = (index / composed.width) * composed.bytesPerRow + (index % composed.width) * 4
+            precondition(Array(UnsafeBufferPointer(start: pixels + offset, count: 4)) == pixel)
+        }
+        let wrongSize = image(width: 1, height: 1, bytes: [0, 0, 0, 0])
+        precondition(applyFrozenWindowAlpha(frozen, mask: wrongSize) === frozen)
+        precondition(applyFrozenWindowAlpha(frozen, mask: nil) === frozen)
     }
 }

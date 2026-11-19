@@ -8942,6 +8942,34 @@ appeared after release. The five Electron reference files passed 132
 tests. Physical pointer delivery remains open.
 [Native transition evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS frozen window screenshot corners
+
+GPUI and Electron already sent the picked window ID in a cached
+window capture. The Swift daemon used the frozen rectangle and
+left desktop pixels in the rounded corners. The cached path now
+uses the selected window's native alpha when the pixel dimensions
+match. The saved colors still come from the frozen frame. A
+missing or differently sized mask preserves the frozen crop.
+
+A bounded AppKit fixture exercised the real GPUI picker, thumbnail,
+history and editor in light and dark at 2×. It seeded the frozen
+store with a red window over magenta and then changed the visible
+target to green. WindowServer supplied the alpha while a
+click-through cover obscured the target. The original 640×440 PNG
+had opaque magenta corners. The revised PNG had transparent corners
+and the same red center. The editor export preserved the alpha
+exactly and differed by at most one premultiplied RGB value at
+partially transparent edges. Pixels with full and zero alpha
+matched exactly.
+
+In these runs the additional mask read raised confirmation-to-thumbnail
+time from 50–53 ms to 114–160 ms. The picker cleared before that
+work finished. The reduced fixture did not time a full-display
+freeze. Apple Silicon and Rosetta geometry tests, Swift daemon
+typechecking, window-ID validation and 77 Electron reference tests
+passed.
+[Native frozen-window evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

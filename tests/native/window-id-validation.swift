@@ -55,6 +55,12 @@ struct WindowIDValidationTests {
                 params: ["windowId": window],
                 requestId: "outline-\(index)"
             )
+            screenshot.handle(
+                method: DaemonContract.Screenshot.Method.captureArea.rawValue,
+                params: ["path": AnyCodable("/tmp/invalid-area.png"), "x": AnyCodable(0), "y": AnyCodable(0),
+                         "width": AnyCodable(10), "height": AnyCodable(10), "cached": AnyCodable(true), "windowId": window],
+                requestId: "area-window-\(index)"
+            )
         }
         for (index, value) in valid.enumerated() {
             let window = try JSONDecoder().decode(AnyCodable.self, from: JSONEncoder().encode(AnyCodable(value)))
@@ -72,6 +78,12 @@ struct WindowIDValidationTests {
                 method: DaemonContract.RecordingOverlay.Method.showWindow.rawValue,
                 params: ["windowId": window],
                 requestId: "valid-outline-\(index)"
+            )
+            screenshot.handle(
+                method: DaemonContract.Screenshot.Method.captureArea.rawValue,
+                params: ["path": AnyCodable("/tmp/valid-area.png"), "x": AnyCodable(0), "y": AnyCodable(0),
+                         "width": AnyCodable(10), "height": AnyCodable(10), "cached": AnyCodable(true), "windowId": window],
+                requestId: "valid-area-window-\(index)"
             )
         }
         let invalidExclusions: [[Any]] = [[0], [-1], [Int(UInt32.max) + 1], [1, 0], [1.5], [true], ["1"]]
@@ -133,19 +145,19 @@ struct WindowIDValidationTests {
         output.fileHandleForWriting.closeFile()
         let bytes = output.fileHandleForReading.readDataToEndOfFile()
         let lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n")
-        precondition(lines.count == (invalid.count + valid.count) * 3 + (invalidExclusions.count + validExclusions.count) * 2 + invalidDisplays.count + validDisplays.count + invalidScroll.count + validScroll.count)
+        precondition(lines.count == (invalid.count + valid.count) * 4 + (invalidExclusions.count + validExclusions.count) * 2 + invalidDisplays.count + validDisplays.count + invalidScroll.count + validScroll.count)
         let responses = try lines.map { try JSONDecoder().decode(Response.self, from: Data($0.utf8)) }
-        for (index, response) in responses.prefix(invalid.count * 3).enumerated() {
-            let action = ["record", "screenshot", "outline"][index % 3]
-            precondition(response.id == "\(action)-\(index / 3)")
+        for (index, response) in responses.prefix(invalid.count * 4).enumerated() {
+            let action = ["record", "screenshot", "outline", "area-window"][index % 4]
+            precondition(response.id == "\(action)-\(index / 4)")
             precondition(!response.success && response.error?.code == "INVALID_PARAMS")
         }
-        for (index, response) in responses.dropFirst(invalid.count * 3).prefix(valid.count * 3).enumerated() {
-            let action = ["record", "screenshot", "outline"][index % 3]
-            precondition(response.id == "valid-\(action)-\(index / 3)")
+        for (index, response) in responses.dropFirst(invalid.count * 4).prefix(valid.count * 4).enumerated() {
+            let action = ["record", "screenshot", "outline", "area-window"][index % 4]
+            precondition(response.id == "valid-\(action)-\(index / 4)")
             precondition(response.success && response.error == nil)
         }
-        let exclusions = responses.dropFirst((invalid.count + valid.count) * 3)
+        let exclusions = responses.dropFirst((invalid.count + valid.count) * 4)
         for (index, response) in exclusions.prefix((invalidExclusions.count + validExclusions.count) * 2).enumerated() {
             let action = index % 2 == 0 ? "area" : "record"
             let caseIndex = index / 2

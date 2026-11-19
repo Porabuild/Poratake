@@ -31,6 +31,26 @@ func unresolvedVisibleScreenshotExclusions(
     requested.subtracting(available).intersection(onScreen)
 }
 
+func applyFrozenWindowAlpha(_ image: CGImage, mask: CGImage?) -> CGImage {
+    guard let mask, mask.width == image.width, mask.height == image.height,
+          let colorSpace = image.colorSpace,
+          let context = CGContext(
+              data: nil,
+              width: image.width,
+              height: image.height,
+              bitsPerComponent: 8,
+              bytesPerRow: 0,
+              space: colorSpace,
+              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) else { return image }
+
+    let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+    context.draw(image, in: bounds)
+    context.setBlendMode(.destinationIn)
+    context.draw(mask, in: bounds)
+    return context.makeImage() ?? image
+}
+
 struct ScreenshotCaptureGeometry {
     let sourceRect: CGRect
     let width: Int

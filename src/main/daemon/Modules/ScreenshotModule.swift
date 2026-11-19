@@ -34,6 +34,17 @@ class ScreenshotModule: Module {
         }
 
         let cached = params?["cached"]?.bool() ?? false
+        let windowID: CGWindowID?
+        if let value = params?["windowId"], !(value.value is NSNull) {
+            guard let number = value.value as? Int, let id = CGWindowID(exactly: number),
+                  id != kCGNullWindowID else {
+                respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid window id")
+                return
+            }
+            windowID = id
+        } else {
+            windowID = nil
+        }
         if let value = params?["excludedWindowIds"], !(value.value is NSNull), value.array() == nil {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "Invalid excluded window ids")
             return
@@ -64,7 +75,12 @@ class ScreenshotModule: Module {
             guard let self = self else { return }
 
             if cached, let image = FrozenFrameStore.crop(to: rect) {
-                self.respondCapture(image, path: path, requestId: requestId)
+                let mask = windowID.flatMap { id in
+                    CGWindowListCreateImage(
+                        CGRect.null, .optionIncludingWindow, id, [.bestResolution, .boundsIgnoreFraming]
+                    )
+                }
+                self.respondCapture(applyFrozenWindowAlpha(image, mask: mask), path: path, requestId: requestId)
                 return
             }
             Task { @MainActor in

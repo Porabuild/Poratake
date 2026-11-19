@@ -1759,3 +1759,46 @@ on arm64. Its overlapping requests held a screenshot until two
 older panels had been hidden. On release only the most recent
 label appeared. The fixture then verified exclusion cleanup.
 Five Electron reference files passed all 132 tests.
+
+2026-11-19 macOS frozen window screenshot alpha
+
+The developer app ran with an isolated profile on the built-in
+Retina display. An AppKit fixture supplied one 320x220-point rounded
+target and seeded FrozenFrameStore with its generated red content
+on a magenta background. The freeze RPC also placed a click-through
+cover over the target. The fixture changed the target to green when
+the picker requested the list. The preflight-granted Swift process
+queried WindowServer only for the selected fixture window's alpha.
+No full-display pixels or other applications' window pixels were
+read. The GPUI window picker used app-local input. The original and
+revised handlers received the same retained frame and target geometry.
+
+Result                 Corner RGBA     Interior RGBA  Editor comparison
+Original light       204,0,204,255     191,31,20,255  Exact
+Original dark        204,0,204,255     191,31,20,255  Exact
+Revised light              0,0,0,0     191,31,20,255  Exact alpha, 332 partial-alpha RGB differences
+Revised dark               0,0,0,0     191,31,20,255  Exact alpha, 332 partial-alpha RGB differences
+
+All PNGs and editor renders were 640x440. For the revised outputs,
+every fully opaque and fully transparent pixel matched the editor
+export exactly. In the 332 antialiased edge pixels, the maximum
+difference was one premultiplied RGB level. A cached composite
+does not retain the original foreground color separately from the
+backdrop at partially transparent pixels.
+
+Phase times in ms. Picker and hide end at WindowServer observations.
+Thumbnail ends at decoded preview readiness. Editor starts at
+thumbnail readiness and ends at the editor-window acknowledgement.
+The screenshot RPC includes the window alpha read when enabled.
+
+Run               Picker   Hide   Capture RPC   Thumbnail   Editor
+Original light     178.2   17.1          10.9        50.0     75.5
+Revised light      169.0   37.0          77.3       113.9     86.3
+Revised dark       173.9   40.9         103.3       160.2     83.5
+Original dark      169.5   41.8           5.7        53.4     87.2
+
+Both handlers produced a Recent Captures entry. In all runs, the
+frozen crop replied before the release request. A setup retry
+waited for the thumbnail window before dispatching its Edit action.
+Separate Swift regressions check transparent and partial-alpha pixels,
+opaque color preservation, and the missing- or wrong-size fallback.
