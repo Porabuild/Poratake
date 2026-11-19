@@ -5127,3 +5127,37 @@ All 38 corresponding light and dark 2x Metal recording-control
 scenes matched byte for byte. The GPUI recording-control suite
 passed 23 tests. Electron reference and daemon contract tests
 passed all 82 cases. No live device access was needed.
+
+2026-11-20 macOS window recording under the toolbar and tooltip
+===============================================================
+
+The current GPUI development executable at a3f33fa4 used the
+screen-only Swift fixture from the earlier protected area
+recording. The existing grant passed preflight. A broker verified
+that Start carried the generated WindowServer ID and that audio,
+microphone, camera and iOS capture were off. It disabled keyboard
+tracking in the forwarded request. The Swift recorder used its
+desktop-independent window filter.
+
+An AppKit window drew a blue field and a colored timing marker.
+The native protected tooltip was visible over its frame while the
+marker was green. After dismissal the same window moved beneath
+the visible, higher-layer GPUI toolbar and the marker became
+yellow. The extraction checked 196x44 tooltip pixels and 826x88
+toolbar pixels at 2x. Across the relevant source frames, the
+maximum difference from the initial background was zero.
+
+Appearance Source frames  Red/Green/Yellow  Last source PTS  Export frames  Last export PTS
+Light                  21     7 / 7 / 7              2.621667             82         2.700000
+Dark                   21     7 / 7 / 7              2.670000             82         2.700000
+
+All source and export files contained one 1280x880 video stream
+and strictly increasing frame timestamps. The recordings opened
+from the normal preview. The probe removed the generated cursor
+sidecar to compare the source pixels, saved a split at 0.45 s,
+and exported the edited take. The largest RGB difference between
+the static sampled regions in GPUI's preview and the corresponding
+pixels in each decoded export frame was zero. Start, Stop and
+editing were app-local. The system pointer was left in place.
+
+The 82 Electron reference and daemon contract tests passed.
