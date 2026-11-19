@@ -3808,3 +3808,21 @@ The test used the development GPUI app, isolated profiles and a
 simulated daemon that supplied a bundled recording. It exercised
 no camera device and posted no system input. All 97 related
 Electron and daemon contract tests passed.
+
+2026-11-19 macOS camera preview restore for partially off-display bounds at 953e362e
+
+The native geometry fixture used a 270x270-point panel and simulated
+connected displays with menu bar and Dock insets. The requested
+top-left points just outside the left and top edges still overlapped
+a connected frame.
+
+Baseline
+camera partially off display: left=(1426.0, 76.0), top=(1426.0, 76.0)
+
+Revised
+camera partially off display: left=(30.0, 647.0), top=(60.0, 814.0)
+
+At a boundary shared by two simulated displays, the requested panel
+overlapped the right display more. It restored at (1750,814) within
+that display's work area. A fully disconnected location still used
+the fallback corner. No camera device was opened.

@@ -10265,6 +10265,24 @@ daemon. They exclude hardware startup and compositor presentation.
 All 97 related Electron and daemon contract tests passed.
 [Stop and camera retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera preview restore at display edges
+
+A saved camera panel that overlapped a connected display could
+jump to the fallback corner if its top-left point was outside the
+display. When no display contains that point, the daemon now
+chooses the display with the largest panel overlap and clamps the
+restored panel to its work area.
+
+The native geometry fixture covered a panel beyond the left and
+top edges, a top-left point at a joined edge, and a rectangle
+spanning two displays. The revised placements stayed inside the
+matched work area. A rectangle wholly outside the connected
+displays used the fallback. Physical mixed-display dragging and
+live camera output remain unverified. Native lifecycle fixtures and
+daemon typechecks passed on arm64 and Rosetta x86_64, along with
+97 Electron and daemon contract tests.
+[Camera placement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

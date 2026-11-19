@@ -55,6 +55,22 @@ struct RecordingOutlineLifecycleTest {
         precondition(placement(800, 200) == NSPoint(x: 800, y: 647))
         precondition(placement(-950, -1) == NSPoint(x: -940, y: 1137))
         precondition(placement(-41, -590) == NSPoint(x: -310, y: 1427))
+        let overLeftEdge = placement(-14, 200)
+        let overTopEdge = placement(60, -45)
+        print("camera partially off display: left=\(overLeftEdge), top=\(overTopEdge)")
+        fflush(stdout)
+        precondition(overLeftEdge == NSPoint(x: 30, y: 647))
+        precondition(overTopEdge == NSPoint(x: 60, y: 814))
+        precondition(placement(-45, 0) == NSPoint(x: 30, y: 814))
+        let right = (
+            frame: NSRect(x: 1728, y: 0, width: 850, height: 1117),
+            visibleFrame: NSRect(x: 1750, y: 44, width: 820, height: 1040)
+        )
+        let sharedEdge = CameraPreviewModule.fittedPanelOrigin(
+            x: 1690, y: -45, size: size, primaryHeight: primary.height,
+            displays: displays + [right], fallback: primaryWorkArea
+        )
+        precondition(sharedEdge == NSPoint(x: 1750, y: 814))
         precondition(placement(3500, -450) == placement(nil, nil))
         precondition(placement(nil, nil) == NSPoint(x: 1426, y: 76))
         print("camera preview geometry: dock insets, negative origins and disconnected display")

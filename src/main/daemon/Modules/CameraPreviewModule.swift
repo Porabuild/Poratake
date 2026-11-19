@@ -307,6 +307,17 @@ class CameraPreviewModule: Module {
            }) {
             return constrained(requestedOrigin, to: display.visibleFrame)
         }
+        if let requestedOrigin {
+            let requested = NSRect(origin: requestedOrigin, size: size)
+            let best = displays.compactMap { display -> (area: CGFloat, visibleFrame: NSRect)? in
+                let overlap = requested.intersection(display.frame)
+                guard !overlap.isEmpty else { return nil }
+                return (overlap.width * overlap.height, display.visibleFrame)
+            }.max { $0.area < $1.area }
+            if let best {
+                return constrained(requestedOrigin, to: best.visibleFrame)
+            }
+        }
         guard let fallback else { return requestedOrigin ?? NSPoint(x: 100, y: 100) }
         let margin: CGFloat = 32
         let defaultOrigin = NSPoint(
