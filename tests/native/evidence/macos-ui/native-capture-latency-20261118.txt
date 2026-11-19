@@ -4212,3 +4212,31 @@ Pair two ran the candidate first. The first two decoder payloads
 took 12.77–15.59 ms each across both variants. This measures
 readiness in the app, before display presentation. The production
 thumbnail code used for the worktree remains the existing path.
+
+2026-11-19 macOS first recording thumbnail at 82a2f2e3
+
+The GPUI development build stopped a fixture recording whose
+source was generated 3840x2160 H.264 at 30 fps. Both builds used
+bundled FFmpeg. The app-local probe waited for the first preview
+image while the History read was held. All six full workflows
+per build persisted the recording and following screenshot in
+the expected order. The pairs alternated order.
+
+Appearance  Pair   Before Stop-to-thumbnail (ms)   Updated Stop-to-thumbnail (ms)
+Light         1                          190.9                            136.7
+Dark          1                          176.6                            132.3
+Light         2                          166.1                            126.5
+Dark          2                          256.8                            140.5
+Light         3                          150.5                            129.1
+Dark          3                          172.0                            169.6
+
+The separate gated probe passed the first BGRA frame through
+and blocked the stream before the second frame. The thumbnail
+was ready before the gate released in both appearances. The
+focused gate then released and verified the recording in History.
+An initial version of the gated probe also attempted a second
+capture and timed out waiting for both History entries. The
+unblocked pairs above covered that combined workflow.
+
+Six light/dark offscreen PNG pairs matched bytes for idle, hover
+and exit on a static 4K checkerboard.

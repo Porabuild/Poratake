@@ -43,8 +43,13 @@ pub(crate) fn needs_stream_seek(previous: f64, requested: f64) -> bool {
     requested < previous || requested - previous > STREAM_SEEK_PREROLL
 }
 
+enum FramePosition {
+    First,
+    Time(f64),
+}
+
 struct Command {
-    time: f64,
+    position: FramePosition,
     reply: Sender<Option<DecodedFrame>>,
     cancelled: Option<FrameCancellation>,
     abandoned: FrameCancellation,
@@ -103,24 +108,29 @@ impl VideoDecoder {
         self.frame_at_interruptible(time, None)
     }
 
+    pub(crate) fn first_frame(&self) -> Option<DecodedFrame> {
+        self.request_frame(FramePosition::First, None)?.wait()
+    }
+
     pub(crate) fn frame_at_interruptible(
         &self,
         time: f64,
         cancelled: Option<&FrameCancellation>,
     ) -> Option<DecodedFrame> {
-        self.request_frame(time, cancelled.cloned())?.wait()
+        self.request_frame(FramePosition::Time(time.max(0.0)), cancelled.cloned())?
+            .wait()
     }
 
     fn request_frame(
         &self,
-        time: f64,
+        position: FramePosition,
         cancelled: Option<FrameCancellation>,
     ) -> Option<PendingFrame> {
         let (reply, received) = mpsc::channel();
         let (waiting, abandoned) = smol::channel::bounded(1);
         self.commands
             .send(Command {
-                time: time.max(0.0),
+                position,
                 reply,
                 cancelled,
                 abandoned,
@@ -137,7 +147,7 @@ impl VideoDecoder {
         time: f64,
         cancelled: FrameCancellation,
     ) -> Option<Receiver<()>> {
-        let pending = self.request_frame(time, Some(cancelled))?;
+        let pending = self.request_frame(FramePosition::Time(time.max(0.0)), Some(cancelled))?;
         let (reply, completion) = mpsc::channel();
         smol::unblock(move || {
             let _ = pending.wait();
@@ -190,11 +200,21 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(Command { time, reply, cancelled, abandoned }) = commands.recv() {
+            while let Ok(Command {
+                position,
+                reply,
+                cancelled,
+                abandoned,
+            }) = commands.recv()
+            {
                 if abandoned.is_closed() || cancelled.as_ref().is_some_and(FrameCancellation::is_closed) {
                     let _ = reply.send(None);
                     continue;
                 }
+                let time = match position {
+                    FramePosition::First => 0.0,
+                    FramePosition::Time(time) => time,
+                };
                 let frame = read_frame(&reader, time, info, &mut cursor);
                 let _ = reply.send(frame);
             }
@@ -556,18 +576,23 @@ mod backend {
         };
         let _ = info_tx.send(Some(media.video));
         let mut decoder = None;
-        while let Ok(Command { time, reply, cancelled, abandoned }) = commands.recv() {
-            let frame = read_frame(
-                &ffmpeg,
-                &path,
-                time,
-                media,
-                &mut decoder,
-                FrameWait {
-                    cancelled: cancelled.as_ref(),
-                    abandoned: Some(&abandoned),
-                },
-            );
+        while let Ok(Command {
+            position,
+            reply,
+            cancelled,
+            abandoned,
+        }) = commands.recv()
+        {
+            let wait = FrameWait {
+                cancelled: cancelled.as_ref(),
+                abandoned: Some(&abandoned),
+            };
+            let frame = match position {
+                FramePosition::First => read_first_frame(&ffmpeg, &path, media, &mut decoder, wait),
+                FramePosition::Time(time) => {
+                    read_frame(&ffmpeg, &path, time, media, &mut decoder, wait)
+                }
+            };
             let _ = reply.send(frame);
         }
     }
@@ -716,6 +741,39 @@ mod backend {
             )
             .await
         }
+    }
+
+    fn read_first_frame(
+        ffmpeg: &Path,
+        path: &Path,
+        media: MediaInfo,
+        decoder: &mut Option<DecoderProcess>,
+        wait: FrameWait<'_>,
+    ) -> Option<DecodedFrame> {
+        if wait.is_interrupted() {
+            return None;
+        }
+        drop(decoder.take());
+        let mut process = start(ffmpeg, path, media, 0.0)?;
+        let frame = smol::block_on(wait_for_first_frame(&mut process, wait))?;
+        *decoder = Some(process);
+        Some(frame)
+    }
+
+    async fn wait_for_first_frame(
+        decoder: &mut DecoderProcess,
+        wait: FrameWait<'_>,
+    ) -> Option<DecodedFrame> {
+        let frame = smol::future::or(
+            async {
+                wait.interrupted().await;
+                None
+            },
+            async { decoder.frames.recv().await.ok().flatten() },
+        )
+        .await?;
+        decoder.next = Some(frame);
+        selected_frame(decoder)
     }
 
     fn read_frame(
@@ -1186,6 +1244,49 @@ esac
         }
 
         #[test]
+        fn first_frame_is_available_before_lookahead_and_kept_for_playback() {
+            let (frames_tx, frames) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
+                frames,
+                spare_frame: smol::channel::bounded(1).0,
+                seek_start: 0.0,
+                fallback_seek_start: None,
+                current: None,
+                next: None,
+            };
+            frames_tx
+                .send_blocking(Some(TimedFrame {
+                    timestamp: 0.0,
+                    frame: DecodedFrame {
+                        width: 1,
+                        height: 1,
+                        bgra: vec![10, 20, 30, 255].into(),
+                    },
+                }))
+                .unwrap();
+            smol::block_on(async {
+                let mut first =
+                    std::pin::pin!(wait_for_first_frame(&mut decoder, FrameWait::default()));
+                let frame = smol::future::poll_once(first.as_mut())
+                    .await
+                    .expect("poster can be decoded while the second frame is unavailable")
+                    .unwrap();
+                assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+            });
+            assert!(decoder.current.is_none());
+            assert_eq!(decoder.next.as_ref().unwrap().timestamp, 0.0);
+            smol::block_on(async {
+                let mut pending =
+                    std::pin::pin!(wait_for_frame(&mut decoder, 0.0, FrameWait::default()));
+                assert!(smol::future::poll_once(pending.as_mut()).await.is_none());
+                frames_tx.close();
+                let frame = pending.await.unwrap().unwrap();
+                assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+            });
+        }
+
+        #[test]
         fn decoder_reuses_only_unshared_frame_storage() {
             let (spare_frame, reusable) = smol::channel::bounded(1);
             let mut decoder = DecoderProcess {
@@ -1650,8 +1751,8 @@ mod backend {
 
     pub fn run(_path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
         let _ = info_tx.send(None);
-        while let Ok(Command { time, reply, .. }) = commands.recv() {
-            let _ = time;
+        while let Ok(Command { position, reply, .. }) = commands.recv() {
+            let _ = position;
             drop(reply);
         }
     }

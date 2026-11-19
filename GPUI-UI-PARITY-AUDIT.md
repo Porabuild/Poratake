@@ -10606,6 +10606,25 @@ existing resizer. All 47 GPUI capture-preview tests, four still-image
 pin tests and 54 Electron reference tests passed.
 [Recording thumbnail experiment](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS first recording thumbnail
+
+The first recording thumbnail asks for the video's first decoded
+frame. The Unix decoder can return it as soon as its bytes arrive
+and keep the stream for playback. Timeline seeks still verify the
+requested timestamp through the usual lookahead path.
+
+In six paired app-local 4K trials, median Stop-to-thumbnail
+readiness fell from 174.3 to 134.5 ms. Every pair improved.
+A separate gate withheld the second decoded frame. The thumbnail
+still appeared and the recording reached History after release,
+in light and dark. Six offscreen PNG pairs for idle, hover and
+exit matched byte for byte with a static 4K source.
+
+The timings stop at thumbnail readiness in the app. These trials
+used a fixture daemon and app-local input. The 61 GPUI decoder and
+preview tests and 54 Electron reference tests passed.
+[First recording thumbnail measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

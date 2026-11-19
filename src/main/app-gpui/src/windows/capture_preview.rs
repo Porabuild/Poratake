@@ -1249,11 +1249,13 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                     return None;
                                 }
                                 playback.in_flight = true;
-                                let time = looped_playhead(
-                                    now.saturating_duration_since(playback.started)
-                                        .as_secs_f64(),
-                                    playback.duration,
-                                );
+                                let time = (!preview.thumbnail_loading).then(|| {
+                                    looped_playhead(
+                                        now.saturating_duration_since(playback.started)
+                                            .as_secs_f64(),
+                                        playback.duration,
+                                    )
+                                });
                                 Some((playback.decoder.clone(), time, blur))
                             })
                             .ok()
@@ -1276,9 +1278,11 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                         .background_executor()
                         .spawn({
                             async move {
-                                decoder
-                                    .frame_at(time)
-                                    .and_then(|frame| video_thumbnails(&frame, blur))
+                                let frame = match time {
+                                    Some(time) => decoder.frame_at(time),
+                                    None => decoder.first_frame(),
+                                };
+                                frame.and_then(|frame| video_thumbnails(&frame, blur))
                             }
                         })
                         .await;
