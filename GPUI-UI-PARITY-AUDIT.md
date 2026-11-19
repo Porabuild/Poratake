@@ -8461,6 +8461,31 @@ and the editor-backed round trip.
 python3 tests/native/macos-capture-history-probe.py --standalone-pin
 ```
 
+### 2026-11-19 live macOS area capture latency at `eb4c8fa3`
+
+A preflight-granted screen-only daemon captured a generated AppKit
+panel under app-local input. The probe sampled WindowServer to wait
+for Poratake's selector to clear the capture region and rejected
+overlap from other apps. All 24 600×440 PNGs matched the generated
+panel within two channel levels. Recent Captures was enabled in
+an isolated profile.
+
+With a persistent stacking checker, warm median area selector
+appearance took 22 ms in light mode and 24 ms in dark mode, and
+confirmed selectors disappeared in 17 and 20 ms. Warm median
+confirmation-to-thumbnail readiness took 114 and 119 ms. Of that
+interval, the capture RPC took about 83 ms and thumbnail readiness
+followed its reply by about 17 ms. Opening the editor from the preview
+took a warm median of 18 ms in each theme. This ends at editor window
+availability.
+
+Starting a fresh checker increased the warm median guard interval
+from 14–18 ms to 69–70 ms and the warm median thumbnail interval
+to 167–170 ms. The slowest of the 24 captures reached thumbnail
+readiness in 253 ms. The previous 2.36-second outlier did not recur.
+Its cause remains unclassified in the earlier run.
+[Per-trial timing and probe details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

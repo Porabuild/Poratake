@@ -1086,3 +1086,59 @@ all three samples per appearance. An earlier guarded run with one
 new checker process per capture matched all six reference images
 but reached a worst 2364.5 ms to thumbnail readiness. Host load and
 checker process launch varied between the runs.
+
+2026-11-19 live area capture latency at eb4c8fa3
+
+The arm64 GPUI development build used the same preflight-only
+screen fixture as the earlier live area run. An opaque, nonactivating
+AppKit panel at (45,625) covered a 300x220 point area selected at
+(85,680) on the 1728x1117 Retina display. A WindowServer guard
+waited for Poratake's overlay to clear and rejected overlap by
+other windows. Initial placement was rejected for overlap before
+forwarding any capture. All four runs used a fresh isolated GPUI
+profile with history enabled, clipboard copying off and Freeze off.
+All 24 previews opened an editor, and all decoded 600x440 PNGs were
+opaque and within two sRGB levels of the generated RGB (64,128,192).
+
+Columns are milliseconds. Area open and selector hidden are sampled
+from WindowServer. Pre-RPC measures from selector confirmation to
+the broker receiving the start of capture-area. Guard ends before
+forwarding that RPC. The capture RPC measures the broker round trip
+to the previously authorized fixture. Post-RPC ends when GPUI
+reports a ready thumbnail. Editor opening measures from the preview
+action to the app reporting its editor window. The first sample in
+each profile is cold. The wrapper adds status polling and an
+explicit stacking check to the measured path.
+
+Checker     Theme Trial Area open Hidden Pre-RPC Guard   RPC  Post-RPC Thumbnail Editor
+Persistent  Light   1      67.1   21.3     0.5    21.4  194.9   18.0     234.8   29.7
+Persistent  Light   2      17.9   10.5     0.4    14.3   83.5   15.9     114.2   27.4
+Persistent  Light   3      28.7   30.9     0.4    27.1   83.7   18.6     129.8   15.7
+Persistent  Light   4      21.5   17.0     0.6    18.2   80.6   18.5     117.9   17.9
+Persistent  Light   5      18.8   20.3     0.4    12.1   82.7   17.2     112.4   18.1
+Persistent  Light   6      29.5   10.4     0.5     8.4   84.8   17.2     110.9   10.4
+Persistent  Dark    1      70.9   12.2     3.9    10.2  166.9   17.3     198.3   20.6
+Persistent  Dark    2      28.5   20.8     0.5    13.5   83.4   19.0     116.4   26.3
+Persistent  Dark    3      23.8   20.0     0.4    18.2   84.1   17.1     119.9   10.9
+Persistent  Dark    4      32.6   10.9     0.4    13.9   82.8   14.9     112.1   18.0
+Persistent  Dark    5      23.6   18.4     0.5    20.2   82.0   16.6     119.3   17.9
+Persistent  Dark    6      17.9   23.1     0.4    22.1   88.4   18.8     129.7   16.3
+Fresh       Light   1      71.9   12.5     1.3    66.4  168.5   17.3     253.4   27.1
+Fresh       Light   2      18.4   14.2     0.7    69.1   80.9   10.0     160.7   18.9
+Fresh       Light   3      18.9   21.8     0.4    68.3   85.1   16.6     170.4   19.3
+Fresh       Light   4      17.9   13.4     0.4    72.4   80.2   17.8     170.8   17.0
+Fresh       Light   5      19.4   13.5     0.4    69.0   80.6   17.2     167.2   11.0
+Fresh       Light   6      26.5   14.9     0.5    66.5   77.9   15.7     160.5   10.7
+Fresh       Dark    1      69.9   14.4     2.8    65.1  164.9   17.1     250.0   25.6
+Fresh       Dark    2      26.2    9.2     0.6    70.2   82.8   15.9     169.5   25.1
+Fresh       Dark    3      24.1   24.0     0.4    68.4   85.1   15.8     169.7   10.8
+Fresh       Dark    4      24.7   13.0     0.4    69.7   80.5   14.1     164.7   12.7
+Fresh       Dark    5      28.7   12.1     0.4    72.7   80.2   17.2     170.6   17.5
+Fresh       Dark    6      26.1   21.7     0.8    69.3   76.2   17.5     163.8   16.2
+
+The widest thumbnail delay was 253.4 ms. Fresh checker startup
+added roughly 50–55 ms to the warm median thumbnail interval
+without reproducing the earlier 2.36-second tail. This is a comparison
+across four sequential fixture runs on one display. System load,
+physical input latency, larger regions and first composited editor
+frames are outside this run.
