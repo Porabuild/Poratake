@@ -453,7 +453,7 @@ fn observe_ui<V: 'static>(cx: &mut Context<V>, ui: &Entity<ScrollCaptureUi>) -> 
     cx.observe(ui, |_, _, cx| cx.notify())
 }
 
-#[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+#[cfg(all(feature = "parity", target_os = "macos"))]
 pub(crate) fn native_control_for_probe(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
     cx.windows()
         .into_iter()
@@ -1002,17 +1002,23 @@ impl ScrollControlBar {
         icon: &'static str,
         tooltip: impl Into<SharedString>,
         disabled: bool,
+        busy: bool,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tooltip: SharedString = tooltip.into();
-        Self::native_tooltip_button(
-            id,
-            toolbar::icon(id, icon, tooltip.clone()).is_disabled(disabled),
-            tooltip,
-            on_click,
-            cx,
-        )
+        let button = toolbar::button(id, tooltip.clone()).is_disabled(disabled);
+        let button = if cfg!(target_os = "macos") && busy {
+            button
+                .sx(|element| element.opacity(1.))
+                .child(crate::ui::icon::spinner_element(
+                    (gpui::ElementId::from("scroll-progress"), id),
+                    px(chrome::TOOL_BUTTON_ICON),
+                ))
+        } else {
+            button.child(icon_element(icon, px(chrome::TOOL_BUTTON_ICON)))
+        };
+        Self::native_tooltip_button(id, button, tooltip, on_click, cx)
     }
 
     fn filled_button(
@@ -1054,12 +1060,30 @@ impl Render for ScrollControlBar {
         } else {
             "Start auto-scroll".into()
         };
-        let refresh_tooltip = self.hovered_tooltip.as_ref().is_some_and(|(id, tooltip)| {
-            *id == "scroll-toggle-auto-scroll" && *tooltip != toggle_tooltip
+        let done_tooltip = if finishing {
+            "Finishing…"
+        } else if retryable {
+            "Retry"
+        } else {
+            "Done (Enter)"
+        };
+        let cancel_tooltip = if cancelling {
+            "Canceling…"
+        } else {
+            "Cancel (Esc)"
+        };
+        let refresh_tooltip = self.hovered_tooltip.as_ref().and_then(|(id, tooltip)| {
+            let next = match *id {
+                "scroll-toggle-auto-scroll" => toggle_tooltip.as_ref(),
+                "scroll-done" => done_tooltip,
+                "scroll-cancel" => cancel_tooltip,
+                _ => return None,
+            };
+            (next != tooltip.as_ref()).then_some((*id, next))
         });
-        if refresh_tooltip {
-            self.hovered_tooltip = Some(("scroll-toggle-auto-scroll", toggle_tooltip.clone()));
-            set_native_tooltip(window, Some(toggle_tooltip.as_ref()));
+        if let Some((id, tooltip)) = refresh_tooltip {
+            self.hovered_tooltip = Some((id, tooltip.into()));
+            set_native_tooltip(window, Some(tooltip));
         }
         let glyph_color = crate::ui::colors::white(0.85);
         let toggle_glyph = if auto_scrolling {
@@ -1087,14 +1111,9 @@ impl Render for ScrollControlBar {
                     .child(Self::button(
                         "scroll-done",
                         "check",
-                        if finishing {
-                            "Finishing…"
-                        } else if retryable {
-                            "Retry"
-                        } else {
-                            "Done (Enter)"
-                        },
+                        done_tooltip,
                         finishing || cancelling,
+                        finishing,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, _| ui.request_finish());
                         },
@@ -1103,11 +1122,8 @@ impl Render for ScrollControlBar {
                     .child(Self::button(
                         "scroll-cancel",
                         "x",
-                        if cancelling {
-                            "Canceling…"
-                        } else {
-                            "Cancel (Esc)"
-                        },
+                        cancel_tooltip,
+                        cancelling,
                         cancelling,
                         |this, _, cx| {
                             this.ui.update(cx, |ui, _| ui.request_cancel());
@@ -2102,9 +2118,17 @@ mod tests {
                 );
             }
         }
-        visual.click_at(gpui::point(px(84.0), px(26.0)));
+        for (x, expected) in [(84.0, "Finishing…"), (118.0, "Canceling…")] {
+            let position = gpui::point(px(x), px(26.0));
+            visual.simulate_mouse_move(position, None, gpui::Modifiers::none());
+            visual.click_at(position);
+            visual.settle();
+            assert_eq!(
+                TEST_NATIVE_TOOLTIP.with_borrow(Clone::clone),
+                Some(expected.into())
+            );
+        }
         assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Finish)));
-        visual.click_at(gpui::point(px(118.0), px(26.0)));
         assert!(matches!(events.try_recv(), Ok(ScrollSessionSignal::Cancel)));
         visual.simulate_mouse_move(gpui::point(px(0.0), px(0.0)), None, gpui::Modifiers::none());
         assert!(tooltip(cx).is_none());

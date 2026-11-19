@@ -131,7 +131,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 let active = crate::capture::scroll::is_active();
                 let icons_hidden = crate::capture::desktop_icons::are_hidden();
                 tx.send((active, icons_hidden)).unwrap();
-                if name == "cancel-finishing-held" {
+                if name == "cancel-finishing-held"
+                    || cfg!(target_os = "macos") && matches!(name, "finish-held" | "cancel-held")
+                {
                     release_rx
                         .recv_timeout(std::time::Duration::from_secs(10))
                         .unwrap();
@@ -255,6 +257,36 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             if name == "finish-held" {
                 let ids = cx.update(crate::windows::scroll_capture::excluded_window_ids_for_parity);
                 assert_eq!(ids, Some(vec![7201, 7202, 7203, 7101, 7102]));
+            }
+            #[cfg(target_os = "macos")]
+            if matches!(name, "finish-held" | "cancel-held") {
+                let control = cx
+                    .update(crate::windows::scroll_capture::native_control_for_probe)
+                    .expect("scroll controls while finishing or canceling");
+                super::capture(cx, control, output, &format!("scroll-control-{name}"));
+                let before = cx.capture_screenshot(control).unwrap();
+                cx.advance_clock(std::time::Duration::from_millis(250));
+                super::capture(
+                    cx,
+                    control,
+                    output,
+                    &format!("scroll-control-{name}-next-frame"),
+                );
+                let after = cx.capture_screenshot(control).unwrap();
+                assert_eq!(before.dimensions(), after.dimensions());
+                release.send(()).unwrap();
+                let scale = cx
+                    .update_window(control, |_, window, _| window.scale_factor())
+                    .unwrap();
+                let physical = |points: f32| (points * scale).round() as u32;
+                let left = if name == "finish-held" { 76. } else { 110. };
+                assert!(
+                    (physical(18.)..physical(34.)).any(|y| {
+                        (physical(left)..physical(left + 16.))
+                            .any(|x| before.get_pixel(x, y) != after.get_pixel(x, y))
+                    }),
+                    "{name}: the active control must show progress while the daemon is held"
+                );
             }
             if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
                 assert!(

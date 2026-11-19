@@ -7939,6 +7939,27 @@ The focused renderer and sidebar tests passed all 50 cases, and
 TypeScript passed. The full editor fixture timed out during navigation.
 The accessibility-tree evidence covers the isolated component.
 
+### 2026-11-19 macOS scroll capture progress while finishing and canceling
+
+The scroll control bar showed a dimmed checkmark while the daemon
+was saving. The pending Done or Cancel control now shows a spinner
+in the same space. A hovered tooltip updates to the pending label
+without requiring pointer movement. The controls keep their existing
+disabled and cancellation behavior.
+
+The offscreen Metal fixture holds the Finish and Cancel replies
+while rendering the toolbar. It checks for animation within the
+active control and checks that the toolbar retains its dimensions.
+The old finishing frames matched byte for byte across two phases.
+
+Both light and dark Metal scroll workflows passed on the built-in
+Retina display's 2× scale, including selection, save, retry and
+cancellation cases. Comparing the old and new dark finishing
+frames found pixel changes only in the Done icon region. All
+17 focused tests passed, including tooltip updates while hovered.
+[Dark finishing control](tests/native/evidence/macos-ui/scroll-control-finishing-dark-20261119.png)
+[Light canceling control](tests/native/evidence/macos-ui/scroll-control-canceling-light-20261119.png)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
