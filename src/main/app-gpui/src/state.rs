@@ -38,7 +38,17 @@ struct NativeShell(Arc<NativeBridge>);
 
 impl gpui::Global for NativeShell {}
 
-pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
+fn start_native_daemon(daemon: &DaemonHandle) -> bool {
+    match daemon.start() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[daemon] failed to start: {error}");
+            false
+        }
+    }
+}
+
+pub fn init(cx: &mut gpui::App, defer_daemon: bool) -> Arc<ConfigStore> {
     let config = match ConfigStore::load() {
         Ok(store) => Arc::new(store),
         Err(error) => {
@@ -50,10 +60,20 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
     let service = CaptureService::new(DaemonHandle::new(), config.clone());
 
     if crate::system::capabilities::has_native_daemon() {
-        if let Err(error) = service.daemon.start() {
-            // Capture features degrade gracefully; the editor still works for
-            // files opened from disk.
-            eprintln!("[daemon] failed to start: {error}");
+        if defer_daemon {
+            let daemon = service.daemon.clone();
+            cx.spawn(async move |cx| {
+                let started = cx
+                    .background_executor()
+                    .spawn(async move { start_native_daemon(&daemon) })
+                    .await;
+                if started {
+                    cx.update(crate::capture::prewarm_freeze_screen);
+                }
+            })
+            .detach();
+        } else {
+            start_native_daemon(&service.daemon);
         }
     }
 

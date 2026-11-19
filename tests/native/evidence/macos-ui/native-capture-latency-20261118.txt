@@ -4547,3 +4547,30 @@ includes metadata polling and does not measure the first paint.
 A separate Rust regression failed the first two attempts,
 verified prompt return from startup, then observed the third
 attempt succeed without an extra restart.
+
+2026-11-19 macOS file editor opens during daemon startup at 2681eb68
+
+The GPUI app opened a generated 640x420 screenshot through
+its direct file argument. The fixture daemon held system:ready
+at startup. WindowServer polling was scoped to the test PID.
+The baseline held Ready for one second after the daemon began
+and checked that no editor window appeared. The updated probe
+waited for the editor window before releasing Ready.
+
+Run                  Theme    Gate at first window   Launch to visible (ms)
+Baseline             light    released                          2104.2
+Baseline             dark     released                          1375.6
+Updated file         light    held                              2129.6
+Updated file         dark     held                              1296.1
+Updated Settings     light    released                          1705.7
+Updated Settings     dark     released                          1512.2
+Baseline repeat      light    released                          1335.3
+Baseline repeat      dark     released                          1293.3
+Updated file repeat  light    held                               977.0
+Updated file repeat  dark     held                               304.1
+
+The initial run shared the host with a build. The repeat
+followed the build. Each profile enabled Freeze Screen and
+logged one prewarm after the daemon sent Ready. A separate
+native probe checked startup prewarm with the preference
+enabled and disabled in both appearances.

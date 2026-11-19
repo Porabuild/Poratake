@@ -594,9 +594,11 @@ fn each_display(
 /// `prewarmFreezeScreen()`: warms the daemon's capture pipeline off the main
 /// thread at startup.
 pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
-    if !crate::system::capabilities::is_supported(
-        crate::system::capabilities::Feature::FreezeScreen,
-    ) {
+    if desktop_icons::is_shutting_down()
+        || !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::FreezeScreen,
+        )
+    {
         return;
     }
     let service = crate::state::state(cx);

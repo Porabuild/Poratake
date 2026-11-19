@@ -212,8 +212,14 @@ fn main() {
             #[cfg(target_os = "linux")]
             display_environment.restore();
 
+            let mut args = std::env::args().skip(1);
+            let argument = args.next();
+            let defer_daemon = cfg!(target_os = "macos")
+                && argument.as_deref().is_some_and(|argument| {
+                    !argument.starts_with("--") && std::path::Path::new(argument).is_file()
+                });
             native::configure_app();
-            let config = state::init(cx);
+            let config = state::init(cx, defer_daemon);
             let settings = config.get();
             let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
             ui::font::register(cx);
@@ -235,7 +241,9 @@ fn main() {
             capture::overlay::init_bindings(cx);
             // `capture/index.ts` prewarms the freeze pipeline at startup so the
             // first capture does not pay for initialising it.
-            capture::prewarm_freeze_screen(cx);
+            if !defer_daemon {
+                capture::prewarm_freeze_screen(cx);
+            }
             // `applyLoginItemSetting()` in the Electron shell reconciles the Run
             // entry with the stored preference on launch; this is the GPUI
             // shell's half of that, so both shells agree on one entry. Comparing
@@ -309,8 +317,7 @@ fn main() {
             // `--intent open-settings` -- runs that menu item, which is the only
             // way to reach the settings and history windows without clicking the
             // tray, and so the only way to screenshot them for a parity check.
-            let mut args = std::env::args().skip(1);
-            match args.next().as_deref() {
+            match argument.as_deref() {
                 #[cfg(all(feature = "parity", target_os = "macos"))]
                 Some("--native-smoke-recording") => ui::native_smoke::open(cx),
                 Some("--intent") => {

@@ -10852,6 +10852,28 @@ All 130 GPUI daemon and capture tests and 41 Electron reference
 tests passed.
 [Early daemon exit measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS file editor opens during daemon startup
+
+Opening an existing file directly now starts the native daemon
+on the background executor. The screenshot editor can open while
+the daemon waits for Ready. Freeze Screen prewarm runs after
+readiness when the preference is enabled. Intent-based startup
+still waits for the daemon as before.
+
+In light and dark, a fixture held the daemon's Ready event.
+The baseline window stayed closed during a one-second hold.
+The revised file editor became onscreen while Ready was still
+held. In the repeat after the build finished, WindowServer
+reported the revised window in 304–977 ms, compared with
+1,293–1,335 ms for the baseline after its gate was released.
+The updated Settings intent also waited for the gate.
+
+The observation covers WindowServer visibility with a generated
+PNG and a fixture daemon. The enabled and disabled Freeze Screen
+probes passed in both appearances, along with 130 GPUI daemon
+and capture tests and 42 Electron reference tests.
+[Direct file startup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
