@@ -414,6 +414,13 @@ pub fn layout(
     )
 }
 
+pub(super) fn centered_raster_offset(canvas: (f64, f64), offset: (f64, f64)) -> (f64, f64) {
+    (
+        offset.0 + (canvas.0.round() - canvas.0) / 2.0,
+        offset.1 + (canvas.1.round() - canvas.1) / 2.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

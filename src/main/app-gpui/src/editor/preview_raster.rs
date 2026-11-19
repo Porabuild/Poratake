@@ -37,6 +37,7 @@ pub struct Surface<'a> {
     pub offset_x: f64,
     pub offset_y: f64,
     pub source_is_composed: bool,
+    pub align_to_composition_grid: bool,
     pub native_scale: f64,
     pub rounded_clip: Option<RoundedClip<'a>>,
     pub pixels: Option<&'a [u8]>,
@@ -484,10 +485,21 @@ fn render_patch(
         .filter(|_| surface.composite_backdrop)
         .map(|(_, x, y)| (x, y))
         .unwrap_or((surface.offset_x, surface.offset_y));
-    let device_x = (left * scale).floor();
-    let device_y = (top * scale).floor();
-    let width = ((right * scale).ceil() - device_x).max(1.0) as u32;
-    let height = ((bottom * scale).ceil() - device_y).max(1.0) as u32;
+    let (phase_x, phase_y) = if surface.align_to_composition_grid && surface.rounded_clip.is_none()
+    {
+        (
+            (composition_origin.0 * scale).rem_euclid(1.0),
+            (composition_origin.1 * scale).rem_euclid(1.0),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let sample_x = (left * scale + phase_x).floor();
+    let sample_y = (top * scale + phase_y).floor();
+    let device_x = sample_x - phase_x;
+    let device_y = sample_y - phase_y;
+    let width = ((right * scale + phase_x).ceil() - sample_x).max(1.0) as u32;
+    let height = ((bottom * scale + phase_y).ceil() - sample_y).max(1.0) as u32;
     let (render_x, render_y, render_width, render_height) = if let Some(clip) = surface.rounded_clip
     {
         let x = device_x.max(0.);
@@ -506,10 +518,10 @@ fn render_patch(
     canvas.translate(-render_x as f32, -render_y as f32);
     canvas.scale(scale as f32, scale as f32);
     canvas.set_screenshot_surface((
-        ((surface_left * scale).floor() - render_x) as i32,
-        ((surface_top * scale).floor() - render_y) as i32,
-        ((surface_right * scale).ceil() - render_x) as i32,
-        ((surface_bottom * scale).ceil() - render_y) as i32,
+        (surface_left * scale - render_x).floor() as i32,
+        (surface_top * scale - render_y).floor() as i32,
+        (surface_right * scale - render_x).ceil() as i32,
+        (surface_bottom * scale - render_y).ceil() as i32,
     ));
     canvas.set_pixel_grid_origin(composition_origin);
     canvas.set_patch_path_anchor(
@@ -534,6 +546,7 @@ fn render_patch(
             offset_x,
             offset_y,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: surface.native_scale,
             rounded_clip: None,
             pixels: Some(pixels),
@@ -632,15 +645,19 @@ fn render_patch(
         draw_matte(&mut canvas);
     }
 
-    let target_left = (target.0 * scale).floor().max(device_x);
-    let target_top = (target.1 * scale).floor().max(device_y);
-    let target_right = (target.2 * scale).ceil().min(device_x + f64::from(width));
-    let target_bottom = (target.3 * scale).ceil().min(device_y + f64::from(height));
+    let target_left = (target.0 * scale + phase_x).floor().max(sample_x);
+    let target_top = (target.1 * scale + phase_y).floor().max(sample_y);
+    let target_right = (target.2 * scale + phase_x)
+        .ceil()
+        .min(sample_x + f64::from(width));
+    let target_bottom = (target.3 * scale + phase_y)
+        .ceil()
+        .min(sample_y + f64::from(height));
     let target_width = (target_right - target_left) as u32;
     let target_height = (target_bottom - target_top) as u32;
     let rect = tiny_skia::IntRect::from_xywh(
-        (target_left - device_x) as i32,
-        (target_top - device_y) as i32,
+        (target_left - sample_x) as i32,
+        (target_top - sample_y) as i32,
         target_width,
         target_height,
     )?;
@@ -658,8 +675,8 @@ fn render_patch(
     }
     Some(Patch {
         pixmap,
-        x: target_left / scale,
-        y: target_top / scale,
+        x: (target_left - phase_x) / scale,
+        y: (target_top - phase_y) / scale,
         width: f64::from(target_width) / scale,
         height: f64::from(target_height) / scale,
     })
@@ -1274,6 +1291,7 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u64(surface.offset_x.to_bits());
     hasher.write_u64(surface.offset_y.to_bits());
     hasher.write_u8(u8::from(surface.source_is_composed));
+    hasher.write_u8(u8::from(surface.align_to_composition_grid));
     hasher.write_u64(surface.native_scale.to_bits());
     if let Some(clip) = surface.rounded_clip {
         hasher.write_u8(1);
@@ -1410,6 +1428,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: image.as_bytes(0),
@@ -1500,6 +1519,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: false,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: source.as_bytes(0),
@@ -1537,6 +1557,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: Some(&bgra),
@@ -1609,6 +1630,7 @@ mod tests {
                 offset_x,
                 offset_y,
                 source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
                 rounded_clip: None,
                 pixels: Some(&bgra),
@@ -1731,6 +1753,7 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: Some(&bgra),
@@ -1862,6 +1885,7 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: first.as_bytes(0),
@@ -1977,6 +2001,7 @@ mod tests {
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
             rounded_clip: None,
             pixels: Some(&backdrop_bgra),
@@ -2101,6 +2126,7 @@ mod tests {
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
             rounded_clip: None,
             pixels: Some(&backdrop_bgra),
@@ -2265,6 +2291,7 @@ mod tests {
             offset_x: 0.25,
             offset_y: 0.25,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
             rounded_clip: None,
             pixels: None,
@@ -2307,6 +2334,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: first.as_bytes(0),
@@ -2503,6 +2531,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: Some(&[]),
@@ -2573,6 +2602,7 @@ mod tests {
             offset_x: 48.,
             offset_y: 20.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: Some(&bgra),
@@ -2645,6 +2675,7 @@ mod tests {
                 offset_x,
                 offset_y,
                 source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
                 rounded_clip: None,
                 pixels: Some(&bgra),
@@ -2707,6 +2738,7 @@ mod tests {
                     offset_x: 0.,
                     offset_y: 0.,
                     source_is_composed: true,
+                    align_to_composition_grid: false,
                     native_scale: 1.,
                     rounded_clip: None,
                     pixels: Some(&bgra),
@@ -2783,6 +2815,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: source.as_bytes(0),
@@ -2882,6 +2915,7 @@ mod tests {
             offset_x: 90.,
             offset_y: -20.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: Some(&bgra),
@@ -2951,6 +2985,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: source.as_bytes(0),
@@ -3035,6 +3070,7 @@ mod tests {
                     offset_x: 0.,
                     offset_y: 0.,
                     source_is_composed: true,
+                    align_to_composition_grid: false,
                     native_scale: 1.,
                     rounded_clip: None,
                     pixels: source.as_bytes(0),
@@ -3155,6 +3191,7 @@ mod tests {
                 offset_x: 0.,
                 offset_y: 0.,
                 source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
                 rounded_clip: None,
                 pixels: source.as_bytes(0),
@@ -3197,6 +3234,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 2.,
             rounded_clip: None,
             pixels: None,
@@ -3248,6 +3286,7 @@ mod tests {
                 offset_x,
                 offset_y,
                 source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.25,
                 rounded_clip: None,
                 pixels: Some(&bgra),
@@ -3431,6 +3470,7 @@ mod tests {
                 offset_x: 0.,
                 offset_y: 0.,
                 source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
                 rounded_clip: None,
                 pixels: None,
@@ -3459,6 +3499,7 @@ mod tests {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: None,
             pixels: None,

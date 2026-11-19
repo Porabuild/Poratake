@@ -2287,3 +2287,26 @@ themes. All 48 new cases met that bound. The matrix covered
 both aspect ratios, both sources, 73% and 137% zoom, simulated
 1x, 1.25x and 2x scale, and light and dark appearance. All
 14 Electron frame, wallpaper and annotation export tests passed.
+
+2026-11-19 macOS centering for framed attachment exports
+
+The framed attachment fixtures used a square or portrait canvas
+with the inset and spacing from the preceding matrix. The
+Electron 43.4.0 offscreen probe invoked the actual export hook
+with the same generated sources at 1x, 1.25x and 2x. All 12 canvas
+sizes and three interior content samples per case matched GPUI.
+
+At 1x, sampling the balanced 273x273 square on row 204 gave left
+and right margins of 24 and 22 pixels before the change and 23
+and 23 after it. The comparison counted coverage at alpha 128
+or above. Both renderers measured 23 pixels on each side after
+the fix. The six square cases matched the sampled margins.
+Four portrait samples retained a one-pixel raster edge difference.
+
+Centering the frame at a half pixel exposed 94 annotation pixels
+that differed by more than two channel levels at 73% zoom in
+the balanced square. The annotation patches now rasterize on
+the composition's pixel grid. With both changes applied, each
+of the 48 Metal preview/reopened PNG comparisons matched within
+one channel level. The check used both app appearances and no
+physical monitor transition.

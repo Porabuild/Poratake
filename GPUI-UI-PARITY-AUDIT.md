@@ -9220,6 +9220,22 @@ at 73% and 137% zoom in both app appearances and simulated 100%,
 level. The 14 Electron reference tests passed.
 [Aspect-ratio preview evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS centering for framed attachment exports
+
+Framed attachments now center against the final pixel dimensions
+of the canvas. The balanced 273×273 square example previously
+measured 24 and 22 pixels at its sides. It now measures 23 on
+each side, matching Electron. Annotation patches use the same
+composition pixel grid at half-pixel offsets.
+
+All 48 Metal preview/reopen comparisons passed in both themes
+with at most one channel level of difference. Twelve offscreen
+Electron exports matched GPUI's dimensions and sampled content
+positions. The six square cases matched the sampled margins.
+Four portrait samples still differ by one edge pixel between
+renderers.
+[Centering and annotation evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

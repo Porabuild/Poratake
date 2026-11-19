@@ -7137,6 +7137,19 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                 } else {
                     (name.clone(), png.clone())
                 };
+                if balanced && scale == 1. && aspect_ratio == "1:1" {
+                    let saved = image::load_from_memory(&variant_png).unwrap().to_rgba8();
+                    let y = saved.height() * 3 / 4;
+                    let mut visible =
+                        (0..saved.width()).filter(|&x| saved.get_pixel(x, y).0[3] >= 128);
+                    let first = visible.next().unwrap();
+                    let last = visible.next_back().unwrap();
+                    assert_eq!(
+                        first,
+                        saved.width() - 1 - last,
+                        "{variant} horizontal margins"
+                    );
+                }
                 let flattened_path = scratch.join(format!("gpui-{variant}-flattened.png"));
                 std::fs::write(&flattened_path, &variant_png).unwrap();
                 let flattened = cx

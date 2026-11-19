@@ -44,6 +44,7 @@ fn rounded_annotation_patches_match_the_flattened_export() {
             offset_x: 0.,
             offset_y: 0.,
             source_is_composed: false,
+            align_to_composition_grid: false,
             native_scale: 1.,
             rounded_clip: Some(RoundedClip {
                 width: 64,
@@ -161,6 +162,7 @@ fn rounded_annotation_sampling_matches_the_flattened_export() {
         offset_x: 0.,
         offset_y: 0.,
         source_is_composed: false,
+        align_to_composition_grid: false,
         native_scale: 1.25,
         rounded_clip: Some(RoundedClip {
             width: 128,

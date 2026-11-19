@@ -412,6 +412,11 @@ fn compose_framed_layers(
     );
     let ((width, height), (offset_x, offset_y, _, _)) =
         crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale, true);
+    let (offset_x, offset_y) = if layers.is_empty() {
+        (offset_x.round(), offset_y.round())
+    } else {
+        crate::editor::wallpaper::centered_raster_offset((width, height), (offset_x, offset_y))
+    };
     let (width, height) = (
         width.round().max(1.0) as u32,
         height.round().max(1.0) as u32,
@@ -436,8 +441,8 @@ fn compose_framed_layers(
         crate::render::window_frame::render(
             canvas,
             image,
-            offset_x.round() + rect.x,
-            offset_y.round() + rect.y,
+            offset_x + rect.x,
+            offset_y + rect.y,
             content_width,
             content_height,
             &wallpaper.window_frame.style,
@@ -472,8 +477,8 @@ fn compose_framed_layers(
         render_layer(&mut canvas, image.as_ref(), rect, inset_color.as_deref());
     }
     canvas.translate(
-        (offset_x.round() + layout.primary.x + inset) as f32 - crop_offset.0,
-        (offset_y.round() + layout.primary.y + title_bar + inset) as f32 - crop_offset.1,
+        (offset_x + layout.primary.x + inset) as f32 - crop_offset.0,
+        (offset_y + layout.primary.y + title_bar + inset) as f32 - crop_offset.1,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())

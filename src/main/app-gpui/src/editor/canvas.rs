@@ -428,15 +428,19 @@ impl RenderOnce for EditorCanvas {
                     frame_scale,
                     !layers.is_empty(),
                 );
-            let (canvas_width, canvas_height, offset_x, offset_y) = if snapped_composition {
-                (
-                    canvas_width.round(),
-                    canvas_height.round(),
-                    offset_x.round(),
-                    offset_y.round(),
-                )
+            let (offset_x, offset_y) =
+                match (snapped_composition, window_frame && !layers.is_empty()) {
+                    (true, true) => crate::editor::wallpaper::centered_raster_offset(
+                        (canvas_width, canvas_height),
+                        (offset_x, offset_y),
+                    ),
+                    (true, false) => (offset_x.round(), offset_y.round()),
+                    (false, _) => (offset_x, offset_y),
+                };
+            let (canvas_width, canvas_height) = if snapped_composition {
+                (canvas_width.round(), canvas_height.round())
             } else {
-                (canvas_width, canvas_height, offset_x, offset_y)
+                (canvas_width, canvas_height)
             };
             // The capture sits wherever the group's layout put it.
             let (offset_x, offset_y) = (
@@ -713,6 +717,9 @@ fn paint_annotations(
             draft,
         ));
     }
+    let align_to_composition_grid = snapshot.backdrop_composite
+        && !snapshot.layers.is_empty()
+        && crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style).is_some();
     let (surface_image, offset_x, offset_y) = if snapshot.backdrop_composite {
         let (width, height) = crate::editor::wallpaper::balanced_size(
             f64::from(snapshot.image_width),
@@ -738,18 +745,23 @@ fn paint_annotations(
             layer_inset,
             layer_title_bar,
         );
-        let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+        let (canvas, (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
             layout.width,
             layout.height,
             snapshot.frame_scale,
             !snapshot.layers.is_empty(),
         );
+        let (x, y) = if align_to_composition_grid {
+            crate::editor::wallpaper::centered_raster_offset(canvas, (x, y))
+        } else {
+            (x.round(), y.round())
+        };
         let (crop_left, crop_top, _, _) = snapshot.balance_crop.unwrap_or_default();
         (
             snapshot.backdrop.as_ref(),
-            x.round() + layout.primary.x + layer_inset - f64::from(crop_left),
-            y.round() + layout.primary.y + layer_inset + title_bar - f64::from(crop_top),
+            x + layout.primary.x + layer_inset - f64::from(crop_left),
+            y + layout.primary.y + layer_inset + title_bar - f64::from(crop_top),
         )
     } else {
         (snapshot.image.as_ref(), 0.0, 0.0)
@@ -765,6 +777,7 @@ fn paint_annotations(
         offset_x,
         offset_y,
         source_is_composed: snapshot.backdrop_composite,
+        align_to_composition_grid,
         native_scale: snapshot.frame_scale,
         rounded_clip: None,
         pixels: surface_image.and_then(|image| image.as_bytes(0)),
