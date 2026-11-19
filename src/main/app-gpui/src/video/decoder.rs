@@ -38,6 +38,14 @@ pub struct DecodedFrame {
 
 pub(crate) type FrameCancellation = smol::channel::Receiver<()>;
 
+async fn wait_for_cancellation(signal: Option<&FrameCancellation>) {
+    if let Some(signal) = signal {
+        let _ = signal.recv().await;
+    } else {
+        std::future::pending().await
+    }
+}
+
 const STREAM_SEEK_PREROLL: f64 = 2.0;
 
 pub(crate) fn needs_stream_seek(previous: f64, requested: f64) -> bool {
@@ -82,12 +90,13 @@ pub(crate) struct DecoderOpening {
 
 impl DecoderOpening {
     fn finish(self) -> Option<VideoDecoder> {
-        self.finish_interruptible(None).ok().flatten()
+        self.finish_interruptible(None, None).ok().flatten()
     }
 
     pub(crate) fn finish_interruptible(
         self,
         cancelled: Option<&FrameCancellation>,
+        superseded: Option<&FrameCancellation>,
     ) -> Result<Option<VideoDecoder>, Self> {
         let ready = smol::future::or(
             async { self.info.recv().await.ok().flatten() },
@@ -96,16 +105,16 @@ impl DecoderOpening {
                 None
             },
         );
-        let info = match cancelled {
-            Some(cancelled) => smol::block_on(smol::future::or(
-                async {
-                    let _ = cancelled.recv().await;
-                    Err(())
-                },
-                async { Ok(ready.await) },
-            )),
-            None => Ok(smol::block_on(ready)),
-        };
+        let info = smol::block_on(smol::future::or(
+            async {
+                wait_for_cancellation(cancelled).await;
+                Err(())
+            },
+            smol::future::or(async { Ok(ready.await) }, async {
+                wait_for_cancellation(superseded).await;
+                Err(())
+            }),
+        ));
         match info {
             Ok(info) => Ok(info.filter(|info| info.is_valid()).map(|info| VideoDecoder {
                 commands: self.commands,
@@ -793,20 +802,13 @@ mod backend {
         }
 
         async fn interrupted(self) -> FrameReadError {
-            async fn wait_for_signal(signal: Option<&FrameCancellation>) {
-                if let Some(signal) = signal {
-                    let _ = signal.recv().await;
-                } else {
-                    std::future::pending().await
-                }
-            }
             smol::future::or(
                 async {
-                    wait_for_signal(self.abandoned).await;
+                    wait_for_cancellation(self.abandoned).await;
                     FrameReadError::TimedOut
                 },
                 async {
-                    wait_for_signal(self.cancelled).await;
+                    wait_for_cancellation(self.cancelled).await;
                     FrameReadError::Cancelled
                 },
             )
@@ -1854,7 +1856,7 @@ mod tests {
         warmup.recv_timeout(Duration::from_secs(1)).unwrap();
 
         cancel.close();
-        let opening = match opening.finish_interruptible(Some(&cancelled)) {
+        let opening = match opening.finish_interruptible(Some(&cancelled), None) {
             Err(opening) => opening,
             Ok(_) => panic!("cancelled wait consumed the opening decoder"),
         };
@@ -1864,8 +1866,17 @@ mod tests {
             duration: 2.0,
             frame_rate: 30.0,
         };
+        let opening = match opening.finish_interruptible(None, Some(&cancelled)) {
+            Err(opening) => opening,
+            Ok(_) => panic!("superseded wait consumed the opening decoder"),
+        };
         info_tx.try_send(Some(info)).unwrap();
-        assert_eq!(opening.finish().unwrap().info(), info);
+        let ready = opening
+            .finish_interruptible(None, Some(&cancelled))
+            .ok()
+            .flatten()
+            .unwrap();
+        assert_eq!(ready.info(), info);
     }
 
     #[cfg(windows)]

@@ -4265,3 +4265,34 @@ composed the camera overlay. The opening and camera-visible PNGs
 each matched their baseline in both appearances. A color sample
 found zero pixels in the camera test range in the opening frame
 and 15,287 matching pixels in the camera-visible frame.
+
+2026-11-19 macOS scrubbing past delayed camera metadata at 07d3889d
+
+The GPUI development app opened a generated 320x180, 30 fps
+screen clip with a 160x90 camera sidecar. A fixture held the
+camera metadata probe. Its visible segment began at 1.0 s.
+Decoder tracing confirmed the screen request for 1.2 s
+had decoded before the next gesture moved to 0.5 s. The
+Stop and preview handoff used the app's normal fixture commands.
+
+The baseline gate released after 400 ms at the screen-only
+request. The revised gate remained closed until the preview
+for that request was ready. Times measure the interval from
+the screen-only command to the first complete frame, in ms.
+
+Gesture   Appearance   Baseline after release    Updated while held
+Scrub     light                         530.5                  55.3
+Scrub     dark                          540.4                  51.6
+Hover     light                         559.6                  58.3
+Hover     dark                          523.7                  57.9
+
+All eight paired screen-only and camera-visible PNGs matched.
+A separate 640x360 run also returned while the gate was held
+at 105.5–121.1 ms. The baseline selected a 480x270 active
+preview after the hold during scrub. The updated scrub preview
+stayed at 640x360. That run shared host resources with a test
+build. The 320x180 run fits every preview quality tier.
+
+A repeat with the final development binary returned in 57.3 ms
+for light scrub, 58.9 ms for dark scrub, 55.6 ms for light hover
+and 45.1 ms for dark hover. PNG comparison passed again.

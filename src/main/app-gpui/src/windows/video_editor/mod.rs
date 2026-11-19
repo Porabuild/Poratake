@@ -166,6 +166,7 @@ pub struct VideoEditorWindow {
     /// flight replaces the queued position rather than piling up.
     compose_in_flight: bool,
     preview_frame_cancellation: Option<smol::channel::Sender<()>>,
+    preview_camera_wait: Option<smol::channel::Sender<()>>,
     queued_frame: Option<f64>,
     preview_frame_generation: u64,
     preview_quality: usize,
@@ -399,6 +400,7 @@ impl VideoEditorWindow {
             preview_image: None,
             compose_in_flight: false,
             preview_frame_cancellation: None,
+            preview_camera_wait: None,
             queued_frame: None,
             preview_frame_generation: 0,
             preview_quality: INITIAL_PREVIEW_QUALITY,
@@ -857,6 +859,12 @@ impl VideoEditorWindow {
         }
     }
 
+    fn supersede_camera_wait(&mut self) {
+        if let Some(wait) = self.preview_camera_wait.take() {
+            wait.close();
+        }
+    }
+
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.source.clone() else {
@@ -872,6 +880,10 @@ impl VideoEditorWindow {
         }
         let (cancellation, cancelled) = smol::channel::bounded(1);
         self.preview_frame_cancellation = Some(cancellation);
+        let (camera_wait, camera_wait_superseded) = (!self.is_playing || self.is_scrubbing)
+            .then(|| smol::channel::bounded(1))
+            .unzip();
+        self.preview_camera_wait = camera_wait;
         self.compose_in_flight = true;
         self.queued_frame = None;
         let generation = self.preview_frame_generation;
@@ -884,7 +896,13 @@ impl VideoEditorWindow {
                     let mut decode_wait = Duration::ZERO;
                     let mut guard = source.lock();
                     let image = guard
-                        .compose_measured(time, max_dimensions, &mut decode_wait, Some(&cancelled))
+                        .compose_measured(
+                            time,
+                            max_dimensions,
+                            &mut decode_wait,
+                            Some(&cancelled),
+                            camera_wait_superseded.as_ref(),
+                        )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
                     (image, started.elapsed(), decode_wait)
@@ -894,6 +912,7 @@ impl VideoEditorWindow {
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
                 this.preview_frame_cancellation = None;
+                this.preview_camera_wait = None;
                 if this.preview_frame_generation == generation {
                     if max_dimensions.is_some() && composed.is_some() {
                         (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
@@ -1400,8 +1419,12 @@ impl VideoEditorWindow {
     pub fn set_playhead(&mut self, time: f64, cx: &mut Context<Self>) {
         let total = self.total_duration();
         let time = time.clamp(0.0, total);
-        if !self.is_scrubbing && (self.playhead != time || self.preview_playhead.is_some()) {
-            self.invalidate_preview_frames();
+        if self.playhead != time || self.preview_playhead.is_some() {
+            if self.is_scrubbing {
+                self.supersede_camera_wait();
+            } else {
+                self.invalidate_preview_frames();
+            }
         }
         self.playhead = time;
         self.preview_playhead = None;
@@ -2589,6 +2612,8 @@ impl VideoEditorWindow {
         }
         if time.is_none() {
             self.invalidate_preview_frames();
+        } else {
+            self.supersede_camera_wait();
         }
         self.preview_playhead = time;
         self.request_frame(cx);

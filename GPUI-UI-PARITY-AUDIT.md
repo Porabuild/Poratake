@@ -10646,6 +10646,28 @@ metadata. Twenty-seven GPUI tests and 58 Electron reference tests
 passed.
 [Delayed camera track verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS scrubbing past delayed camera metadata
+
+Moving the scrub or hover position can now interrupt a pending
+camera metadata wait. The pending camera decoder survives and
+ordinary frame decoding can still finish during the gesture.
+Once metadata is available, the editor can use the camera frame
+even if a newer scrub position is queued.
+
+In a 320×180 fixture, a camera segment from 1.0 to 2.0 seconds
+was held at its FFmpeg metadata read. After the screen frame
+at 1.2 seconds decoded, the app-local scrub or hover moved to
+0.5 seconds. The updated editor showed the screen-only frame
+in 45–59 ms while the camera remained held. The baseline stayed
+on the preceding image throughout a deliberate 400 ms hold.
+After release, the screen-only and camera-visible snapshots
+matched across both builds in light and dark.
+
+The fixture used generated video files and measured app readiness.
+It exercised a scrub in progress and timeline hover. All 190
+targeted GPUI tests and 48 Electron reference tests passed.
+[Scrub and hover measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

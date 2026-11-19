@@ -147,7 +147,7 @@ impl Source {
         max_dimensions: Option<(u32, u32)>,
     ) -> Option<Pixmap> {
         let mut decode_wait = Duration::ZERO;
-        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait, None)
+        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait, None, None)
     }
 
     pub(super) fn compose_measured(
@@ -156,6 +156,7 @@ impl Source {
         max_dimensions: Option<(u32, u32)>,
         decode_wait: &mut Duration,
         cancelled: Option<&FrameCancellation>,
+        camera_wait_superseded: Option<&FrameCancellation>,
     ) -> Option<Pixmap> {
         if cancelled.is_some_and(FrameCancellation::is_closed) {
             return None;
@@ -185,7 +186,7 @@ impl Source {
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             if let Some(opening) = self.camera_opening.take() {
-                match opening.finish_interruptible(cancelled) {
+                match opening.finish_interruptible(cancelled, camera_wait_superseded) {
                     Ok(camera) => self.camera = camera,
                     Err(opening) => {
                         self.camera_opening = Some(opening);
@@ -609,7 +610,7 @@ mod tests {
         let dimensions = Some((160, 90));
         let mut decode_wait = Duration::ZERO;
         assert!(source
-            .compose_measured(0., dimensions, &mut decode_wait, None)
+            .compose_measured(0., dimensions, &mut decode_wait, None, None)
             .is_some());
         assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.video_frame.is_none());
@@ -621,7 +622,7 @@ mod tests {
         assert!(source.camera.is_none());
         let mut decode_wait = Duration::ZERO;
         assert!(source
-            .compose_measured(still + 0.75, dimensions, &mut decode_wait, None)
+            .compose_measured(still + 0.75, dimensions, &mut decode_wait, None, None)
             .is_some());
         assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.compose(still + 0.25, dimensions).is_some());

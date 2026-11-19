@@ -1746,9 +1746,11 @@ pub fn open(cx: &mut App) {
                 }
                 if command.starts_with("video editor cut ")
                     || command.starts_with("video editor seek ")
+                    || command.starts_with("video editor hover seek ")
                     || matches!(
                         command.as_str(),
                         "video editor export" | "video editor export done" | "video editor snapshot"
+                            | "video editor scrub begin"
                     )
                 {
                     let Some(handle) =
@@ -1774,7 +1776,18 @@ pub fn open(cx: &mut App) {
                                 editor.set_playhead(time, cx);
                                 return true;
                             }
+                            if let Some(time) = command.strip_prefix("video editor hover seek ")
+                                .and_then(|value| value.parse::<f64>().ok())
+                                .filter(|time| time.is_finite())
+                            {
+                                editor.preview_seek(Some(time), cx);
+                                return true;
+                            }
                             match command.as_str() {
+                                "video editor scrub begin" => {
+                                    editor.begin_scrub();
+                                    true
+                                }
                                 "video editor export" => {
                                     editor.export_to_path_for_parity(output.join("export.mp4"), cx)
                                 }
