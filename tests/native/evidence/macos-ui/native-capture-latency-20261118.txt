@@ -4031,3 +4031,22 @@ checks were running on the host during the measurement.
 Border alpha   Before min/median/max (ms)   After min/median/max (ms)
 255                 29.95 / 56.24 / 80.18       5.81 / 14.54 / 27.69
 128                 33.20 / 44.12 / 85.27      14.57 / 19.05 / 47.39
+
+2026-11-19 macOS screenshot export canvas reuse at eb0917ce
+
+Fresh GPUI development processes on the M5 Pro opened an editor
+from a fixture 3840x2160 screenshot and added an annotation. Four
+app-local Print reference commands per appearance composed,
+encoded, and wrote the annotated PNG. The round trip includes
+the command pipe and file write. vmmap sampled after editor close.
+
+Build   Appearance   Four command times (ms)   Peak / after close (MiB)
+Before  light        64.5 58.1 55.2 55.6                388.3 / 157.4
+Before  dark         64.3 54.3 56.5 53.7                387.7 / 156.9
+Updated light        40.1 30.5 30.0 31.5                388.2 / 157.5
+Updated dark         42.8 30.7 31.0 30.5                388.2 / 157.5
+
+All output PNGs matched with SHA-256
+587fefb06b73eb70158a902f1fd2c6e23868a2df4efa4daad627bd16b434c761.
+Both builds retained 126.6 MiB in empty large malloc regions
+after editor close in these trials.

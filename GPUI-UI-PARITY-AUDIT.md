@@ -10474,6 +10474,28 @@ borrowed samples with the premultiplied image across 24 combinations
 of border and content alpha, including the content cutoff.
 [Balance sampling measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS screenshot export canvas reuse
+
+Screenshot composition now uses the converted source image as its
+initial canvas. The previous path allocated a blank canvas and drew
+the source onto it at the same size before adding annotations.
+
+For eight annotated 4K PNG exports per build, the median app-local
+command time fell from 56 ms to 31 ms. Each command composed and
+encoded the image and wrote it to a temporary file. Light and dark
+outputs matched byte for byte across both builds. Peak process
+footprint remained near 388 MiB and the footprint after closing the
+editor remained near 157 MiB.
+
+A regression compares the previous and current compositions
+pixel for pixel across all 256 source alpha values, with and
+without a translucent annotation. The light and dark offscreen
+checks passed for scaled blackout, redaction order, rounded
+reopen and Balance effects. The app-local Print and annotation
+save probes passed, along with 378 GPUI tests and 24 Electron
+reference tests.
+[Screenshot export measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

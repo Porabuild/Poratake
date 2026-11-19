@@ -97,15 +97,13 @@ pub fn compose_with_layers(
         None => (width.max(1), height.max(1)),
     };
 
-    let mut canvas = match Canvas::new(width, height) {
-        Some(canvas) => canvas,
-        None => return RgbaImage::new(width, height),
+    let Some(mut canvas) = base
+        .and_then(from_dynamic_image)
+        .map(Canvas::from_pixmap)
+        .or_else(|| Canvas::new(width, height))
+    else {
+        return RgbaImage::new(width, height);
     };
-    if let Some(base) = base {
-        if let Some(pixmap) = from_dynamic_image(base) {
-            canvas.draw_pixmap(pixmap.as_ref(), 0.0, 0.0, width as f32, height as f32);
-        }
-    }
     let original_balance = wallpaper
         .balance
         .then(|| balance_pixmap(canvas.pixmap().as_ref()))
@@ -1332,6 +1330,40 @@ mod tests {
                 actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 4),
                 "{x},{y}: {actual:?} vs {expected:?}"
             );
+        }
+    }
+
+    #[test]
+    fn source_canvas_matches_drawing_onto_an_empty_canvas() {
+        let (width, height) = (256, 64);
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([(x * 37) as u8, (y * 51) as u8, (x ^ y) as u8, x as u8])
+        }));
+        let source = from_dynamic_image(&base).unwrap();
+        let annotation = Annotation::Rectangle {
+            id: "overlay".into(),
+            x: 72.5,
+            y: 14.25,
+            width: 108.5,
+            height: 25.25,
+            stroke: "#da243b".into(),
+            stroke_width: 2.0,
+            fill: Some("#2a859b80".into()),
+        };
+        for annotations in [&[][..], std::slice::from_ref(&annotation)] {
+            let mut previous = Canvas::new(width, height).unwrap();
+            previous.draw_pixmap(source.as_ref(), 0.0, 0.0, width as f32, height as f32);
+            annotation_renderer::draw_all_screenshot(&mut previous, annotations, 1.0);
+            let actual = compose_with_layers(
+                Some(&base),
+                width,
+                height,
+                annotations,
+                &WallpaperSettings::default(),
+                &[],
+                1.0,
+            );
+            assert_eq!(actual, to_rgba(previous.pixmap()));
         }
     }
 
