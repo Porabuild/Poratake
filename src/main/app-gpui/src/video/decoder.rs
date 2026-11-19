@@ -516,9 +516,20 @@ mod backend {
     struct DecoderProcess {
         child: Child,
         frames: smol::channel::Receiver<Option<TimedFrame>>,
+        spare_frame: smol::channel::Sender<Vec<u8>>,
         seek_start: f64,
         current: Option<TimedFrame>,
         next: Option<TimedFrame>,
+    }
+
+    impl DecoderProcess {
+        fn advance(&mut self, frame: TimedFrame) {
+            if let Some(previous) = self.current.replace(frame) {
+                if let Ok(bytes) = Arc::try_unwrap(previous.frame.bgra) {
+                    let _ = self.spare_frame.try_send(bytes);
+                }
+            }
+        }
     }
 
     impl Drop for DecoderProcess {
@@ -638,12 +649,8 @@ mod backend {
         }
         let time = time.max(0.0).next_up();
         if let Some(decoder) = decoder.as_mut() {
-            if decoder
-                .next
-                .as_ref()
-                .is_some_and(|next| next.timestamp <= time)
-            {
-                decoder.current = decoder.next.take();
+            if let Some(next) = decoder.next.take_if(|next| next.timestamp <= time) {
+                decoder.advance(next);
             }
         }
         let restart = decoder.as_ref().is_none_or(|decoder| {
@@ -691,12 +698,8 @@ mod backend {
         time: f64,
         cancelled: Option<&FrameCancellation>,
     ) -> Result<Option<DecodedFrame>, FrameReadError> {
-        if decoder
-            .next
-            .as_ref()
-            .is_some_and(|next| next.timestamp <= time)
-        {
-            decoder.current = decoder.next.take();
+        if let Some(next) = decoder.next.take_if(|next| next.timestamp <= time) {
+            decoder.advance(next);
         }
         if decoder
             .next
@@ -727,7 +730,7 @@ mod backend {
         .await?
         {
             if frame.timestamp <= time {
-                decoder.current = Some(frame);
+                decoder.advance(frame);
                 continue;
             }
             decoder.next = Some(frame);
@@ -888,6 +891,7 @@ mod backend {
         let trace_pid = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
             .map(|_| child.id());
         let (frame_tx, frames) = smol::channel::bounded(1);
+        let (spare_frame, reusable) = smol::channel::bounded(1);
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
@@ -899,7 +903,10 @@ mod backend {
                     };
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
-                    let mut bytes = vec![0; frame_size];
+                    let bytes = reusable.try_recv();
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let reused = bytes.is_ok();
+                    let mut bytes = bytes.unwrap_or_else(|_| vec![0; frame_size]);
                     let payload = bytes.as_mut_slice();
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let (payload, payload_phases) = if trace_pid.is_some() {
@@ -929,7 +936,7 @@ mod backend {
                     ) {
                         let finished = std::time::Instant::now();
                         println!(
-                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3} {:.3} {:.3} {:.3}",
+                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3} {:.3} {:.3} {:.3} {reused}",
                             timestamp - start_time,
                             received.duration_since(started).as_secs_f64() * 1000.,
                             finished.duration_since(received).as_secs_f64() * 1000.,
@@ -963,6 +970,7 @@ mod backend {
         Some(DecoderProcess {
             child,
             frames,
+            spare_frame,
             seek_start,
             current: None,
             next: None,
@@ -1039,6 +1047,7 @@ esac
             let mut decoder = DecoderProcess {
                 child: ProcessCommand::new("/bin/sh").args(["-c", ":"]).spawn().unwrap(),
                 frames,
+                spare_frame: smol::channel::bounded(1).0,
                 seek_start: 0.0,
                 current: None,
                 next: None,
@@ -1066,6 +1075,42 @@ esac
                 .unwrap()
                 .unwrap();
             assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+        }
+
+        #[test]
+        fn decoder_reuses_only_unshared_frame_storage() {
+            let (spare_frame, reusable) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
+                frames: smol::channel::bounded(1).1,
+                spare_frame,
+                seek_start: 0.0,
+                current: None,
+                next: None,
+            };
+            let frame = |timestamp, byte| TimedFrame {
+                timestamp,
+                frame: DecodedFrame {
+                    width: 1,
+                    height: 1,
+                    bgra: vec![byte, 0, 0, 255].into(),
+                },
+            };
+            decoder.advance(frame(0.0, 10));
+            let held = selected_frame(&decoder).unwrap();
+            decoder.advance(frame(1.0, 20));
+            assert!(reusable.try_recv().is_err());
+            assert_eq!(held.bgra[0], 10);
+
+            let current = decoder.current.as_ref().unwrap();
+            let cached = Arc::downgrade(&current.frame.bgra);
+            let address = current.frame.bgra.as_ptr();
+            decoder.advance(frame(2.0, 30));
+            let bytes = reusable.try_recv().unwrap();
+            assert_eq!(bytes.as_ptr(), address);
+            assert_eq!(bytes.as_slice(), [20, 0, 0, 255]);
+            assert!(cached.upgrade().is_none());
+            assert_eq!(selected_frame(&decoder).unwrap().bgra[0], 30);
         }
 
         #[cfg(target_os = "macos")]
@@ -1234,6 +1279,7 @@ esac
                 let mut decoder = Some(DecoderProcess {
                     child,
                     frames,
+                    spare_frame: smol::channel::bounded(1).0,
                     seek_start: 0.0,
                     current: last_frame.map(|timestamp| TimedFrame {
                         timestamp,

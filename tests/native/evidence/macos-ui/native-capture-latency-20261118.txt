@@ -2404,3 +2404,56 @@ in each appearance. All 120 decoded output frames and timestamps
 matched the respective baseline. The EOF regression and three
 development FFmpeg sparse timeline tests passed. The larger
 buffer preserves the fallback on systems that reject the request.
+
+2026-11-19 macOS reuse of raw video frame storage
+
+The baseline build was 4c010ce6. The optimized arm64 build
+used the same bundled FFmpeg 9.0.1, socket settings and generated
+3840x2160 H.264 clip at 60 fps. The app-local fixture used a fresh
+profile per trial. Each arm ran four trials with no test encoder
+and four with two concurrent veryfast libx264 encoders. Run order
+alternated within each theme. Other host work was uncontrolled.
+Counts and decoder timings cover 0.4 to 2.4 seconds after Play.
+The app query is a local control round trip. The test did not
+time presentation or physical input.
+
+The raw-read allocation interval includes selecting a reusable
+buffer or creating a new one. The parent records a fresh Arc
+for each decoded frame, preserving preview cache identity. The
+ownership regression verified that a strongly referenced frame
+keeps its bytes and a previously weakly referenced allocation
+can be reused without reviving the old frame.
+
+Playback samples, milliseconds except counts
+light before load=0 updates=119 reused=0/119 read_med=11.01 read_max=26.07 alloc_med=0.54 decode_max=1.19 ping_max=6.42 thumb=576.2 editor=646.9
+light after load=0 updates=120 reused=117/119 read_med=11.79 read_max=37.31 alloc_med=0.00 decode_max=17.39 ping_max=1.63 thumb=301.6 editor=534.9
+dark after load=0 updates=117 reused=118/120 read_med=9.88 read_max=21.47 alloc_med=0.00 decode_max=2.08 ping_max=0.99 thumb=477.3 editor=785.6
+dark before load=0 updates=7 reused=0/113 read_med=14.85 read_max=53.69 alloc_med=0.47 decode_max=389.33 ping_max=26.35 thumb=425.2 editor=497.1
+dark before load=0 updates=1 reused=0/14 read_med=79.69 read_max=547.23 alloc_med=0.41 decode_max=990.58 ping_max=115.86 thumb=892.3 editor=701.3
+dark after load=0 updates=1 reused=26/26 read_med=69.63 read_max=174.75 alloc_med=0.00 decode_max=476.11 ping_max=48.15 thumb=1271.6 editor=860.7
+light after load=0 updates=1 reused=20/21 read_med=86.46 read_max=255.30 alloc_med=0.00 decode_max=1283.70 ping_max=47.00 thumb=1068.2 editor=1070.2
+light before load=0 updates=1 reused=0/22 read_med=89.54 read_max=146.47 alloc_med=0.49 decode_max=998.22 ping_max=54.07 thumb=1159.4 editor=1520.1
+light before load=2 updates=3 reused=0/70 read_med=20.62 read_max=109.96 alloc_med=0.43 decode_max=619.14 ping_max=39.94 thumb=1440.1 editor=1280.0
+light after load=2 updates=1 reused=33/34 read_med=36.57 read_max=253.70 alloc_med=0.00 decode_max=662.09 ping_max=33.79 thumb=1030.5 editor=1028.2
+dark after load=2 updates=3 reused=60/65 read_med=22.15 read_max=338.38 alloc_med=0.00 decode_max=1044.61 ping_max=19.84 thumb=1370.8 editor=1156.3
+dark before load=2 updates=2 reused=0/63 read_med=22.09 read_max=142.07 alloc_med=0.45 decode_max=1029.57 ping_max=27.44 thumb=1047.2 editor=795.1
+dark before load=2 updates=2 reused=0/64 read_med=23.78 read_max=116.35 alloc_med=0.43 decode_max=1091.61 ping_max=19.51 thumb=372.4 editor=493.0
+dark after load=2 updates=4 reused=93/97 read_med=15.64 read_max=101.20 alloc_med=0.00 decode_max=533.38 ping_max=7.33 thumb=737.2 editor=637.9
+light after load=2 updates=3 reused=49/68 read_med=14.71 read_max=155.85 alloc_med=0.00 decode_max=742.35 ping_max=0.62 thumb=370.7 editor=588.9
+light before load=2 updates=3 reused=0/66 read_med=17.73 read_max=139.79 alloc_med=0.50 decode_max=602.34 ping_max=1.97 thumb=421.7 editor=381.1
+
+No test encoders applied preview updates out of 120
+Baseline 119, 7, 1, 1
+Updated  120, 117, 1, 1
+
+Two test encoders applied preview updates out of 120
+Baseline 3, 2, 2, 3
+Updated  1, 3, 4, 3
+
+The macOS development app produced byte-identical first-frame and
+1.25-second seek PNGs before and after the change. It exported both
+appearances at 3840x2160 after an exact 1.25-second split. FFmpeg
+decoded all 120 output frames in each appearance, and frame digests
+and timestamps matched the baseline. Only the built-in 3456x2234
+Retina display was online. The shared Unix FFmpeg implementation
+was exercised on macOS.

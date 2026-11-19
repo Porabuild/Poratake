@@ -9291,6 +9291,30 @@ seek. All 1,192 GPUI tests and three sparse timeline FFmpeg tests
 passed. Sustained 4K60 playback under contention remains open.
 [Per-trial timing and frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS reuse of raw video frame storage
+
+The FFmpeg frame reader reuses a decoded byte buffer after the
+decoder advances past the frame and releases its final strong
+reference. Each stream retains at most one spare buffer. Reusing
+its bytes gives the new frame a new Arc identity, so the editor's
+existing weak-reference cache distinguishes the two frames.
+
+The development app played a generated 3840×2160 H.264 clip in
+light and dark. Across eight paired trials, the updated build
+reused 516 of 550 payload buffers (94%).
+The median of trial allocation medians was 0.46 ms
+before and 0.00 ms after. With two concurrent encoders,
+the baseline applied 2–3 and the updated app applied
+1–4 of 120 expected preview updates per sample. Host
+activity outside the test varied. Sustained 4K60 playback under
+contention remains open.
+
+First-frame and exact-seek editor snapshots matched byte for byte
+in both appearances. All 120 decoded export frames and timestamps
+matched the baseline in each appearance after the same split. All
+1,193 GPUI tests and three sparse timeline FFmpeg tests passed.
+[Per-run timing and pixel evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
