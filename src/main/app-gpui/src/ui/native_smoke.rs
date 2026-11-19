@@ -1,10 +1,9 @@
 use std::io::BufRead;
 use std::path::PathBuf;
 
-#[cfg(not(test))]
-use herogpui::gpui::MouseExitEvent;
 use herogpui::gpui::{
-    point, px, App, AppContext, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    point, px, App, AppContext, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
+    MouseMoveEvent,
     MouseUpEvent, PlatformInput,
 };
 
@@ -1826,6 +1825,27 @@ pub fn open(cx: &mut App) {
                     return cx
                         .update_window(handle, |_, window, cx| window.dispatch_event(event, cx))
                         .is_ok();
+                }
+                if matches!(command.as_str(), "record hover stop" | "record exit hover") {
+                    let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) else {
+                        return false;
+                    };
+                    return cx.update_window(handle, |_, window, cx| {
+                        let event = if command == "record hover stop" {
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position: crate::ui::parity::measured("recording-controls", 1).center(),
+                                pressed_button: None,
+                                modifiers: Modifiers::none(),
+                            })
+                        } else {
+                            PlatformInput::MouseExited(MouseExitEvent {
+                                position: point(window.bounds().size.width + px(3.), px(22.)),
+                                pressed_button: None,
+                                modifiers: Modifiers::none(),
+                            })
+                        };
+                        window.dispatch_event(event, cx);
+                    }).is_ok();
                 }
                 if command == "status" {
                     return recorder::is_recording();

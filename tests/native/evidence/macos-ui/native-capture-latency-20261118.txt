@@ -1431,3 +1431,41 @@ initial dark trial compared a preview at 2.214167 seconds against
 the next encoded frame. It found a cursor-region mismatch. The
 aligned rerun compared the same 30 fps frame index in preview and
 export and met the pixel tolerance in both themes.
+
+2026-11-19 live macOS area recording and export with protected overlays
+
+The un-packaged app at 8791a900 used a Swift fixture built from
+current sources. The fixture preflighted Screen Recording and
+disabled audio, camera, keyboard and cursor capture. It supplied the
+toolbar midpoint as the native location for an app-local hover.
+The production tooltip placement, window registration, and capture
+filter then ran. An initial overlap check rejected an area containing
+part of another window, and a smaller region was used.
+
+Both themes recorded x=660, y=45, width=420, height=97 points at 2x.
+The toolbar occupied (726,57,276,44), and the native Stop recording
+tooltip occupied (876,105,98,22). WindowServer verified the tooltip
+and generated marker overlapped in time. The marker disappeared
+before the tooltip closed. The ordinary magenta panel then occupied
+the tooltip's exact former bounds.
+
+Theme   Stop to decoded preview   Marked frames   Ordinary frames
+Light             96.2 ms               7               7
+Dark              98.1 ms               7               7
+
+All tested interior pixels in both overlay regions were blue in the
+marked frames, within ten levels of the fixture's expected blue.
+The video-only source and MP4 preserved the positive magenta stage.
+The comparison matched editor playheads to decoded output indices.
+
+Theme   Protected index / within five levels   Ordinary index / within five levels
+Light             37 / 99.379%                          62 / 98.800%
+Dark              37 / 99.379%                          63 / 98.800%
+
+The overall percentages include chroma changes around the generated
+green and magenta boundaries. In an initial ordinary sample, the
+largest extent of differences beyond five levels was six pixels
+from the panel edge. In the final comparison every pixel outside
+an eight-pixel band around the relevant synthetic panel edge was
+within five levels. Overlay-region and positive-control checks
+were evaluated independently.

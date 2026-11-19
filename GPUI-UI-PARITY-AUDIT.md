@@ -8722,6 +8722,30 @@ and exposed a mismatch around the moving cursor. The corrected
 comparison used the exact output-frame index on both sides.
 [Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 live macOS area recording excludes the toolbar and tooltip
+
+The current GPUI app recorded an 840×194-pixel region of a generated
+backdrop in both themes. The recording toolbar and the native Stop
+recording tooltip were visible inside that region. The tooltip sat
+four points below the toolbar. The screen-only fixture used an
+owner-relative pointer position for the app-local hover. A green
+marker appeared only while the tooltip was visible.
+
+Both recordings contained seven marked frames. Every tested pixel
+inside the toolbar and tooltip regions stayed within ten RGB levels
+of the blue backdrop. An ordinary magenta window at the tooltip's
+former bounds then appeared in seven frames per recording, verifying
+that the region was sampled. Stop to decoded preview took 96 ms in
+light mode and 98 ms in dark mode.
+
+The editor and decoded MP4 export preserved the protected and
+ordinary-window stages. At matched frame indices, 99.379% of all
+pixels in each protected sample and 98.800% in each ordinary sample
+were within five RGB levels of the preview. Every pixel outside an
+eight-pixel band around the generated color edges met that tolerance.
+The hover probe used app-local input.
+[Native verification and sampling details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
