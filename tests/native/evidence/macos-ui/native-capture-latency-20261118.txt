@@ -1469,3 +1469,28 @@ from the panel edge. In the final comparison every pixel outside
 an eight-pixel band around the relevant synthetic panel edge was
 within five levels. Overlay-region and positive-control checks
 were evaluated independently.
+
+2026-11-19 macOS full-display isolation and generated-media export
+
+The preflight-granted Swift fixture used an opaque 1728x1117-point
+backdrop on the sole Retina display. The WindowServer guard found
+two Notification Center windows above the backdrop and stopped
+before a recorder Start request was sent. Their WindowServer levels
+were 8, and the generated panel's was 1100. This establishes an
+isolation blocker for the current live full-display test only.
+
+The development GPUI app subsequently used a recorder stub. The
+stub checked the screen request rectangle (0,0,1728,1117) and no
+window ID, then returned a generated 3456x2234 video with a blue
+stage followed by a red stage. The GPUI editor persisted two
+segments after the 0.25-second split. It exported original-size MP4
+through the production worker with an isolated destination.
+
+Theme   Fixture Stop to preview   Preview to editor image   Export completion
+Light           186.7 ms                    228.2 ms             4493.4 ms
+Dark            143.2 ms                    229.4 ms             5626.0 ms
+
+The samples used frames 15 and 45 of the 30 fps output, corresponding
+to 0.5 and 1.5 seconds. All 7,720,704 pixels in each of the four
+matched preview/export pairs agreed within five levels in every
+RGB channel. There was a single video stream in each export.

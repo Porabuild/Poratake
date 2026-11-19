@@ -8746,6 +8746,28 @@ eight-pixel band around the generated color edges met that tolerance.
 The hover probe used app-local input.
 [Native verification and sampling details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS full-display editor and export verification
+
+The live full-display attempt stopped before sending a capture
+request. WindowServer reported two Notification Center windows in
+front of the generated backdrop. The temporary backdrop and app
+closed after the guard rejected the scene. Live full-display
+capture remains open for the current build.
+
+A separate app-local probe exercised the full-display request and
+editor pipeline using a generated video. The recorder stub verified
+an explicit 1728×1117-point display rectangle with no window ID and
+provided a 3456×2234 video. The editor saved a split and exported
+a video-only MP4 at the original size in both themes. For both
+colors at matched output-frame indices, every decoded pixel was
+within five RGB levels of the preview.
+
+With the fixture daemon, Stop to decoded preview took 187 ms in
+light and 143 ms in dark. Preview to the editor image took 228 and
+229 ms. The full-resolution exports completed in 4.49 and 5.63 s.
+These timings cover the editor handoff and export with fixture media.
+[Per-run details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
