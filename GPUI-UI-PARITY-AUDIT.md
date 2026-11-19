@@ -10522,6 +10522,36 @@ colors across 24 alpha combinations. All 384 targeted GPUI tests
 and 16 Electron reference tests passed.
 [Inset preview measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS AVAssetReader 4K60 decoder experiment
+
+A standalone AVAssetReader probe loaded a generated 4K60 H.264
+clip while two independent software encoders ran. Median decode
+and transfer time for 180 frames was 2.16 s for the existing FFmpeg
+route, 0.79 s for AVAssetReader BGRA, and 0.63 s for AVAssetReader
+NV12. The native arms copied each frame into reusable memory.
+[Apple AVAssetReaderTrackOutput documentation](https://developer.apple.com/documentation/avfoundation/avassetreadertrackoutput)
+
+AVAssetReader BGRA differed from the current decoder in 26–30% of
+sampled bytes. NV12 matched on both limited- and full-range H.264.
+Passing that NV12 through a separate bundled FFmpeg conversion
+reproduced the reference BGRA exactly for both fixtures. The
+two-process bridge had a 229–242 ms maximum frame wait under load,
+compared with 89–91 ms for the current route in the paired trials.
+
+A variable-rate fixture with a 0.5 s leading edit gap also exposed
+an extra black sample at zero in AVAssetReader. Starting the reader
+at the first nonempty track segment reproduced all 12 reference
+NV12 frames and timestamps in that fixture. Seeking to a point
+between two samples returned the expected earlier pixels, with the
+timestamp clipped to the seek boundary. The rotated 4:3 sample-aspect
+ratio fixture exposed its transform and aspect ratio separately
+from the coded pixels.
+
+This was a standalone experiment. The app retains its current
+decoder. Sustained 4K60 editor playback under load remains open.
+Twelve GPUI decoder tests and 58 Electron reference tests passed.
+[AVAssetReader probe measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

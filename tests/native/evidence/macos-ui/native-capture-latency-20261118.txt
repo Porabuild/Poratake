@@ -4076,3 +4076,65 @@ running on the host. All pairs matched the resulting color.
 Border alpha   Result    Before min/median/max (ms)   After min/median/max (ms)
 255            #b5cbed       10.91 / 11.30 / 12.62         0.79 / 0.96 / 1.22
 128            #b3c9eb       12.24 / 13.76 / 15.02         0.96 / 1.14 / 1.42
+
+2026-11-19 macOS AVAssetReader 4K60 decoder experiment at 1d2ee979
+
+An Apple Silicon development probe used AVAssetReaderTrackOutput
+with alwaysCopiesSampleData disabled and copied each decoded image
+into one reusable packed buffer. The baseline used bundled FFmpeg
+with showinfo checksum disabled, passthrough frame timing, one raw
+video output thread, and the application's 1 MiB receive and 4 MiB
+send socket buffers. The fixture was a 3840x2160, 60 fps, BT.709
+H.264 color pattern with limited-range 4:2:0 and a GOP of 60.
+The loaded cases ran alongside two ffmpeg libx264 veryfast encoders,
+each with two input and two output threads. Probes confirmed both
+encoder processes were alive before and after each measurement.
+
+Direct decoding and copy of 180 frames. Times are total in ms.
+Load     Trial      FFmpeg BGRA    AVAssetReader BGRA    AVAssetReader NV12
+idle         1            753.3                 549.0                 411.7
+idle         2            753.6                 545.0                 410.3
+idle         3            755.5                 555.0                 410.5
+loaded       1           1892.0                 721.5                 625.3
+loaded       2           2340.4                 793.3                 866.4
+loaded       3           2161.2                 829.8                 538.4
+
+Pixel comparisons across four frames per signal range matched the
+reference sample timestamps. NV12 matched all 49,766,400 bytes in
+each range. Native BGRA differed in 39,879,700 of 132,710,400 bytes
+for limited range and 34,659,597 for full range. Absolute differences
+exceeded five in 1.61% and 1.65% of BGRA bytes, respectively.
+
+The bridge fed native NV12 through a separate bundled FFmpeg
+rawvideo reader tagged with the source BT.709 color metadata and
+limited or full range. It reproduced all 132,710,400 reference BGRA
+bytes in each range. The first 180 limited-range sample timestamps
+matched when carried separately from the conversion stream.
+
+Bridge timings for 180 frames. The maximum read includes first frame.
+Load    Pair   Direct total (ms)   Bridge total (ms)   Direct max   Bridge max
+idle       1               827.8               910.4        64.88       159.93
+idle       2               887.7               927.4        64.12       161.51
+idle       3               907.7               982.4        64.66       158.85
+loaded     1              1876.4              1925.9        90.64       234.26
+loaded     2              2079.6              2002.3        89.21       241.47
+loaded     3              1868.2              1818.7        88.95       229.56
+
+A second run with rawvideo converter probesize 32 and analyzeduration
+0 preserved the same reference bytes. Bridge frame waits still
+reached 161–176 ms idle and 235–585 ms loaded. Host contention was
+higher in the last repeat. These measurements exclude editor
+composition, audio, display presentation, and application IPC.
+
+The 12-frame VFR fixture stored a 0.5-second empty edit segment,
+a 90-degree rotation and 4:3 sample aspect ratio. Both the upright
+and rotated versions produced an extra native sample at time zero
+with luma 16 and chroma 128. The actual media samples ran from 0.500
+to 0.750 seconds in both decoders. With the native time range
+starting at 0.500, all 12 original timestamps and 149,299,200
+coded-orientation NV12 bytes matched the bundled decoder with
+autorotation disabled. Starting the reader at 0.545 returned the
+pixels of the original 0.533333 sample, stamped at 0.545.
+AVFoundation exposed 3840x2160 coded dimensions and 5120x2160
+presentation dimensions before rotation, plus a separate
+preferred transform. That metadata is absent from raw NV12 rows.
