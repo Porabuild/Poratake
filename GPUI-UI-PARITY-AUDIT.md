@@ -10705,6 +10705,26 @@ metadata query. The timing ends at the app's frame update.
 All 191 targeted GPUI tests and 48 Electron reference tests passed.
 [Delayed camera frame measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera decoder cleanup after the last segment
+
+The editor now cancels camera warmup, releases its cached camera
+image and retires the FFmpeg frame stream when the camera is
+disabled or its last visible segment has ended. It keeps the
+decoder's metadata so a later seek can open a fresh frame stream.
+
+In light and dark tests with a 1080p camera sidecar, the previous
+FFmpeg camera process held about 230 MiB after playback ended.
+The revised process exited, and the editor's own footprint stayed
+near 246 MiB in both builds. The worker also exited when the
+fixture deliberately held its camera warmup before the first frame.
+
+Seeking back to the camera segment opened a new frame stream.
+Camera and screen snapshots matched the baseline bytes in all
+normal and held cases. The fixture used generated video files
+and app-local controls. All 191 targeted GPUI tests and 48 Electron
+reference tests passed.
+[Camera decoder lifetime measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

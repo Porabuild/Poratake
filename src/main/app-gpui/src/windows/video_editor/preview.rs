@@ -30,6 +30,8 @@ pub struct Source {
     video_frame: Option<CachedFrame>,
     camera_frame: Option<CachedFrame>,
     camera_warmup: Option<CameraWarmup>,
+    camera_decode_active: bool,
+    has_decoded_camera: bool,
 }
 
 struct CameraWarmup {
@@ -89,6 +91,8 @@ impl Source {
             video_frame: None,
             camera_frame: None,
             camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
         })
     }
 
@@ -123,6 +127,9 @@ impl Source {
         let next_first_frame = state.first_frame.image_data.clone();
         let frame_rate = crate::video::export::frame_rate(&state).max(1) as f64;
 
+        if !state.camera_style.visible {
+            self.release_inactive_camera();
+        }
         self.video_segments = segments::to_video_segments(&state.segments);
         self.engine.set_state(state);
         self.engine.set_frame_rate(frame_rate);
@@ -198,7 +205,7 @@ impl Source {
                     }
                 }
             }
-            let had_camera_frame = self.camera_frame.is_some();
+            self.camera_decode_active = self.camera.is_some();
             let camera = cached_frame(&mut self.camera_frame, video_time, || {
                 decode_frame(
                     self.camera.as_ref(),
@@ -209,12 +216,13 @@ impl Source {
                 )
             });
             if camera.is_none()
-                && (had_camera_frame
+                && (self.has_decoded_camera
                     || cancelled.is_some_and(FrameCancellation::is_closed)
                     || camera_wait_superseded.is_some_and(FrameCancellation::is_closed))
             {
                 return None;
             }
+            self.has_decoded_camera |= camera.is_some();
             camera
         } else {
             let state = &self.engine.config().state;
@@ -225,6 +233,8 @@ impl Source {
                     .any(|segment| segment.end_time > adjusted)
             {
                 self.warm_camera(video_time);
+            } else {
+                self.release_inactive_camera();
             }
             None
         };
@@ -251,11 +261,28 @@ impl Source {
             (None, Some(opening)) => opening.request_warmup(time, cancelled),
             (None, None) => None,
         };
+        self.camera_decode_active |= completed.is_some();
         self.camera_warmup = completed.map(|completed| CameraWarmup {
             time,
             completed,
             cancel,
         });
+    }
+
+    fn release_inactive_camera(&mut self) {
+        if let Some(warmup) = self.camera_warmup.take() {
+            warmup.cancel.close();
+        }
+        self.camera_frame = None;
+        if !std::mem::take(&mut self.camera_decode_active) {
+            return;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        match (&self.camera, &self.camera_opening) {
+            (Some(decoder), _) => decoder.release_frames(),
+            (None, Some(opening)) => opening.release_frames(),
+            (None, None) => {}
+        }
     }
 
     fn render(
@@ -473,6 +500,8 @@ mod tests {
             video_frame: None,
             camera_frame: None,
             camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
         };
         let video_time = 0.5;
         let decoded = DecodedFrame {
@@ -517,6 +546,8 @@ mod tests {
             video_frame: None,
             camera_frame: None,
             camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
         };
         let screen = DecodedFrame {
             width: 320,
@@ -649,10 +680,7 @@ mod tests {
         disabled.camera_style.visible = false;
         source.set_state(disabled);
         assert!(source.compose(still + 1.5, dimensions).is_some());
-        assert!(Arc::ptr_eq(
-            &first,
-            &source.camera_frame.as_ref().unwrap().pixmap
-        ));
+        assert!(source.camera_frame.is_none());
 
         source.set_state(state);
         assert!(source.compose(still + 1.5, dimensions).is_some());

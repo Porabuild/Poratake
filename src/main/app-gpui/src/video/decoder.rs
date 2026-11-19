@@ -57,7 +57,13 @@ enum FramePosition {
     Time(f64),
 }
 
-struct Command {
+enum Command {
+    Frame(FrameCommand),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    ReleaseFrames,
+}
+
+struct FrameCommand {
     position: FramePosition,
     reply: FrameReply,
     cancelled: Option<FrameCancellation>,
@@ -141,6 +147,11 @@ impl DecoderOpening {
             })),
             Err(()) => Err(self),
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn release_frames(&self) {
+        let _ = self.commands.send(Command::ReleaseFrames);
     }
 
     pub(crate) fn request_warmup(
@@ -239,6 +250,11 @@ impl VideoDecoder {
         ))
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn release_frames(&self) {
+        let _ = self.commands.send(Command::ReleaseFrames);
+    }
+
     pub(crate) fn request_warmup(
         &self,
         time: f64,
@@ -270,13 +286,13 @@ fn queue_frame(
 ) -> Option<smol::channel::Sender<()>> {
     let (waiting, abandoned) = smol::channel::bounded(1);
     commands
-        .send(Command {
+        .send(Command::Frame(FrameCommand {
             position,
             reply,
             cancelled,
             superseded,
             abandoned,
-        })
+        }))
         .ok()?;
     Some(waiting)
 }
@@ -342,13 +358,13 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(Command {
+            while let Ok(Command::Frame(FrameCommand {
                 position,
                 reply,
                 cancelled,
                 superseded,
                 abandoned,
-            }) = commands.recv()
+            })) = commands.recv()
             {
                 if abandoned.is_closed()
                     || cancelled.as_ref().is_some_and(FrameCancellation::is_closed)
@@ -726,14 +742,18 @@ mod backend {
         };
         let _ = info_tx.try_send(Some(media.video));
         let mut decoder = None;
-        while let Ok(Command {
-            position,
-            reply,
-            cancelled,
-            superseded,
-            abandoned,
-        }) = commands.recv()
-        {
+        while let Ok(command) = commands.recv() {
+            let Command::Frame(FrameCommand {
+                position,
+                reply,
+                cancelled,
+                superseded,
+                abandoned,
+            }) = command
+            else {
+                drop(decoder.take());
+                continue;
+            };
             let wait = FrameWait {
                 cancelled: cancelled.as_ref(),
                 superseded: superseded.as_ref(),
@@ -1908,7 +1928,7 @@ mod backend {
         info_tx: smol::channel::Sender<Option<VideoInfo>>,
     ) {
         let _ = info_tx.try_send(None);
-        while let Ok(Command { position, reply, .. }) = commands.recv() {
+        while let Ok(Command::Frame(FrameCommand { position, reply, .. })) = commands.recv() {
             let _ = position;
             drop(reply);
         }
@@ -1928,7 +1948,11 @@ mod tests {
         let waiting = std::thread::spawn(move || {
             let _ = done.send(decoder.frame_at_supersedable(1.0, None, Some(&superseded)));
         });
-        let command = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        let command = match receiver.recv_timeout(Duration::from_secs(2)).unwrap() {
+            Command::Frame(command) => command,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Command::ReleaseFrames => panic!("expected a frame request"),
+        };
         supersede.close();
         assert!(finished.recv_timeout(Duration::from_secs(2)).unwrap().is_none());
         assert!(command.abandoned.is_closed());
@@ -1948,7 +1972,11 @@ mod tests {
         };
         let (cancel, cancelled) = smol::channel::bounded(1);
         let warmup = opening.request_warmup(0.5, cancelled.clone()).unwrap();
-        let command = receiver.try_recv().unwrap();
+        let command = match receiver.try_recv().unwrap() {
+            Command::Frame(command) => command,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Command::ReleaseFrames => panic!("expected a frame request"),
+        };
         assert!(matches!(command.position, FramePosition::Time(0.5)));
         drop(command);
         warmup.recv_timeout(Duration::from_secs(1)).unwrap();

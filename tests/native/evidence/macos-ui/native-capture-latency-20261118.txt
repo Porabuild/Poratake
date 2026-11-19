@@ -4350,3 +4350,28 @@ In a repeat after the build completed, the before paths resumed
 1226.4 and 1235.7 ms after Play. The updated paths resumed at
 802.4 and 805.2 ms with the frame gate still closed. All four
 paused PNG comparisons passed again.
+
+2026-11-19 macOS camera decoder cleanup after the last segment at 04f76882
+
+Fresh development processes played a generated 320x180 screen
+clip with a 1920x1080 H.264 camera sidecar. The camera segment
+ran from 0.3 to 0.8 s of a two-second clip. A bundled FFmpeg
+wrapper recorded the camera raw-video process ID. After
+playback ended, proc_pid_rusage measured physical footprint.
+
+Build      Theme   Camera process   Camera footprint (MiB)   Editor footprint (MiB)
+Baseline   light   resident                         230.25                  245.74
+Baseline   dark    resident                         230.23                  245.81
+Updated    light   exited                                —                  245.81
+Updated    dark    exited                                —                  245.47
+
+The held fixture blocked the first raw camera command before
+it could emit a frame. The updated editor resumed screen-only
+playback and reaped that command while its gate was still
+closed, in light and dark.
+
+In both updated fixtures, the paused seek to 0.45 s started
+a second camera PID. A seek to 1.2 s reaped it. Every paused
+PNG matched the normal baseline for the same appearance and
+timestamp. The camera marker's RGB range covered 3,767 pixels
+at 0.45 s and zero pixels at 1.2 s.
