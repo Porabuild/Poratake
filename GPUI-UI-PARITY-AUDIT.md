@@ -9660,6 +9660,40 @@ visibility and include polling. The five Electron reference files
 passed all 168 tests.
 [Desktop hover timings](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt)
 
+### 2026-11-19 macOS capture shortcuts and window readiness
+
+Temporary area and window capture shortcuts went through the macOS
+desktop keyboard event path on the built-in Retina display. Six runs
+per appearance opened the area overlay, replaced it with the window
+picker, then reopened area capture after dismissal. The daemon
+fixture saw one window-list request per switch and returned a
+generated 3840×2160 PNG on each confirmation. All 12 saved PNGs
+matched the fixture bytes.
+
+The timing starts at posting the desktop key for the three shortcut
+rows. Cancellation, area confirmation and opening the editor use
+app-local input or a test command. Warm results are medians of
+trials two through six. Window timing includes polling and stops at
+WindowServer visibility.
+
+| Transition (ms)                       | Light cold | Light warm | Dark cold | Dark warm | Slowest |
+| ------------------------------------- | ---------: | ---------: | --------: | --------: | ------: |
+| Area overlay opens by shortcut        |       73.2 |       22.6 |      55.0 |      22.8 |    73.2 |
+| Area switches to window by shortcut   |       27.7 |       25.3 |      33.3 |      26.7 |    34.0 |
+| App-local cancel hides overlay        |        6.2 |       10.6 |      12.0 |      11.8 |    21.9 |
+| Area overlay reopens by shortcut      |       19.6 |       21.5 |      21.8 |      21.9 |    25.4 |
+| Area confirmation hides overlay       |       17.6 |       20.2 |      20.1 |      16.0 |    23.3 |
+| Confirmation to preview window        |       18.0 |       20.6 |      20.6 |      17.9 |    27.0 |
+| Confirmation to 4K thumbnail ready    |       60.1 |       59.6 |      60.7 |      60.5 |    65.6 |
+| Preview double-click to editor window |       90.3 |       56.5 |      76.4 |      55.5 |    90.3 |
+
+The desktop drag and directed Escape attempts did not complete a
+capture or cancel the overlay in this session. Real button and Escape
+delivery for the workflow, live capture latency under desktop
+input, and first composited frames remain unverified by this run.
+All 145 tests in the five related Electron reference files passed.
+[Per-trial results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

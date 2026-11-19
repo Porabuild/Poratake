@@ -3022,3 +3022,47 @@ tooltip owner hide: no reveal after screenshot barrier
 The focused fixture, complete arm64 and Rosetta x86_64 fixtures,
 full daemon typechecks on both architectures and 56 Electron scroll
 tests passed. The fixture used a single display and app-local points.
+
+2026-11-19 macOS capture shortcuts and WindowServer timing at 6a7f80cf
+
+The GPUI parity development app ran with a fresh temporary profile
+per appearance on an Apple M5 Pro built-in 2x Retina display with
+Freeze, microphone, camera and system audio off. A Python daemon
+fixture returned one window target and wrote a generated 3840x2160 PNG.
+The temporary Control-Option-Shift-8 and Control-Option-Shift-9
+shortcuts were posted with CoreGraphics. The probe matched the
+overlay's window title and process ID in WindowServer. Each switch
+used a new overlay window ID and the RPC trace recorded six
+window-selector list calls in each appearance.
+
+Cancellation called the app's test command. Area confirmation
+dispatched a 300x220 point drag to the active overlay within the app.
+The app-local preview double-click opened the editor. Each capture
+was byte-identical to the fixture and each editor was closed before
+the next trial. Timing includes polling, roughly every four ms for
+WindowServer state. The thumbnail readiness check queried the app.
+
+Milliseconds. Trial 1 in each appearance is cold.
+Mode   Run     Area  Switch  Cancel  Reopen    Hide  Preview  Thumb   Editor
+light    1   73.20   27.66    6.22   19.59   17.56   17.99   60.11   90.29
+light    2   20.39   22.90   10.58   20.26   23.30   26.99   59.57   55.51
+light    3   22.60   31.07   11.71   19.89   17.00   17.49   63.88   57.32
+light    4   17.65   22.82    9.84   21.49   17.26   17.74   59.62   56.50
+light    5   25.16   29.60    6.77   25.37   20.16   20.59   56.98   64.91
+light    6   33.57   25.30   21.94   22.46   21.07   24.36   64.73   55.36
+dark     1   55.02   33.29   12.00   21.84   20.14   20.58   60.67   76.42
+dark     2   20.10   29.00   10.00   20.63   15.98   16.45   59.75   55.55
+dark     3   22.85   26.68    6.36   24.22   17.68   18.15   65.59   61.96
+dark     4   17.78   34.03   12.74   18.52   17.44   17.91   60.48   61.78
+dark     5   22.78   19.73   11.79   21.85   14.81   15.28   58.33   55.40
+dark     6   28.56   26.39   13.32   25.18    6.69   20.48   63.14   54.64
+
+A directed Escape event did not dismiss the unfocused overlay.
+A generated blank window could not become frontmost in this session,
+so a desktop Escape trial with a known foreground target was skipped.
+A guarded desktop drag moved the pointer but did not confirm the
+selection. The probe recovered by using the in-app paths described
+above. The selector appearance numbers do not measure compositor
+paint. Both apps and the fixture daemon exited. The original pointer
+was restored and the pre-existing editor process remained running.
+The five Electron reference files passed all 145 tests.
