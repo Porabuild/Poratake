@@ -11230,6 +11230,26 @@ opened in the editor, and all 82 Electron reference and contract
 tests passed.
 [Per-run Stop and preview timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS recording thumbnail copies after resize
+
+The preview now moves the resized buffer into the screenshot
+or recording thumbnail. An unblurred recording thumbnail already
+has GPUI's BGRA channel order and skips the two channel-swap
+passes. Hover blur still uses the same RGBA pipeline.
+
+Allocation tracing measured 112,000 fewer allocated bytes per
+recording thumbnail. The regression compared the crop and alpha
+with the original resize over seven landscape, portrait, and
+small-frame shapes. All six 2× Metal images for idle, hover and
+exit in light and dark matched byte for byte.
+
+The four paired GPUI Stop-to-thumbnail runs varied across both
+builds. They do not establish a timing improvement in the full
+handoff. The existing resize path also avoided a repeat of the
+borrowed-buffer slowdown. The 48 GPUI preview tests and 70 Electron
+preview and thumbnail tests passed.
+[Thumbnail allocation measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

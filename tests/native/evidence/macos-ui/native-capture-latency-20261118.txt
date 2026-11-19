@@ -5230,3 +5230,41 @@ dark  closure     2         385.9      50.3         112.9           549.1       
 All eight runs cleared the toolbar and outline, opened the preview
 in the GPUI editor and decoded the three generated source phases.
 The 82 Electron reference and daemon contract tests passed.
+
+2026-11-20 macOS thumbnail copies after resize
+===============================================
+
+The retained change uses the existing owned resize and transfers
+its RGBA allocation into the caller. Idle video thumbnails are
+already in BGRA after resizing, so they skip the two red/blue
+channel swaps used in the hover path.
+
+In nine rotated pairs per source orientation, an isolated resize
+benchmark at development opt-level 1 counted these requested
+allocation bytes per thumbnail. The timed operation includes the
+resize and obtaining the final 200x140 buffer.
+
+Source       Before bytes  Revised bytes   Before median ms  Revised median ms
+3840x2160        42143120       42031120              43.883             40.861
+2160x3840        45990240       45878240              42.938             46.271
+
+A separate borrowed-resizer recheck removed the full source copy
+but took 88.78 and 97.96 ms in this environment, compared with
+27.30 and 38.32 ms in its paired controls. The app retains the
+owned resize path. All compared resized bytes matched.
+
+The GPUI native window probe supplied the same two-second 4K clip
+through a fixture daemon. These times run from issuing Stop to the
+first positive thumbnail-ready reply and include decoding.
+The scene comparison used a separate static 4K checkerboard.
+
+Theme  Pair  Stop to ready before ms  Stop to ready revised ms
+Light     1                   499.7                     297.1
+Dark      1                   360.6                     237.5
+Light     2                   363.5                     254.3
+Dark      2                   279.1                     375.3
+
+All six idle, hover and exit PNGs matched across the light and
+dark 2x macOS Metal runs. The GPUI capture-preview tests passed
+48 cases. The Electron preview and thumbnail tests passed 70.
+This measures app readiness with fixture media.

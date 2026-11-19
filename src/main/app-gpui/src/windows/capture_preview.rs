@@ -1356,11 +1356,14 @@ fn video_thumbnails(
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
-        .to_rgba8();
+        .into_rgba8();
+    if !blur {
+        return Some((render_bgra_thumbnail(buffer), None));
+    }
     for pixel in buffer.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let blurred = blur.then(|| blur_thumbnail(&buffer)).flatten();
+    let blurred = blur_thumbnail(&buffer);
     Some((render_thumbnail(buffer), blurred))
 }
 
@@ -1801,7 +1804,7 @@ fn load_preview_thumbnails(
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
-        .to_rgba8();
+        .into_rgba8();
     let blurred = blur_thumbnail(&scaled);
     (Some(render_thumbnail(scaled)), blurred)
 }
@@ -1817,6 +1820,10 @@ fn render_thumbnail(mut image: image::RgbaImage) -> Arc<gpui::RenderImage> {
     for pixel in image.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
+    render_bgra_thumbnail(image)
+}
+
+fn render_bgra_thumbnail(image: image::RgbaImage) -> Arc<gpui::RenderImage> {
     let frame = image::Frame::new(image);
     Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]))
 }
@@ -5274,6 +5281,51 @@ mod tests {
             bgra: Vec::new().into(),
         };
         assert!(super::video_thumbnails(&empty, true).is_none());
+    }
+
+    #[test]
+    fn video_thumbnails_preserve_the_cover_crop_and_alpha() {
+        for (width, height) in [
+            (3840, 2160),
+            (2160, 3840),
+            (1543, 663),
+            (663, 1543),
+            (200, 140),
+            (7, 5),
+            (3, 7),
+        ] {
+            let pixels = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    (x.wrapping_mul(7) % 256) as u8,
+                    (y.wrapping_mul(11) % 256) as u8,
+                    ((x + y).wrapping_mul(3) % 256) as u8,
+                    ((x + y) % 256) as u8,
+                ])
+            });
+            let expected = image::DynamicImage::ImageRgba8(pixels.clone())
+                .resize_to_fill(
+                    PREVIEW_WIDTH as u32,
+                    PREVIEW_HEIGHT as u32,
+                    image::imageops::FilterType::Triangle,
+                )
+                .into_rgba8();
+            let mut rgba = expected.clone();
+            for pixel in rgba.as_mut().as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let blurred = blur_thumbnail(&rgba).unwrap();
+            let source = crate::video::decoder::DecodedFrame {
+                width,
+                height,
+                bgra: pixels.into_raw().into(),
+            };
+            let (thumbnail, no_blur) = video_thumbnails(&source, false).unwrap();
+            assert_eq!(thumbnail.as_bytes(0), Some(expected.as_raw().as_slice()));
+            assert!(no_blur.is_none());
+            let (thumbnail, actual_blur) = video_thumbnails(&source, true).unwrap();
+            assert_eq!(thumbnail.as_bytes(0), Some(expected.as_raw().as_slice()));
+            assert_eq!(actual_blur.unwrap().as_bytes(0), blurred.as_bytes(0));
+        }
     }
 
     #[test]
