@@ -8837,6 +8837,22 @@ fixture passed, including the rendered-label and tall-owner tests.
 The five Electron recording control and preview files passed
 132 tests.
 
+### 2026-11-19 macOS video editor with a tall timeline in a short window
+
+A saved 300-point timeline left the preview only 32 points tall in
+a 640×440-point window. The two 16-point insets consumed that space.
+The track pane now shrinks and scrolls to leave space for the preview
+while the playback controls and ruler keep their heights. Enlarging
+the window restores the saved timeline height. Dragging the resize
+handle starts from the displayed height.
+
+The regression reproduced the 32-point pane before the fix. It now
+verifies at least 84 points for the preview, an in-bounds track pane,
+and restoration of the saved 300-point timeline on a larger window.
+Both 640×440-point Metal runs at 2× verified the rendered preview
+colors and timeline label contrast with the maximum saved height,
+one in light and one in dark. All 1,189 GPUI tests passed.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

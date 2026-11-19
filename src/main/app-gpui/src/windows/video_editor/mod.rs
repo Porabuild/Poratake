@@ -2638,7 +2638,13 @@ impl VideoEditorWindow {
     }
 
     pub fn begin_timeline_resize(&mut self, y: f32, cx: &mut Context<Self>) {
-        self.timeline_resize = Some((y, self.timeline_height));
+        let displayed_height = f32::from(self.pane_scroll.bounds().size.height);
+        let height = if displayed_height > 0.0 {
+            displayed_height
+        } else {
+            self.timeline_height
+        };
+        self.timeline_resize = Some((y, height));
         cx.notify();
     }
 
@@ -3745,9 +3751,11 @@ impl Render for VideoEditorWindow {
             stage_box = stage_box.max_w(px(width as f32)).max_h(px(height as f32));
         }
         let preview = div()
+            .id("video-editor-preview")
+            .debug_selector(|| "video-editor-preview".into())
             .relative()
             .flex_1()
-            .min_h_0()
+            .min_h(px(timeline::pane_height(timeline::MIN_PANE_TRACKS)))
             .flex()
             .items_center()
             .justify_center()
@@ -3817,7 +3825,8 @@ impl Render for VideoEditorWindow {
                     div()
                         .flex()
                         .flex_col()
-                        .flex_none()
+                        .min_h_0()
+                        .flex_shrink_1()
                         .border_t_1()
                         .border_color(theme.border)
                         .bg(theme.card)
@@ -3827,7 +3836,7 @@ impl Render for VideoEditorWindow {
                             window,
                             cx,
                         ))
-                        .child(controls)
+                        .child(div().flex_none().child(controls))
                         .child(timeline::ruler::render(
                             display_duration,
                             self.pixels_per_second,
@@ -3839,7 +3848,8 @@ impl Render for VideoEditorWindow {
                             div()
                                 .relative()
                                 .h(px(self.timeline_height))
-                                .flex_shrink_0()
+                                .min_h_0()
+                                .flex_shrink_1()
                                 .child(
                                     div()
                                         .id("video-timeline-tracks")
@@ -6529,6 +6539,44 @@ mod keyboard_demo_tests {
         assert!(status.origin.x >= panel.origin.x && status.origin.y >= panel.origin.y);
         assert!(status.origin.x + status.size.width <= panel.origin.x + panel.size.width);
         assert!(status.origin.y + status.size.height <= panel.origin.y + panel.size.height);
+    }
+
+    #[herogpui::test]
+    fn a_tall_saved_timeline_fits_a_short_window_without_hiding_the_preview(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let saved = timeline::pane_height(timeline::MAX_PANE_TRACKS);
+        let mut handle = None;
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.timeline_height = saved;
+            editor.state.ui.timeline_height = Some(f64::from(saved));
+            handle = Some(window.window_handle());
+            editor
+        });
+        let handle = handle.unwrap();
+        let compact = size(px(640.), px(440.));
+        cx.simulate_window_resize(handle, compact);
+        cx.refresh().unwrap();
+
+        let preview = cx.debug_bounds("video-editor-preview").unwrap();
+        let tracks = cx.update(|_, cx| editor.read(cx).pane_scroll.bounds());
+        assert!(
+            preview.size.height >= px(timeline::pane_height(timeline::MIN_PANE_TRACKS)),
+            "{preview:?}"
+        );
+        assert!(tracks.size.height < px(saved), "{tracks:?}");
+        assert!(tracks.bottom() <= compact.height, "{tracks:?}");
+
+        cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
+        cx.refresh().unwrap();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.pane_scroll.bounds().size.height, px(saved));
+            assert_eq!(editor.state.ui.timeline_height, Some(f64::from(saved)));
+        });
     }
 
     #[herogpui::test]

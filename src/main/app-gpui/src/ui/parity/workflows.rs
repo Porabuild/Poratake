@@ -11120,6 +11120,10 @@ pub(super) fn video(
         segments: vec![model::Segment::spanning(2.)],
         ..Default::default()
     };
+    if (width, height) == (640., 440.) {
+        use crate::windows::video_editor::timeline::{pane_height, MAX_PANE_TRACKS};
+        state.ui.timeline_height = Some(f64::from(pane_height(MAX_PANE_TRACKS)));
+    }
     state.drawing_segments.push(model::DrawingSegment {
         id: "visual-drawing".into(),
         start_time: 0.,
