@@ -8411,6 +8411,19 @@ probe and all 1,182 GPUI tests passed.
 python3 tests/native/macos-capture-history-probe.py --editor-print
 ```
 
+### 2026-11-19 macOS screenshot editor Cloud Upload responsiveness
+
+Cloud Upload captures the editor state at invocation and composes and
+encodes the PNG on the background executor. It passes the rendered
+bytes directly to the existing provider code, eliminating the temporary
+file and keeping the filename, MIME type and clipboard behavior.
+
+The loopback REST regression verified the exact PNG from the requested
+composition after a later editor change. It also verified the returned
+URL on GPUI's test clipboard. The test used a local endpoint and did
+not exercise the user's cloud configuration. The GPUI suite passed
+1,183 tests with 23 ignored.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

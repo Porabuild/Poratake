@@ -4194,15 +4194,8 @@ impl EditorWindow {
             crate::intents::open_settings(crate::windows::settings::registry::Category::Cloud, cx);
             return;
         }
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                eprintln!("[cloud] export failed: {error}");
-                return;
-            }
-        };
+        let composition = self.composition();
         let name = crate::editor::filename::generate_screenshot_export_name("png");
-        let path = std::env::temp_dir().join(&name);
 
         self.cloud_upload = UploadState::Uploading;
         cx.notify();
@@ -4211,10 +4204,8 @@ impl EditorWindow {
             let uploaded = cx
                 .background_executor()
                 .spawn(async move {
-                    std::fs::write(&path, png)?;
-                    let url = crate::cloud::upload(&config, &path);
-                    let _ = std::fs::remove_file(&path);
-                    url
+                    let png = composition.encode(false)?;
+                    crate::cloud::upload_bytes(&config, Path::new(&name), png)
                 })
                 .await;
 
@@ -4246,8 +4237,10 @@ impl EditorWindow {
                 .timer(std::time::Duration::from_secs(2))
                 .await;
             let _ = entity.update(cx, |editor, cx| {
-                editor.cloud_upload = UploadState::Idle;
-                cx.notify();
+                if editor.cloud_upload == state {
+                    editor.cloud_upload = UploadState::Idle;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -4936,6 +4929,88 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[herogpui::test]
+    fn cloud_upload_sends_the_requested_composition(cx: &mut gpui::TestAppContext) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}/screenshot.png");
+        let response_url = url.clone();
+        let receiver = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = BufReader::new(stream);
+            let mut line = String::new();
+            request.read_line(&mut line).unwrap();
+            assert!(line.starts_with("POST /upload "));
+            let mut length = None;
+            loop {
+                line.clear();
+                assert!(request.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("Content-Length") {
+                        length = Some(value.trim().parse().unwrap());
+                    }
+                }
+            }
+            let mut payload = vec![0; length.unwrap()];
+            request.read_exact(&mut payload).unwrap();
+            write!(
+                request.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_url}",
+                response_url.len(),
+            )
+            .unwrap();
+            payload
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([72, 104, 224, 255]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_str().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|config| {
+            config.cloud.enabled = true;
+            config.cloud.active_provider = "rest".into();
+            config.cloud.rest.url = format!("http://{address}/upload");
+            config.cloud.rest.response_is_plain_text = true;
+        });
+        let (handle, expected) = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            assert!(crate::open_editor_with_state(cx, path, Some(Default::default())));
+            let handle = cx.windows().into_iter()
+                .find_map(|handle| handle.downcast::<EditorWindow>())
+                .unwrap();
+            let expected = handle.update(cx, |editor, _, cx| {
+                editor.wallpaper.padding = 20.;
+                let expected = editor.export_png().unwrap();
+                editor.upload_to_cloud(cx);
+                assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Uploading);
+                editor.wallpaper.padding = 40.;
+                expected
+            }).unwrap();
+            (handle, expected)
+        });
+        cx.run_until_parked();
+        handle.update(cx, |editor, _, _| {
+            assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Success);
+        }).unwrap();
+        cx.update(|cx| {
+            assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(url.as_str()));
+        });
+        let payload = receiver.join().unwrap();
+        assert!(payload.windows(expected.len()).any(|part| part == expected));
     }
 
     #[herogpui::test]
