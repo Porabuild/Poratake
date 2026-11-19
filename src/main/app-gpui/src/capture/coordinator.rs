@@ -422,6 +422,20 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
         (generation, read)
     });
 
+    let editor = (!show_preview && !screenshot.capture_to_clipboard).then(|| {
+        let path = path.to_string_lossy().into_owned();
+        let source = path.clone();
+        let image = cx.background_executor().spawn(async move {
+            let result = crate::editor::window::PreparedScreenshot::open(&source);
+            #[cfg(all(feature = "parity", target_os = "macos"))]
+            if std::env::var_os("PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR").is_some() {
+                println!("NATIVE_SMOKE direct editor image prepared {}", result.is_ok());
+            }
+            result
+        });
+        (path, image)
+    });
+
     if let Some(write) = history {
         let item = crate::history_store::HistoryItem {
             id: uuid_simple(),
@@ -449,9 +463,10 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
         }
     }
     drop(finalization);
-    if !screenshot.capture_to_clipboard && !show_preview {
+    if let Some((path, image)) = editor {
+        let image = image.await;
         cx.update(|cx| {
-            crate::open_editor_async(cx, path.to_string_lossy().into_owned());
+            crate::open_editor_with_image(cx, &path, Some(Default::default()), image);
         });
     }
 }

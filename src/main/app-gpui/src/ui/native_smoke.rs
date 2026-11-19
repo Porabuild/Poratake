@@ -1372,7 +1372,8 @@ pub fn open(cx: &mut App) {
         config.screenshot.hide_desktop_icons = false;
         config.screenshot.freeze_screen =
             std::env::var("PORATAKE_NATIVE_SMOKE_FREEZE").as_deref() == Ok("1");
-        config.screenshot.show_preview = true;
+        config.screenshot.show_preview =
+            std::env::var_os("PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR").is_none();
         config.screenshot.format = "png".into();
         config.recording.start_delay = std::env::var("PORATAKE_NATIVE_SMOKE_START_DELAY")
             .ok()
@@ -1651,6 +1652,11 @@ pub fn open(cx: &mut App) {
                     return cx
                         .update_window(handle, |_, window, cx| window.dispatch_event(event, cx))
                         .is_ok();
+                }
+                if command == "editor ready" {
+                    return cx.windows().iter().any(|handle| {
+                        handle.downcast::<crate::editor::EditorWindow>().is_some()
+                    });
                 }
                 if command == "close editor" {
                     let Some(handle) = cx

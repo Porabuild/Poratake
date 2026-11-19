@@ -8343,6 +8343,24 @@ those writes.
 python3 tests/native/macos-save-panel-probe.py
 ```
 
+### 2026-11-19 macOS direct-to-editor image preparation
+
+When Capture Preview is disabled, GPUI now decodes the newly saved
+screenshot and prepares its editor image in parallel with history
+persistence. After the entry is written, it opens the prepared image
+with fresh annotation state. Reopening existing screenshots through
+Preview or Recent Captures still restores their saved state.
+
+The native probe held the history read while capturing a generated
+3840×2160 PNG. Image preparation finished during the hold in light
+and dark mode. The editor opened 52.7 and 54.4 ms after release, and
+the matching history entry was present. These timings start at
+history release. End-to-end timing on a real 4K capture remains open.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --direct-editor
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

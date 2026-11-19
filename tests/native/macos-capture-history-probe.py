@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
-from struct import pack
+from struct import pack, unpack
 from subprocess import PIPE, Popen
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -21,7 +21,8 @@ def fixture_daemon():
         body = name + data
         return pack(">I", len(data)) + body + pack(">I", crc32(body))
 
-    width, height = 300, 220
+    direct_editor = "PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR" in os.environ
+    width, height = (3840, 2160) if direct_editor else (300, 220)
     row = b"\0" + bytes([64, 112, 192]) * width
     png = (
         b"\x89PNG\r\n\x1a\n"
@@ -111,6 +112,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
             'exec "$PORATAKE_HISTORY_PROBE_PYTHON" "$PORATAKE_HISTORY_PROBE_SCRIPT" --daemon\n'
         )
         bridge.chmod(0o700)
+        direct_editor_env = {"PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR": "1"} if opening == "direct-editor" else {}
         app = Popen(
             [str(executable), "--native-smoke-recording"],
             stdin=PIPE, stdout=PIPE, text=True, bufsize=1,
@@ -123,6 +125,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 "PORATAKE_NATIVE_SMOKE_RECT": "650,410,300,220",
                 "PORATAKE_NATIVE_SMOKE_FREEZE": "0",
                 "PORATAKE_NATIVE_SMOKE_HISTORY": "1",
+                **direct_editor_env,
             },
         )
         replies = Queue()
@@ -172,6 +175,27 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening == "direct-editor":
+                os.mkfifo(history_path)
+                capture_area()
+                with held_read(history_path):
+                    assert wait("NATIVE_SMOKE direct editor image prepared ").endswith(" true")
+                    assert not command("editor ready")
+                    assert not command("preview ready")
+                start = monotonic()
+                eventually("editor ready")
+                elapsed_ms = (monotonic() - start) * 1000
+                source, = captured_files(1)
+                with source.open("rb") as png:
+                    assert unpack(">II", png.read(24)[16:]) == (3840, 2160)
+                saved, = json.loads(history_path.read_text())
+                assert Path(saved["originalPath"]) == source
+                print("4K editor image was prepared while history was held")
+                print(f"editor opened in {elapsed_ms:.1f} ms after history release")
+                assert command("close editor")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
             if copy:
                 capture_area()
                 eventually("preview ready")
@@ -340,6 +364,7 @@ if __name__ == "__main__":
         [],
         ["--recording"],
         ["--editor-open"],
+        ["--direct-editor"],
         ["--history-open"],
         ["--history-delete"],
         ["--history-clear"],
@@ -357,8 +382,8 @@ if __name__ == "__main__":
             ),
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
-                None,
+                "direct-editor" if sys.argv[1:] == ["--direct-editor"] else None,
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
