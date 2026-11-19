@@ -8791,6 +8791,24 @@ test files passed 21 tests. Live timing measurements are from GPUI's
 app-local input on the built-in Retina display.
 [Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 current macOS fixed-header scroll stitching
+
+The current Swift fixture captured three live frames of a generated
+Retina page with a fixed 102-point header. The page accepted scripted
+offsets while the fixture skipped system pointer input. The 208- and
+266-point steps stitched to 920×1592 and 920×1824 PNGs. Each output
+contained one header, preserved Display P3 and matched the expected
+native rows within two RGB channel levels after converting both
+sides to sRGB. All three magenta windows were present in the
+unfiltered control capture and absent from the stitched outputs.
+
+The native Swift fixture suite passed. The GPUI light and dark
+scroll fixtures passed selection, preview, history, saved-image
+reopen, cancellation and retry. The two Electron scroll test
+files passed all 50 tests. Stitching remains open where different
+scroll histories produce the same frames.
+[Native fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

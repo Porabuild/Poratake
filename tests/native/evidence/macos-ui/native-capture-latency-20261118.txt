@@ -1528,3 +1528,30 @@ status checks answered in 7.4 and 0.9 ms. Selector and countdown
 were removed, and the broker rejected any capture call in that test.
 No output file was created. Electron timer-capture and timer-control
 unit tests passed all 21 cases.
+
+2026-11-19 current macOS fixed-header scroll stitching
+
+The native scroll test binary used current Swift sources and checked
+its existing Screen Recording grant. The generated AppKit page had
+a 102-point stationary header and a 278-point scrolling body in the
+selected 460x380-point region at 2x. The fixture drove the page at
+known offsets and skipped pointer movement and scroll event posting.
+WindowServer checks confined the samples to the generated page.
+Three small magenta panels supplied known exclusion window IDs.
+
+Step points  Frames  Output dimensions  Exact RGB channels  Max channel delta  Final capture through save
+208             3        920x1592           99.985981%               2                   132.4 ms
+266             3        920x1824           99.987764%               2                   152.4 ms
+
+Expected output used the full first native reference and the exact
+appended rows from each subsequent reference. The saved PNGs were
+Display P3. The first RGB comparison converted only the references
+and reported a profile mismatch. The corrected comparison converted
+both stitched and reference PNGs to sRGB. The unfiltered control
+contained 10,800 magenta pixels in each case; stitched outputs
+contained zero. Final capture through save includes the last
+app-local Advance and native save, separate from scroll gesture latency.
+
+The GPUI handoff was exercised with the existing fixture daemon in
+both themes. The Swift preview suite and 50 Electron scroll unit
+tests passed. No stitch decision rule was changed in this run.
