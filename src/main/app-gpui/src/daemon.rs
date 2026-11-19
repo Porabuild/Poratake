@@ -68,6 +68,7 @@ impl std::error::Error for DaemonRpcError {}
 enum DaemonStartup {
     Ready,
     Exited,
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -88,6 +89,7 @@ pub struct DaemonHandle {
 
 struct DaemonInner {
     lifecycle: Mutex<()>,
+    startup: Mutex<Option<SyncSender<DaemonStartup>>>,
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     pending: Mutex<HashMap<String, Pending>>,
@@ -197,6 +199,7 @@ impl DaemonHandle {
         Self {
             inner: Arc::new(DaemonInner {
                 lifecycle: Mutex::new(()),
+                startup: Mutex::new(None),
                 child: Mutex::new(None),
                 stdin: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
@@ -293,26 +296,42 @@ impl DaemonHandle {
         *self.inner.stdin.lock() = Some(stdin);
 
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
-        self.spawn_reader(stdout, startup_tx.clone());
-        self.watch_child_by_pid(pid, startup_tx);
+        let cancelled = {
+            let mut startup = self.inner.startup.lock();
+            let cancelled = self.inner.shutting_down.load(Ordering::SeqCst);
+            if !cancelled {
+                *startup = Some(startup_tx.clone());
+            }
+            cancelled
+        };
+        let outcome = if cancelled {
+            Ok(DaemonStartup::Cancelled)
+        } else {
+            self.spawn_reader(stdout, startup_tx.clone());
+            self.watch_child_by_pid(pid, startup_tx);
+            startup_rx.recv_timeout(Duration::from_secs(10))
+        };
+        *self.inner.startup.lock() = None;
 
-        match startup_rx.recv_timeout(Duration::from_secs(10)) {
+        let failure = match outcome {
             Ok(DaemonStartup::Ready) => {
                 self.inner.restart_attempts.store(0, Ordering::SeqCst);
-                Ok(())
+                return Ok(());
             }
-            Ok(DaemonStartup::Exited) => Err(DaemonExitedBeforeReady.into()),
-            Err(_) => {
-                let Some(mut child) = self.inner.child.lock().take() else {
-                    return Err(DaemonExitedBeforeReady.into());
-                };
-                *self.inner.stdin.lock() = None;
-                let _ = child.kill();
-                let _ = child.wait();
-                self.inner.reject_all_pending("Daemon ready timeout");
-                Err(anyhow!("Daemon ready timeout"))
-            }
+            Ok(DaemonStartup::Exited) => return Err(DaemonExitedBeforeReady.into()),
+            Ok(DaemonStartup::Cancelled) => "Daemon is shutting down",
+            Err(_) => "Daemon ready timeout",
+        };
+        let child = self.inner.child.lock().take();
+        if let Some(mut child) = child {
+            *self.inner.stdin.lock() = None;
+            let _ = child.kill();
+            let _ = child.wait();
+        } else if !self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(DaemonExitedBeforeReady.into());
         }
+        self.inner.reject_all_pending(failure);
+        Err(anyhow!(failure))
     }
 
     fn spawn_reader(
@@ -376,14 +395,18 @@ impl DaemonHandle {
     }
 
     pub fn stop(&self) {
-        let _lifecycle = self.inner.lifecycle.lock();
         self.inner.shutting_down.store(true, Ordering::SeqCst);
-        self.send_raw(&json!({
+        if let Some(startup) = self.inner.startup.lock().take() {
+            let _ = startup.try_send(DaemonStartup::Cancelled);
+        }
+        let _lifecycle = self.inner.lifecycle.lock();
+        if self.send_raw(&json!({
             "id": "quit",
             "module": "system",
             "method": "quit"
-        }));
-        thread::sleep(Duration::from_millis(500));
+        })) {
+            thread::sleep(Duration::from_millis(500));
+        }
 
         let mut guard = self.inner.child.lock();
         if let Some(child) = guard.as_mut() {
@@ -1471,6 +1494,9 @@ impl DaemonInner {
     }
 
     fn schedule_restart(self: &Arc<Self>) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let attempts = self.restart_attempts.fetch_add(1, Ordering::SeqCst);
         if attempts >= MAX_RESTART_ATTEMPTS {
             eprintln!("[daemon] Max restart attempts reached");
@@ -1699,6 +1725,44 @@ done
         daemon.stop();
         assert!(!daemon.is_running());
         assert!(!wait_for_child_exit(restarted).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_daemon_during_startup_does_not_wait_for_ready() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::Instant;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            "#!/bin/sh\nprintf x > \"$0.started\"\nwhile IFS= read -r line; do :; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let daemon = DaemonHandle::with_binary(fixture);
+        let starting = daemon.clone();
+        let launch = thread::spawn(move || starting.start());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !directory.path().join("daemon.started").is_file() || !daemon.is_running() {
+            assert!(Instant::now() < deadline, "fixture daemon did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let pid = daemon.inner.child.lock().as_ref().unwrap().id();
+        let started = Instant::now();
+        daemon.stop();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            launch.join().unwrap().unwrap_err().to_string(),
+            "Daemon is shutting down"
+        );
+        assert!(!daemon.is_running());
+        #[cfg(target_os = "macos")]
+        assert!(!wait_for_child_exit(pid).unwrap());
+        #[cfg(not(target_os = "macos"))]
+        let _ = pid;
     }
 
     #[test]

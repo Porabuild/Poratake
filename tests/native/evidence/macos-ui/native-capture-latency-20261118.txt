@@ -4574,3 +4574,18 @@ followed the build. Each profile enabled Freeze Screen and
 logged one prewarm after the daemon sent Ready. A separate
 native probe checked startup prewarm with the preference
 enabled and disabled in both appearances.
+
+2026-11-19 macOS shutdown while the daemon starts at 55b9bd32
+
+The subprocess regression ran a shell that marked itself started
+and blocked on stdin without sending system:ready. The test called
+DaemonHandle::stop from a separate thread context while start
+still awaited the handshake. It verified cancellation returned
+the shutdown error, removed the active child and reaped the PID.
+The isolated run finished in 0.06 s including the fixture launch.
+This measures the daemon lifecycle test.
+
+The daemon suite also checked graceful shutdown, immediate exit
+before readiness, startup retries and recovery from a crash after
+readiness. Ten GPUI daemon tests, 121 GPUI capture tests and 42
+Electron reference tests passed.

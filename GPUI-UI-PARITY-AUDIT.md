@@ -10874,6 +10874,21 @@ probes passed in both appearances, along with 130 GPUI daemon
 and capture tests and 42 Electron reference tests.
 [Direct file startup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS shutdown while the daemon starts
+
+Shutdown now signals the in-progress daemon startup before taking
+the lifecycle lock. The startup caller reaps the unfinished daemon
+and releases the lock. A daemon that is already ready still receives
+the graceful Quit request. The quit grace period applies when that
+request was sent successfully.
+
+The isolated macOS subprocess fixture held the daemon before
+Ready. Stop cancelled the wait, the process was reaped, and the test
+finished in 60 ms, including starting the fixture. The daemon and
+capture suites covered the existing restart and shutdown paths.
+All 131 GPUI tests and 42 Electron reference tests passed.
+[Startup cancellation verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
