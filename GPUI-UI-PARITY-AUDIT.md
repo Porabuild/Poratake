@@ -9570,6 +9570,22 @@ and app-local keyboard events.
 [Dark unbroken-title tooltip](tests/native/evidence/macos-ui/recording-title-focus-retina-dark-20261119.png)
 [Native-title evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS live capture with tied center scroll seams
+
+The wide tied-seam regression now has live Retina capture evidence.
+A generated AppKit window rendered two 1280×160 frames at offsets
+zero and 88, then rendered the full 1280×248 page. The captured
+second frame differed from its expected header and body rows at
+exactly one pixel in the true overlap.
+
+The previous matcher kept the first frame. The current matcher
+recovered the 72-row overlap and saved all 248 rows. The preview and
+saved image matched the full reference after sRGB conversion.
+The PNG retained Display P3, with all 1,269,760 decoded RGBA bytes
+matching the reference. The fixture captured only its own window
+by ID and advanced the page with app-local commands.
+[Live tied-seam evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

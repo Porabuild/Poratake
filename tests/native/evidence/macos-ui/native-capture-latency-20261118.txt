@@ -2924,3 +2924,37 @@ after dark unbroken [(792, 74, 795, 76), (797, 74, 799, 76), (801, 74, 803, 76)]
 The next focused control showed Start recording in the inspected
 dark Unicode scene. Both 2x Metal control workflows passed using
 the fixture daemon. All 76 Electron recording-control tests passed.
+
+2026-11-19 macOS live capture with tied center scroll seams
+
+The generated AppKit window displayed the tied-seam regression on
+the built-in Retina display. Both captured 1280x160 stages and the
+full 1280x248 reference came from the same window ID. The driver
+verified the owning process and bounds before each window-only
+request and waited for consecutive matching PNGs. An existing
+screen-only grant passed preflight. No system input was posted.
+
+existing screen grant verified without requesting access
+first 17291 1280 160 55.5 ms
+second 17291 1280 160 60.1 ms
+reference 17291 1280 248 79.1 ms
+
+The native Swift preview and save code ran on those same frames.
+The baseline was 27b4d102, before the center-tie retry. The
+updated build used the current matcher at df6d94b8.
+
+Prior
+result [] 1 1280 160
+profiles Optional(kCGColorSpaceDisplayP3) Optional(kCGColorSpaceDisplayP3)
+
+Current
+result [72] 2 1280 248
+profiles Optional(kCGColorSpaceDisplayP3) Optional(kCGColorSpaceDisplayP3)
+sRGB equal true
+sRGB equal true
+
+The changed pixel lies in the body overlap at row 52, column zero.
+The full reference retains the corresponding row from frame zero.
+
+captured changed pixels (row, column) [(52, 0)]
+saved PNG exactly matches 1269760 decoded RGBA bytes
