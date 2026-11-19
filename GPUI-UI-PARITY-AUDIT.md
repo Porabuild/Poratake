@@ -8164,6 +8164,33 @@ checks. The dark scroll workflow passed, including preview,
 save, cancellation and retry. The arm64 GPUI suite passed
 1,178 tests with 23 ignored.
 
+### 2026-11-19 macOS screenshot editor history loading
+
+Opening a screenshot preview prepared its bitmap off the app thread
+but still read saved edits during window construction. The native
+probe held the history read and reproduced an unresponsive app.
+GPUI now prepares the bitmap and loads saved edits together on the
+background executor. The preview, file picker and History openings
+use that preparation path.
+
+History keeps its window available while preparation runs. It closes
+after a successful open, leaves the row available after failure, and
+ignores a repeat open while one is pending. A focused regression
+checks the failed-open retry, exactly one editor, and matching
+export pixels.
+
+The native held-history probe uses the isolated fixture daemon.
+It checks that the app responds while editor history is held and
+that the editor opens after the read is released. Three revised runs
+answered in about 0.1 ms while history was held. The original build
+missed the four-second response window. Both selection profiles
+passed in light and dark. The arm64 GPUI suite passed 1,179 tests
+with 23 ignored.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --editor-open
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

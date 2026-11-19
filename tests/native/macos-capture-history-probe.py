@@ -63,7 +63,7 @@ def fixture_daemon():
 
 
 @contextmanager
-def held_history(path):
+def held_history(path, contents="[]"):
     deadline = monotonic() + 12
     while True:
         try:
@@ -77,9 +77,9 @@ def held_history(path):
         yield
     finally:
         replacement = path.with_suffix(".ready")
-        replacement.write_text("[]")
+        replacement.write_text(contents)
         replacement.replace(path)
-        os.write(writer, b"[]")
+        os.write(writer, contents.encode())
         os.close(writer)
 
 
@@ -89,7 +89,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable, recording=False):
+def verify(executable, recording=False, opening_editor=False):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -168,6 +168,25 @@ def verify(executable, recording=False):
         history_path = profile / "history.json"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening_editor:
+                capture_area()
+                eventually("preview ready")
+                contents = history_path.read_text()
+                history_path.unlink()
+                os.mkfifo(history_path)
+                assert command("preview editor")
+                with held_history(history_path, contents):
+                    start = monotonic()
+                    send("status")
+                    assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
+                    elapsed_ms = (monotonic() - start) * 1000
+                    print(f"app status replied in {elapsed_ms:.1f} ms while editor history was held")
+                eventually("close editor")
+                print("the screenshot editor opened after history was released")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
+
             preview = "video preview ready" if recording else "preview ready"
             os.mkfifo(history_path)
             if recording:
@@ -218,11 +237,12 @@ def verify(executable, recording=False):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
-    elif sys.argv[1:] in ([], ["--recording"]):
+    elif sys.argv[1:] in ([], ["--recording"], ["--editor-open"]):
         root = Path(__file__).resolve().parents[2]
         verify(
             root / "src/main/target/debug/poratake-gpui",
             recording=sys.argv[1:] == ["--recording"],
+            opening_editor=sys.argv[1:] == ["--editor-open"],
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open]")

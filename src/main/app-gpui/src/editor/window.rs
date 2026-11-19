@@ -51,6 +51,14 @@ pub(crate) struct PersistedEditorState {
     layers: Vec<crate::editor::layers::ImageLayer>,
 }
 
+impl PersistedEditorState {
+    pub(crate) fn load_for_screenshot(path: &str) -> Self {
+        crate::history_store::editor_state_for_path(std::path::Path::new(path))
+            .and_then(|state| serde_json::from_value(state).ok())
+            .unwrap_or_default()
+    }
+}
+
 struct PreCropState {
     base_image: Arc<image::DynamicImage>,
     width: f32,
@@ -516,11 +524,8 @@ impl EditorWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let persisted = persisted.unwrap_or_else(|| {
-            crate::history_store::editor_state_for_path(std::path::Path::new(path))
-                .and_then(|state| serde_json::from_value(state).ok())
-                .unwrap_or_default()
-        });
+        let persisted =
+            persisted.unwrap_or_else(|| PersistedEditorState::load_for_screenshot(path));
         let (width, height) = prepared
             .as_ref()
             .map_or((0., 0.), PreparedScreenshot::dimensions);

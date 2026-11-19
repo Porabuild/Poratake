@@ -54,6 +54,7 @@ pub struct HistoryWindow {
     activation: Option<gpui::Subscription>,
     revealing: bool,
     closing: bool,
+    opening_screenshot: bool,
 }
 
 impl HistoryWindow {
@@ -77,6 +78,7 @@ impl HistoryWindow {
             activation: None,
             revealing: cfg!(windows),
             closing: false,
+            opening_screenshot: false,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if this.revealing
@@ -318,15 +320,27 @@ impl HistoryWindow {
     }
 
     pub fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing || self.opening_screenshot {
+            return;
+        }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
         let path = item.original_path.clone();
         let kind = item.r#type;
         if kind == HistoryItemType::Screenshot {
-            if crate::open_editor_for(cx, &path) {
-                self.close(window, cx);
-            }
+            self.opening_screenshot = true;
+            let prepared = crate::prepare_editor_open(cx, path.clone());
+            cx.spawn_in(window, async move |entity, cx| {
+                let (state, image) = prepared.await;
+                let _ = entity.update_in(cx, |this, window, cx| {
+                    this.opening_screenshot = false;
+                    if !this.closing && crate::open_editor_with_image(cx, &path, state, image) {
+                        this.close(window, cx);
+                    }
+                });
+            })
+            .detach();
             return;
         }
         self.close(window, cx);
@@ -764,6 +778,69 @@ mod tests {
     }
 
     #[herogpui::test]
+    fn history_retries_after_open_failure_and_prepares_only_one_editor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::EditorWindow;
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let path = directory.path().join("capture.png");
+        let pixels = image::RgbaImage::from_pixel(20, 10, image::Rgba([64, 112, 192, 255]));
+        pixels.save(&path).unwrap();
+        let missing = directory.path().join("missing.png");
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            let mut history = HistoryWindow::new(store, window, cx);
+            history.items = [(&missing, 2), (&path, 1)]
+                .into_iter()
+                .map(|(path, timestamp)| HistoryItem {
+                    id: timestamp.to_string(),
+                    timestamp,
+                    original_path: path.to_string_lossy().into_owned(),
+                    r#type: HistoryItemType::Screenshot,
+                    editor_state: None,
+                    duration: None,
+                })
+                .collect();
+            history.filter = HistoryFilter::All;
+            history.sort_order = HistorySortOrder::Newest;
+            history
+        });
+        let find_editors = |cx: &App| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .collect::<Vec<_>>()
+        };
+
+        history
+            .update(cx, |history, window, cx| history.open_index(0, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(cx.read(|cx| find_editors(cx).is_empty()));
+        assert!(cx.read(|cx| cx.windows().contains(&history.into())));
+
+        history
+            .update(cx, |history, window, cx| {
+                history.open_index(1, window, cx);
+                history.open_index(1, window, cx);
+                assert!(find_editors(cx).is_empty());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(!cx.windows().contains(&history.into()));
+            let editors = find_editors(cx);
+            assert_eq!(editors.len(), 1);
+            let editor = editors[0].read(cx).unwrap();
+            assert_eq!(PathBuf::from(&editor.file_path), path);
+            let png = editor.export_png().unwrap();
+            assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8(), pixels);
+        });
+    }
+
+    #[herogpui::test]
     fn history_layout_fits_narrow_windows(cx: &mut gpui::TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
@@ -800,6 +877,7 @@ mod tests {
                 activation: None,
                 revealing: false,
                 closing: false,
+                opening_screenshot: false,
             }
         });
         visual.update(|_, cx| {

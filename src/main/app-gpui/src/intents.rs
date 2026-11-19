@@ -386,7 +386,7 @@ pub fn open_settings(category: Category, cx: &mut App) {
 
 fn open_picked_image(cx: &mut App) {
     pick_file("Open in Editor", IMAGE_EXTENSIONS, cx, |path, cx| {
-        crate::open_editor_for(cx, path.to_string_lossy().as_ref());
+        crate::open_editor_async(cx, path.to_string_lossy().into_owned());
     });
 }
 

@@ -79,19 +79,33 @@ pub(crate) fn open_editor_with_state(
     )
 }
 
+pub(crate) fn prepare_editor_open(
+    cx: &App,
+    path: String,
+) -> gpui::Task<(
+    Option<editor::window::PersistedEditorState>,
+    image::ImageResult<editor::window::PreparedScreenshot>,
+)> {
+    cx.background_executor().spawn(async move {
+        let image = editor::window::PreparedScreenshot::open(&path);
+        let state = image
+            .as_ref()
+            .ok()
+            .map(|_| editor::window::PersistedEditorState::load_for_screenshot(&path));
+        (state, image)
+    })
+}
+
 pub(crate) fn open_editor_async(cx: &mut App, path: String) {
+    let prepared = prepare_editor_open(cx, path.clone());
     cx.spawn(async move |cx| {
-        let source = path.clone();
-        let image = cx
-            .background_executor()
-            .spawn(async move { editor::window::PreparedScreenshot::open(&source) })
-            .await;
-        cx.update(|cx| open_editor_with_image(cx, &path, None, image));
+        let (state, image) = prepared.await;
+        cx.update(|cx| open_editor_with_image(cx, &path, state, image));
     })
     .detach();
 }
 
-fn open_editor_with_image(
+pub(crate) fn open_editor_with_image(
     cx: &mut App,
     path: &str,
     editor_state: Option<editor::window::PersistedEditorState>,
