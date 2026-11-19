@@ -2285,6 +2285,17 @@ struct ScrollCapturePreviewTest {
         print("scroll restart after duplicates: scheduled=\(resumedSteps), ended=\(resumedEnds.count)")
         fflush(stdout)
         precondition(resumedSteps == 1 && resumedEnds.count == 1 && resumedModule.testIsAutoScrolling())
+        var cursorTransitions: [Bool] = []
+        var postedSteps: [CGPoint] = []
+        resumedModule.testSetCursorResponder { cursorTransitions.append($0) }
+        resumedModule.testCheckCursor(inside: true)
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: -1, y: 48)) { postedSteps.append($0) }
+        print("scroll step with pointer outside: posts=\(postedSteps.count)")
+        fflush(stdout)
+        precondition(postedSteps.isEmpty && cursorTransitions == [true])
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) { postedSteps.append($0) }
+        precondition(postedSteps.count == 1 && postedSteps[0].x == 64 && cursorTransitions == [true, false])
+        print("scroll step after pointer returns: posts=\(postedSteps.count), prompt cleared")
         let resumedGeneration = resumedModule.testCaptureGeneration()
         for index in 1...3 {
             resumedModule.testCaptureAfterScroll(generation: resumedGeneration)

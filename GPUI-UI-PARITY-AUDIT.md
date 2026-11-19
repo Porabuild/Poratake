@@ -10054,6 +10054,22 @@ The fixture injects frames and intercepts input. Identical-image histories
 still require independent information to disambiguate a stitch.
 [Auto Scroll restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Auto Scroll pointer boundary at dispatch
+
+Auto Scroll could post a wheel step outside the selected area
+between cursor-monitor callbacks. A step now samples the pointer,
+updates the boundary prompt, and uses that same position as the
+wheel event target. The next step resumes when the pointer returns.
+
+The native fixture moved the simulated pointer outside without
+running the periodic cursor check. The previous implementation
+posted one step outside. The revised fixture posted zero, showed
+the prompt, and sent exactly one step at the tested inside point
+when the pointer returned. The native fixtures and daemon typechecks
+passed on arm64 and Rosetta x86_64, along with 62 Electron and daemon
+contract tests. No desktop input was posted.
+[Auto Scroll boundary evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -3576,3 +3576,21 @@ The revised capture scheduled a scroll step and consumed its duplicate
 allowance only for images captured after each scroll. The final PNG
 matched the retained frame. The fixture used a supplied frame provider
 and a scheduling spy, so no mouse movement or wheel input was posted.
+
+2026-11-19 macOS Auto Scroll pointer stepping between monitor ticks at f366a0f2
+
+The fixture started Auto Scroll with a generated frame and intercepted
+wheel dispatch. With the cached monitor state inside, it presented a
+pointer at x=-1 outside the selected region and invoked a scroll step.
+
+Baseline
+scroll step with pointer outside: posts=1
+
+Revised
+scroll step with pointer outside: posts=0
+scroll step after pointer returns: posts=1, prompt cleared
+
+The next simulated point at x=64 was inside. The posted event used x=64
+and the cursor prompt had cleared, despite the monitor having been
+outside on the previous step. The other scroll restart checks still
+saved the retained frame exactly. No real pointer input was used.

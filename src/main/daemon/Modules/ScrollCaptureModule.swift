@@ -386,7 +386,8 @@ class ScrollCaptureModule: NSObject, Module {
     private var testPreviewEncoder: ((CGImage) -> String?)?
     private var testPreviewResponder: ((Int, Int) -> Void)?
     private var testScrollEndedResponder: (([String: Any]) -> Void)?
-    private var testCursorInside: Bool?
+    private var testCursorLocation: NSPoint?
+    private var testScrollResponder: ((CGPoint) -> Void)?
     private var testCursorResponder: ((Bool) -> Void)?
     private var testBeforeFrameComparison: (() -> Void)?
     private var testCaptureProvider: ((@escaping (CGImage?) -> Void) -> Void)?
@@ -867,12 +868,16 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func performAutoScrollStep() {
-        guard !isCursorOutside else { return }
+        guard isAutoScrolling else { return }
+        let location = scrollPointerLocation()
+        let outside = !captureArea.contains(location)
+        setCursorOutside(outside)
+        guard !outside else { return }
 
         let stepsPerFrame = scrollStepsPerFrame
         let isFinalStep = currentScrollStep == stepsPerFrame - 1
         let delta = isFinalStep ? scrollDeltaPerStep + scrollStepRemainder : scrollDeltaPerStep
-        simulateScroll(delta: delta)
+        simulateScroll(delta: delta, at: location)
         currentScrollStep += 1
 
         guard currentScrollStep >= stepsPerFrame else { return }
@@ -928,12 +933,11 @@ class ScrollCaptureModule: NSObject, Module {
         CGWarpMouseCursorPosition(CGPoint(x: centerX, y: centerY))
     }
 
-    private func isCursorInsideCaptureArea() -> Bool {
+    private func scrollPointerLocation() -> NSPoint {
 #if SCROLL_CAPTURE_TEST
-        if let testCursorInside { return testCursorInside }
+        if let testCursorLocation { return testCursorLocation }
 #endif
-        let mouseLocation = NSEvent.mouseLocation
-        return captureArea.contains(mouseLocation)
+        return NSEvent.mouseLocation
     }
 
     private func startCursorMonitor() {
@@ -953,7 +957,7 @@ class ScrollCaptureModule: NSObject, Module {
 
     private func checkCursorPosition() {
         guard isAutoScrolling else { return }
-        setCursorOutside(!isCursorInsideCaptureArea())
+        setCursorOutside(!captureArea.contains(scrollPointerLocation()))
     }
 
     private func setCursorOutside(_ outside: Bool) {
@@ -972,10 +976,14 @@ class ScrollCaptureModule: NSObject, Module {
         emit(event: "cursor", data: ["outside": outside])
     }
 
-    private func simulateScroll(delta: Int32) {
-        let mouseLocation = NSEvent.mouseLocation
-        let cgMouseY = primaryScreenHeight() - mouseLocation.y
-        let cgPoint = CGPoint(x: mouseLocation.x, y: cgMouseY)
+    private func simulateScroll(delta: Int32, at location: NSPoint) {
+        let cgPoint = CGPoint(x: location.x, y: primaryScreenHeight() - location.y)
+#if SCROLL_CAPTURE_TEST
+        if let testScrollResponder {
+            testScrollResponder(cgPoint)
+            return
+        }
+#endif
 
         if let scrollEvent = CGEvent(scrollWheelEvent2Source: nil,
                                       units: .pixel,
@@ -2512,9 +2520,17 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     func testCheckCursor(inside: Bool) {
-        testCursorInside = inside
+        testCursorLocation = NSPoint(x: inside ? captureArea.midX : captureArea.minX - 1, y: captureArea.midY)
         checkCursorPosition()
-        testCursorInside = nil
+        testCursorLocation = nil
+    }
+
+    func testPerformAutoScrollStep(at point: NSPoint, post: @escaping (CGPoint) -> Void) {
+        testCursorLocation = point
+        testScrollResponder = post
+        performAutoScrollStep()
+        testCursorLocation = nil
+        testScrollResponder = nil
     }
 
     func testInstallBoundary(_ window: NSWindow) {
