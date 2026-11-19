@@ -1237,3 +1237,36 @@ Direct  Dark    2    71.7    0.7       83.2      155.7
 Direct  Dark    3    66.4    0.7       86.3      153.4
 Direct  Dark    4    69.1    0.7       87.2      157.0
 Direct  Dark    5    65.8    0.7       84.4      150.9
+
+2026-11-19 macOS 4K60 editor runtime phase trace
+
+The development GPUI app played a generated 3840x2160 H.264 clip at
+60 fps for six media seconds. A fixture daemon provided the recording.
+The test used the worktree's FFmpeg binary. A wrapper inserted
+-threads:v 2 before the input only in the capped runs, leaving
+FFmpeg output settings and the file identical. Runs alternated the
+position of the variants. The first trials overlapped local test
+work and host load was not controlled.
+
+Updates are counted from 0.5 through 3.5 wall seconds after the
+app-local play command. Decode is the synchronous request through
+the actual VideoDecoder. Other is the measured background update
+work minus that wait, including lock, pixel conversion and composition
+cost. Counts describe images applied by GPUI and exclude display
+presentation. Values in ms.
+
+Trial            Updates    Decode median/max   Other median/max    Interval median/max
+Light auto           1       1520.16/1520.16       24.24/24.24                 –
+Dark auto            1        776.21/776.21        18.38/18.38                 –
+Dark threads2        1       2383.41/2383.41       14.95/14.95                 –
+Dark threads2        8        295.39/611.78        15.75/20.93          374.43/624.82
+Dark auto           60         19.50/124.67        12.10/21.22           31.29/140.15
+Dark auto          178          0.04/15.39         12.43/19.81           16.67/28.06
+Dark threads2      149          0.04/41.93         12.26/16.67           16.75/54.12
+
+When only one update completed inside the measurement interval, the
+trace preserves its decode and other times and omits an update
+interval. In the light stall, the preview had already reduced to
+480x270. Decoder wait dominated all samples that stalled. The
+evidence does not isolate FFmpeg processing from raw pipe transport
+or scheduling within that wait.

@@ -176,10 +176,19 @@ fn cached_frame(
     {
         return Some(frame);
     }
-    let frame = decoder
-        .and_then(|decoder| decoder.frame_at(time))
-        .and_then(|frame| to_pixmap(&frame))
-        .map(Arc::new);
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    let decode_started = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
+        .map(|_| std::time::Instant::now());
+    let decoded = decoder.and_then(|decoder| decoder.frame_at(time));
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    if let Some(started) = decode_started {
+        println!(
+            "VIDEO_SMOKE decode {time:.6} {:.3} {}",
+            started.elapsed().as_secs_f64() * 1000.,
+            decoded.is_some(),
+        );
+    }
+    let frame = decoded.as_ref().and_then(to_pixmap).map(Arc::new);
     *cached = frame.clone().map(|frame| (time, frame));
     frame
 }

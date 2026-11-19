@@ -894,6 +894,14 @@ impl VideoEditorWindow {
                             active_preview_budget(this.source_frame_rate),
                         );
                     }
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    if std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").is_some() {
+                        let size = composed.as_ref().map(|image| image.size(0)).unwrap_or_default();
+                        println!(
+                            "VIDEO_SMOKE update {time:.6} {:.3} {} {}",
+                            elapsed.as_secs_f64() * 1000., size.width.0, size.height.0,
+                        );
+                    }
                     if let Some(image) = composed {
                         // Every composed frame is a new texture, so the previous
                         // one has to leave the sprite atlas with it.
@@ -1743,6 +1751,11 @@ impl VideoEditorWindow {
     }
 
     /// The composed frame under the playhead, which the focus picker draws.
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn playback_active_for_parity(&self) -> bool {
+        self.is_playing
+    }
+
     pub fn preview_image(&self) -> Option<Arc<gpui::RenderImage>> {
         self.preview_image.clone()
     }

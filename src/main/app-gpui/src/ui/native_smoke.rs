@@ -1607,6 +1607,24 @@ pub fn open(cx: &mut App) {
                         })
                         .unwrap_or(false);
                 }
+                if matches!(command.as_str(), "video editor play" | "video editor playing") {
+                    let Some(handle) =
+                        registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {
+                            handle.downcast::<crate::windows::video_editor::VideoEditorWindow>()
+                        })
+                    else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |editor, _, cx| {
+                            if command == "video editor play" && !editor.playback_active_for_parity()
+                            {
+                                editor.toggle_playback(cx);
+                            }
+                            editor.playback_active_for_parity()
+                        })
+                        .unwrap_or(false);
+                }
                 if command == "video editor ready" {
                     let Some(handle) =
                         registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {

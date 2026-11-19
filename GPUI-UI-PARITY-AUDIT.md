@@ -8527,6 +8527,25 @@ of those warm upper bounds. The exact first composited frame time
 and physical input latency remain open.
 [Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K60 playback stall phase trace
+
+The native development probe can start editor playback and trace the
+decoded-frame wait and the work through each preview update. The probe
+uses generated video and a fixture recorder. The trace is opt-in via
+`PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK=1` in parity builds.
+
+The earlier stall recurred. In the first trial one update took 1,544 ms,
+including 1,520 ms waiting for the decoded frame. Across a further
+six trials, some three-second samples contained only one update,
+while the best unmodified decoder sample contained 178. During
+the third paired comparison, the unmodified decoder delivered 178
+updates and a two-input-thread cap delivered 149. The cap also
+stalled in other trials, so the production decoder settings were
+kept. The trace identifies decoder delivery as the largest measured
+part of the stalled updates. FFmpeg decode, raw pipe delivery and
+host scheduling within that wait remain open. All 1,183 GPUI tests passed.
+[Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
