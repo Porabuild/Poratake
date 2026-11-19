@@ -1142,3 +1142,53 @@ without reproducing the earlier 2.36-second tail. This is a comparison
 across four sequential fixture runs on one display. System load,
 physical input latency, larger regions and first composited editor
 frames are outside this run.
+
+2026-11-19 live macOS Retina window capture and editor latency
+
+The GPUI code was at eb4c8fa3, with an isolated profile per run,
+history enabled, Freeze off and automatic clipboard copying disabled.
+The previously authorized screen-only Swift fixture supplied the
+window list and capture. The synthetic fixture window was 1480x870
+points at 2x, borderless, nonactivating and mouse-transparent. The
+broker forwarded a singleton generated target list to the app and
+asserted the chosen window ID before forwarding capture-window. A
+first attempt at floating level was rejected by the native picker
+and issued no capture request. The measured runs used normal level.
+
+All 20 resulting 2960x1740 PNGs were converted to sRGB by ColorSync
+and decoded through ffmpeg. Every decoded pixel was within two
+levels of the intended RGBA (204,26,31,255). The eight direct editor
+trials also asserted the saved file's history entry and absence of a
+preview. No capture operation targeted another app's window.
+
+Columns are milliseconds. Switch ends when WindowServer shows the
+replacement selector and the window list reply is available. Cancel
+and hidden are WindowServer observations. Pre-RPC is from target
+click to capture RPC dispatch. Post-RPC ends at thumbnail readiness
+in Preview mode or at the editor window becoming available in Direct
+mode. Ready measures from target click to that same endpoint. For
+Preview, Editor measures from the subsequent preview edit action
+to editor window availability. Direct rows already include editor
+opening in Ready. The first sample in each profile is cold.
+
+Mode    Theme Trial Area open Switch Cancel Reopen Hidden Pre-RPC   RPC Post-RPC Ready Editor
+Preview Light   1     145.8   99.9   18.3   43.8   25.9    6.1   188.4   85.9   280.4 150.2
+Preview Light   2      99.9  140.0   17.5  134.3   48.2    1.5   140.5   68.4   210.4 346.8
+Preview Light   3      91.6  156.9   34.4   96.6   70.9    4.9   129.7   71.0   205.6  59.4
+Preview Light   4      56.6   49.8   14.1   42.6   40.6    1.2   107.6   72.2   181.1  72.9
+Preview Light   5      38.0   54.2   16.7   51.8   17.2    1.1    98.1   70.9   170.1 104.5
+Preview Light   6      55.1   46.2   25.0   50.8   26.7    0.5   110.2   67.8   178.5  67.8
+Preview Dark    1     131.9   81.0   37.4   60.9   46.2    4.3   183.1   90.4   277.8 124.5
+Preview Dark    2      53.7   66.6   28.4   58.7   26.5    6.1   141.1   84.3   231.5  86.6
+Preview Dark    3      89.7   69.0   11.7   34.7   15.3    1.6    97.0   65.1   163.7  75.0
+Preview Dark    4      45.6   50.0   17.3   44.0   18.6    1.0   106.7   59.1   166.8  71.3
+Preview Dark    5      31.7   54.8   17.0   71.9   58.1    1.3   106.3   85.8   193.5  52.6
+Preview Dark    6      37.5   50.8   15.4   50.6   34.6    0.5    94.0   60.9   155.5  66.1
+Direct  Light   1     109.9  143.6   51.2   94.8   54.7   14.9   197.2  151.7   363.8    –
+Direct  Light   2      43.8   40.7   15.1   53.8   18.3    0.6    90.5   73.1   164.2    –
+Direct  Light   3      42.7   44.1   17.9   32.6   16.5    0.7   116.6   70.4   187.7    –
+Direct  Light   4      33.7   32.4    9.4   32.9   11.2    0.6   110.9  123.7   235.2    –
+Direct  Dark    1     203.7  101.2   28.9   46.5   27.7    2.7   186.7  108.5   297.9    –
+Direct  Dark    2     100.7   53.4   21.8   43.3   30.7   11.7   103.4   90.6   205.6    –
+Direct  Dark    3      37.3   45.5   14.3   32.9   55.8    1.9   112.5   67.3   181.6    –
+Direct  Dark    4      45.2   53.9   11.8   48.8   24.6    1.2    94.7   71.5   167.4    –

@@ -8486,6 +8486,29 @@ readiness in 253 ms. The previous 2.36-second outlier did not recur.
 Its cause remains unclassified in the earlier run.
 [Per-trial timing and probe details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 live macOS Retina window capture and editor latency
+
+On the built-in Retina display, the GPUI development app selected a
+generated nonactivating window using app-local input. The broker
+filtered the native window list to the generated target and forwarded
+capture requests only for that ID. Freeze was off. All 20 saved
+2960×1740 PNGs matched the generated colors within two sRGB levels.
+The direct-to-editor runs also verified the matching history entry.
+
+With Preview enabled, warm median area-to-window switching took
+54 ms in light mode and 55 ms in dark mode. Cancelling the window
+picker took 18 and 17 ms. Picking the window to thumbnail readiness
+took 181 and 167 ms. The capture RPC accounted for 110 and 106 ms,
+and the thumbnail became ready about 71 and 65 ms after its reply.
+Preview-to-editor window readiness took a warm median of 73 and
+71 ms, with one light trial taking 347 ms.
+
+With Preview disabled, warm median window pick to editor window
+readiness took 188 ms in light mode and 182 ms in dark mode. The
+cold runs took 364 and 298 ms. First composited editor frames,
+physical input latency and 4K-resolution capture remain open.
+[Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
