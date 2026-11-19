@@ -8143,6 +8143,27 @@ is isolated from the system clipboard. Both full 1280-point
 macOS Metal profiles passed at 1×, with 221 PNGs per appearance.
 The arm64 GPUI suite passed 1,178 tests with 23 ignored.
 
+### 2026-11-19 macOS screenshot destination preparation
+
+The area, window and scroll paths checked the configured screenshot
+directory on the app thread. They now snapshot the naming settings
+and filename at confirmation, then resolve the directory on the
+capture worker. Clipboard opening uses the same destination helper.
+The existing fallback to Pictures is retained.
+
+The fixture points an area capture at a read-only directory. The
+old error omitted the destination. The revised regression checks
+that the warning includes the folder, that preparation failure
+sends no capture request, and that retry saves the expected pixels
+after write access is restored.
+
+The focused macOS selection workflow is available with
+`PORATAKE_PARITY_SELECTION_ONLY=1`. Its light and dark runs
+passed the area, window, display, preview, editor and clipboard
+checks. The dark scroll workflow passed, including preview,
+save, cancellation and retry. The arm64 GPUI suite passed
+1,178 tests with 23 ignored.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

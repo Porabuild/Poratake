@@ -321,12 +321,13 @@ impl Coordinator {
             return self.run_scroll_capture(capture, excluded_window_ids, owner, hide, cx);
         }
         let service = self.service.clone();
-        let path = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
+            let path = resolve_destination();
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
                     capture_screenshot_to_file(&path, |temporary| {
@@ -578,11 +579,12 @@ impl Coordinator {
         cx: &mut Context<Self>,
     ) {
         let service = self.service.clone();
-        let path = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
+            let path = resolve_destination();
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
                     capture_screenshot_to_file(&path, |temporary| {
@@ -652,13 +654,16 @@ impl Coordinator {
             return;
         }
 
-        let output = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             let daemon = service.daemon.clone();
-            let started = cx
+            let (started, output) = cx
                 .background_executor()
-                .spawn(async move { crate::capture::scroll::start_reserved(&daemon, &request) })
+                .spawn(async move {
+                    let output = resolve_destination();
+                    (crate::capture::scroll::start_reserved(&daemon, &request), output)
+                })
                 .await;
             if !started {
                 cx.update(|cx| {

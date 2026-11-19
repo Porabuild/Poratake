@@ -977,6 +977,14 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_SELECTION_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        std::fs::File::create(output.join("daemon-fixture.jsonl")).unwrap();
+        workflows::selection_captures(&mut cx, &output, &scratch);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_SCROLL_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         std::fs::OpenOptions::new()

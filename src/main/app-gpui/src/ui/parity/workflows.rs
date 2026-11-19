@@ -2499,6 +2499,80 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
     }
 }
 
+#[cfg(target_os = "macos")]
+fn screenshot_destination_failure_and_retry(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scratch: &Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let captures = scratch.join("read-only-screenshot-destination");
+    std::fs::create_dir_all(&captures).unwrap();
+    let permissions = std::fs::metadata(&captures).unwrap().permissions();
+    std::fs::set_permissions(&captures, std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let service = cx.update(|cx| {
+        use crate::windows::registry::{self, WindowKind};
+
+        registry::close(WindowKind::CapturePreview, cx);
+        crate::state::state(cx)
+    });
+    let previous = service.config.get();
+    service.config.update(|config| {
+        config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+        config.screenshot.freeze_screen = false;
+        config.screenshot.hide_desktop_icons = false;
+        config.screenshot.show_preview = true;
+        config.screenshot.capture_to_clipboard = false;
+        config.screenshot.auto_copy_to_clipboard = false;
+    });
+    take_notifications();
+    let before = super::daemon_fixture::calls(output).len();
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    std::fs::set_permissions(&captures, permissions).unwrap();
+
+    assert!(captures.read_dir().unwrap().next().is_none());
+    assert!(!super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "screenshot" && call["method"] == "capture-area"));
+    assert!(
+        take_notifications().iter().any(|(title, body, _)| {
+            title == "Capture Failed" && body.contains(captures.to_str().unwrap())
+        }),
+        "capture failure must name the destination folder"
+    );
+
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    verify_saved_capture(
+        cx,
+        scratch,
+        &captures,
+        (SELECTED_RECT, [240, 80, 64, 255]),
+        "workflow-screenshot-destination-retry",
+    );
+    service.config.update(|config| {
+        config.storage = previous.storage;
+        config.screenshot = previous.screenshot;
+    });
+}
+
 pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
     #[cfg(target_os = "macos")]
     let display = cx.update(|cx| {
@@ -3547,6 +3621,8 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             config.screenshot.capture_to_clipboard = false;
         });
     });
+    #[cfg(target_os = "macos")]
+    screenshot_destination_failure_and_retry(cx, output, scratch);
     println!("selection capture clipboard modes and saved pixels passed");
 }
 

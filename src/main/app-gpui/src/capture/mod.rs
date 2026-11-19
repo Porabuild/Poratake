@@ -29,7 +29,16 @@ fn uuid_simple() -> String {
 
 pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
     let directory = output.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(directory)?;
+    let with_directory = |error: std::io::Error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "Could not prepare a screenshot in {}. {error}",
+                directory.display()
+            ),
+        )
+    };
+    std::fs::create_dir_all(directory).map_err(&with_directory)?;
     loop {
         let temporary = directory.join(format!(".poratake-{}.tmp.png", uuid_simple()));
         match std::fs::OpenOptions::new()
@@ -39,7 +48,7 @@ pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
         {
             Ok(_) => return Ok(temporary),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(with_directory(error)),
         }
     }
 }
@@ -274,19 +283,7 @@ impl CaptureService {
         }
     }
 
-    /// Port of `getScreenshotsDir`.
-    pub fn screenshots_dir(&self) -> PathBuf {
-        let config = self.config.get();
-        let custom = config.storage.screenshots_path.clone();
-        if !custom.is_empty() && std::path::Path::new(&custom).is_dir() {
-            return PathBuf::from(custom);
-        }
-        let pictures = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
-        pictures.join("Poratake")
-    }
-
-    /// Port of `generateScreenshotPath`.
-    pub fn generate_screenshot_path(&self) -> PathBuf {
+    pub(crate) fn screenshot_destination(&self) -> impl FnOnce() -> PathBuf + Send + 'static {
         let config = self.config.get();
         let pattern = if config.storage.naming_pattern.is_empty() {
             "%type %Y-%m-%d at %H.%M.%S"
@@ -299,7 +296,16 @@ impl CaptureService {
             "png",
             chrono::Local::now(),
         );
-        self.screenshots_dir().join(filename)
+        let custom = PathBuf::from(config.storage.screenshots_path);
+        move || {
+            if !custom.as_os_str().is_empty() && custom.is_dir() {
+                return custom.join(filename);
+            }
+            dirs::picture_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Poratake")
+                .join(filename)
+        }
     }
 
     /// Same daemon contract as `captureRegionToFile`: screen-space rect in

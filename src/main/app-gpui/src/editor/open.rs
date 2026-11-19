@@ -11,16 +11,15 @@ pub fn open_clipboard(cx: &mut App) {
         eprintln!("[editor] clipboard has no image");
         return;
     };
-    let service = crate::state::state(cx);
+    let resolve_destination = crate::state::state(cx).screenshot_destination();
     cx.spawn(async move |cx| {
         let saved: anyhow::Result<_> = cx
             .background_executor()
             .spawn(async move {
                 let buffer = crate::render::images::decode(&image.bytes)
                     .context("The clipboard image could not be decoded")?;
-                let path = service.generate_screenshot_path();
-                let temporary = crate::capture::prepare_screenshot(&path)
-                    .with_context(|| format!("Could not prepare {}", path.display()))?;
+                let path = resolve_destination();
+                let temporary = crate::capture::prepare_screenshot(&path)?;
                 if let Err(error) = buffer.save(&temporary) {
                     let _ = std::fs::remove_file(&temporary);
                     return Err(error).context("Could not write the clipboard image");
