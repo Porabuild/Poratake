@@ -2031,3 +2031,58 @@ Darwin's socket option handler returns an error when it cannot
 reserve the configured buffer. The decoder uses its pipe fallback
 when either socket option fails.
 https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_socket.c#L4576-L4607
+
+2026-11-19 macOS playback during concurrent 4K encoding
+
+The comparison used the native GPUI development builds immediately
+before and after the macOS socket change. Each played the same
+generated four-second 3840x2160 H.264 source at 60 fps. A separate
+local FFmpeg process encoded the clip in a loop with libx264
+veryfast, two input threads and two output threads, dropping its
+encoded output. The process reported frame progress before Play
+and stayed alive during each probe. The run ended the encoder
+after sampling. Both builds used bundled FFmpeg for editor decode.
+
+Each GPUI run counted applied preview updates from 0.4 through
+2.4 seconds after Play. The control commands queried playback,
+opened the area selector, switched to the window selector and
+canceled it. WindowServer sampling was scoped to the temporary
+app PID. The test used no physical input or live capture. The
+window list contained a synthetic target. Times are milliseconds.
+
+Run          Updates   Max decode   Payload median/max   Max ping   Area open   Switch   Dismiss
+Pipe light         2       748.32       27.46/75.25          0.84      154.89    48.04     48.47
+Socket light      29       260.12       16.15/51.30          9.09      166.87    53.30     49.69
+Socket dark       34       650.92       15.97/131.79        18.92      158.89    49.11     57.27
+Pipe dark          3       976.06       26.07/135.30        15.49      146.74    60.53     62.90
+Pipe dark          7       504.28       22.41/52.24          7.04      145.11    55.19     67.03
+Socket dark      118         7.98        7.00/27.22          2.02       98.79    38.79     44.08
+Socket light     115        25.03        9.54/27.81          5.40      163.38    63.97     62.06
+Pipe light         6       452.04       16.96/74.14          6.84      127.55    46.71     65.90
+
+The encoder reported 51–88 frames by the end of the paired runs.
+One earlier unpaired socket run saw payload reads reach 197.75 ms,
+with the selector appearing in 283 ms. An earlier pipe setup run
+timed out waiting for the thumbnail before the concurrent job
+started. Its first payload read took 4.306 s. These two runs are
+outside the table because they were not part of its alternating
+sequence.
+
+The standalone follow-up used the bundled FFmpeg binary and the
+first 180 frames of the same file. Decode only used wrapped source
+frames. BGRA to null includes conversion and raw output without an
+application reader. Socket runs read the whole raw payload. Other
+host work was uncontrolled. Values are seconds, listed in trial
+order within each condition.
+
+Stage                         Without test encoder     With test encoder
+Decode only                          1.595 / 0.533         0.584 / 0.784
+BGRA to null                         3.020 / 1.846         1.666 / 8.668
+Socket                               3.807 / 2.324         3.536 / 15.980
+Socket, two filter threads           7.274 / 2.709         5.135 / 8.290
+Socket, four filter threads          2.246 / 5.467         3.363 / 11.731
+
+Producing three seconds of raw BGRA sometimes took longer than
+realtime with the null device as the sink. The timing ranges
+leave swscale, raw output preparation and scheduling inside
+FFmpeg open.

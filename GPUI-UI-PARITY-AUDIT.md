@@ -9094,6 +9094,27 @@ both real-FFmpeg sparse seek tests passed. The earlier intermittent
 stall remains open.
 [Transfer and playback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS playback during concurrent 4K encoding
+
+The GPUI development builds alternated between the original pipe
+and the tuned socket while a separate software encoder processed
+the generated 4K60 clip. The pipe applied 2–7 preview updates
+over two seconds and the socket applied 29–118. Median payload
+times were 17.0–27.5 ms and 7.0–16.2 ms respectively. The longest
+completed decoder request on the socket was 651 ms.
+
+The app-local playback query answered within 19 ms across the
+eight paired runs. The area selector appeared in 99–167 ms,
+switched to window mode in 39–64 ms and cleared in 44–67 ms.
+WindowServer observations were limited to the temporary app.
+
+The standalone BGRA path also slowed with its output directed
+to the null device, so frame production and host scheduling
+remain relevant to the stall. The two- and four-filter-thread
+caps varied too much across runs to select either. The playback
+stall remains reproducible under concurrent encoding.
+[Concurrent playback and diagnostic evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
