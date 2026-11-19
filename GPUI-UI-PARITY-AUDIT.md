@@ -9746,6 +9746,32 @@ tests and 50 Electron reference tests passed. Sustained 4K60
 playback under comparable encoding load remains open.
 [Per-trial timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K decode and Electron comparison
+
+The same generated 4K60 H.264 pattern ran through a minimal
+Electron video and 640×360 canvas fixture. Chromium reported 120
+video frame callbacks and zero dropped frames in every two-second
+sample, with VideoToolbox and with its FFmpeg software decoder.
+The six loaded samples ran alongside two independent 4K encoders.
+The fixture exercised the video and canvas paths and omitted the
+full editor composition engine.
+
+In the standalone GPUI-style BGRA transfer, caps of two or four
+decoder threads and one filter thread each won at most half of
+their six paired loaded runs. All four settings produced
+identical BGRA hashes and timestamps for 180 frames.
+
+A separate test reduced each raw frame from 33.2 MB of BGRA
+to 12.4 MB of planar YUV. With the same encoding load, the
+median for 180 frames fell from 2.61 s to 1.12 s across four
+pairs. That measures frame production and transfer. Converting
+the YUV back to BGRA separately reproduced every pixel and
+timestamp from this source. The raw stream dropped the sample
+aspect ratio header. The editor would need to carry that
+metadata and preserve color and timing across other formats.
+Fifty-six related Electron tests passed.
+[Decoder and Electron timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
