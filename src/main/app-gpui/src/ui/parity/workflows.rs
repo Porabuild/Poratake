@@ -3362,6 +3362,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
     );
     std::fs::write(&existing, b"previous capture").unwrap();
     let clipboard_pixels = [70, 120, 180, 255].repeat(20 * 10);
+    let clipboard_path = captures.join("Collision (2).png");
     cx.update(|cx| {
         crate::system::clipboard::ClipboardService::write_rgba(
             cx,
@@ -3371,10 +3372,16 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         )
         .unwrap();
         crate::editor::open_clipboard(cx);
+        assert!(
+            !cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .any(|editor| Path::new(&editor.read(cx).unwrap().file_path) == clipboard_path),
+            "the clipboard editor must not open in the command's UI turn"
+        );
     });
     cx.run_until_parked();
     assert_eq!(std::fs::read(&existing).unwrap(), b"previous capture");
-    let clipboard_path = captures.join("Collision (2).png");
     assert_eq!(
         image::open(&clipboard_path).unwrap().to_rgba8().into_raw(),
         clipboard_pixels
@@ -3386,6 +3393,13 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             .find(|editor| Path::new(&editor.read(cx).unwrap().file_path) == clipboard_path)
             .unwrap()
     });
+    let editor_pixels = cx.update(|cx| {
+        image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())
+            .unwrap()
+            .to_rgba8()
+            .into_raw()
+    });
+    assert_eq!(editor_pixels, clipboard_pixels);
     cx.update_window(editor.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();

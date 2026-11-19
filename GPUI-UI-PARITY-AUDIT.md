@@ -8126,6 +8126,23 @@ recording workflows passed in light and dark, including screen,
 area and window preview-to-decoded-export checks. The arm64 GPUI
 suite passed 1,178 tests with 23 ignored.
 
+### 2026-11-19 macOS clipboard image editor opening
+
+Open Clipboard in Editor previously decoded the clipboard image,
+published the PNG and prepared the editor bitmap within the app
+command. GPUI now reads the clipboard on the app thread, then
+does the file and image work on the background executor. The editor
+opens through the shared prepared-image path after publication.
+
+The existing collision fixture now checks that the editor stays
+closed in the command's UI turn. It failed on the old code. The
+same fixture checks that the previous file survives, the clipboard
+image receives an exclusive filename, and the saved PNG and
+editor export retain the generated pixels. The fixture clipboard
+is isolated from the system clipboard. Both full 1280-point
+macOS Metal profiles passed at 1×, with 221 PNGs per appearance.
+The arm64 GPUI suite passed 1,178 tests with 23 ignored.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
