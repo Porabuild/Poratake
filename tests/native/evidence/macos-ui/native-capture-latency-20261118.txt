@@ -3826,3 +3826,20 @@ At a boundary shared by two simulated displays, the requested panel
 overlapped the right display more. It restored at (1750,814) within
 that display's work area. A fully disconnected location still used
 the fallback corner. No camera device was opened.
+
+2026-11-19 open macOS camera preview on display-change notification at aa0ea769
+
+The native fixture positioned a generated AppKit camera panel 24
+points to the left of the built-in display's work area and posted
+NSApplication.didChangeScreenParametersNotification locally.
+
+Baseline
+camera preview did not refit after a display update
+
+Revised
+camera display update: same panel and exclusion ID, clamped to the work area
+
+The panel moved to the work area's left edge and kept its vertical
+position and window ID. The exclusion registry retained the ID
+until dismissal. No display settings were changed and no camera
+was opened. The notification was posted by the test fixture.

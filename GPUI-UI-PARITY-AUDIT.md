@@ -10283,6 +10283,23 @@ daemon typechecks passed on arm64 and Rosetta x86_64, along with
 97 Electron and daemon contract tests.
 [Camera placement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS camera preview fit after a display change
+
+The open camera preview now reapplies its work-area constraints
+when AppKit reports a display configuration change. The observer
+belongs to the current panel and is removed when the panel closes.
+[AppKit display-change notification](https://developer.apple.com/documentation/appkit/nsapplication/didchangescreenparametersnotification)
+
+The native fixture posted the notification locally while a generated
+camera panel was 24 points outside the work area. The panel moved
+inside, retained its existing WindowServer and capture-exclusion
+ID, and released that ID on dismissal. The fixture used the built-in
+display without changing its settings. Physical screen changes,
+Dock changes and live camera output remain unverified. Native lifecycle
+fixtures and daemon typechecks passed on arm64 and Rosetta x86_64,
+along with 97 Electron and daemon contract tests.
+[Display change evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

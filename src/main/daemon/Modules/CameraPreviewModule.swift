@@ -16,6 +16,7 @@ class CameraPreviewModule: Module {
     private var panel: NSPanel?
     private var contentView: CameraPreviewContentView?
     private var moveObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
     
     private var source = CameraPreviewSource()
     private var flipped: Bool = false
@@ -271,17 +272,29 @@ class CameraPreviewModule: Module {
     
     @MainActor
     private func calculatePosition(x: Int?, y: Int?, size: NSSize) -> NSPoint {
+        let origin = x.flatMap { x in
+            y.map { y in
+                NSPoint(x: CGFloat(x), y: DisplayCoordinates.cocoaY(
+                    topLeftY: CGFloat(y), height: size.height,
+                    primaryHeight: DisplayCoordinates.primaryHeight
+                ))
+            }
+        }
+        return fittedPanelOrigin(origin, size: size)
+    }
+
+    @MainActor
+    private func fittedPanelOrigin(_ origin: NSPoint?, size: NSSize) -> NSPoint {
         let screens = NSScreen.screens
         return Self.fittedPanelOrigin(
-            x: x, y: y, size: size,
-            primaryHeight: screens.first?.frame.height ?? 0,
+            requestedOrigin: origin, size: size,
             displays: screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) },
             fallback: (panel?.screen ?? NSScreen.main ?? screens.first)?.visibleFrame
         )
     }
 
     static func fittedPanelOrigin(
-        x: Int?, y: Int?, size: NSSize, primaryHeight: CGFloat,
+        requestedOrigin: NSPoint?, size: NSSize,
         displays: [(frame: NSRect, visibleFrame: NSRect)],
         fallback: NSRect?
     ) -> NSPoint {
@@ -291,23 +304,14 @@ class CameraPreviewModule: Module {
                 y: min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
             )
         }
-        let topLeft = x.flatMap { x in
-            y.map { y in
-                NSPoint(
-                    x: CGFloat(x),
-                    y: DisplayCoordinates.cocoaY(topLeftY: CGFloat(y), height: 0, primaryHeight: primaryHeight)
-                )
-            }
-        }
-        let requestedOrigin = topLeft.map { NSPoint(x: $0.x, y: $0.y - size.height) }
-        if let topLeft, let requestedOrigin,
-           let display = displays.first(where: {
-               topLeft.x >= $0.frame.minX && topLeft.x < $0.frame.maxX
-                   && topLeft.y > $0.frame.minY && topLeft.y <= $0.frame.maxY
-           }) {
-            return constrained(requestedOrigin, to: display.visibleFrame)
-        }
         if let requestedOrigin {
+            let topLeft = NSPoint(x: requestedOrigin.x, y: requestedOrigin.y + size.height)
+            if let display = displays.first(where: {
+                topLeft.x >= $0.frame.minX && topLeft.x < $0.frame.maxX
+                    && topLeft.y > $0.frame.minY && topLeft.y <= $0.frame.maxY
+            }) {
+                return constrained(requestedOrigin, to: display.visibleFrame)
+            }
             let requested = NSRect(origin: requestedOrigin, size: size)
             let best = displays.compactMap { display -> (area: CGFloat, visibleFrame: NSRect)? in
                 let overlap = requested.intersection(display.frame)
@@ -350,12 +354,31 @@ class CameraPreviewModule: Module {
                 self.emit(event: "position-changed", data: ["x": x, "y": y])
             }
         }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self, weak panel] _ in
+            Task { @MainActor in
+                guard let self, let panel, self.panel === panel else { return }
+                let frame = panel.frame
+                let position = self.fittedPanelOrigin(frame.origin, size: frame.size)
+                if position != frame.origin {
+                    panel.setFrameOrigin(position)
+                }
+            }
+        }
     }
 
     private func stopMoveTracking() {
-        guard let moveObserver else { return }
-        NotificationCenter.default.removeObserver(moveObserver)
-        self.moveObserver = nil
+        if let moveObserver {
+            NotificationCenter.default.removeObserver(moveObserver)
+            self.moveObserver = nil
+        }
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+            self.screenObserver = nil
+        }
     }
 
     #if RECORDING_OUTLINE_TEST

@@ -47,9 +47,11 @@ struct RecordingOutlineLifecycleTest {
             (frame: secondary, visibleFrame: secondaryWorkArea),
         ]
         func placement(_ x: Int?, _ y: Int?) -> NSPoint {
-            CameraPreviewModule.fittedPanelOrigin(
-                x: x, y: y, size: size, primaryHeight: primary.height,
-                displays: displays, fallback: primaryWorkArea
+            let origin = x.flatMap { x in
+                y.map { y in NSPoint(x: CGFloat(x), y: primary.height - CGFloat(y) - size.height) }
+            }
+            return CameraPreviewModule.fittedPanelOrigin(
+                requestedOrigin: origin, size: size, displays: displays, fallback: primaryWorkArea
             )
         }
         precondition(placement(800, 200) == NSPoint(x: 800, y: 647))
@@ -67,7 +69,7 @@ struct RecordingOutlineLifecycleTest {
             visibleFrame: NSRect(x: 1750, y: 44, width: 820, height: 1040)
         )
         let sharedEdge = CameraPreviewModule.fittedPanelOrigin(
-            x: 1690, y: -45, size: size, primaryHeight: primary.height,
+            requestedOrigin: NSPoint(x: 1690, y: primary.height + 45 - size.height), size: size,
             displays: displays + [right], fallback: primaryWorkArea
         )
         precondition(sharedEdge == NSPoint(x: 1750, y: 814))
@@ -328,6 +330,31 @@ struct RecordingOutlineLifecycleTest {
     }
 
     @MainActor
+    static func verifyCameraPreviewDisplayChange() async throws {
+        guard NSScreen.screens.count == 1, let work = NSScreen.screens.first?.visibleFrame,
+              work.width > 300, work.height > 300 else { return }
+        let origin = NSPoint(x: work.minX - 24, y: work.midY - 135)
+        let frame = NSRect(origin: origin, size: NSSize(width: 270, height: 270))
+        let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.orderFrontRegardless()
+        panel.setFrameOrigin(origin)
+        let camera = CameraPreviewModule()
+        precondition(camera.testInstallPanel(panel))
+        let id = CGWindowID(panel.windowNumber)
+        precondition(panel.frame.origin == origin)
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp)
+        try await waitFor("camera preview did not refit after a display update") {
+            panel.frame.minX == work.minX && panel.frame.minY == origin.y
+        }
+        precondition(work.contains(panel.frame))
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [id])
+        await camera.testHidePanel()
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
+        print("camera display update: same panel and exclusion ID, clamped to the work area")
+    }
+
+    @MainActor
     static func run() async throws {
         verifyCameraSelection()
         verifyCameraPreviewPlacement()
@@ -347,6 +374,7 @@ struct RecordingOutlineLifecycleTest {
             return
         }
         try await verifyCameraPreviewStartup()
+        try await verifyCameraPreviewDisplayChange()
         let module = RecordingOverlayModule()
         let screen = NSScreen.screens.first!
         if NSScreen.screens.count == 1 {
