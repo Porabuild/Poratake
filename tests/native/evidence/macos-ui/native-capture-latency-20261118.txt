@@ -5005,3 +5005,25 @@ base     dark  pause-first        883.41       21.1
 GPUI editor tests: 174 passed and 5 ignored. Electron editor
 and export reference tests: 66 passed. The parity development
 build passed. The fixture supplied no physical camera or audio.
+
+2026-11-19 macOS pointer clearance in the protected tooltip fallback
+===================================================================
+
+The native fixture used a real generated AppKit owner and protected
+tooltip on the built-in display and injected a 340x250-point work
+area. Its owner left two vertical points and eight horizontal points
+per side, so the wrapped tooltip could only fit inside the owner.
+The pointer locations were 32 points from the right edge and six
+points from either the top or the bottom.
+
+The baseline debug run failed on the lower pointer with a negative
+six-point gap. The updated AppKit panel fit inside the work area with
+18 points to the pointer for all four combinations of edge and
+appearance. The panel was visible, click-through, and registered for
+capture exclusion. Dismissal removed the panel and its registry entry.
+The separate tall-owner check kept four points beside the owner.
+
+The focused placement command and complete Swift fixture passed
+on arm64 and Rosetta x86_64. Both full daemon typechecks and 138
+Electron reference and contract tests passed. This used app-local
+coordinates and checked the registry without capturing the desktop.

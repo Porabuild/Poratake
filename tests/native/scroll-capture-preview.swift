@@ -377,6 +377,57 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyTooltipFallbackClearsPointer() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 340,
+              screen.visibleFrame.height >= 250 else {
+            print("SKIP tooltip pointer clearance: no suitable AppKit display")
+            return
+        }
+        let work = NSRect(x: screen.visibleFrame.midX - 170, y: screen.visibleFrame.midY - 125,
+                          width: 340, height: 250)
+        let ownerFrame = work.insetBy(dx: 8, dy: 2)
+        let owner = NSPanel(contentRect: ownerFrame, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        owner.animationBehavior = .none
+        owner.ignoresMouseEvents = true
+        owner.orderFrontRegardless()
+        defer { owner.orderOut(nil) }
+        let ownerID = CGWindowID(owner.windowNumber)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+            work.contains(point) ? .init(frame: work, visibleFrame: work) : nil
+        })
+        let title = "Copy with a long preset name and settings that wrap inside a narrow work area"
+        var sequence: UInt64 = 0
+        for dark in [false, true] {
+            for nearBottom in [true, false] {
+                sequence += 1
+                let point = NSPoint(x: work.maxX - 32, y: nearBottom ? work.minY + 6 : work.maxY - 6)
+                precondition(tooltip.accept(sequence: sequence, owner: ownerID, text: title))
+                let shown = try await tooltip.show(
+                    sequence: sequence, owner: ownerID, text: title, dark: dark,
+                    at: point, ownerFrame: ownerFrame
+                )
+                guard shown, let panel = tooltip.testPanel else {
+                    preconditionFailure("The fallback tooltip was not shown")
+                }
+                precondition(panel.isVisible && work.contains(panel.frame))
+                precondition(panel.frame.minX <= point.x && panel.frame.maxX >= point.x)
+                precondition(panel.frame.intersects(ownerFrame), "This fixture must exercise the pointer fallback")
+                let gap = nearBottom ? panel.frame.minY - point.y : point.y - panel.frame.maxY
+                precondition(gap >= 18, "Tooltip fallback must clear the pointer: gap \(gap)")
+                precondition(panel.ignoresMouseEvents && registry.currentWindowIDs() == [CGWindowID(panel.windowNumber)])
+                sequence += 1
+                precondition(!tooltip.accept(sequence: sequence, owner: ownerID, text: nil))
+                await waitUntil("The fallback tooltip was not dismissed") {
+                    !panel.isVisible && registry.currentWindowIDs().isEmpty
+                }
+                print("visible fallback tooltip: \(dark ? "dark" : "light"), \(nearBottom ? "bottom" : "top"), gap \(gap)")
+            }
+        }
+    }
+
+    @MainActor
     static func captureStrictScrollFrame(_ args: [String]) async {
         guard CGPreflightScreenCaptureAccess() else {
             print("SKIP strict scroll frame: Screen Recording permission was not already granted")
@@ -990,6 +1041,7 @@ struct ScrollCapturePreviewTest {
                     try await verifyTooltipWaitsForOverlappingCaptures()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
+                    try await verifyTooltipFallbackClearsPointer()
                 } else {
                     await verifyAsyncScrollComparison()
                     try await runRecordingCoordinationChecks()
@@ -1453,6 +1505,7 @@ struct ScrollCapturePreviewTest {
         try await verifyTooltipWaitsForRestart()
         try await verifyTooltipWaitsForOverlappingCaptures()
         try await verifyTallTooltipPlacement()
+        try await verifyTooltipFallbackClearsPointer()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
             let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)

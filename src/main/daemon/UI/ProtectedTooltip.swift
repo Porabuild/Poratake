@@ -201,11 +201,13 @@ final class ProtectedTooltip {
         let visible = screen.visibleFrame
         var x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
         let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
-        let below = anchorFrame.map { $0.minY - size.height - 4 } ?? point.y - 18 - size.height
-        let above = anchorFrame.map { $0.maxY + 4 } ?? point.y + 18
+        let pointerBelow = point.y - 18 - size.height
+        let pointerAbove = point.y + 18
+        let below = anchorFrame.map { $0.minY - size.height - 4 } ?? pointerBelow
+        let above = anchorFrame.map { $0.maxY + 4 } ?? pointerAbove
         let belowFits = below >= visible.minY
         let aboveFits = above + size.height <= visible.maxY
-        var preferredY = point.y - 18 - size.height
+        var preferredY = pointerBelow >= visible.minY || point.y >= visible.midY ? pointerBelow : pointerAbove
         if belowFits {
             preferredY = below
         } else if aboveFits {

@@ -11066,6 +11066,24 @@ GPUI editor suite passed 174 tests and the Electron reference
 suites passed 66.
 [Paused background memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltips when the owner fills the work area
+
+A protected tooltip now uses the side of the pointer with room
+when it cannot fit outside its owner. The previous bottom-edge
+placement covered the pointer by six points in a narrow fixture.
+
+The real AppKit panel kept an 18-point gap at both the top and
+bottom edges of the simulated work area in light and dark. It
+remained visible inside the work area, ignored pointer events,
+and unregistered on dismissal. The existing tall-owner side
+placement retained its four-point owner gap.
+
+Focused and complete Swift fixtures passed on Apple Silicon and
+Rosetta, as did both daemon typechecks and 138 Electron reference
+and daemon contract tests. The probe used app-local coordinates
+on the built-in display.
+[Tooltip fallback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
