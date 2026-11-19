@@ -473,7 +473,7 @@ mod backend {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod backend {
     use super::*;
-    use std::io::{BufRead as _, BufReader, Read as _};
+    use std::io::{BufRead as _, BufReader, Read};
     use std::process::{Child, Command as ProcessCommand, Stdio};
 
     struct TimedFrame {
@@ -690,6 +690,71 @@ mod backend {
             .map(|frame| frame.frame.clone())
     }
 
+    #[cfg(target_os = "macos")]
+    const FRAME_SOCKET_BUFFER: usize = 1024 * 1024;
+
+    #[cfg(target_os = "macos")]
+    fn frame_socket(frame_size: usize) -> Option<(std::os::unix::net::UnixStream, Stdio)> {
+        use std::ffi::{c_int, c_void};
+        use std::os::fd::{AsRawFd, OwnedFd};
+        use std::os::unix::net::UnixStream;
+
+        unsafe extern "C" {
+            fn setsockopt(
+                socket: c_int,
+                level: c_int,
+                option: c_int,
+                value: *const c_void,
+                length: u32,
+            ) -> c_int;
+        }
+
+        const SOL_SOCKET: c_int = 0xffff;
+        const SO_SNDBUF: c_int = 0x1001;
+        const SO_RCVBUF: c_int = 0x1002;
+
+        if frame_size <= FRAME_SOCKET_BUFFER {
+            return None;
+        }
+        let (reader, writer) = UnixStream::pair().ok()?;
+        let capacity = FRAME_SOCKET_BUFFER as c_int;
+        for (fd, option) in [(reader.as_raw_fd(), SO_RCVBUF), (writer.as_raw_fd(), SO_SNDBUF)] {
+            let result = unsafe {
+                setsockopt(
+                    fd,
+                    SOL_SOCKET,
+                    option,
+                    (&capacity as *const c_int).cast(),
+                    std::mem::size_of::<c_int>() as u32,
+                )
+            };
+            if result != 0 {
+                return None;
+            }
+        }
+        Some((reader, Stdio::from(OwnedFd::from(writer))))
+    }
+
+    fn spawn_frame_reader(
+        mut command: ProcessCommand,
+        _frame_size: usize,
+    ) -> Option<(Child, Box<dyn Read + Send>)> {
+        #[cfg(target_os = "macos")]
+        if let Some((reader, stdout)) = frame_socket(_frame_size) {
+            if let Ok(child) = command.stdout(stdout).spawn() {
+                return Some((child, Box::new(reader)));
+            }
+        }
+
+        let mut child = command.stdout(Stdio::piped()).spawn().ok()?;
+        if let Some(output) = child.stdout.take() {
+            return Some((child, Box::new(output)));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+
     fn start(
         ffmpeg: &Path,
         path: &Path,
@@ -704,7 +769,7 @@ mod backend {
         if seek_start > 0.0 {
             command.args(["-ss", &format!("{seek_start:.6}"), "-noaccurate_seek"]);
         }
-        let mut child = command
+        command
             .arg("-i")
             .arg(path)
             .args([
@@ -724,15 +789,8 @@ mod backend {
                 "pipe:1",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
-        let Some(mut output) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        };
+            .stderr(Stdio::piped());
+        let (mut child, mut output) = spawn_frame_reader(command, frame_size)?;
         let Some(stderr) = child.stderr.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -908,6 +966,19 @@ esac
             permissions.set_mode(0o755);
             std::fs::set_permissions(executable, permissions).expect("fake FFmpeg permissions");
             directory
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn large_frame_reader_delivers_stdout_then_eof() {
+            let mut command = ProcessCommand::new("/usr/bin/printf");
+            command.arg("frame");
+            let (mut child, mut output) =
+                spawn_frame_reader(command, FRAME_SOCKET_BUFFER + 1).unwrap();
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).unwrap();
+            assert!(child.wait().unwrap().success());
+            assert_eq!(bytes, b"frame");
         }
 
         #[test]

@@ -1980,3 +1980,54 @@ The existing status command returned true while starting. The new
 recording-active command stayed false until acknowledgement, then
 turned true. Both returned false after Stop and decoded thumbnail
 handoff. The held-reply workflow used fixture media.
+
+2026-11-19 macOS large video frame transfer
+
+The benchmark used the bundled FFmpeg 9.0.1 decoder, a generated
+three-second 3840x2160 H.264 clip at 60 fps, and the production
+raw BGRA and showinfo options. The reader paired each frame with
+the reported timestamp and reused a preallocated buffer. Separate
+verification runs hashed all 180 frames and compared every
+timestamp. Pipe, default socket and tuned socket matched.
+
+Four unpaced timing rounds interleaved the transports. These runs
+counted every byte and did not hash the payload during timing.
+The tuned socket configured a 1 MiB receive buffer on the reader
+and a 1 MiB send buffer on the writer. An untuned pair reported
+8 KiB buffers. The /dev/null case consumed timestamps and sent
+the raw pixels straight to the null device.
+
+Transport           Total elapsed median   Range
+Pipe                              1582.0 ms   1575.1–1588.6 ms
+Socket, default buffers           5930.2 ms   5925.7–5940.9 ms
+Socket, 1 MiB buffers               779.7 ms    651.4–802.3 ms
+/dev/null                           813.7 ms    760.4–841.9 ms
+
+The GPUI development app played the same test clip. The runs
+alternated current and prior binaries in each appearance. They
+counted updates between 0.4 and 2.4 seconds after Play. The
+existing trace measures from the timestamp to the end of the
+payload read, including buffer allocation. The times exclude
+display presentation.
+
+Run            Updates   Max decoder request   Payload median/max
+Pipe light         120                0.03 ms        8.29/9.19 ms
+Socket light       120                0.02 ms        3.03/3.24 ms
+Socket dark        120                0.03 ms        3.12/3.56 ms
+Pipe dark          120                0.03 ms        8.25/9.19 ms
+Pipe dark          120                0.03 ms       8.33/10.58 ms
+Socket dark        120                0.03 ms        3.02/3.18 ms
+Socket light       120                0.03 ms        3.01/3.19 ms
+Pipe light         120                0.03 ms        8.27/9.05 ms
+
+Both builds exported the generated recording at 3840x2160 after
+saving a split. The first editor preview PNG had the same SHA-256
+in both builds. In each run, 95.825846% of the first decoded H.264
+frame was within five RGB levels of that preview. The frame
+comparison score was unchanged. The stress samples that previously
+produced second-long stalls are outside this timing batch.
+
+Darwin's socket option handler returns an error when it cannot
+reserve the configured buffer. The decoder uses its pipe fallback
+when either socket option fails.
+https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_socket.c#L4576-L4607

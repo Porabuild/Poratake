@@ -9076,6 +9076,24 @@ Start acknowledgement and verified that the two states differed
 until recording became active.
 [Clock and duration evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS large video frame transfer
+
+The macOS decoder now transfers frames larger than 1 MiB over a
+local socket pair with 1 MiB buffers. Small frames and buffer
+setup failures use the existing pipe. The standalone 4K60
+comparison verified identical bytes and timestamps for all
+180 frames. Median transfer-and-decode time fell from 1,582 to
+780 ms. A socket with its default buffers was substantially slower.
+
+In eight alternating GPUI playback runs, median payload time fell
+from 8.25–8.33 ms to 3.01–3.12 ms. Each run applied 120 preview
+updates over two seconds. Both paths produced the same initial
+editor snapshot and the same first-frame comparison against an
+edited 3840×2160 export. The EOF regression, 1,190 GPUI tests and
+both real-FFmpeg sparse seek tests passed. The earlier intermittent
+stall remains open.
+[Transfer and playback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
