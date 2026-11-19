@@ -10552,6 +10552,36 @@ decoder. Sustained 4K60 editor playback under load remains open.
 Twelve GPUI decoder tests and 58 Electron reference tests passed.
 [AVAssetReader probe measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video sample aspect ratio and rotation
+
+The shared FFmpeg decoder now scales non-square pixels to their
+display geometry before the editor composes preview and export.
+It expands the affected axis and applies the stored orientation
+to the resulting dimensions. Square-pixel sources use the
+original conversion filter. Oversized aspect-ratio expansions
+are rejected using the existing image allocation budget.
+
+Four H.264 fixtures went through the GPUI recording preview,
+paused editor and MP4 export using app-local commands and a
+fixture daemon. The output dimensions matched Electron's video
+metadata in each case.
+
+| Source SAR and rotation | Old preview and export | GPUI preview and export | Electron video |
+| ----------------------- | ---------------------: | ----------------------: | -------------: |
+| 4:3, upright            |              144 × 108 |               192 × 108 |      192 × 108 |
+| 4:3, 90°                |              108 × 144 |               108 × 192 |      108 × 192 |
+| 3:4, upright            |              144 × 108 |               144 × 144 |      144 × 144 |
+| 3:4, 90°                |              108 × 144 |               144 × 144 |      144 × 144 |
+
+Each paused preview matched every RGB byte of the corresponding
+normalized source frame. The decoded H.264 exports had mean RGB
+differences of 1.96–3.36 levels from the previews. Both light and
+dark ran in the fixture. The native decoder tests also covered
+repeated seeks and a fractional 182.5 px display dimension,
+which rounds to 183 px as in Electron. Twenty-four GPUI tests
+and 58 Electron reference tests passed.
+[Video display geometry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

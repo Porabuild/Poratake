@@ -4138,3 +4138,39 @@ pixels of the original 0.533333 sample, stamped at 0.545.
 AVFoundation exposed 3840x2160 coded dimensions and 5120x2160
 presentation dimensions before rotation, plus a separate
 preferred transform. That metadata is absent from raw NV12 rows.
+
+2026-11-19 macOS non-square video pixels at 47b4b941
+
+Four generated H.264 clips used 144x108 coded pixels, 12 fps
+and sample aspect ratios 4:3 and 3:4. Each ratio had an
+upright version and a 90-degree display matrix. A separate
+146x108 fixture used SAR 5:4. Electron's videoWidth and
+videoHeight reported the display dimensions below. The
+GPUI fixture daemon supplied the clips on Start and the
+app-local Stop opened the video preview. The normal preview
+double-click opened the editor. The probe saved the paused
+frame PNG and decoded the first frame of the editor's MP4.
+
+Source           Electron     Old preview / MP4   New preview / MP4
+4:3 upright      192x108             144x108              192x108
+4:3 rotated      108x192             108x144              108x192
+3:4 upright      144x144             144x108              144x144
+3:4 rotated      144x144             108x144              144x144
+5:4 fractional   183x108             —                    183x108 decoder geometry
+
+Every paused preview matched all 62,208 RGB bytes of a
+standalone bundled FFmpeg reference normalized to square pixels.
+The encoded MP4 matched the dimensions in every case, with
+these RGB differences measured after decoding the first frame.
+
+Source           Theme   Mean abs error   RGB bytes within five levels
+4:3 upright      light           2.1909                         89.407%
+4:3 rotated      dark            3.2313                         87.768%
+3:4 upright      dark            1.9614                         92.125%
+3:4 rotated      light           3.3605                         83.753%
+
+The FFmpeg-backed regression generates the upright and rotated
+sources locally, then checks frame dimensions and storage size,
+selects a later frame, and verifies that seeking back recovers
+the original bytes. Existing sparse screen and camera timing
+fixtures also passed.

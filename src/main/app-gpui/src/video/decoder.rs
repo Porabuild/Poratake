@@ -514,9 +514,11 @@ mod backend {
         frame: DecodedFrame,
     }
 
+    #[derive(Clone, Copy, Default)]
     struct MediaInfo {
         video: VideoInfo,
         start_time: f64,
+        normalize_pixel_aspect: bool,
     }
 
     struct DecoderProcess {
@@ -552,16 +554,14 @@ mod backend {
             let _ = info_tx.send(None);
             return;
         };
-        let info = media.video;
-        let _ = info_tx.send(Some(info));
+        let _ = info_tx.send(Some(media.video));
         let mut decoder = None;
         while let Ok(Command { time, reply, cancelled, abandoned }) = commands.recv() {
             let frame = read_frame(
                 &ffmpeg,
                 &path,
                 time,
-                info,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait {
                     cancelled: cancelled.as_ref(),
@@ -582,11 +582,18 @@ mod backend {
         )
         .ok()?;
         let metadata = String::from_utf8_lossy(&output.stderr);
-        let video = metadata.lines().find(|line| line.contains("Video:"))?;
+        let mut stream = metadata.lines().skip_while(|line| !line.contains("Video:"));
+        let video = stream.next()?;
         let (mut width, mut height) = video
             .split(|character: char| character.is_whitespace() || character == ',')
             .find_map(parse_dimensions)?;
-        if parse_rotation(&metadata).is_some_and(rotation_swaps_dimensions) {
+        let aspect = sample_aspect(video).unwrap_or((1, 1));
+        let normalize_pixel_aspect = aspect.0 != aspect.1;
+        (width, height) = square_pixel_size(width, height, aspect)?;
+        let rotation = stream
+            .take_while(|line| !line.trim_start().starts_with("Stream #"))
+            .find_map(parse_rotation);
+        if rotation.is_some_and(rotation_swaps_dimensions) {
             std::mem::swap(&mut width, &mut height);
         }
         let words: Vec<_> = video.split_whitespace().collect();
@@ -615,7 +622,39 @@ mod backend {
                 frame_rate,
             },
             start_time,
+            normalize_pixel_aspect,
         })
+    }
+
+    fn sample_aspect(video: &str) -> Option<(u32, u32)> {
+        let (_, ratio) = video.split_once("[SAR ")?;
+        let (num, den) = ratio
+            .split_whitespace()
+            .next()?
+            .trim_end_matches(']')
+            .split_once(':')?;
+        let (num, den) = (num.parse().ok()?, den.parse().ok()?);
+        (num > 0 && den > 0).then_some((num, den))
+    }
+
+    fn square_pixel_size(width: u32, height: u32, (num, den): (u32, u32)) -> Option<(u32, u32)> {
+        if num == den {
+            return Some((width, height));
+        }
+        let expand = |size: u32, num: u32, den: u32| {
+            let rounded = (u64::from(size) * u64::from(num) + u64::from(den / 2)) / u64::from(den);
+            u32::try_from(rounded).ok()
+        };
+        let (width, height) = if num > den {
+            (expand(width, num, den)?, height)
+        } else {
+            (width, expand(height, den, num)?)
+        };
+        let frame_bytes = u64::from(width)
+            .checked_mul(u64::from(height))?
+            .checked_mul(4)?;
+        (frame_bytes <= image::Limits::default().max_alloc.unwrap_or(u64::MAX))
+            .then_some((width, height))
     }
 
     fn parse_dimensions(value: &str) -> Option<(u32, u32)> {
@@ -683,8 +722,7 @@ mod backend {
         ffmpeg: &Path,
         path: &Path,
         time: f64,
-        info: VideoInfo,
-        start_time: f64,
+        media: MediaInfo,
         decoder: &mut Option<DecoderProcess>,
         wait: FrameWait<'_>,
     ) -> Option<DecodedFrame> {
@@ -716,7 +754,7 @@ mod backend {
             drop(decoder.take());
             let preroll_start = (time - STREAM_SEEK_PREROLL).max(0.0);
             let seek_start = if preroll_start > 0.0 { time } else { 0.0 };
-            let mut process = start(ffmpeg, path, info, start_time, seek_start)?;
+            let mut process = start(ffmpeg, path, media, seek_start)?;
             process.fallback_seek_start = (preroll_start > 0.0).then_some(preroll_start);
             process
         } else {
@@ -728,7 +766,7 @@ mod backend {
         }
         if let Some(preroll_start) = process.fallback_seek_start.filter(|_| frame.is_ok()) {
             drop(process);
-            process = start(ffmpeg, path, info, start_time, preroll_start)?;
+            process = start(ffmpeg, path, media, preroll_start)?;
             frame = smol::block_on(wait_for_frame(&mut process, time, wait));
         }
         if matches!(frame, Ok(Some(_)) | Err(FrameReadError::Cancelled)) {
@@ -861,11 +899,23 @@ mod backend {
     fn start(
         ffmpeg: &Path,
         path: &Path,
-        info: VideoInfo,
-        start_time: f64,
+        media: MediaInfo,
         seek_start: f64,
     ) -> Option<DecoderProcess> {
+        let MediaInfo {
+            video: info,
+            start_time,
+            normalize_pixel_aspect,
+        } = media;
         let frame_size = info.width as usize * info.height as usize * 4;
+        let filter = if normalize_pixel_aspect {
+            format!(
+                "scale={}:{},setsar=1,showinfo=checksum=0",
+                info.width, info.height
+            )
+        } else {
+            "showinfo=checksum=0".to_owned()
+        };
         let seek_start = seek_start.max(0.0);
         let mut command = ProcessCommand::new(ffmpeg);
         command.args(["-hide_banner", "-loglevel", "info", "-copyts"]);
@@ -880,7 +930,7 @@ mod backend {
                 "0:v:0",
                 "-an",
                 "-vf",
-                "showinfo=checksum=0",
+                &filter,
                 "-fps_mode",
                 "passthrough",
                 "-threads:v",
@@ -1216,8 +1266,7 @@ esac
                     &ffmpeg,
                     &source,
                     time,
-                    media.video,
-                    media.start_time,
+                    media,
                     &mut decoder,
                     FrameWait::default(),
                 )
@@ -1253,8 +1302,7 @@ esac
                     &ffmpeg,
                     &source,
                     time,
-                    media.video,
-                    media.start_time,
+                    media,
                     &mut decoder,
                     FrameWait::default(),
                 )
@@ -1304,6 +1352,10 @@ esac
                 duration: 2.0,
                 frame_rate: 12.0,
             };
+            let media = MediaInfo {
+                video: info,
+                ..Default::default()
+            };
             let mut decoder = None;
             let source = directory.path().join("source.mov");
             for (time, expected) in [
@@ -1311,8 +1363,79 @@ esac
                 (2.0 / 12.0, 2),
                 ((1.0 + 1.0 / 12.0) - 1.0 / 12.0, 12),
             ] {
-                let frame = read_frame(&ffmpeg, &source, time, info, 0.0, &mut decoder, FrameWait::default()).unwrap();
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media,
+                    &mut decoder,
+                    FrameWait::default(),
+                )
+                .unwrap();
                 assert_eq!(frame.bgra[0], expected, "frame at {time:.17}");
+            }
+        }
+
+        #[test]
+        fn square_pixel_dimensions_expand_the_shortened_axis() {
+            assert_eq!(sample_aspect("144x108 [SAR 4:3 DAR 16:9]"), Some((4, 3)));
+            assert_eq!(sample_aspect("144x108 [SAR 1:0]"), None);
+            assert_eq!(sample_aspect("144x108"), None);
+            assert_eq!(square_pixel_size(144, 108, (4, 3)), Some((192, 108)));
+            assert_eq!(square_pixel_size(144, 108, (3, 4)), Some((144, 144)));
+            assert_eq!(square_pixel_size(146, 108, (5, 4)), Some((183, 108)));
+            assert_eq!(square_pixel_size(3840, 2160, (1, 1)), Some((3840, 2160)));
+            assert_eq!(square_pixel_size(3840, 2160, (65535, 1)), None);
+        }
+
+        #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn anamorphic_video_decodes_at_square_pixel_dimensions() {
+            let ffmpeg = crate::video::ffmpeg_path();
+            let directory = tempfile::tempdir().unwrap();
+            let upright = directory.path().join("upright.mp4");
+            let rotated = directory.path().join("rotated.mp4");
+            let encoded = ProcessCommand::new(&ffmpeg)
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=144x108:rate=12",
+                    "-vf",
+                    "setsar=4/3",
+                    "-frames:v",
+                    "12",
+                    "-c:v",
+                    "mpeg4",
+                ])
+                .arg(&upright)
+                .status()
+                .unwrap();
+            assert!(encoded.success());
+            let rotated_copy = ProcessCommand::new(&ffmpeg)
+                .args(["-v", "error", "-display_rotation:v:0", "90", "-i"])
+                .arg(&upright)
+                .args(["-map", "0:v:0", "-c", "copy"])
+                .arg(&rotated)
+                .status()
+                .unwrap();
+            assert!(rotated_copy.success());
+
+            for (path, dimensions) in [(upright, (192, 108)), (rotated, (108, 192))] {
+                let decoder = VideoDecoder::open(&path).unwrap();
+                let info = decoder.info();
+                assert_eq!((info.width, info.height), dimensions);
+                let first = decoder.frame_at(0.).unwrap();
+                let later = decoder.frame_at(0.5).unwrap();
+                let reopened = decoder.frame_at(0.).unwrap();
+                for frame in [&first, &later, &reopened] {
+                    assert_eq!((frame.width, frame.height), dimensions);
+                    assert_eq!(frame.bgra.len(), (dimensions.0 * dimensions.1 * 4) as usize);
+                }
+                assert_eq!(first.bgra, reopened.bgra);
+                assert_ne!(first.bgra, later.bgra);
             }
         }
 
@@ -1362,8 +1485,7 @@ esac
                     &ffmpeg,
                     &source,
                     requested,
-                    media.video,
-                    media.start_time,
+                    media,
                     &mut decoder,
                     FrameWait::default(),
                 )
@@ -1405,8 +1527,10 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &directory.path().join("source.mov"),
                 8.0,
-                info,
-                0.0,
+                MediaInfo {
+                    video: info,
+                    ..Default::default()
+                },
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1431,8 +1555,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 0.25,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait::default(),
             );
@@ -1443,8 +1566,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 0.25,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1476,8 +1598,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 0.25,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1487,8 +1608,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 5.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1503,8 +1623,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 10.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1515,8 +1634,7 @@ printf '\042\000\000\377'
                 &ffmpeg,
                 &source,
                 5.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut None,
                 FrameWait::default(),
             )
