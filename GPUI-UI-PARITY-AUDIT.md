@@ -8681,6 +8681,29 @@ after release. The attempted baseline used the rebuilt binary and
 was excluded. All 1,188 GPUI tests and the development FFmpeg
 camera visibility test passed.
 
+### 2026-11-19 current macOS recorded-window movement and closure
+
+The GPUI build at `79094a68` and a screen-only fixture built from
+the current Swift sources recorded a generated AppKit window in
+light and dark. The same outline followed the move and resize,
+disappeared while the target was hidden, and returned when the
+target was restored. The hidden interval preserved the recording.
+
+Releasing the window produced one TARGET_CLOSED event and one
+automatic Stop in each run. Both video-only files decoded at the
+original 720×480 size with red, green and blue stages. The resized
+blue stage was centered with black padding on both sides, and
+saved packet timestamps increased strictly. The toolbar and
+outline disappeared, both previews decoded, and both projects
+opened in the video editor.
+
+Closure to Stop request was 284 ms in light and 281 ms in dark.
+Closure to decoded preview took 390 and 386 ms, and preview-to-editor
+frame readiness took 87 and 63 ms. The probe sampled window
+visibility and decoded frame availability. Export and physical
+pointer input were outside this run.
+[Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

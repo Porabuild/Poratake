@@ -1370,3 +1370,32 @@ inside the gap while the hold was active. The camera decoded after
 release and arrival at its visible range. These checks measure
 editor updates and decoder delivery. They do not measure display
 presentation or camera transition latency.
+
+2026-11-19 current macOS recorded-window movement and closure
+
+The GPUI code was at 79094a68. The Swift fixture was built from
+the matching worktree. It preflighted Screen Recording access,
+disabled stream audio, and rejected requests for audio, camera,
+iOS device or keyboard capture. A generated AppKit window was
+the only window ID permitted by the broker. Startup timing used
+the asynchronous start request and daemon confirmation.
+
+All times are milliseconds.
+
+Theme   Start request to reply  Move outline  Resize outline  Close to Stop  Close to preview frame  Preview to editor frame
+Light            217.4              129.5          128.8          283.5             390.3                      87.2
+Dark             218.0              129.0          125.4          280.9             386.1                      62.8
+
+Both runs tracked one outline ID through movement, resize, hiding
+and restoration. The native target object was released while its
+process remained alive. WindowServer reported its ID absent and
+the recorder delivered one TARGET_CLOSED event. The toolbar and
+outline closed before the preview-to-editor check.
+
+The light and dark files contained nine and eight video frames,
+respectively, at 720x480. The decoder preserved red, green and blue
+stages. The blue band occupied columns 16–43 in the 60-column
+sample, with black padding on both sides. Direct MOV packet
+inspection found strictly increasing presentation and decode
+timestamps in both recordings. A raw downsample timing warning
+in the light run was checked against those source timestamps.
