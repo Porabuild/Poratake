@@ -9170,6 +9170,22 @@ FFmpeg preview, seek and export tests passed. Live camera hardware
 was outside this fixture.
 [Camera seek evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS framed attachments at fractional zoom
+
+The existing Metal fixture now compares the framed attachment
+preview with its flattened PNG reopened in a separate editor.
+It uses balanced dark frames and translucent light frames, each
+with a top attachment, a right attachment, and a rectangle moved
+through the editor. The original and reopened views are measured
+using their own snapped image bounds.
+
+All 24 combinations passed at 73% and 137% zoom, simulated
+100%, 125%, and 200% display scale, and light and dark appearance.
+The largest difference was one channel level. The 13 Electron
+wallpaper, frame and annotation export tests passed. Physical
+display transitions remain outside the fixture.
+[Framed preview evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

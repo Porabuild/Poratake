@@ -7104,6 +7104,74 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             }
         }
 
+        #[cfg(target_os = "macos")]
+        if (balanced && frame_style == "macos-dark")
+            || (transparent && frame_style == "macos-light")
+        {
+            let flattened_path = scratch.join(format!("gpui-{name}-flattened.png"));
+            std::fs::write(&flattened_path, &png).unwrap();
+            let flattened = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            for effective_zoom in [0.73, 1.37] {
+                let zoom = effective_zoom / scale;
+                let mut crops = Vec::new();
+                for (handle, is_flattened) in [(editor, false), (flattened, true)] {
+                    handle
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, handle.into());
+                    let bounds = if is_flattened {
+                        cx.update(|cx| handle.read(cx).unwrap().bounds.borrow().unwrap())
+                    } else {
+                        super::measured("editor-stage", 0)
+                    };
+                    let screenshot = cx.capture_screenshot(handle.into()).unwrap();
+                    let snap = |value: gpui::Pixels| {
+                        let value = f32::from(value) * scale;
+                        (value.abs() - 0.5).ceil().copysign(value) as u32
+                    };
+                    let left = snap(bounds.left());
+                    let top = snap(bounds.top());
+                    crops.push(
+                        image::imageops::crop_imm(
+                            &screenshot,
+                            left,
+                            top,
+                            snap(bounds.right()) - left,
+                            snap(bounds.bottom()) - top,
+                        )
+                        .to_image(),
+                    );
+                }
+                let actual = &crops[0];
+                let expected = &crops[1];
+                actual
+                    .save(scratch.join(format!("gpui-{name}-zoom-{effective_zoom}-preview.png")))
+                    .unwrap();
+                expected
+                    .save(scratch.join(format!("gpui-{name}-zoom-{effective_zoom}-flattened.png")))
+                    .unwrap();
+                assert_eq!(actual.dimensions(), expected.dimensions(), "{name} at {effective_zoom}x");
+                let mut changed = 0;
+                let mut worst = 0;
+                for (a, e) in actual.pixels().zip(expected.pixels()) {
+                    let gap = a.0.iter().zip(e.0).map(|(a, e)| a.abs_diff(e)).max().unwrap();
+                    changed += usize::from(gap > 2);
+                    worst = worst.max(gap);
+                }
+                assert_eq!(changed, 0, "{name} at {effective_zoom}x, worst channel difference {worst}");
+            }
+            cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+                .unwrap();
+        }
+
         cx.update_window(window, |_, window, _| window.remove_window())
             .unwrap();
         cx.run_until_parked();

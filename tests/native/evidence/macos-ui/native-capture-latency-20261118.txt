@@ -2202,3 +2202,30 @@ replaces a stream with no buffered frame. The complete GPUI suite
 passed with 1,191 tests. The four separate development FFmpeg
 tests covered camera preview conversion, sparse screen and
 camera timing, and delayed camera visibility through edit/export.
+
+2026-11-19 macOS framed attachments at fractional zoom
+
+The GPUI offscreen Metal comparison added two existing composition
+fixtures to the fractional zoom check. The first used a balanced
+source with a macOS dark frame. The second used a 50%-alpha region
+in the source with a macOS light frame. Each fixture had a top and
+right attachment. The editor drew and moved a rectangle before
+exporting, then a second editor reopened the flattened PNG.
+
+Each rendered preview crop was compared against the reopened
+image at the same zoom. The fixture computed each window's bounds
+on its own and snapped both edges to the Metal pixel grid.
+
+Appearance   Simulated scale   Zoom         Cases   Max channel difference
+Light        1x                73%, 137%         4                        1
+Light        1.25x             73%, 137%         4                        1
+Light        2x                73%, 137%         4                        1
+Dark         1x                73%, 137%         4                        1
+Dark         1.25x             73%, 137%         4                        1
+Dark         2x                73%, 137%         4                        1
+
+The existing native-size and reopened comparisons also passed
+in both themes. The Electron window frame, wallpaper and
+annotation export suites passed all 13 tests. The new comparison
+uses generated captures and app-local input in the headless
+renderer.
