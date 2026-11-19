@@ -9204,6 +9204,22 @@ spacing matched GPUI. In the sampled 125% export, all changed
 pixels were inside the narrow title bar.
 [Frame and attachment evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS framed aspect-ratio previews at fractional zoom
+
+The framed backdrop now fills the measured stage. The earlier
+image-fit pass could resize it again after stage snapping. A
+balanced framed attachment with a 9:16 canvas at 137% zoom and
+simulated 200% display scale differed from a reopened PNG in
+7,483 pixels by more than two channel levels. The largest channel
+difference was 110.
+
+The revised fixture adds 1:1 and 9:16 canvases to the framed
+attachment inset and spacing matrix. All 48 Metal comparisons
+at 73% and 137% zoom in both app appearances and simulated 100%,
+125% and 200% scale matched the reopened PNG within one channel
+level. The 14 Electron reference tests passed.
+[Aspect-ratio preview evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

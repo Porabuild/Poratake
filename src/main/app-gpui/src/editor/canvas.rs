@@ -485,6 +485,7 @@ impl RenderOnce for EditorCanvas {
                 }
                 Some(image) => backdrop.child(
                     img(image)
+                        .object_fit(gpui::ObjectFit::Fill)
                         .absolute()
                         .inset_0()
                         .w(px(canvas_width as f32 * zoom))

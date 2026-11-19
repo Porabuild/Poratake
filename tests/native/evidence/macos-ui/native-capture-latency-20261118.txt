@@ -2265,3 +2265,25 @@ at x=59 in a 40-pixel frame. Both revised renderers fit all three
 circles using their existing sizes, spacing and left margin as
 the group proportions. The fixture uses generated image data and
 app-local input.
+
+2026-11-19 macOS framed aspect-ratio previews at fractional zoom
+
+The GPUI Metal fixture applied 1:1 and 9:16 canvas ratios to the
+framed attachment compositions with a six-point inset and
+seven-point spacing. It used a balanced dark macOS frame and a
+light macOS frame with partial source transparency. Each included
+two attachments and a dragged annotation.
+
+At 2x simulated scale and 137% zoom, the original balanced
+portrait case had 7,483 pixels differing by more than two
+channel levels, with a maximum difference of 110. The preview
+and reopened PNG had equal snapped dimensions. The framed
+backdrop used the image element's contain fit, while the opened
+PNG directly painted the full image rectangle.
+
+With full-bounds backdrop painting, the prior failing case
+matched the reopened image within one channel level in both
+themes. All 48 new cases met that bound. The matrix covered
+both aspect ratios, both sources, 73% and 137% zoom, simulated
+1x, 1.25x and 2x scale, and light and dark appearance. All
+14 Electron frame, wallpaper and annotation export tests passed.

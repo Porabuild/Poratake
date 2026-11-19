@@ -7109,18 +7109,29 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             || (transparent && frame_style == "macos-light")
         {
             let original_wallpaper = cx.update(|cx| editor.read(cx).unwrap().wallpaper.clone());
-            for with_inset in [false, true] {
+            for (with_inset, aspect_ratio) in [
+                (false, "auto"),
+                (true, "auto"),
+                (true, "1:1"),
+                (true, "9:16"),
+            ] {
                 let (variant, variant_png) = if with_inset {
                     editor
                         .update(cx, |editor, _, cx| {
                             editor.wallpaper.inset = 6.;
                             editor.wallpaper.spacing = 7.;
+                            editor.wallpaper.aspect_ratio = aspect_ratio.into();
                             cx.notify();
                         })
                         .unwrap();
                     settle(cx, window);
+                    let variant = if aspect_ratio == "auto" {
+                        format!("{name}-inset-spacing")
+                    } else {
+                        format!("{name}-aspect-{}", aspect_ratio.replace(':', "x"))
+                    };
                     (
-                        format!("{name}-inset-spacing"),
+                        variant,
                         cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap()),
                     )
                 } else {
