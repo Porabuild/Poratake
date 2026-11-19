@@ -206,6 +206,7 @@ struct CapturePreview {
     last_frame: Option<std::time::Instant>,
     hovered: bool,
     busy: bool,
+    deleting: bool,
     completed: Option<Instant>,
     export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
@@ -213,6 +214,12 @@ struct CapturePreview {
     layout_y: Option<f32>,
     layout_animation: Option<LayoutAnimation>,
     dismiss_animation: Option<DismissAnimation>,
+}
+
+impl CapturePreview {
+    fn is_busy(&self) -> bool {
+        self.busy || self.deleting
+    }
 }
 
 fn cancel_thumbnail_load(preview: &mut CapturePreview) {
@@ -342,6 +349,28 @@ impl CapturePreviewWindow {
         self.pointer_inside
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn delete_latest_for_parity(handle: gpui::WindowHandle<Self>, cx: &mut App) -> bool {
+        handle
+            .update(cx, |view, window, cx| {
+                let Some(preview) = view.previews.last() else {
+                    return false;
+                };
+                let id = preview.id;
+                let entity = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    delete_preview(&entity, id, window, cx)
+                });
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn deleting_for_parity(&self) -> bool {
+        self.previews.last().is_some_and(|preview| preview.deleting)
+    }
+
     #[cfg(feature = "parity")]
     pub(crate) fn thumbnails_ready_for_parity(&self) -> bool {
         self.previews.iter().all(|preview| {
@@ -411,6 +440,7 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                deleting: false,
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -461,6 +491,7 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                deleting: false,
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -1034,7 +1065,7 @@ fn dismiss_verdict(
                 view.preview_window_hovered(window),
                 view.keyboard_controls_visible(window)
                     || preview.thumbnail_loading
-                    || preview.busy
+                    || preview.is_busy()
                     || preview.completed.is_some()
                     || view
                         .display_menu
@@ -1140,7 +1171,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                     .is_open_for(&format!("preview-display-menu-{id}"), cx);
                                 let preview = &mut view.previews[index];
                                 let blur = preview.hovered
-                                    || preview.busy
+                                    || preview.is_busy()
                                     || menu_open
                                     || preview.dismiss_animation.is_some_and(|animation| {
                                         animation.controls_progress.is_some()
@@ -1273,7 +1304,7 @@ fn start_video_export(
             handle
                 .update(cx, |view, _, cx| {
                     let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
-                    if preview.busy || preview.completed.is_some() {
+                    if preview.is_busy() || preview.completed.is_some() {
                         return None;
                     }
                     preview.busy = true;
@@ -1802,6 +1833,97 @@ fn report_copy_failure(cx: &mut App, message: &str) {
     crate::windows::toast::Toast::show(cx, "Copy failed", message.to_string());
 }
 
+fn delete_preview(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Ok(Some((path, kind))) = preview_entity.update(cx, |view, cx| {
+        let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+        if preview.is_busy() || preview.completed.is_some() || preview.dismiss_animation.is_some() {
+            return None;
+        }
+        preview.deleting = true;
+        cx.notify();
+        let kind = match preview.kind {
+            PreviewKind::Video => crate::history_store::HistoryItemType::Video,
+            PreviewKind::Screenshot => crate::history_store::HistoryItemType::Screenshot,
+        };
+        Some((preview.path.clone(), kind))
+    }) else {
+        return;
+    };
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { crate::history_store::delete_path(&path, kind) })
+            .await;
+        cx.update(|cx| {
+            let deleted = report_delete_result(
+                result,
+                kind == crate::history_store::HistoryItemType::Video,
+                cx,
+            );
+            let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |view, window, cx| {
+                let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                else {
+                    return;
+                };
+                preview.deleting = false;
+                if deleted {
+                    begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        });
+    })
+    .detach();
+}
+
+fn report_delete_result(
+    result: crate::history_store::DeleteOutcome,
+    is_video: bool,
+    cx: &mut App,
+) -> bool {
+    use crate::history_store::DeleteOutcome;
+
+    match result {
+        DeleteOutcome::Deleted => {}
+        DeleteOutcome::DeletedWithBackupWarning(path) => {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        }
+        DeleteOutcome::HistoryPersistenceFailed(error) => {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                format!("The capture was deleted, but its history entry may return after restart: {error}"),
+            );
+        }
+        DeleteOutcome::SourceDeletionFailed
+        | DeleteOutcome::HistoryUnavailable
+        | DeleteOutcome::NotFound => {
+            let message = if is_video {
+                "Could not delete the recording."
+            } else {
+                "Could not delete the screenshot."
+            };
+            crate::windows::toast::Toast::show(cx, "Delete failed", message);
+            return false;
+        }
+    }
+    true
+}
+
 fn edit_preview(
     preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
     id: u64,
@@ -1810,7 +1932,7 @@ fn edit_preview(
 ) {
     let edited = preview_entity.update(cx, |view, cx| {
         let preview = view.previews.iter().find(|preview| preview.id == id)?;
-        if preview.dismiss_animation.is_some() || preview.busy || preview.completed.is_some() {
+        if preview.dismiss_animation.is_some() || preview.is_busy() || preview.completed.is_some() {
             return None;
         }
         let source = (preview.kind, preview.path.to_string_lossy().into_owned());
@@ -1997,7 +2119,8 @@ impl CapturePreviewWindow {
     }
 
     fn advance_hover(preview: &mut CapturePreview, hovered: bool, now: Instant) -> (f32, bool) {
-        let target = if Self::show_controls(hovered, preview.busy, preview.completed.is_some()) {
+        let target = if Self::show_controls(hovered, preview.is_busy(), preview.completed.is_some())
+        {
             1.0
         } else {
             0.0
@@ -2038,7 +2161,11 @@ impl CapturePreviewWindow {
         let controls_active = preview.hovered && window_hovered || menu_open || keyboard_controls;
         let (progress, animating) = Self::advance_hover(preview, controls_active, now);
         (
-            Self::show_controls(controls_active, preview.busy, preview.completed.is_some()),
+            Self::show_controls(
+                controls_active,
+                preview.is_busy(),
+                preview.completed.is_some(),
+            ),
             progress,
             animating,
         )
@@ -2076,7 +2203,8 @@ impl CapturePreviewWindow {
         let busy = preview.busy;
         let finished = preview.completed.map(|at| finished_progress(at, now));
         let export_progress = preview.export_progress.clone();
-        let gated = busy || finished.is_some();
+        let deleting = preview.deleting;
+        let gated = preview.is_busy() || finished.is_some();
         let (show_controls, progress, animating) =
             Self::control_frame(preview, window_hovered, menu_open, keyboard_controls, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
@@ -2250,8 +2378,10 @@ impl CapturePreviewWindow {
                             cx,
                             ("preview-delete", id),
                             "trash-2",
-                            false,
-                            if is_video {
+                            deleting,
+                            if deleting {
+                                "Deleting…"
+                            } else if is_video {
                                 "Delete recording"
                             } else {
                                 "Delete screenshot"
@@ -2260,58 +2390,12 @@ impl CapturePreviewWindow {
                             theme,
                             theme.destructive,
                             {
-                                let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
                                     if gated {
                                         return;
                                     }
-                                    let kind = if is_video {
-                                        crate::history_store::HistoryItemType::Video
-                                    } else {
-                                        crate::history_store::HistoryItemType::Screenshot
-                                    };
-                                    match crate::history_store::delete_path(&path, kind) {
-                                        crate::history_store::DeleteOutcome::Deleted => {}
-                                        crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "History recovery copy remains",
-                                                format!("Could not remove the saved recovery copy at {path}"),
-                                            );
-                                        }
-                                        crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "History update failed",
-                                                format!("The capture was deleted, but its history entry may return after restart: {error}"),
-                                            );
-                                        }
-                                        crate::history_store::DeleteOutcome::SourceDeletionFailed
-                                        | crate::history_store::DeleteOutcome::HistoryUnavailable
-                                        | crate::history_store::DeleteOutcome::NotFound => {
-                                            let message = if is_video {
-                                                "Could not delete the recording."
-                                            } else {
-                                                "Could not delete the screenshot."
-                                            };
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "Delete failed",
-                                                message,
-                                            );
-                                            return;
-                                        }
-                                    }
-                                    let _ = preview_entity.update(cx, |view, cx| {
-                                        begin_remove_preview(
-                                            view,
-                                            id,
-                                            DismissBehavior::PreserveControls,
-                                            window,
-                                            cx,
-                                        )
-                                    });
+                                    delete_preview(&preview_entity, id, window, cx);
                                 }
                             },
                         )),
@@ -2330,7 +2414,7 @@ impl CapturePreviewWindow {
                         .flex_col()
                         .gap(px(4.0))
                         .when(menu_open, |el| el.hidden())
-                        .when(is_video && !busy, |el| {
+                        .when(is_video && !gated, |el| {
                             el.child(preview::pill(
                                 cx,
                                 ("preview-copy-video", id),
@@ -2485,7 +2569,9 @@ impl CapturePreviewWindow {
                                 {
                                     let path = path.clone();
                                     move |_, cx| {
-                                        crate::system::desktop::reveal_in_file_manager(&path);
+                                        if !deleting {
+                                            crate::system::desktop::reveal_in_file_manager(&path);
+                                        }
                                         cx.stop_propagation();
                                     }
                                 },
@@ -2526,7 +2612,7 @@ impl CapturePreviewWindow {
                                                 .previews
                                                 .iter_mut()
                                                 .find(|preview| preview.id == id)?;
-                                            if preview.busy || preview.completed.is_some() {
+                                            if preview.is_busy() || preview.completed.is_some() {
                                                 return None;
                                             }
                                             preview.busy = true;
@@ -3170,6 +3256,7 @@ mod tests {
             last_frame: None,
             hovered: false,
             busy: false,
+            deleting: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -5271,6 +5358,7 @@ mod tests {
             last_frame: Some(now),
             hovered: true,
             busy: false,
+            deleting: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -5313,6 +5401,7 @@ mod tests {
             last_frame: None,
             hovered: false,
             busy: false,
+            deleting: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),

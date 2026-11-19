@@ -143,11 +143,11 @@ def verify(executable, recording=False, opening=None, mutation=None):
             send(action)
             return wait(f"NATIVE_SMOKE {action} ").endswith(" true")
 
-        def eventually(action):
+        def eventually(action, *, expected=True):
             deadline = monotonic() + 10
-            while not command(action):
+            while command(action) != expected:
                 if monotonic() >= deadline:
-                    raise RuntimeError(f"{action} did not become ready")
+                    raise RuntimeError(f"{action} did not return {expected}")
                 sleep(0.01)
 
         def capture_area():
@@ -167,18 +167,21 @@ def verify(executable, recording=False, opening=None, mutation=None):
                 sleep(0.01)
 
         history_path = profile / "history.json"
+        preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
             if opening or mutation:
                 capture_area()
                 eventually("preview ready")
-                if mutation:
+                if mutation and not preview_delete:
                     assert command("open history")
                     eventually("history ready")
                 contents = history_path.read_text()
                 history_path.unlink()
                 os.mkfifo(history_path)
-                if mutation:
+                if preview_delete:
+                    send(mutation)
+                elif mutation:
                     send(f"history {mutation}")
                 elif opening == "editor":
                     assert command("preview editor")
@@ -194,13 +197,44 @@ def verify(executable, recording=False, opening=None, mutation=None):
                         assert command("history open")
                         assert not command("history ready")
                     if mutation:
-                        assert command("history ready")
+                        if preview_delete:
+                            assert command("preview ready")
+                            assert command("preview deleting")
+                        else:
+                            assert command("history ready")
                         captured_files(1)
                 if mutation:
-                    eventually("history empty")
+                    if preview_delete:
+                        captured_files(0)
+                        eventually("preview ready", expected=False)
+                    else:
+                        eventually("history empty")
                     assert not list(captures.glob("*.png"))
                     assert json.loads(history_path.read_text()) == []
-                    print(f"history {mutation} removed the capture and its entry after release")
+                    print(f"{mutation} removed the capture and its entry after release")
+                    if preview_delete:
+                        capture_area()
+                        eventually("preview ready")
+                        files = captured_files(1)
+                        contents = history_path.read_text()
+                        history_path.unlink()
+                        os.mkfifo(history_path)
+                        captures.chmod(0o500)
+                        try:
+                            send(mutation)
+                            with held_history(history_path, contents):
+                                assert command("preview deleting")
+                            eventually("preview deleting", expected=False)
+                            assert command("preview ready")
+                            assert captured_files(1) == files
+                            assert history_path.read_text() == contents
+                        finally:
+                            captures.chmod(0o700)
+                        assert command(mutation)
+                        captured_files(0)
+                        eventually("preview ready", expected=False)
+                        assert json.loads(history_path.read_text()) == []
+                        print("failed deletion retained the preview and source, and retry deleted it")
                 elif opening == "editor":
                     eventually("close editor")
                     print("the screenshot editor opened after history was released")
@@ -262,7 +296,13 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
     elif sys.argv[1:] in (
-        [], ["--recording"], ["--editor-open"], ["--history-open"], ["--history-delete"], ["--history-clear"]
+        [],
+        ["--recording"],
+        ["--editor-open"],
+        ["--history-open"],
+        ["--history-delete"],
+        ["--history-clear"],
+        ["--preview-delete"],
     ):
         root = Path(__file__).resolve().parents[2]
         verify(
@@ -270,7 +310,7 @@ if __name__ == "__main__":
             recording=sys.argv[1:] == ["--recording"],
             mutation=next(
                 (mode for mode in ("delete", "clear") if sys.argv[1:] == [f"--history-{mode}"]),
-                None,
+                "preview delete" if sys.argv[1:] == ["--preview-delete"] else None,
             ),
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
@@ -278,4 +318,4 @@ if __name__ == "__main__":
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear | --preview-delete]")

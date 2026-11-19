@@ -8233,6 +8233,28 @@ python3 tests/native/macos-capture-history-probe.py --history-delete
 python3 tests/native/macos-capture-history-probe.py --history-clear
 ```
 
+### 2026-11-19 macOS capture preview deletion responsiveness
+
+Deleting a screenshot or recording from its preview now performs the
+history read, file removal and history update on the background executor.
+The preview shows a spinner while deletion is pending. If source removal
+fails, the preview remains available and its controls allow a retry.
+
+The isolated screenshot probe held the history read open. The old build
+missed the four-second status deadline. Across four light and dark trials, the fixed build replied in 0.1–2.3 ms
+while the read was still held. Releasing the
+read removed the file and its history entry. Making the capture directory
+read-only kept both the source and its preview in place. Restoring write
+access let the same preview delete the file.
+
+The arm64 GPUI suite passed 1,179 tests with 23 ignored. Both light and
+dark 950-point Metal profiles passed at 2×, covering preview placement,
+stacking, editor handoff, thumbnail pixels and automatic dismissal.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --preview-delete
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
