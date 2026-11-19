@@ -84,7 +84,7 @@ pub(super) fn video_blur(cx: &mut HeadlessAppContext, output: &Path, video: &Pat
             config.preview.corner = "bottom-right".into();
             config.preview.auto_dismiss = false;
         });
-        CapturePreviewWindow::open_video(cx, video.to_owned());
+        CapturePreviewWindow::open_video(cx, video.to_owned(), None);
     });
     let preview = cx
         .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
@@ -760,7 +760,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         crate::state::state(cx)
             .config
             .update(|config| config.wallpaper = wallpaper);
-        CapturePreviewWindow::open_video(cx, scratch.join("preview-video.poratake"));
+        CapturePreviewWindow::open_video(cx, scratch.join("preview-video.poratake"), None);
     });
     let preview = cx
         .update(|cx| registry::handle(WindowKind::CapturePreview, cx))

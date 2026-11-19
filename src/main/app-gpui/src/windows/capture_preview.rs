@@ -492,6 +492,14 @@ impl CapturePreviewWindow {
             thumbnail_ready_sender,
             cx,
         );
+        Self::watch_finalization(id, finalization, cx);
+    }
+
+    fn watch_finalization(
+        id: u64,
+        finalization: Option<smol::channel::Receiver<()>>,
+        cx: &mut App,
+    ) {
         let Some(finalization) = finalization else {
             return;
         };
@@ -518,7 +526,11 @@ impl CapturePreviewWindow {
     /// Recording counterpart of `open`: the stack shows the project's video
     /// with play/export actions (`recording-actions.ts` shows a `'video'`
     /// preview when `recording.showPreview` is on).
-    pub fn open_video(cx: &mut App, project: PathBuf) {
+    pub(crate) fn open_video(
+        cx: &mut App,
+        project: PathBuf,
+        finalization: Option<smol::channel::Receiver<()>>,
+    ) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
         let entered_at = cx.background_executor().now();
@@ -545,7 +557,7 @@ impl CapturePreviewWindow {
                 busy: false,
                 deleting: false,
                 copying: false,
-                finalizing: false,
+                finalizing: finalization.is_some(),
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -556,6 +568,7 @@ impl CapturePreviewWindow {
             },
         );
         pump_video_preview(cx, id);
+        Self::watch_finalization(id, finalization, cx);
     }
 
     fn load_screenshot_thumbnails(
@@ -1359,7 +1372,7 @@ fn start_video_export(
             handle
                 .update(cx, |view, _, cx| {
                     let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
-                    if preview.is_busy() || preview.completed.is_some() {
+                    if preview.finalizing || preview.is_busy() || preview.completed.is_some() {
                         return None;
                     }
                     preview.busy = true;
@@ -2561,7 +2574,7 @@ impl CapturePreviewWindow {
                                     .rounded_full()
                                     .bg(theme.popover)
                                     .text_color(theme.popover_foreground)
-                                    .child("Saving capture…"),
+                                    .child(if is_video { "Saving recording…" } else { "Saving capture…" }),
                             )
                         })
                         .when_some(polish.filter(|_| !gated && !stack_copying), |el, preset| {
@@ -3578,7 +3591,7 @@ mod tests {
         let (mut cx, attempts) = preview_open_failure_context();
         cx.update(|cx| crate::state::set_test_state(cx, config));
 
-        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone(), None));
 
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(&*notifications.borrow(), &["Preview unavailable"]);
@@ -4897,7 +4910,7 @@ mod tests {
             for _ in 1..PREVIEW_MAX_STACK {
                 CapturePreviewWindow::open(cx, path.clone());
             }
-            CapturePreviewWindow::open_video(cx, project);
+            CapturePreviewWindow::open_video(cx, project, None);
         });
         cx.run_until_parked();
         let stack = stack_handle(cx).unwrap();
@@ -5359,7 +5372,7 @@ mod tests {
         let config =
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
         cx.update(|cx| crate::state::set_test_state(cx, config));
-        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone(), None));
         cx.run_until_parked();
 
         let kinds = stack_handle(cx)
@@ -5400,7 +5413,7 @@ mod tests {
         );
         cx.update(|cx| {
             crate::state::set_test_state(cx, config);
-            CapturePreviewWindow::open_video(cx, project);
+            CapturePreviewWindow::open_video(cx, project, None);
             let handle = registry::handle(WindowKind::CapturePreview, cx)
                 .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
                 .unwrap();
@@ -5477,7 +5490,9 @@ mod tests {
             "dismissal retained the decoder"
         );
 
-        cx.update(|cx| CapturePreviewWindow::open_video(cx, dir.path().join("Other.poratake")));
+        cx.update(|cx| {
+            CapturePreviewWindow::open_video(cx, dir.path().join("Other.poratake"), None)
+        });
         stack
             .update(cx, |view, window, cx| {
                 super::remove_preview_now(view, id, window, cx);

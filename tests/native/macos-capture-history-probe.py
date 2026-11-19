@@ -279,27 +279,26 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 eventually("start-ready")
                 command("start")
                 eventually("status")
+                stop_started = monotonic()
                 command("stop")
             else:
                 capture_area()
             with held_read(history_path):
                 start = monotonic()
+                eventually(preview)
+                ready_at = monotonic()
+                elapsed_ms = (ready_at - start) * 1000
+                assert command("preview finalizing")
+                assert command("preview delete")
+                assert not command("preview deleting")
                 if recording:
-                    send(preview)
-                    assert wait(f"NATIVE_SMOKE {preview} ", timeout=4).endswith(" false")
-                    elapsed_ms = (monotonic() - start) * 1000
-                    print(f"preview status replied in {elapsed_ms:.1f} ms while history was held")
                     first, = captures.glob("*.poratake")
                     state = json.loads((first / "state.json").read_text())
                     assert state["sourceDuration"] == 2.0 and len(state["segments"]) == 1
+                    print(f"recording first frame ready {(ready_at - stop_started) * 1000:.1f} ms after Stop")
                 else:
-                    eventually(preview)
-                    elapsed_ms = (monotonic() - start) * 1000
-                    assert command("preview finalizing")
-                    assert command("preview delete")
-                    assert not command("preview deleting")
                     first, = captured_files(1)
-                    print(f"thumbnail ready in {elapsed_ms:.1f} ms while history was held")
+                print(f"thumbnail ready in {elapsed_ms:.1f} ms while history was held")
                 capture_area()
                 second, = captured_files(1 if recording else 2) - {first}
 

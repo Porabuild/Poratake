@@ -8297,6 +8297,26 @@ measures thumbnail readiness after the capture file was written. The earlier 2.3
 python3 tests/native/macos-capture-history-probe.py
 ```
 
+### 2026-11-19 macOS recording preview handoff before project finalization
+
+After the recorder stops, GPUI starts decoding the preview directly
+from the finalized video while it prepares the editor state and writes
+the history entry. This matches Electron's earlier recording preview.
+Edit, Delete and Copy become available once both project tasks finish.
+
+The generated-recording macOS probe held the history read. The old
+build reached its 10-second first-frame deadline. The revised build
+decoded the first preview frame 141.4 ms after Stop in light mode and
+118.5 ms in dark mode, with history still held. The probe confirmed
+that Delete stayed gated, the generated two-second project state
+contained a single segment, and a screenshot taken during the hold
+was saved after the recording in history. The screenshot-only variant
+also passed.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --recording
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

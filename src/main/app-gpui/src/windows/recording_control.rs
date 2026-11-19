@@ -2645,6 +2645,15 @@ impl RecordingControl {
             };
             (write, item)
         });
+        let finalization = show_preview.then(|| {
+            let (sender, receiver) = smol::channel::bounded(1);
+            crate::windows::capture_preview::CapturePreviewWindow::open_video(
+                cx,
+                project.clone(),
+                Some(receiver),
+            );
+            sender
+        });
         cx.spawn(async move |_, cx| {
             let state_project = project.clone();
             cx.background_executor()
@@ -2672,14 +2681,13 @@ impl RecordingControl {
                     cx.update(|cx| crate::windows::toast::Toast::show(cx, title, message));
                 }
             }
-            cx.update(|cx| {
-                if show_preview {
-                    crate::windows::capture_preview::CapturePreviewWindow::open_video(cx, project);
-                } else {
+            drop(finalization);
+            if !show_preview {
+                cx.update(|cx| {
                     let path = project.to_string_lossy().into_owned();
                     crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
-                }
-            });
+                });
+            }
         })
         .detach();
         true
