@@ -8853,6 +8853,35 @@ Both 640×440-point Metal runs at 2× verified the rendered preview
 colors and timeline label contrast with the maximum saved height,
 one in light and one in dark. All 1,189 GPUI tests passed.
 
+### 2026-11-19 macOS selector, preview and editor responsiveness
+
+The GPUI build at `755052f4` ran six app-local trials per appearance
+with a temporary profile on the built-in Retina display. WindowServer
+sampling followed the selector replacement, cancellation, preview,
+editor opening and cleanup. A fixture supplied a 3840×2160 PNG to
+isolate the UI and image preparation cost from native capture time.
+All 12 saved PNGs matched the fixture byte for byte.
+
+| Transition                        | Warm median light | Warm median dark | Slowest of 12 |
+| --------------------------------- | ----------------- | ---------------- | ------------- |
+| Area selector appears             | 42 ms             | 50 ms            | 199 ms        |
+| Area selector switches to window  | 45 ms             | 52 ms            | 144 ms        |
+| Cancel hides the window selector  | 25 ms             | 26 ms            | 103 ms        |
+| Confirm hides the area selector   | 28 ms             | 44 ms            | 78 ms         |
+| Confirm to preview window         | 45 ms             | 63 ms            | 93 ms         |
+| Confirm to 4K thumbnail readiness | 185 ms            | 167 ms           | 198 ms        |
+| Preview action to editor window   | 165 ms            | 173 ms           | 234 ms        |
+
+Earlier live runs measured warm thumbnail readiness at 114–119 ms
+for a 600×440 area and 167–181 ms for a 2960×1740 window, including
+native capture. The separate 4K editor sampling run found the expected
+pixels by a warm median of 149–153 ms after the preview Edit action,
+including the sampling RPC. These runs measure different stages and
+use separate fixtures. First display presentation and physical input
+latency remain open. The earlier intermittent 4K60 decoder stall
+also remains open.
+[Per-trial evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -1555,3 +1555,38 @@ app-local Advance and native save, separate from scroll gesture latency.
 The GPUI handoff was exercised with the existing fixture daemon in
 both themes. The Swift preview suite and 50 Electron scroll unit
 tests passed. No stitch decision rule was changed in this run.
+
+2026-11-19 macOS selector, preview and editor responsiveness at 755052f4
+
+An isolated arm64 GPUI development app ran six trials per appearance.
+A fresh process and configuration were used for each appearance.
+Freeze was off. A socket fixture supplied one generated pick target
+and a 3840x2160 PNG for capture-area. No screen pixels were read.
+WindowServer polling queried only the development app PID. App-local
+input opened the area selector, switched to window mode, cancelled,
+reopened area, drew a selection, confirmed, opened the captured image
+in the editor and closed all test windows. All 12 saved PNGs matched
+the generated input. One setup run with an empty pick list was
+excluded because the app correctly closed the selector.
+
+All values are milliseconds. Trial 1 is cold. Switch requires a new
+selector window ID. Cancel and Confirm hidden end when the selector
+is absent from WindowServer. Preview window and Editor end at the
+first matching window listing. Thumbnail ends when GPUI reports that
+the thumbnail is ready. Polling and fixture overhead are included.
+The capture-area fixture had a median RPC duration of 4.9 ms in light
+and 1.7 ms in dark. These samples do not time display presentation.
+
+Theme Trial   Area   Switch  Cancel  Reopen  Confirm hidden  Preview window  Thumbnail  Editor
+light     1  140.0     41.6    12.0    37.6            15.9            33.1      151.8   199.6
+light     2   31.5     39.6    25.0    37.1            27.9            44.6      183.5   177.2
+light     3   38.2     42.0    18.2    57.9            31.8            61.9      198.4   164.7
+light     4   48.8     70.0    57.5    55.7            22.0            40.3      190.5   232.6
+light     5   41.5     45.3    15.3    43.0            21.9            44.9      131.3   126.1
+light     6   53.3    144.0   103.1    71.5            41.7            93.2      185.3   164.9
+dark      1  198.7     56.7    49.1   114.6            19.9            37.9      131.8   220.6
+dark      2   49.1     41.6    26.0    51.4            20.6            61.9      166.9   163.9
+dark      3   38.0     51.0    33.6    41.7            44.3            66.5      180.1   200.0
+dark      4   69.0     51.5    20.9    47.0            50.4            62.7      122.9   145.6
+dark      5   50.1     56.9    17.8    44.3            21.5            49.2      162.0   172.7
+dark      6   49.9     54.3    36.1    74.8            78.0            78.0      169.9   233.6
