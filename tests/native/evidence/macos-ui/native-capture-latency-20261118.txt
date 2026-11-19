@@ -4633,3 +4633,42 @@ There was no physical input or capture from the real desktop.
 
 GPUI History tests: 43 passed. Electron reference History and thumbnail
 tests: 81 passed. The GPUI parity development executable built successfully.
+
+2026-11-19 macOS hidden video playback
+=====================================
+
+An app-local recording fixture supplied a seven-second generated
+3840x2160 60 fps H.264 clip to the development app. The probe opened the
+recording editor from the capture preview, started playback, hid or
+minimized the editor from a visible state and checked that playback
+continued. It sampled GPUI process CPU over one second after a 350 ms
+settling interval. FFmpeg child PIDs from the trace were checked for
+liveness and physical footprint at the end of the interval.
+
+The reveal timings run from the app-local Show reply to the first
+composed preview with a timestamp within 200 ms of the wall-clock
+playhead at reveal. The PNG was taken at the end of the timeline,
+after restoring and seeking near the end. The fixture had no audio
+track and these probes do not measure physical input or display paint.
+
+Build     Theme  Action    Hidden updates  GPUI CPU ms  Decoder MiB  Reveal ms
+Baseline  light  hide                  62        685.7        884.4        4.6
+Updated   light  hide                   0          3.3       exited      116.9
+Baseline  dark   minimize              61        679.4        885.6      146.4
+Updated   dark   minimize               0          7.1       exited       85.4
+Baseline  dark   hide                  60        698.6        886.1       13.1
+Updated   dark   hide                   0          5.9       exited      129.5
+Baseline  light  minimize              62        691.9        886.4      143.7
+Updated   light  minimize               0          6.9       exited       90.5
+
+GPUI alone held 365–371 MiB during the hidden sample in both builds.
+Restored playback timestamps in the updated trials were 2.335–3.205 s
+against wall-clock playheads of 2.318–3.201 s in the paired comparison.
+All eight end-of-timeline 3840x2160 PNGs had SHA-256
+4f01d3220cc146fe47d0e3d0432c4d8e350de780e7a442872d8ff1f4c3a38515.
+In a separate batch overlapping compilation, updated reveal time
+ranged from 81 to 291 ms.
+
+GPUI video editor suite: 172 passed and 5 ignored. Electron timeline,
+camera, music and export reference suites: 66 passed. The GPUI parity
+development executable built successfully.

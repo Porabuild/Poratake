@@ -225,6 +225,8 @@ pub struct VideoEditorWindow {
     preview_visibility_sub: Option<gpui::Subscription>,
     #[cfg(target_os = "macos")]
     preview_window_hidden: bool,
+    #[cfg(target_os = "macos")]
+    refresh_preview_on_show: bool,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
@@ -299,10 +301,10 @@ impl VideoEditorWindow {
                             crate::system::window_visibility::is_minimized_or_hidden(window);
                         editor.preview_visibility_sub = Some(cx.observe_window_visibility(
                             window,
-                            |editor, visibility, window, _| {
-                                editor.preview_window_hidden = !visibility.is_visible()
+                            |editor, visibility, window, cx| {
+                                let hidden = !visibility.is_visible()
                                     && crate::system::window_visibility::is_minimized_or_hidden(window);
-                                editor.release_hidden_preview_buffers();
+                                editor.set_preview_window_hidden(hidden, cx);
                             },
                         ));
                     }
@@ -471,6 +473,8 @@ impl VideoEditorWindow {
             preview_visibility_sub: None,
             #[cfg(target_os = "macos")]
             preview_window_hidden: false,
+            #[cfg(target_os = "macos")]
+            refresh_preview_on_show: false,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
@@ -887,8 +891,30 @@ impl VideoEditorWindow {
     }
 
     #[cfg(target_os = "macos")]
+    fn set_preview_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.preview_window_hidden == hidden {
+            return;
+        }
+        self.preview_window_hidden = hidden;
+        if hidden {
+            let frame_queued = self.queued_frame.take().is_some();
+            if self.compose_in_flight || frame_queued {
+                self.invalidate_preview_frames();
+                self.refresh_preview_on_show = true;
+            }
+            self.release_hidden_preview_buffers();
+            return;
+        }
+        if std::mem::take(&mut self.refresh_preview_on_show) || self.is_playing {
+            self.autoscroll_timeline();
+            self.request_frame(cx);
+            cx.notify();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     fn release_hidden_preview_buffers(&mut self) {
-        if !self.preview_window_hidden || self.is_playing || self.compose_in_flight {
+        if !self.preview_window_hidden || self.compose_in_flight {
             return;
         }
         if let Some(mut source) = self.source.as_ref().and_then(|source| source.try_lock()) {
@@ -898,6 +924,12 @@ impl VideoEditorWindow {
 
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if self.preview_window_hidden {
+            self.refresh_preview_on_show = true;
+            self.release_hidden_preview_buffers();
+            return;
+        }
         let Some(source) = self.source.clone() else {
             return;
         };
@@ -1081,6 +1113,10 @@ impl VideoEditorWindow {
                 }
                 this.playhead = next;
                 this.sync_audio_transport();
+                #[cfg(target_os = "macos")]
+                if this.preview_window_hidden {
+                    return true;
+                }
                 this.autoscroll_timeline();
                 this.request_frame(cx);
                 cx.notify();
@@ -7617,6 +7653,71 @@ mod keyboard_demo_tests {
             "first preview must reflect the square wallpaper"
         );
         cx.run_until_parked();
+        scheduler.drain_tasks();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hidden_playback_advances_without_replacing_the_preview() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let clock = scheduler.clock();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        let editor = editor_with_preview_source(&mut cx, directory.path());
+        cx.update(|cx| editor.update(cx, |editor, cx| editor.request_frame(cx)));
+        cx.run_until_parked();
+        let initial_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.toggle_playback(cx);
+                editor.request_frame(cx);
+                editor.set_preview_window_hidden(true, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        clock.advance(Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                assert!(editor.is_playing);
+                assert!(
+                    (editor.playhead - 0.5).abs() < 1e-9,
+                    "playhead was {}",
+                    editor.playhead
+                );
+                assert!(!editor.compose_in_flight);
+                assert!(Arc::ptr_eq(
+                    &editor.preview_image().unwrap(),
+                    &initial_image
+                ));
+                editor.set_preview_window_hidden(false, cx);
+            });
+        });
+        cx.run_until_parked();
+        let revealed_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        assert!(!Arc::ptr_eq(&revealed_image, &initial_image));
+
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| editor.set_preview_window_hidden(true, cx));
+        });
+        clock.advance(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                assert!(!editor.is_playing);
+                assert_eq!(editor.playhead, editor.total_duration());
+                assert!(Arc::ptr_eq(
+                    &editor.preview_image().unwrap(),
+                    &revealed_image
+                ));
+                editor.set_preview_window_hidden(false, cx);
+            });
+        });
+        cx.run_until_parked();
+        let final_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        assert!(!Arc::ptr_eq(&final_image, &revealed_image));
         scheduler.drain_tasks();
     }
 

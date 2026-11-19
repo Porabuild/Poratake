@@ -10929,6 +10929,27 @@ The GPUI History suite passed 43 tests, including cancellation
 between two items, and the Electron History suites passed 81.
 [History background work measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS decoding during hidden playback
+
+Hiding or minimizing a playing video editor now drops its preview
+decoders and stops offscreen composition. The playback clock and audio
+transport still advance. On reveal, the editor retains the last image
+until it has a frame at the current playhead.
+
+In four paired 4K60 development trials, the old decoder held
+884–886 MiB while the editor was hidden. The revised editor released
+the decoder in all four trials. GPUI CPU time during a one-second
+hidden sample fell from 679–699 ms to 3–7 ms. When restored, the new
+preview reached the current playhead in 85–130 ms, and the final 4K
+PNG matched the baseline bytes in every trial. A separate run during
+compilation took up to 291 ms to refresh.
+
+These runs used generated silent video, app-local commands and
+preview-image readiness. The GPUI regression covers an in-flight
+composition and playback ending while hidden. The targeted GPUI
+and Electron reference suites passed 172 and 66 tests, respectively.
+[Hidden playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
