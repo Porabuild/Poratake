@@ -13,7 +13,7 @@ use tiny_skia::Pixmap;
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
 use crate::video::decoder::{
-    needs_stream_seek, DecodedFrame, FrameCancellation, VideoDecoder, VideoInfo,
+    needs_stream_seek, DecodedFrame, DecoderOpening, FrameCancellation, VideoDecoder, VideoInfo,
 };
 use crate::video::{project, sidecars};
 use crate::windows::video_editor::model::VideoEditorState;
@@ -25,6 +25,7 @@ pub struct Source {
     engine: Engine,
     video: Option<VideoDecoder>,
     camera: Option<VideoDecoder>,
+    camera_opening: Option<DecoderOpening>,
     video_segments: Vec<VideoSegment>,
     video_frame: Option<CachedFrame>,
     camera_frame: Option<CachedFrame>,
@@ -54,9 +55,9 @@ impl Source {
         }
 
         let camera_path = project::camera_video_path(path);
-        let camera = camera_path
+        let camera_opening = camera_path
             .is_file()
-            .then(|| VideoDecoder::open(&camera_path))
+            .then(|| VideoDecoder::begin_open(&camera_path))
             .flatten();
 
         let preview_fps = crate::video::export::frame_rate(&state).max(1) as f64;
@@ -82,7 +83,8 @@ impl Source {
         Some(Self {
             engine: Engine::new(config),
             video,
-            camera,
+            camera: None,
+            camera_opening,
             video_segments,
             video_frame: None,
             camera_frame: None,
@@ -182,6 +184,15 @@ impl Source {
             decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
+            if let Some(opening) = self.camera_opening.take() {
+                match opening.finish_interruptible(cancelled) {
+                    Ok(camera) => self.camera = camera,
+                    Err(opening) => {
+                        self.camera_opening = Some(opening);
+                        return None;
+                    }
+                }
+            }
             let had_camera_frame = self.camera_frame.is_some();
             let camera = cached_frame(&mut self.camera_frame, video_time, || {
                 decode_frame(self.camera.as_ref(), video_time, decode_wait, cancelled)
@@ -219,14 +230,16 @@ impl Source {
         }) {
             return;
         }
-        self.camera_warmup = self.camera.as_ref().and_then(|decoder| {
-            let (cancel, cancelled) = smol::channel::bounded(1);
-            let completed = decoder.request_warmup(time, cancelled)?;
-            Some(CameraWarmup {
-                time,
-                completed,
-                cancel,
-            })
+        let (cancel, cancelled) = smol::channel::bounded(1);
+        let completed = match (&self.camera, &self.camera_opening) {
+            (Some(decoder), _) => decoder.request_warmup(time, cancelled),
+            (None, Some(opening)) => opening.request_warmup(time, cancelled),
+            (None, None) => None,
+        };
+        self.camera_warmup = completed.map(|completed| CameraWarmup {
+            time,
+            completed,
+            cancel,
         });
     }
 
@@ -439,6 +452,7 @@ mod tests {
             engine: Engine::new(config),
             video: None,
             camera: None,
+            camera_opening: None,
             video_segments: Vec::new(),
             video_frame: None,
             camera_frame: None,
@@ -482,6 +496,7 @@ mod tests {
             engine: Engine::new(Config::new(320., 180., state)),
             video: None,
             camera: None,
+            camera_opening: None,
             video_segments: Vec::new(),
             video_frame: None,
             camera_frame: None,
@@ -602,6 +617,8 @@ mod tests {
         assert!(source.compose(still + 0.75, dimensions).is_some());
         assert!(source.camera_frame.is_none());
         assert!(source.camera_warmup.is_some());
+        assert!(source.camera_opening.is_some());
+        assert!(source.camera.is_none());
         let mut decode_wait = Duration::ZERO;
         assert!(source
             .compose_measured(still + 0.75, dimensions, &mut decode_wait, None)
@@ -609,6 +626,8 @@ mod tests {
         assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.compose(still + 0.25, dimensions).is_some());
         let first = source.camera_frame.as_ref().unwrap().pixmap.clone();
+        assert!(source.camera_opening.is_none());
+        assert!(source.camera.is_some());
 
         let mut disabled = state.clone();
         disabled.camera_style.visible = false;

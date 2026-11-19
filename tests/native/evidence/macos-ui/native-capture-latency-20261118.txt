@@ -4240,3 +4240,28 @@ unblocked pairs above covered that combined workflow.
 
 Six light/dark offscreen PNG pairs matched bytes for idle, hover
 and exit on a static 4K checkerboard.
+
+2026-11-19 macOS editor opening with a delayed camera track at 52aaece0
+
+The app-local recording preview opened an editor with a generated
+640x360 screen clip and a 160x90 camera sidecar. The camera segment
+ran from 1.0 to 2.0 seconds. A bundled FFmpeg wrapper held the camera
+metadata query. The existing build stayed unready throughout the
+400 ms hold. A focused updated run verified a first preview while
+the gate was still closed, in both appearances.
+
+Appearance   Baseline after release (ms)   Updated before release (ms)
+Light                              613.6                         132.7
+Dark                               620.3                         151.6
+
+Both columns measure elapsed time from Open Editor. The baseline
+column includes the deliberate gate. A repeat with decoder tracing
+reported 151.6 and 148.6 ms to the screen in light and dark.
+The app sought to 1.2 seconds and the trace confirmed the screen
+frame had decoded. While camera metadata was still blocked, the
+preview held its complete opening frame. Seeking to 0.5 seconds
+refreshed it before release. After release, seeking to 1.2 seconds
+composed the camera overlay. The opening and camera-visible PNGs
+each matched their baseline in both appearances. A color sample
+found zero pixels in the camera test range in the opening frame
+and 15,287 matching pixels in the camera-visible frame.

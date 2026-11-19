@@ -10625,6 +10625,27 @@ used a fixture daemon and app-local input. The 61 GPUI decoder and
 preview tests and 54 Electron reference tests passed.
 [First recording thumbnail measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS editor opening with a delayed camera track
+
+The screen preview can open while the camera sidecar is reading
+metadata. Camera warmup can queue on the pending decoder. A frame
+that shows the camera waits for the decoder, and a superseding
+paused seek can interrupt that wait while retaining the decoder.
+
+In a fixture with the camera segment starting at one second, the
+baseline stayed on its loading state during a 400 ms metadata gate.
+The updated editor showed the screen at 133–152 ms with the gate
+still closed. Seeking into the camera segment held the last complete
+image, then seeking back refreshed the screen before release.
+After release, the screen-only and camera-visible snapshots matched
+the baseline byte for byte in light and dark.
+
+This exercised generated video files with a fixture daemon. The
+gate timings measure app readiness and deliberately delay camera
+metadata. Twenty-seven GPUI tests and 58 Electron reference tests
+passed.
+[Delayed camera track verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VideoInfo {
@@ -73,28 +74,78 @@ pub struct VideoDecoder {
     info: VideoInfo,
 }
 
+pub(crate) struct DecoderOpening {
+    commands: Sender<Command>,
+    info: smol::channel::Receiver<Option<VideoInfo>>,
+    deadline: Instant,
+}
+
+impl DecoderOpening {
+    fn finish(self) -> Option<VideoDecoder> {
+        self.finish_interruptible(None).ok().flatten()
+    }
+
+    pub(crate) fn finish_interruptible(
+        self,
+        cancelled: Option<&FrameCancellation>,
+    ) -> Result<Option<VideoDecoder>, Self> {
+        let ready = smol::future::or(
+            async { self.info.recv().await.ok().flatten() },
+            async {
+                smol::Timer::at(self.deadline).await;
+                None
+            },
+        );
+        let info = match cancelled {
+            Some(cancelled) => smol::block_on(smol::future::or(
+                async {
+                    let _ = cancelled.recv().await;
+                    Err(())
+                },
+                async { Ok(ready.await) },
+            )),
+            None => Ok(smol::block_on(ready)),
+        };
+        match info {
+            Ok(info) => Ok(info.filter(|info| info.is_valid()).map(|info| VideoDecoder {
+                commands: self.commands,
+                info,
+            })),
+            Err(()) => Err(self),
+        }
+    }
+
+    pub(crate) fn request_warmup(
+        &self,
+        time: f64,
+        cancelled: FrameCancellation,
+    ) -> Option<Receiver<()>> {
+        request_warmup(&self.commands, time, cancelled)
+    }
+}
+
 impl VideoDecoder {
     /// Opens `path`, returning `None` when the file cannot be decoded on this
     /// platform or has no video stream.
     pub fn open(path: &Path) -> Option<Self> {
-        let (command_tx, command_rx) = mpsc::channel();
-        let (info_tx, info_rx) = mpsc::channel();
+        Self::begin_open(path)?.finish()
+    }
+
+    pub(crate) fn begin_open(path: &Path) -> Option<DecoderOpening> {
+        let (commands, command_rx) = mpsc::channel();
+        let (info_tx, info) = smol::channel::bounded(1);
         let owned = path.to_path_buf();
+        let deadline = Instant::now() + Duration::from_secs(10);
 
         std::thread::Builder::new()
             .name("video-decoder".into())
             .spawn(move || backend::run(owned, command_rx, info_tx))
             .ok()?;
 
-        let info = info_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .ok()??;
-        if !info.is_valid() {
-            return None;
-        }
-        Some(Self {
-            commands: command_tx,
+        Some(DecoderOpening {
+            commands,
             info,
+            deadline,
         })
     }
 
@@ -109,7 +160,7 @@ impl VideoDecoder {
     }
 
     pub(crate) fn first_frame(&self) -> Option<DecodedFrame> {
-        self.request_frame(FramePosition::First, None)?.wait()
+        request_frame(&self.commands, FramePosition::First, None)?.wait()
     }
 
     pub(crate) fn frame_at_interruptible(
@@ -117,29 +168,12 @@ impl VideoDecoder {
         time: f64,
         cancelled: Option<&FrameCancellation>,
     ) -> Option<DecodedFrame> {
-        self.request_frame(FramePosition::Time(time.max(0.0)), cancelled.cloned())?
-            .wait()
-    }
-
-    fn request_frame(
-        &self,
-        position: FramePosition,
-        cancelled: Option<FrameCancellation>,
-    ) -> Option<PendingFrame> {
-        let (reply, received) = mpsc::channel();
-        let (waiting, abandoned) = smol::channel::bounded(1);
-        self.commands
-            .send(Command {
-                position,
-                reply,
-                cancelled,
-                abandoned,
-            })
-            .ok()?;
-        Some(PendingFrame {
-            reply: received,
-            _waiting: waiting,
-        })
+        request_frame(
+            &self.commands,
+            FramePosition::Time(time.max(0.0)),
+            cancelled.cloned(),
+        )?
+        .wait()
     }
 
     pub(crate) fn request_warmup(
@@ -147,15 +181,44 @@ impl VideoDecoder {
         time: f64,
         cancelled: FrameCancellation,
     ) -> Option<Receiver<()>> {
-        let pending = self.request_frame(FramePosition::Time(time.max(0.0)), Some(cancelled))?;
-        let (reply, completion) = mpsc::channel();
-        smol::unblock(move || {
-            let _ = pending.wait();
-            let _ = reply.send(());
-        })
-        .detach();
-        Some(completion)
+        request_warmup(&self.commands, time, cancelled)
     }
+}
+
+fn request_frame(
+    commands: &Sender<Command>,
+    position: FramePosition,
+    cancelled: Option<FrameCancellation>,
+) -> Option<PendingFrame> {
+    let (reply, received) = mpsc::channel();
+    let (waiting, abandoned) = smol::channel::bounded(1);
+    commands
+        .send(Command {
+            position,
+            reply,
+            cancelled,
+            abandoned,
+        })
+        .ok()?;
+    Some(PendingFrame {
+        reply: received,
+        _waiting: waiting,
+    })
+}
+
+fn request_warmup(
+    commands: &Sender<Command>,
+    time: f64,
+    cancelled: FrameCancellation,
+) -> Option<Receiver<()>> {
+    let pending = request_frame(commands, FramePosition::Time(time.max(0.0)), Some(cancelled))?;
+    let (reply, completion) = mpsc::channel();
+    smol::unblock(move || {
+        let _ = pending.wait();
+        let _ = reply.send(());
+    })
+    .detach();
+    Some(completion)
 }
 
 #[cfg(windows)]
@@ -171,11 +234,15 @@ mod backend {
     /// `MFTIME` counts 100-nanosecond units.
     const UNITS_PER_SECOND: f64 = 10_000_000.0;
 
-    pub fn run(path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
+    pub fn run(
+        path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if MFStartup(MF_VERSION, MFSTARTUP_FULL).is_err() {
-                let _ = info_tx.send(None);
+                let _ = info_tx.try_send(None);
                 CoUninitialize();
                 return;
             }
@@ -183,7 +250,7 @@ mod backend {
             let reader = match open_reader(&path) {
                 Some(reader) => reader,
                 None => {
-                    let _ = info_tx.send(None);
+                    let _ = info_tx.try_send(None);
                     let _ = MFShutdown();
                     CoUninitialize();
                     return;
@@ -191,7 +258,7 @@ mod backend {
             };
 
             let info = describe(&reader);
-            let _ = info_tx.send(Some(info));
+            let _ = info_tx.try_send(Some(info));
             if !info.is_valid() {
                 drop(reader);
                 let _ = MFShutdown();
@@ -568,13 +635,17 @@ mod backend {
         }
     }
 
-    pub fn run(path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
+    pub fn run(
+        path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
         let ffmpeg = crate::video::ffmpeg_path();
         let Some(media) = describe(&ffmpeg, &path) else {
-            let _ = info_tx.send(None);
+            let _ = info_tx.try_send(None);
             return;
         };
-        let _ = info_tx.send(Some(media.video));
+        let _ = info_tx.try_send(Some(media.video));
         let mut decoder = None;
         while let Ok(Command {
             position,
@@ -1749,8 +1820,12 @@ printf '\042\000\000\377'
 mod backend {
     use super::*;
 
-    pub fn run(_path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
-        let _ = info_tx.send(None);
+    pub fn run(
+        _path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
+        let _ = info_tx.try_send(None);
         while let Ok(Command { position, reply, .. }) = commands.recv() {
             let _ = position;
             drop(reply);
@@ -1761,6 +1836,37 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cancelled_metadata_wait_preserves_the_pending_decoder() {
+        let (commands, receiver) = mpsc::channel();
+        let (info_tx, info) = smol::channel::bounded(1);
+        let opening = DecoderOpening {
+            commands,
+            info,
+            deadline: Instant::now() + Duration::from_secs(10),
+        };
+        let (cancel, cancelled) = smol::channel::bounded(1);
+        let warmup = opening.request_warmup(0.5, cancelled.clone()).unwrap();
+        let command = receiver.try_recv().unwrap();
+        assert!(matches!(command.position, FramePosition::Time(0.5)));
+        drop(command);
+        warmup.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        cancel.close();
+        let opening = match opening.finish_interruptible(Some(&cancelled)) {
+            Err(opening) => opening,
+            Ok(_) => panic!("cancelled wait consumed the opening decoder"),
+        };
+        let info = VideoInfo {
+            width: 1,
+            height: 1,
+            duration: 2.0,
+            frame_rate: 30.0,
+        };
+        info_tx.try_send(Some(info)).unwrap();
+        assert_eq!(opening.finish().unwrap().info(), info);
+    }
 
     #[cfg(windows)]
     #[derive(serde::Deserialize)]
