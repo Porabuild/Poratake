@@ -4939,3 +4939,37 @@ The larger buffer was a temporary benchmark build. Production uses
 the existing socket defaults.
 The default configuration passed 20 GPUI decoder tests and the
 three development FFmpeg tests for sparse and anamorphic timelines.
+
+2026-11-19 macOS idle memory after opening a video editor
+=======================================================
+
+A development recording fixture supplied a generated 3840x2160
+60 fps H.264 clip. The app-local probe opened the video editor
+through the recording preview in a fresh profile each time. Memory
+is proc_pid_rusage physical footprint. It was sampled after the
+opening PNG was saved and a further 600 ms of paused time.
+
+Open is the preview Edit command to first applied image. Redraw
+is a paused seek to the same timestamp, before Play. First play
+is the command reply to the first applied frame at a later time.
+Timings exclude display presentation.
+
+Build    Theme Pair  Open ms  Redraw ms  First play ms  GPUI MiB  Decoder MiB
+base     light    1    219.0       71.6           22.1     491.1       880.47
+updated  light    1    202.4       70.2           97.1     495.3       exited
+updated  dark     1    214.0       69.9           94.6     485.7       exited
+base     dark     1    209.1       72.5           23.0     489.6       879.99
+updated  light    2    220.4       69.5           96.4     490.1       exited
+base     light    2    216.2       69.1           22.9     488.1       880.13
+base     dark     2    221.6       69.0           21.9     490.2       880.31
+updated  dark     2    215.8       71.9           97.1     489.9       exited
+
+All opening and same-position redraw PNGs matched with SHA-256
+48716dcff624d69996bb95a973c4e64fd576c4e5b73c5cff7aa6cfc1c0b82b92.
+The updated paused redraw traced no decoder request and started no
+FFmpeg process. App-local Play resumed with a frame past zero.
+The fixture supplied no physical camera or audio input.
+
+GPUI video editor tests: 174 passed and 5 ignored. The development FFmpeg
+camera visibility test passed separately. Electron video editor and export
+reference tests: 66 passed. The development build passed.

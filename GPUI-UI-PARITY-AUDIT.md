@@ -11025,6 +11025,26 @@ development binary. Opening preview pixels matched in both themes.
 The decoder transport remains an open performance issue.
 [Socket timing and frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS idle memory after opening a video editor
+
+After composing its first paused preview, the editor now releases
+the screen and camera decoder processes and retains the source
+pixmaps for same-position redraws. Playback starts a decoder when it
+needs the next frame.
+
+Four paired light and dark 4K60 runs released an FFmpeg process with
+about 880 MiB of physical footprint. The editor's own footprint was
+486–495 MiB. The opening and same-position redraw PNGs matched byte
+for byte. Same-position redraws took 69–72 ms after release and did
+not start a decoder.
+
+The first preview update after Play took 95–97 ms, up from 22–23 ms
+with a resident decoder. These app-local timings measure preview
+image readiness with generated media. The GPUI video editor suite
+passed 174 tests, the development FFmpeg camera fixture passed, and
+66 Electron reference tests passed.
+[Paused opening memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

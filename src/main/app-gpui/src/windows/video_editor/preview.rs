@@ -270,10 +270,14 @@ impl Source {
     }
 
     fn release_inactive_camera(&mut self) {
+        self.camera_frame = None;
+        self.park_camera_decoder();
+    }
+
+    fn park_camera_decoder(&mut self) {
         if let Some(warmup) = self.camera_warmup.take() {
             warmup.cancel.close();
         }
-        self.camera_frame = None;
         if !std::mem::take(&mut self.camera_decode_active) {
             return;
         }
@@ -287,11 +291,17 @@ impl Source {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(super) fn release_buffered_frames(&mut self) {
+        self.video_frame = None;
+        self.camera_frame = None;
+        self.park_decoders();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn park_decoders(&mut self) {
         if let Some(video) = &self.video {
             video.release_frames();
         }
-        self.video_frame = None;
-        self.release_inactive_camera();
+        self.park_camera_decoder();
     }
 
     fn render(
@@ -536,6 +546,9 @@ mod tests {
         assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
+            source.park_decoders();
+            let after_park = source.compose(intro_duration + video_time, None).unwrap();
+            assert_eq!(after_park.data(), recovered.data());
             source.release_buffered_frames();
             assert!(source.video_frame.is_none());
             assert!(source.compose(intro_duration + video_time, None).is_none());

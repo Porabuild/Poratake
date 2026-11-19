@@ -964,6 +964,8 @@ impl VideoEditorWindow {
         self.compose_in_flight = true;
         self.queued_frame = None;
         let generation = self.preview_frame_generation;
+        #[cfg(target_os = "macos")]
+        let park_after_first_preview = self.preview_image.is_none() && max_dimensions.is_none();
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let release_at_end = max_dimensions.is_none()
             && self.preview_playhead.is_none()
@@ -990,6 +992,14 @@ impl VideoEditorWindow {
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if release_at_end && !cancelled.is_closed() {
                         guard.release_buffered_frames();
+                    }
+                    #[cfg(target_os = "macos")]
+                    if park_after_first_preview
+                        && !release_at_end
+                        && image.is_some()
+                        && !cancelled.is_closed()
+                    {
+                        guard.park_decoders();
                     }
                     (image, started.elapsed(), decode_wait)
                 })
