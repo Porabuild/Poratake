@@ -118,12 +118,11 @@ private final class ScrollPreviewSession {
                     self.lock.lock()
                     let shouldNotify = !self.previewStopped
                     self.alignmentStopped = true
-                    self.previewStopped = true
-                    self.pendingPreview = nil
+                    let acceptedFrameCount = self.frames.count
                     self.lock.unlock()
                     if shouldNotify {
                         DispatchQueue.main.async {
-                            alignmentFailure(frameCount - 1)
+                            alignmentFailure(acceptedFrameCount)
                         }
                     }
                     return
@@ -148,6 +147,14 @@ private final class ScrollPreviewSession {
             if let request = request {
                 self.schedulePreview(request)
             }
+        }
+    }
+
+    func resumeAlignment() {
+        alignmentQueue.sync {
+            lock.lock()
+            alignmentStopped = false
+            lock.unlock()
         }
     }
 
@@ -406,7 +413,6 @@ class ScrollCaptureModule: NSObject, Module {
     private var isCursorOutside = false
     private var autoScrollSpeed: ScrollSpeed = .medium
     private var maxHeight: Int = 20000
-    private var lastFrameHash: Int? = nil
     private var duplicateFrameCount: Int = 0
     private var currentScrollStep: Int = 0
     private var scrollDeltaPerStep: Int32 = 0
@@ -553,7 +559,6 @@ class ScrollCaptureModule: NSObject, Module {
         captureArea = NSRect(x: CGFloat(x), y: cocoaY, width: CGFloat(width), height: CGFloat(height))
         capturedFrames.removeAll()
         isCapturing = true
-        lastFrameHash = nil
         duplicateFrameCount = 0
 
         let topLeftY = mainScreenHeight - cocoaY - CGFloat(height)
@@ -835,6 +840,10 @@ class ScrollCaptureModule: NSObject, Module {
             return false
         }
 
+        if noOverlapReported {
+            previewSession?.resumeAlignment()
+            noOverlapReported = false
+        }
         isAutoScrolling = true
         autoButton?.title = "Stop"
         currentScrollStep = 0
@@ -1147,7 +1156,7 @@ class ScrollCaptureModule: NSObject, Module {
             return
         }
         let previous = capturedFrames.last?.image
-        let previousHash = lastFrameHash
+        let previousHash = capturedFrames.last?.hash
 #if SCROLL_CAPTURE_TEST
         let beforeComparison = testBeforeFrameComparison
 #endif
@@ -1188,17 +1197,10 @@ class ScrollCaptureModule: NSObject, Module {
         }
 
         duplicateFrameCount = 0
-        lastFrameHash = comparison.hash
-
-        let frame = CapturedFrame(
-            image: cgImage,
-            index: capturedFrames.count
-        )
-        capturedFrames.append(frame)
-
+        let index = capturedFrames.count
+        capturedFrames.append(CapturedFrame(image: cgImage, hash: comparison.hash))
         updatePreviewImage()
-
-        return frame.index
+        return index
     }
 
     private func framesHaveSamePixels(_ previous: CGImage, _ current: CGImage) -> Bool {
@@ -2046,7 +2048,6 @@ class ScrollCaptureModule: NSObject, Module {
         publishedPreviewFrameCount = 0
         capturedFrames.removeAll()
         isCapturing = false
-        lastFrameHash = nil
         duplicateFrameCount = 0
         currentScrollStep = 0
         scrollDeltaPerStep = 0
@@ -2141,6 +2142,7 @@ class ScrollCaptureModule: NSObject, Module {
                     return
                 }
                 self.stopAutoScroll()
+                self.capturedFrames.removeLast(self.capturedFrames.count - acceptedFrameCount)
                 self.noOverlapReported = true
                 self.emitScrollEnded(reason: "no-overlap", frameCount: acceptedFrameCount)
             },
@@ -2303,7 +2305,7 @@ class ScrollCaptureModule: NSObject, Module {
     }
 
     private func appendTestFrame(_ image: CGImage) -> Int? {
-        let comparison = compareFrame(image, previous: capturedFrames.last?.image, previousHash: lastFrameHash)
+        let comparison = compareFrame(image, previous: capturedFrames.last?.image, previousHash: capturedFrames.last?.hash)
         return appendCapturedFrame(image, comparison: comparison)
     }
 
@@ -2321,7 +2323,7 @@ class ScrollCaptureModule: NSObject, Module {
         handleStart(params: params, requestId: "zero-hash-restart-test")
         let restarted = appendTestFrame(image)
         cleanup()
-        return (hash, results, count, restarted, lastFrameHash == nil)
+        return (hash, results, count, restarted, capturedFrames.last?.hash == nil)
     }
 
     func testPreviewAndSave(
@@ -2338,7 +2340,7 @@ class ScrollCaptureModule: NSObject, Module {
         capturedFrames.removeAll()
         for (index, image) in frames.enumerated() {
             let previousFrame = index > 0 ? frames[index - 1] : nil
-            capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
+            capturedFrames.append(CapturedFrame(image: image, hash: nil))
             enqueuePreviewImage(
                 image,
                 previousFrame: previousFrame,
@@ -2399,7 +2401,7 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testPrepareCaptureForFinish(frames: [CGImage], step: Int) {
         cleanup()
-        capturedFrames = frames.enumerated().map { CapturedFrame(image: $0.element, index: $0.offset) }
+        capturedFrames = frames.map { CapturedFrame(image: $0, hash: nil) }
         guard let frame = frames.first else { return }
         captureArea = NSRect(x: 0, y: 0, width: frame.width, height: frame.height)
         scrollStepPoints = step
@@ -2433,7 +2435,7 @@ class ScrollCaptureModule: NSObject, Module {
 
     func testAppendPreviewFrame(_ image: CGImage) {
         let previousFrame = capturedFrames.last?.image
-        capturedFrames.append(CapturedFrame(image: image, index: capturedFrames.count))
+        capturedFrames.append(CapturedFrame(image: image, hash: nil))
         guard let session = previewSession else { return }
         enqueuePreviewImage(
             image,
@@ -2701,7 +2703,7 @@ private func topLeftYFromCocoaFrame(_ frame: NSRect, primaryHeight: CGFloat) -> 
 
 private struct CapturedFrame {
     let image: CGImage
-    let index: Int
+    let hash: Int?
 }
 
 enum ScrollSpeed: String {

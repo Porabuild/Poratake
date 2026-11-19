@@ -10104,6 +10104,27 @@ simulated scroll daemon and app-local input. All 62 related Electron
 and contract tests passed.
 [Scroll input workflow evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS scroll preview and retry after a rejected seam
+
+A failed alignment could cancel a preview render for frames that
+had already been verified. Restarting Auto Scroll also left the
+matcher stopped. The daemon now preserves verified preview work
+and drops the rejected suffix. On retry it starts from the last
+accepted image and its stored duplicate fingerprint.
+
+The native regression held the render for the second verified
+image, rejected the next seam, then released the render. The old
+preview stayed at one frame. The revised preview showed both
+verified frames. After retry, a new overlapping image extended
+the accepted result to three frames, and the saved 640×352 PNG
+matched the expected page pixel for pixel. This fixture supplies
+frames and alignment results to test lifecycle ordering. Retry
+uses the existing matcher confidence checks. Image-only histories
+that produce identical frames remain ambiguous. The Swift suites
+and daemon typechecks passed on arm64 and Rosetta x86_64, along
+with 62 Electron and daemon contract tests.
+[Scroll retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

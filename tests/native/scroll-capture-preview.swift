@@ -2345,6 +2345,67 @@ struct ScrollCapturePreviewTest {
         precondition(pixels(resumedImage) == pixels(frames[0]))
         print("scroll restart: three post-scroll duplicates stop without changing saved pixels")
 
+        let retryModule = ScrollCaptureModule()
+        retryModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        let rejected = frame(start: footerStep * 5, width: footerWidth, height: footerHeight)
+        let recovered = frame(start: footerStep * 2, width: footerWidth, height: footerHeight)
+        let encoderEntered = DispatchSemaphore(value: 0)
+        let releaseEncoder = DispatchSemaphore(value: 0)
+        var retryPreviews: [Int] = []
+        var retryEnds: [[String: Any]] = []
+        var retryCaptures: [(CGImage?) -> Void] = []
+        var retrySteps = 0
+        retryModule.testSetPreviewAlignment { top, bottom, _, _ in
+            if bottom === rejected { return nil }
+            precondition((top === frames[0] && bottom === frames[1]) || (top === frames[1] && bottom === recovered))
+            return footerHeight - footerStep
+        }
+        retryModule.testSetPreviewEncoder { image in
+            if image.height == 96 {
+                encoderEntered.signal()
+                releaseEncoder.wait()
+            }
+            return "preview"
+        }
+        retryModule.testSetPreviewResponder { count, _ in retryPreviews.append(count) }
+        retryModule.testSetScrollEndedResponder { retryEnds.append($0) }
+        retryModule.testSetScheduleAutoScroll { retrySteps += 1 }
+        retryModule.testSetCaptureProvider { retryCaptures.append($0) }
+        precondition(retryModule.testConsumeCaptureImage(frames[0]))
+        await waitUntil("The first retry fixture preview did not appear") { retryPreviews == [1] }
+        precondition(retryModule.testConsumeCaptureImage(frames[1]))
+        precondition(encoderEntered.wait(timeout: .now() + 5) == .success)
+        precondition(retryModule.testConsumeCaptureImage(rejected))
+        await waitUntil("The rejected frame did not stop scrolling") { retryEnds.count == 1 }
+        precondition(retryEnds[0]["frameCount"] as? Int == 2)
+        releaseEncoder.signal()
+        retryModule.testWaitForPreviewWork()
+        var retryPreviewDrained = false
+        DispatchQueue.main.async { retryPreviewDrained = true }
+        await waitUntil("The verified preview work did not drain") { retryPreviewDrained }
+        print("scroll rejected seam: verified previews=\(retryPreviews)")
+        fflush(stdout)
+        precondition(retryPreviews == [1, 2])
+
+        retryModule.testEnqueueAutoScrollStart()
+        await waitUntil("The alignment retry did not request its baseline") { retryCaptures.count == 1 }
+        retryCaptures[0](frames[1])
+        await waitUntil("The alignment retry did not schedule a step") { retrySteps == 1 }
+        retryModule.testCaptureAfterScroll(generation: retryModule.testCaptureGeneration())
+        precondition(retryCaptures.count == 2)
+        retryCaptures[1](recovered)
+        await waitUntil("The aligned recovery frame did not appear") { retryPreviews.last == 3 }
+        let retryOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-seam-retry-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: retryOutput) }
+        let retryResult = await finish(retryModule, output: retryOutput)
+        precondition(retryResult?["frameCount"] as? Int == 3 && retryEnds.count == 1)
+        let retrySource = CGImageSourceCreateWithURL(retryOutput as CFURL, nil)!
+        let retryImage = CGImageSourceCreateImageAtIndex(retrySource, 0, nil)!
+        let expectedRetry = frame(start: 0, width: footerWidth, height: footerHeight + footerStep * 2)
+        precondition(pixels(retryImage) == pixels(expectedRetry))
+        print("scroll seam retry: recovered third frame, saved pixels match")
+
         let asyncCaptureModule = ScrollCaptureModule()
         asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
         asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }

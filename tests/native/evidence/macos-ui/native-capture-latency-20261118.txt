@@ -3633,3 +3633,25 @@ measured at least 9.99:1 contrast in the offscreen snapshots.
 This fixture asserted notification text rather than drawing an OS
 notification. It did not post real scroll input. All 62 Electron and
 daemon contract tests also passed.
+
+2026-11-19 macOS scroll recovery after rejected alignment at cdba2248
+
+The fixture supplied two overlapping images and held the PNG encoder
+for the verified two-frame preview. A third image deliberately failed
+alignment. The test released the verified render and observed which
+preview arrived, then retried Auto from the last accepted image.
+
+Baseline
+scroll rejected seam: verified previews=[1]
+
+Revised
+scroll rejected seam: verified previews=[1, 2]
+scroll seam retry: recovered third frame, saved pixels match
+
+The retry's baseline was a copy of the second accepted frame. The
+matcher compared the next image against that accepted frame. The
+saved 640x352 PNG matched the generated three-frame page exactly.
+A failure was reported once and the rejected frame contributed no
+pixels. The fixture intercepted scroll scheduling and supplied
+alignment results to exercise lifecycle ordering. It posted no
+desktop input.
