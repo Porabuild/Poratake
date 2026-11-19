@@ -943,14 +943,18 @@ pub fn native_ui_probe() {
                             }
                             return;
                         }
-                        if matches!(command.as_str(), "record-hover" | "record-exit") {
+                        if matches!(command.as_str(), "record-hover" | "record-exit")
+                            || command.starts_with("record-hover ")
+                        {
                             let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) else {
                                 return;
                             };
                             let _ = cx.update_window(handle, |_, window, cx| {
-                                let event = if command == "record-hover" {
+                                let event = if command != "record-exit" {
+                                    let x = command.strip_prefix("record-hover ")
+                                        .map_or(22., |x| x.parse().expect("recording hover x"));
                                     PlatformInput::MouseMove(MouseMoveEvent {
-                                        position: point(px(22.), px(22.)),
+                                        position: point(px(x), px(22.)),
                                         pressed_button: None,
                                         modifiers: Modifiers::none(),
                                     })

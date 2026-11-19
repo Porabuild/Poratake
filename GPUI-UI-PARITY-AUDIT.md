@@ -8925,6 +8925,23 @@ more work outside the decoder. Playback update counts, preview
 resolution and first-frame cost are recorded separately.
 [Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS recording tooltips across controls
+
+The native GPUI probe dispatched unpressed mouse moves directly to
+the recording window at 2× scale. One sequence in each appearance
+visited Start recording, Select camera, Select microphone, and
+Close, then exited. The fixture daemon used the owner frame sent by
+GPUI and a synthetic anchor within that frame. The real AppKit
+tooltip showed each requested label in the matching appearance
+with a four-point gap. Exiting cleared the final panel.
+
+The measured in-window replacements took 4.9–22.1 ms from the probe
+command through observing the visible panel. The Swift fixture also
+held a screenshot in flight and verified that only the newest label
+appeared after release. The five Electron reference files passed 132
+tests. Physical pointer delivery remains open.
+[Native transition evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

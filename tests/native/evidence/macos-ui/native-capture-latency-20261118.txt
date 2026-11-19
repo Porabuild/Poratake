@@ -1723,3 +1723,39 @@ Existing dark              120   640x360 (91), 853x480 (29)         4.881    20.
 The native sample did not establish an end-to-end improvement that
 preserves preview quality. The product paths retain the existing
 conversion. These runs measured preview updates inside GPUI.
+
+2026-11-19 macOS GPUI recording tooltip transitions
+
+The development --native-ui-probe ran in a temporary profile for
+each appearance on the built-in Retina display. Its toolbar was
+284x44 points. The probe sent unpressed app-local mouse moves at
+y=22. It queried the active GPUI tooltip status and verified the
+corresponding recording-control:setTooltip request through a Swift
+fixture daemon. The fixture used the current ProtectedTooltip,
+the owner ID and frame passed by the development app, and a
+synthetic pointer anchored at the frame center. It checked the
+actual AppKit label, appearance, visible alpha, click-through
+setting and registry membership. The panel's four-point gap was
+measured against the real owner frame.
+
+The first hover served to start the fixture and was cleared before
+the sequences. In a light run an older show reached the fixture
+after a newer hide and was rejected. None of the runs posted
+system input or touched screen, microphone or camera permissions.
+The numbers include command dispatch and polling. They end at the
+fixture observing the native panel state. Display presentation
+is outside the timing interval.
+
+Action                    Local x   Light ms   Dark ms
+Start recording                22       92.7      23.4
+Select camera                  62       22.1      18.0
+Select microphone             112       14.2      13.1
+Close                         262        4.9       9.7
+Exit                            –        4.6       0.3
+
+Dismissal verified that the GPUI tooltip status was empty and the
+fixture had no active panel. The full native Swift fixture passed
+on arm64. Its overlapping requests held a screenshot until two
+older panels had been hidden. On release only the most recent
+label appeared. The fixture then verified exclusion cleanup.
+Five Electron reference files passed all 132 tests.
