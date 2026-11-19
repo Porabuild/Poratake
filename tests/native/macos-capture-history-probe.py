@@ -23,6 +23,7 @@ def fixture_daemon():
         return pack(">I", len(data)) + body + pack(">I", crc32(body))
 
     large_capture = "PORATAKE_HISTORY_PROBE_LARGE_CAPTURE" in os.environ
+    camera_retry = "PORATAKE_HISTORY_PROBE_CAMERA_RETRY" in os.environ
     width, height = (3840, 2160) if large_capture else (300, 220)
     row = b"\0" + bytes([64, 112, 192]) * width
     png = (
@@ -58,6 +59,11 @@ def fixture_daemon():
             result = {"visible": True}
         elif method == ("camera-preview", "setContentProtection"):
             result = {"protected": request["params"]["enabled"]}
+        elif camera_retry and method == ("camera-preview", "show"):
+            output = Path(os.environ["PORATAKE_NATIVE_SMOKE_OUTPUT"])
+            with (output / "camera-preview-requests.jsonl").open("a") as log:
+                log.write(json.dumps(request["params"]) + "\n")
+            result = {"visible": True}
         else:
             assert method in {
                 ("freeze-screen", "prewarm"),
@@ -107,7 +113,11 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         captures.mkdir()
         (profile / "config.json").write_text(json.dumps({
             "onboarding": {"completed": True, "skipped": True},
-            "general": {"autoCheckUpdates": False, "playSoundOnScreenshot": False},
+            "general": {
+                "autoCheckUpdates": False,
+                "playSoundOnScreenshot": False,
+                "startOnLogin": (Path.home() / "Library/LaunchAgents/com.porabuild.poratake-gpui.plist").exists(),
+            },
             "shortcuts": {},
             "appearance": {"mode": os.environ.get("PORATAKE_HISTORY_PROBE_THEME", "system")},
             "history": {"enabled": True},
@@ -132,6 +142,8 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 "PORATAKE_NATIVE_SMOKE_FREEZE": "0",
                 "PORATAKE_NATIVE_SMOKE_HISTORY": "1",
                 **direct_editor_env,
+                **({"PORATAKE_NATIVE_UI_FAKE_DAEMON": "1", "PORATAKE_HISTORY_PROBE_CAMERA_RETRY": "1"}
+                   if opening == "camera-retry" else {}),
                 **({"PORATAKE_HISTORY_PROBE_LARGE_CAPTURE": "1"} if opening in {"direct-editor", "editor-print"} else {}),
             },
         )
@@ -182,6 +194,24 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening == "camera-retry":
+                requests = captures / "camera-preview-requests.jsonl"
+                assert command("camera-select generated-camera")
+                eventually("camera-state")
+                eventually("camera-pending", expected=False)
+                command("start")
+                eventually("recording-active")
+                assert command("camera-select generated-camera")
+                eventually("camera-pending", expected=False)
+                device_ids = [json.loads(line).get("deviceId") for line in requests.read_text().splitlines()]
+                assert device_ids == ["generated-camera", "generated-camera"], device_ids
+                assert command("camera-state")
+                command("stop")
+                eventually("video preview ready")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                print("camera selection during recording retried the locked preview and preserved the recording")
+                return
             if opening == "standalone-pin":
                 capture_area()
                 eventually("preview ready")
@@ -453,6 +483,7 @@ if __name__ == "__main__":
     elif sys.argv[1:] in (
         [],
         ["--recording"],
+        ["--camera-retry"],
         ["--editor-open"],
         ["--direct-editor"],
         ["--standalone-pin"],
@@ -476,10 +507,10 @@ if __name__ == "__main__":
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
                 next(
-                    (mode for mode in ("direct-editor", "annotation-save", "editor-print", "standalone-pin") if sys.argv[1:] == [f"--{mode}"]),
+                    (mode for mode in ("direct-editor", "annotation-save", "editor-print", "standalone-pin", "camera-retry") if sys.argv[1:] == [f"--{mode}"]),
                     None,
                 ),
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --camera-retry | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

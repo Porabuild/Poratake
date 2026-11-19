@@ -10231,6 +10231,26 @@ daemon typechecks passed on arm64 and Rosetta x86_64, along with
 97 Electron and daemon contract tests.
 [Camera preview retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS GPUI camera preview retry while recording
+
+Selecting the locked camera again during recording now refreshes
+its preview if the camera is already enabled. The request uses the
+recording's selected source and leaves the recorder's camera active.
+
+The isolated development app sent one preview Show request and
+zero recorder Set Camera requests for the selection. Before the
+fix it sent zero preview requests and one recorder request. The
+light and dark runs covered an accepted preview retry and a
+rejected one. Both kept the camera enabled and opened the recording
+preview after Stop. The native smoke regression is available as
+`python3 tests/native/macos-capture-history-probe.py --camera-retry`
+with a GPUI parity development build.
+
+The fixture used a simulated daemon and bundled video, so hardware
+preview recovery is still unverified. All 97 related Electron and
+daemon contract tests passed.
+[Toolbar camera retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

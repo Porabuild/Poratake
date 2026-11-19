@@ -1547,6 +1547,14 @@ impl RecordingControl {
 
     #[cfg(target_os = "macos")]
     fn request_recording_camera(&mut self, enabled: bool, cx: &mut Context<Self>) -> bool {
+        if enabled && self.camera && self.camera_preview_visible {
+            let request = self.prepare_camera_preview(cx);
+            return self.request_camera_preview(
+                request,
+                |this, _, _| this.camera_pending = false,
+                cx,
+            );
+        }
         if !enabled || self.camera_preview_visible {
             return self.send_recording_camera(enabled, cx);
         }

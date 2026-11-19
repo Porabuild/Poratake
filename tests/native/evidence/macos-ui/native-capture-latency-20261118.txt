@@ -3771,3 +3771,23 @@ the stopped message, and a repeated show request cleared it and
 started the same generated source for a third time. The camera
 device was never opened. These checks cover the AppKit and session
 lifecycle, with live device recovery still unverified.
+
+2026-11-19 macOS toolbar retry for the active recording camera at 23d3a8df
+
+The parity development app ran in isolated profiles against a
+simulated daemon. Two pre-record selections of the same named
+camera sent two preview requests. During recording a further
+selection used that same locked source.
+
+Baseline
+active selection: preview show delta 0 recorder set delta 1
+
+Revised in light and dark
+active selection: preview show delta 1 recorder set delta 0
+
+A second pair deliberately held and rejected the preview reply.
+The camera stayed enabled while waiting and after the rejection.
+No camera-preview hide was sent during the retry. The recording
+preview opened after Stop. The accepted path is also covered by
+the retained --camera-retry native smoke mode. No camera hardware
+was opened. All 97 Electron and daemon contract tests passed.
