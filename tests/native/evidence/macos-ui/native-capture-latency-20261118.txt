@@ -2523,3 +2523,59 @@ camera-delayed-toggle.mov 10.100000 pts=10.0/10.0 same=True valid=True frames=2/
 camera-delayed-toggle.mov 11.100000 pts=11.0/11.0 same=True valid=True frames=3/3 ms=18.5/15.7
 camera-delayed-toggle.mov 16.100000 pts=16.0/16.0 same=True valid=True frames=4/4 ms=18.1/17.8
 camera-delayed-toggle.mov 19.000000 pts=19.0/19.0 same=True valid=True frames=6/6 ms=17.7/18.4
+
+2026-11-19 native macOS History tooltips and editor reopen
+
+The arm64 GPUI --native-ui-probe command used temporary profiles,
+a fixture daemon, and a generated 640x360 checkerboard screenshot.
+App-local mouse events moved between the folder and Delete actions.
+The probe rendered the actual AppKit window's GPUI scene through Metal.
+A WindowServer query matched only the isolated probe PID and verified
+each window width and dismissal. The screenshots omit compositor
+backdrop pixels. No screen recording or input permission was requested.
+
+light default-grid-idle history probe scene: Size { 400px × 500px } at 2x WindowServer id 16567
+light default-grid-reveal history probe scene: Size { 400px × 500px } at 2x WindowServer id 16567
+light default-grid-delete history probe scene: Size { 400px × 500px } at 2x WindowServer id 16567
+light default-grid-exit history probe scene: Size { 400px × 500px } at 2x WindowServer id 16567
+light compact-grid-idle history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-grid-reveal history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-grid-delete history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-grid-exit history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-list-idle history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-list-reveal history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-list-delete history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light compact-list-exit history probe scene: Size { 140px × 500px } at 2x WindowServer id 16567
+light history closed
+light history reopened the screenshot with exact editor pixels
+dark default-grid-idle history probe scene: Size { 400px × 500px } at 2x WindowServer id 16576
+dark default-grid-reveal history probe scene: Size { 400px × 500px } at 2x WindowServer id 16576
+dark default-grid-delete history probe scene: Size { 400px × 500px } at 2x WindowServer id 16576
+dark default-grid-exit history probe scene: Size { 400px × 500px } at 2x WindowServer id 16576
+dark compact-grid-idle history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-grid-reveal history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-grid-delete history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-grid-exit history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-list-idle history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-list-reveal history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-list-delete history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark compact-list-exit history probe scene: Size { 140px × 500px } at 2x WindowServer id 16576
+dark history closed
+dark history reopened the screenshot with exact editor pixels
+
+Changed-pixel bounds compare hover to idle in the tooltip region.
+Contrast uses sampled solid label and fill pixels. Residual counts
+compare the changed bubble pixels with the pointer-exit scene.
+
+light-default-grid   reveal bounds px (276,140)–(466,203) contrast 16.85:1 residual 0/11919
+light-default-grid   delete bounds px (332,140)–(435,203) contrast 16.85:1 residual 0/6527
+light-compact-grid   reveal bounds px (56,329)–(246,392) contrast 16.85:1 residual 0/11904
+light-compact-grid   delete bounds px (156,329)–(259,392) contrast 16.85:1 residual 0/6524
+light-compact-list   reveal bounds px (44,333)–(234,382) contrast 16.85:1 residual 0/9278
+light-compact-list   delete bounds px (100,333)–(203,382) contrast 16.85:1 residual 0/5100
+dark-default-grid    reveal bounds px (236,139)–(466,206) contrast 18.44:1 residual 0/12765
+dark-default-grid    delete bounds px (332,140)–(435,203) contrast 18.44:1 residual 0/6626
+dark-compact-grid    reveal bounds px (45,329)–(247,397) contrast 18.44:1 residual 0/13250
+dark-compact-grid    delete bounds px (156,329)–(259,392) contrast 18.44:1 residual 0/6633
+dark-compact-list    reveal bounds px (44,333)–(234,382) contrast 18.44:1 residual 0/9538
+dark-compact-list    delete bounds px (100,333)–(203,382) contrast 18.44:1 residual 0/5188

@@ -19,6 +19,72 @@ fn probe_tooltip(window: &herogpui::gpui::Window) -> Option<String> {
 }
 
 #[cfg(not(test))]
+fn history_probe(command: &str, directory: &std::path::Path, cx: &mut App) {
+    use crate::windows::history::{model::HistoryLayout, HistoryWindow};
+    use herogpui::gpui::size;
+
+    let handle = registry::handle(WindowKind::History, cx)
+        .and_then(|handle| handle.downcast::<HistoryWindow>())
+        .expect("native history window");
+    if command == "layout" {
+        handle
+            .update(cx, |history, _, cx| history.toggle_layout(cx))
+            .expect("switch native history layout");
+        println!("history probe layout: switched");
+        return;
+    }
+    let history = handle.read(cx).expect("read native history");
+    let (ready, _, _, layout) = history.parity_state();
+    let item_bounds = history.parity_item_bounds(0);
+    cx.update_window(handle.into(), |_, window, cx| {
+        match command {
+            "narrow" => window.resize(size(px(140.), px(crate::windows::history::POPOVER_HEIGHT))),
+            "scene" => {
+                assert!(ready, "history thumbnails must be ready");
+                window
+                    .render_to_image()
+                    .expect("history scene")
+                    .save(directory.join("history-scene.png"))
+                    .expect("save history scene");
+            }
+            "ready" => {
+                println!("history probe ready: {ready}");
+                return;
+            }
+            "hover-item" | "hover-reveal" | "hover-delete" | "hover-exit" => {
+                let position = match command {
+                    "hover-item" => item_bounds.expect("history item").center(),
+                    "hover-exit" => point(px(-1.), px(-1.)),
+                    _ => {
+                        let group = match layout {
+                            HistoryLayout::Grid => "history-grid-actions",
+                            HistoryLayout::List => "history-row-actions",
+                        };
+                        let action = usize::from(command == "hover-delete");
+                        crate::ui::parity::measured(group, action).center()
+                    }
+                };
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers: Modifiers::none(),
+                    }),
+                    cx,
+                );
+            }
+            _ => panic!("unsupported history probe command"),
+        }
+        println!(
+            "history probe {command}: {:?} at {}x",
+            window.viewport_size(),
+            window.scale_factor()
+        );
+    })
+    .expect("update native history window");
+}
+
+#[cfg(not(test))]
 fn timer_edge_position(cx: &mut App) {
     use crate::capture::{overlay, timer};
     use crate::system::work_area;
@@ -714,6 +780,10 @@ pub fn native_ui_probe() {
                             }
                             crate::intents::dispatch(Intent::History, None, cx);
                             println!("history toggled");
+                            return;
+                        }
+                        if let Some(command) = command.strip_prefix("history-probe ") {
+                            history_probe(command, &probe_directory, cx);
                             return;
                         }
                         if command == "onboarding-open" {

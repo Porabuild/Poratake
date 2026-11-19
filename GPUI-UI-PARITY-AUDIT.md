@@ -4386,7 +4386,7 @@ appearance.
 | P1       | Extended video interactions and export matrix            | Preview/export checks cover zoom, camera, cursor, shortcuts, subtitles, blur at the composition edge, and some audio across cuts and speeds. Verify mic/music and live playback; expand interactions, styles and combined edits. Compare video blur with Electron near translucent or clipped source edges. Representative coverage only.                                                                                                                                                                                                                                                                                                |
 | P1       | Video redaction crop and rounded camera                  | Crops include camera clips and rectangle corners. Offscreen macOS editor frames with rounded camera, zoom and pixelation match decoded export within two mean RGB levels in the effect region. 4K offscreen timing is recorded below. The 17 residual channels and interactive frame pacing remain open.                                                                                                                                                                                                                                                                                                                                 |
 | P1       | Native accessibility action delivery                     | Native macOS Settings verified dropdown opening and selection, switch toggling, and slider setting and stepping at 880×700. Isolated tests exercise HeroGPUI actions. Verify screen readers and other operating system adapters.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| P2       | History visual and native verification                   | Verified native macOS contrast, 2× grid spacing, compact list at 140pt, opening and Finder reveal on one display. Mock tests cover grid and list tooltip boundaries. Verify live tooltips and multiple displays.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| P2       | History visual and native verification                   | Verified native macOS contrast, 2× grid spacing, compact list at 140pt, opening and Finder reveal on one display. Mock tests cover grid and list tooltip boundaries. Native AppKit and Metal checks cover both action tooltips at 400 and 140 points in both themes. Physical multiple-display behavior remains open.                                                                                                                                                                                                                                                                                                                    |
 | P2       | Attachment edge accessibility                            | Named controls, keyboard activation and in-bounds focus borders are tested. Native Windows accessibility invocation is verified for the right edge; extend physical keyboard and screen-reader checks to every edge and target platform.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | P2       | Complete state coverage beyond representative controls   | Add default/hover/pressed/focused/open cases for each shared control and overlay, with focused content remaining visible in narrow windows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | P2       | macOS and Linux runtime comparison                       | The 2026-11-17 macOS smoke verified settings appearance, preview/control surfaces, live capture, generated-page scroll stitching, and recorded video edit/export. Ambiguous scroll seams, physical pointer movement between controls, live camera capture, and multi-display workflows remain open.                                                                                                                                                                                                                                                                                                                                      |
@@ -9339,6 +9339,27 @@ offset and the sparse screen and camera fixtures. All 1,194 GPUI
 tests and three sparse FFmpeg tests passed. Sustained playback
 under contention remains open.
 [Per-seek evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-19 native macOS History tooltips and editor reopen
+
+Recent Captures rendered in a visible AppKit window on the built-in
+Retina display. App-local input exercised **Show in folder** and
+**Delete** in the 400-point grid, 140-point grid, and 140-point
+list at 2× in both appearances. WindowServer reported the same
+window before and after the narrow resize. All 12 rendered
+tooltips stayed inside the window and cleared on pointer exit.
+Sampled solid text and fill colors measured contrast of 16.85:1
+in light and 18.44:1 in dark.
+
+Escape removed the History window from WindowServer. Reopening
+History and pressing Enter opened the generated screenshot in
+the editor with exact pixels in both themes. All 63 Electron
+History and popover reference tests passed. The scene captures
+show the GPUI content at native scale. Physical input and
+another display remain outside this run.
+[Light compact grid](tests/native/evidence/macos-ui/history-tooltip-grid-light-20261119.png)
+[Dark compact list](tests/native/evidence/macos-ui/history-tooltip-list-dark-20261119.png)
+[Native fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 
