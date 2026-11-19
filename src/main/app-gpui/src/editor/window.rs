@@ -812,7 +812,11 @@ impl EditorWindow {
         let Some(base) = self.base_image.as_ref() else {
             return;
         };
-        let crop = crate::editor::export::balance_bounds(&base.to_rgba8()).map(|bounds| {
+        let bounds = match base.as_rgba8() {
+            Some(rgba) => crate::editor::export::balance_bounds(rgba),
+            None => crate::editor::export::balance_bounds(&base.to_rgba8()),
+        };
+        let crop = bounds.map(|bounds| {
             (
                 bounds.left as f32,
                 bounds.top as f32,
@@ -2321,7 +2325,10 @@ fn render_redact_patch(
         return None;
     }
 
-    let mut patch = image::imageops::crop_imm(&base.to_rgba8(), x0, y0, w, h).to_image();
+    let mut patch = match base.as_rgba8() {
+        Some(rgba) => image::imageops::crop_imm(rgba, x0, y0, w, h).to_image(),
+        None => image::imageops::crop_imm(&base.to_rgba8(), x0, y0, w, h).to_image(),
+    };
     crate::editor::export::redact_region(
         &mut patch,
         (0, 0, w as i64, h as i64),

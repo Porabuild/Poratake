@@ -10426,6 +10426,29 @@ reference tests passed. The native smoke also covered annotation
 save, History and Print.
 [4K editor memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS screenshot Balance and blackout memory
+
+Balance and blackout preview now read directly from the editor’s
+decoded RGBA image. Balance still computes the same edge crop, and
+blackout copies only the rectangle it needs to paint. Both paths
+previously made a temporary copy of the full image.
+
+Reopening a generated 3840×2160 screenshot with a small saved
+blackout used 234 MiB of physical footprint in both appearances,
+down from 266 MiB. The 31.6 MiB empty large malloc region from
+the baseline was absent. Reopening with Balance enabled used
+311 MiB, down from 321–322 MiB. The Balance fixture still reported
+an empty large region of 31.6 MiB after opening. These figures
+measure the editor while open.
+
+The light and dark offscreen checks passed for scaled blackout
+reopen, redaction order, balanced attachments and Balance effects.
+The scaled blackout checks compared the preview with the reopened
+PNG at four zoom levels and three display scales. The largest
+sampled difference was one RGB level. All 376 active GPUI editor
+tests and 22 Electron reference tests passed.
+[Balance and blackout memory measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

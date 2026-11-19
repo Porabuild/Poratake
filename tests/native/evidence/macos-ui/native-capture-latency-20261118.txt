@@ -3985,3 +3985,25 @@ One additional trial added an annotation and exported the 4K PNG.
 The baseline and updated PNG bytes matched with SHA-256
 587fefb06b73eb70158a902f1fd2c6e23868a2df4efa4daad627bd16b434c761.
 Its post-close footprint was 182.0 MiB before and 157.2 MiB after.
+
+2026-11-19 macOS Balance and blackout editor memory at 2afb0f2b
+
+Fresh GPUI development processes opened the same generated
+3840x2160 RGBA screenshot directly as a file. Each temporary
+History entry applied the plain, Balance, or blackout state. The
+image had a white border so Balance had a margin to trim. The
+blackout covered a 138.5x59.7 rectangle. vmmap sampled the app
+two seconds after launch. Values are MiB of physical footprint.
+
+State     Appearance    Before   Updated   Before peak   Updated peak
+Plain     light          230.0     229.8         321.0          321.0
+Plain     dark           232.6     230.0         321.8          321.4
+Balance   light          321.2     311.4         412.7          401.7
+Balance   dark           322.1     311.3         413.6          401.7
+Blackout  light          265.5     233.9         355.8          325.3
+Blackout  dark           265.6     234.0         356.8          325.3
+
+The baseline Balance and blackout runs each had 31.6 MiB resident
+in one empty large malloc region. The updated Balance runs still
+showed that region size. Neither updated blackout run showed an
+empty large malloc region in its vmmap summary.
