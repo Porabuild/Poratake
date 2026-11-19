@@ -832,6 +832,7 @@ class ScrollCaptureModule: NSObject, Module {
         isAutoScrolling = true
         autoButton?.title = "Stop"
         currentScrollStep = 0
+        duplicateFrameCount = 0
 
         let frameHeight = Int(captureArea.height)
         scrollStepPoints = max(1, Int(Double(frameHeight) * (1.0 - frameOverlapRatio)))
@@ -844,7 +845,7 @@ class ScrollCaptureModule: NSObject, Module {
         warpCursorToCaptureCenter()
         startCursorMonitor()
         emitAutoScrollChanged(scrolling: true)
-        captureCurrentFrame { [weak self] result in
+        captureCurrentFrame(countsDuplicate: false) { [weak self] result in
             guard let self = self, self.continueAfterCapture(result) else { return }
             self.scheduleAutoScrollStep()
         }
@@ -1002,10 +1003,13 @@ class ScrollCaptureModule: NSObject, Module {
         return false
     }
 
-    private func captureCurrentFrame(completion: @escaping (FrameCaptureResult) -> Void) {
+    private func captureCurrentFrame(
+        countsDuplicate: Bool = true,
+        completion: @escaping (FrameCaptureResult) -> Void
+    ) {
         let generation = captureGeneration
         let receive: (CGImage?) -> Void = { [weak self] image in
-            self?.completeExcludedCapture(image, generation: generation) { result in
+            self?.completeExcludedCapture(image, generation: generation, countsDuplicate: countsDuplicate) { result in
                 if let result { completion(result) }
             }
         }
@@ -1106,6 +1110,7 @@ class ScrollCaptureModule: NSObject, Module {
     private func completeExcludedCapture(
         _ image: CGImage?,
         generation: UInt64,
+        countsDuplicate: Bool = true,
         completion: @escaping (FrameCaptureResult?) -> Void
     ) {
         guard canAcceptFrame(generation: generation) else {
@@ -1131,7 +1136,8 @@ class ScrollCaptureModule: NSObject, Module {
                     completion(nil)
                     return
                 }
-                completion(appendCapturedFrame(image, comparison: comparison) == nil ? .duplicate : .captured)
+                let index = appendCapturedFrame(image, comparison: comparison, countsDuplicate: countsDuplicate)
+                completion(index == nil ? .duplicate : .captured)
             }
         }
     }
@@ -1142,8 +1148,13 @@ class ScrollCaptureModule: NSObject, Module {
         return FrameComparison(hash: hash, isDuplicate: isDuplicate)
     }
 
-    private func appendCapturedFrame(_ cgImage: CGImage, comparison: FrameComparison) -> Int? {
+    private func appendCapturedFrame(
+        _ cgImage: CGImage,
+        comparison: FrameComparison,
+        countsDuplicate: Bool = true
+    ) -> Int? {
         if comparison.isDuplicate {
+            guard countsDuplicate else { return capturedFrames.count - 1 }
             duplicateFrameCount += 1
             if duplicateFrameCount >= maxDuplicateFrames {
                 return nil

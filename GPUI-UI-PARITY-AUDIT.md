@@ -10036,6 +10036,24 @@ are outside these timings. All 27 related Electron and daemon
 contract tests passed.
 [Countdown timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Auto Scroll restart after duplicate frames
+
+Auto Scroll could stop as soon as it restarted. The first snapshot
+often matched the last saved image and inherited the previous run's
+duplicate count. Each run now starts a fresh count, and its baseline
+snapshot does not consume a post-scroll retry.
+
+The native fixture stopped on repeated frames, restarted through the
+normal Auto Scroll request, and submitted the same baseline. The old
+implementation stopped before scheduling another scroll step. The
+revised one scheduled the step, then stopped after the existing three
+post-scroll duplicates. The saved PNG matched the original accepted
+frame byte for byte. The Swift fixtures and daemon typechecks passed on
+arm64 and Rosetta x86_64, along with 62 Electron and daemon contract tests.
+The fixture injects frames and intercepts input. Identical-image histories
+still require independent information to disambiguate a stitch.
+[Auto Scroll restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

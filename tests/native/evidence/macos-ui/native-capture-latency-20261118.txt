@@ -3558,3 +3558,21 @@ intel         2.65     2.6527   -             2.6778      3.0021
 The probe measured the AppKit timer lifecycle and label, excluding
 window composition and downstream screenshot work. No physical input
 was used. All 27 Electron and daemon contract tests passed.
+
+2026-11-19 macOS Auto Scroll restart after repeated frames at 25c40057
+
+The Swift fixture submitted one valid frame and three duplicates.
+After Auto Scroll stopped, it sent the ordinary Auto Scroll start
+request. The first capture matched the retained image exactly.
+
+Baseline
+scroll restart after duplicates: scheduled=0, ended=2
+
+Revised
+scroll restart after duplicates: scheduled=1, ended=1
+scroll restart: three post-scroll duplicates stop without changing saved pixels
+
+The revised capture scheduled a scroll step and consumed its duplicate
+allowance only for images captured after each scroll. The final PNG
+matched the retained frame. The fixture used a supplied frame provider
+and a scheduling spy, so no mouse movement or wheel input was posted.

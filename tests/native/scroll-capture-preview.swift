@@ -2264,6 +2264,49 @@ struct ScrollCapturePreviewTest {
             return result
         }
 
+        let resumedModule = ScrollCaptureModule()
+        resumedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        resumedModule.testSetPreviewEncoder { _ in "preview" }
+        var resumedEnds: [[String: Any]] = []
+        var resumedSteps = 0
+        var resumedCaptures: [(CGImage?) -> Void] = []
+        resumedModule.testSetScrollEndedResponder { resumedEnds.append($0) }
+        resumedModule.testSetScheduleAutoScroll { resumedSteps += 1 }
+        resumedModule.testSetCaptureProvider { resumedCaptures.append($0) }
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(!resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedEnds.count == 1 && !resumedModule.testIsAutoScrolling())
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Restart did not request a baseline image") { resumedCaptures.count == 1 }
+        resumedCaptures[0](frames[0])
+        await waitUntil("Restart baseline did not complete") { resumedSteps == 1 || resumedEnds.count == 2 }
+        print("scroll restart after duplicates: scheduled=\(resumedSteps), ended=\(resumedEnds.count)")
+        fflush(stdout)
+        precondition(resumedSteps == 1 && resumedEnds.count == 1 && resumedModule.testIsAutoScrolling())
+        let resumedGeneration = resumedModule.testCaptureGeneration()
+        for index in 1...3 {
+            resumedModule.testCaptureAfterScroll(generation: resumedGeneration)
+            precondition(resumedCaptures.count == index + 1)
+            resumedCaptures[index](frames[0])
+            await waitUntil("A post-scroll image did not complete") {
+                resumedSteps == index + 1 || resumedEnds.count == 2
+            }
+            precondition(resumedModule.testIsAutoScrolling() == (index < 3))
+        }
+        precondition(resumedSteps == 3 && resumedEnds.count == 2)
+        precondition(resumedEnds.last?["reason"] as? String == "duplicate")
+        let resumedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-resume-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: resumedOutput) }
+        let resumedResult = await finish(resumedModule, output: resumedOutput)
+        precondition(resumedResult?["frameCount"] as? Int == 1)
+        let resumedSource = CGImageSourceCreateWithURL(resumedOutput as CFURL, nil)!
+        let resumedImage = CGImageSourceCreateImageAtIndex(resumedSource, 0, nil)!
+        precondition(pixels(resumedImage) == pixels(frames[0]))
+        print("scroll restart: three post-scroll duplicates stop without changing saved pixels")
+
         let asyncCaptureModule = ScrollCaptureModule()
         asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
         asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
