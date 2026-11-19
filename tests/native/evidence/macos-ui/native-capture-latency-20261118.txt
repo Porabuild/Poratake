@@ -3295,3 +3295,25 @@ destination rectangle, and kept a four-point owner gap. The original
 panel and WindowServer exclusion ID survived the move. Each dismissal
 cleared its registration. The test used generated coordinates and one
 display, so physical mixed-DPI transitions remain unverified.
+
+2026-11-19 macOS replacement tooltip and a superseded filter error
+
+The Swift fixture held an exclusion refresh with the real AppKit
+Camera tooltip ID, replaced it with Microphone, and waited until
+the retired ID was absent from the registry. The replacement and
+the pending cleanup had joined the held refresh. It then returned
+the missing-window error for the former tooltip ID.
+
+Baseline at 9353b714
+tooltip superseded filter failure: replacement visible=false
+
+Revised
+tooltip superseded filter failure: replacement visible=true
+
+The successful retry submitted just the replacement's ID. The
+panel stayed transparent while the retry was held and became
+visible after it completed. Dismissal submitted an empty exclusion
+list and unregistered the panel.
+The current-revision filter failure test still reports its error
+to the caller. The fixture models the filter error and update
+ordering without starting a live recording.

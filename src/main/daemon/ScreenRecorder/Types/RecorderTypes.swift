@@ -156,10 +156,11 @@ final class RecordingCaptureWindowRegistry {
         #if SCROLL_CAPTURE_TEST
         await testOnRefreshCleared?()
         #endif
+        let currentResult = revision == self.revision ? result : .success(())
         let waiters = refreshWaiters
         refreshWaiters.removeAll()
         for waiter in waiters.reversed() {
-            waiter.resume(with: result)
+            waiter.resume(with: currentResult)
         }
     }
 

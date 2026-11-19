@@ -9813,6 +9813,25 @@ related Electron and contract tests passed. Physical multi-display
 and mixed-DPI behavior remain open.
 [Display transition results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltip replacement after an exclusion refresh fails
+
+A recording filter refresh could fail to resolve a tooltip window
+that had already been replaced. The failure reached the replacement
+even though its window was present. The registry now reassesses the
+current window set when a refresh finishes for an older revision.
+It still reports failures for the current revision.
+
+The native fixture held a refresh for the Camera tooltip, replaced it
+with the Microphone tooltip, then returned the missing-window error
+for the retired panel. The previous implementation suppressed the
+Microphone tooltip. The revised implementation applied the new window
+ID before revealing the replacement and cleared the ID on dismissal.
+The panel stayed transparent while the retry was held. The fixture uses
+real AppKit panels and a simulated asynchronous filter update. The
+full Swift fixtures and daemon typechecks passed on arm64 and Rosetta
+x86_64, along with 70 related Electron and contract tests.
+[Filter refresh results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

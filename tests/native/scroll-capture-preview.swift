@@ -485,6 +485,70 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyTooltipReplacesUnresolvedFilter() async throws {
+        guard let screen = NSScreen.screens.first else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let pointer = NSPoint(x: owner.midX, y: owner.midY)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var snapshots: [[CGWindowID]] = []
+        var releaseOld: CheckedContinuation<Void, Never>?
+        var releaseLatest: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            snapshots.append(ids)
+            if snapshots.count == 1 {
+                await withCheckedContinuation { releaseOld = $0 }
+                throw RecordingCaptureFilterError.unavailableWindows(ids)
+            }
+            if !ids.isEmpty {
+                await withCheckedContinuation { releaseLatest = $0 }
+            }
+        }
+
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Select camera"))
+        let first = Task { @MainActor in
+            try await tooltip.show(sequence: 1, owner: 1, text: "Select camera", dark: false,
+                                   at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The first tooltip filter was not held") { releaseOld != nil }
+        precondition(snapshots.count == 1 && snapshots[0].count == 1)
+        precondition(tooltip.testPanel?.alphaValue == 0)
+
+        precondition(tooltip.accept(sequence: 2, owner: 1, text: "Select microphone"))
+        let latest = Task { @MainActor in
+            try await tooltip.show(sequence: 2, owner: 1, text: "Select microphone", dark: false,
+                                   at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The filter did not queue the replacement tooltip") {
+            guard let panel = tooltip.testPanel else { return false }
+            let latestID = CGWindowID(panel.windowNumber)
+            return registry.currentWindowIDs() == [latestID] && snapshots[0] != [latestID]
+                && registry.testPendingRefreshWaiterCount == 3
+        }
+        let panel = tooltip.testPanel!
+        let latestID = CGWindowID(panel.windowNumber)
+        precondition(panel.alphaValue == 0)
+        releaseOld?.resume()
+        await waitUntil("The replacement filter update was not retried") { releaseLatest != nil }
+        precondition(snapshots.count == 2 && snapshots[1] == [latestID])
+        precondition(tooltip.testPanel === panel && panel.alphaValue == 0)
+        releaseLatest?.resume()
+
+        let visible = (try? await latest.value) == true
+        print("tooltip superseded filter failure: replacement visible=\(visible)")
+        fflush(stdout)
+        precondition(visible && tooltip.testPanel === panel && panel.alphaValue == 1)
+        let previousVisible = try await first.value
+        precondition(!previousVisible)
+        precondition(registry.currentWindowIDs() == [latestID])
+        precondition(!tooltip.accept(sequence: 3, owner: 1, text: nil))
+        await waitUntil("The replacement exclusion did not clear") {
+            registry.currentWindowIDs().isEmpty && snapshots.last == []
+        }
+    }
+
+    @MainActor
     static func verifyTooltipPointerExit() async throws {
         guard let screen = NSScreen.screens.first else {
             print("SKIP tooltip pointer exit: no AppKit display")
@@ -802,6 +866,7 @@ struct ScrollCapturePreviewTest {
                     try await verifyTooltipPointerMove()
                     try await verifyTooltipOwnerMove()
                     try await verifyTooltipDisplayTransition()
+                    try await verifyTooltipReplacesUnresolvedFilter()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                 } else {
@@ -1263,6 +1328,7 @@ struct ScrollCapturePreviewTest {
         try await verifyTooltipOwnerMove()
         try await verifyTooltipDisplayTransition()
         try await verifyTooltipControlReplacement()
+        try await verifyTooltipReplacesUnresolvedFilter()
         try await verifyTallTooltipPlacement()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
