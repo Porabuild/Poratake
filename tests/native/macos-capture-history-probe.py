@@ -79,7 +79,9 @@ def fixture_daemon():
             if (output / "camera-retry.hold").exists():
                 Thread(target=reject_held_camera_retry, args=(request["id"],), daemon=True).start()
                 continue
-            result = {"visible": True}
+            position = {"x": 24, "y": 64}
+            emit({"event": "camera-preview:position-changed", "data": position})
+            result = {"visible": True, "position": position}
         elif camera_retry and method == ("camera-preview", "hide"):
             (output / "camera-preview.hidden").touch()
             result = {"visible": False}
@@ -218,6 +220,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 assert command("camera-select generated-camera")
                 eventually("camera-state")
                 eventually("camera-pending", expected=False)
+                assert command("camera-position 24 64")
                 command("start")
                 eventually("recording-active")
                 assert command("camera-select generated-camera")

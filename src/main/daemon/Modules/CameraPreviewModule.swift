@@ -64,7 +64,12 @@ class CameraPreviewModule: Module {
                     #if RECORDING_OUTLINE_TEST
                     self.testShowResults[requestId] = visible
                     #endif
-                    self.respond(id: requestId, result: ["visible": visible])
+                    var result: [String: Any] = ["visible": visible]
+                    if visible, let panel = self.panel {
+                        let (x, y) = self.position(of: panel)
+                        result["position"] = ["x": x, "y": y]
+                    }
+                    self.respond(id: requestId, result: result)
                 } catch {
                     #if RECORDING_OUTLINE_TEST
                     self.testFailedShows.insert(requestId)
@@ -253,6 +258,7 @@ class CameraPreviewModule: Module {
         refitPanel(panel)
         panel.alphaValue = 1
         panel.ignoresMouseEvents = false
+        reportPosition(of: panel)
     }
 
     @MainActor
@@ -349,6 +355,23 @@ class CameraPreviewModule: Module {
     }
     
     @MainActor
+    private func position(of panel: NSPanel) -> (Int, Int) {
+        let frame = panel.frame
+        return (Int(frame.minX), Int(DisplayCoordinates.topLeftY(
+            cocoaY: frame.minY, height: frame.height, primaryHeight: DisplayCoordinates.primaryHeight
+        )))
+    }
+
+    @MainActor
+    private func reportPosition(of panel: NSPanel) {
+        let (x, y) = position(of: panel)
+        #if RECORDING_OUTLINE_TEST
+        testReportedPositions.append(NSPoint(x: x, y: y))
+        #endif
+        emit(event: "position-changed", data: ["x": x, "y": y])
+    }
+
+    @MainActor
     private func setupMoveTracking(for panel: NSPanel) {
         guard moveObserver == nil else { return }
         moveObserver = NotificationCenter.default.addObserver(
@@ -359,16 +382,7 @@ class CameraPreviewModule: Module {
             Task { @MainActor in
                 guard let self, let panel, self.panel === panel else { return }
 
-                let x = Int(panel.frame.origin.x)
-                let y = Int(DisplayCoordinates.topLeftY(
-                    cocoaY: panel.frame.origin.y, height: panel.frame.height,
-                    primaryHeight: DisplayCoordinates.primaryHeight
-                ))
-
-                #if RECORDING_OUTLINE_TEST
-                self.testReportedPositions.append(NSPoint(x: x, y: y))
-                #endif
-                self.emit(event: "position-changed", data: ["x": x, "y": y])
+                self.reportPosition(of: panel)
             }
         }
         screenObserver = NotificationCenter.default.addObserver(

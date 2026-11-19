@@ -29,7 +29,9 @@ export async function showCameraPreview(
     : undefined;
 
   try {
-    await daemon.call('camera-preview', 'show', {
+    const result = await daemon.call<{
+      position?: { x: number; y: number };
+    } | null>('camera-preview', 'show', {
       deviceId: settings.selectedDeviceId,
       deviceName: settings.selectedDeviceName,
       resolution: settings.resolution || '720p',
@@ -43,7 +45,9 @@ export async function showCameraPreview(
         enabled: true,
       });
     }
-    currentSettings = settings;
+    currentSettings = result?.position
+      ? { ...settings, position: fromNativePosition(result.position) }
+      : settings;
   } catch (error) {
     currentSettings = null;
     await daemon.call('camera-preview', 'hide').catch(() => {});

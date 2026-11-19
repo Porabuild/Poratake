@@ -361,6 +361,13 @@ struct RecordingOutlineLifecycleTest {
             print("camera deferred fit: superseded=\(superseded), workAreaFit=\(work.contains(panel.frame))")
             fflush(stdout)
             precondition(panel.frame.origin == NSPoint(x: work.minX, y: origin.y))
+            let fitted = NSPoint(x: Int(panel.frame.minX), y: Int(DisplayCoordinates.topLeftY(
+                cocoaY: panel.frame.minY, height: panel.frame.height,
+                primaryHeight: DisplayCoordinates.primaryHeight
+            )))
+            print("camera reveal position: reports=\(camera.testReportedPositions)")
+            fflush(stdout)
+            precondition(camera.testReportedPositions == [fitted])
             precondition(camera.testStartup.panel === panel && registry.currentWindowIDs() == [id])
             await camera.testHidePanel()
             precondition(registry.currentWindowIDs().isEmpty)

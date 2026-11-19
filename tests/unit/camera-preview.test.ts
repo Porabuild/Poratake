@@ -82,6 +82,19 @@ describe('camera-preview', () => {
     expect(args.resolution).toBe('720p');
   });
 
+  it('stores the fitted position returned when the preview opens', async () => {
+    mockDaemonCall.mockResolvedValueOnce({
+      visible: true,
+      position: { x: 24, y: 64 },
+    });
+    const m = await import('@/main/capture/video/camera-preview');
+    await m.showCameraPreview({
+      ...sampleSettings,
+      position: { x: -40, y: 64 },
+    });
+    expect(m.getCameraPreviewSettings()?.position).toEqual({ x: 24, y: 64 });
+  });
+
   it('keeps the preview hidden when the daemon rejects show', async () => {
     mockDaemonCall
       .mockRejectedValueOnce(new Error('camera failed'))

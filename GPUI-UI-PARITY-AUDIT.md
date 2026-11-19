@@ -10319,6 +10319,26 @@ typechecks passed on Apple Silicon and Rosetta x86_64, along with
 97 Electron and daemon contract tests.
 [Deferred camera placement evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS fitted camera preview position on reveal
+
+A camera panel could be moved into the work area just before
+reveal without reporting that correction. The daemon now emits
+the fitted position when the panel appears and returns it in the
+Show reply. GPUI receives the event, and Electron initializes
+its preview state from the reply when the position is available.
+
+The native fixture verified one report and the same reply position
+for both a first request and a superseding request. A simulated
+daemon in the light and dark GPUI smoke tests sent corrected
+coordinates before the Show reply. GPUI retained those coordinates
+and the recording preview still opened after the held-retry Stop.
+The Electron test verified that the returned position supersedes
+the original requested one. Native fixtures and daemon typechecks
+passed on arm64 and Rosetta x86_64, along with 98 Electron and
+daemon contract tests. These cases use generated sessions and
+app-local controls.
+[Camera position handoff evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

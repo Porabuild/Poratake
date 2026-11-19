@@ -3862,3 +3862,22 @@ The same AppKit window moved to the left work-area edge before the
 show reply and retained its capture-exclusion ID until dismissal.
 This test staged a stale panel frame locally. It changed no display
 settings and opened no camera device.
+
+2026-11-19 macOS fitted camera preview position at reveal at b966a838
+
+The AppKit test moved the protected hidden panel outside the work
+area and released its screenshot barrier. Both native reveal paths
+corrected the panel location. The fixture compared the reported
+top-left desktop coordinates with the fitted window and Show reply.
+
+Baseline
+camera reveal position: reports=[]
+
+Revised
+camera reveal position: reports=[(0.0, 440.0)]
+Show position: x=0, y=440
+
+The GPUI camera-retry probe also received the fixture event (24,64)
+before the Show reply and retained those coordinates in both light
+and dark. An Electron unit test verified that Show's returned
+position is stored. The native fixture opened no camera device.
