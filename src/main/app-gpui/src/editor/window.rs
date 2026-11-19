@@ -514,8 +514,8 @@ pub(crate) struct PreparedScreenshot {
 
 impl PreparedScreenshot {
     pub(crate) fn open(path: &str) -> image::ImageResult<Self> {
-        let decoded = crate::render::images::open(path)?;
-        let base = Arc::new(image::DynamicImage::ImageRgba8(decoded.into_rgba8()));
+        let decoded = crate::render::images::open_rgba8(path)?;
+        let base = Arc::new(image::DynamicImage::ImageRgba8(decoded));
         let image = render_image_from_base(&base);
         let tiles = crate::editor::image_tiles::create(&image);
         Ok(Self { base, image, tiles })

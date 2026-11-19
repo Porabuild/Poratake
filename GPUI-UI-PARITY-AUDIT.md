@@ -10402,6 +10402,30 @@ opened the 4K screenshot editor 40–56 ms after the fixture released
 its History read.
 [Daemon watchdog measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K screenshot editor memory
+
+The editor now decodes opaque 8-bit RGB PNGs into the buffer that
+will hold the RGBA source for edits and export. It expands the
+channels in that buffer before applying the existing ICC conversion.
+This removes the separate 24 MiB buffer for a 3840×2160 RGB image.
+
+On the M5 Pro, after three open and close cycles per appearance,
+the prior GPUI build held 118–120 MiB after close. The revised build
+held 91–94 MiB. Empty large malloc regions dropped from 87 MiB to
+63 MiB. The editing source and GPUI image each still use a
+full-size pixel buffer. A separate annotated export produced
+byte-identical PNGs before and after the change.
+
+The median interval from area confirmation to source preparation
+was 64 ms before and 71 ms after. The median interval to the editor
+being ready was 142 ms before and 90 ms after in the same six trials
+per build. These are development runs with a generated RGB PNG,
+app-local input and readiness queries. They exclude display paint.
+Forty-seven GPUI image, export and reopen tests and 26 Electron
+reference tests passed. The native smoke also covered annotation
+save, History and Print.
+[4K editor memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

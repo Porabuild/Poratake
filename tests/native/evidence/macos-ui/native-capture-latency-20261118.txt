@@ -3953,3 +3953,35 @@ All eight GPUI daemon tests passed. A standalone waitid and waitpid
 fixture passed on arm64 and under Rosetta x86_64. The 112 related
 Electron tests passed. The direct 4K screenshot editor fixture
 opened 55.3 ms after History release in light and 40.3 ms in dark.
+
+2026-11-19 macOS RGB PNG editor memory at 016413b5
+
+Fresh GPUI development processes on the M5 Pro used temporary light
+and dark profiles. The daemon fixture returned an opaque 3840x2160
+RGB PNG. The local mouse-up command confirmed the area. Timings stop
+at the app's preparation report and editor-ready query. The memory
+column is physical footprint three seconds after each editor closed.
+
+Build    Theme Trial   Prepared (ms)   Editor ready (ms)   After close (MiB)
+Before   light     1           63.7               167.4              118.77
+Before   light     2           75.5               172.2              119.72
+Before   light     3           55.9                90.4              117.83
+Before   dark      1           70.4               163.8              118.77
+Before   dark      2           63.7               120.2              117.61
+Before   dark      3           51.2                94.2              117.78
+Updated  light     1           74.6               114.8               93.30
+Updated  light     2           75.7                88.8               91.38
+Updated  light     3           62.7                75.8               91.47
+Updated  dark      1           71.2               108.9               94.11
+Updated  dark      2           69.9                91.3               94.31
+Updated  dark      3           59.1                82.0               92.97
+
+vmmap after the third close reported 87.0 MiB resident in empty
+large malloc regions in each baseline and 63.3 MiB after the
+change. Peak physical footprint by appearance was 347.8 and
+347.7 MiB before, and 324.3 and 327.2 MiB after.
+
+One additional trial added an annotation and exported the 4K PNG.
+The baseline and updated PNG bytes matched with SHA-256
+587fefb06b73eb70158a902f1fd2c6e23868a2df4efa4daad627bd16b434c761.
+Its post-close footprint was 182.0 MiB before and 157.2 MiB after.

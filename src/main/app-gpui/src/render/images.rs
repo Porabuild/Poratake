@@ -8,11 +8,19 @@ use image::{
 use moxcms::{ColorProfile, DataColorSpace, Layout, TransformExecutor};
 
 pub fn open(path: impl AsRef<Path>) -> ImageResult<DynamicImage> {
-    decode_reader(ImageReader::open(path)?.with_guessed_format()?)
+    decode_reader(ImageReader::open(path)?.with_guessed_format()?, false)
+}
+
+pub fn open_rgba8(path: impl AsRef<Path>) -> ImageResult<RgbaImage> {
+    decode_reader(ImageReader::open(path)?.with_guessed_format()?, true)
+        .map(DynamicImage::into_rgba8)
 }
 
 pub fn decode(bytes: &[u8]) -> ImageResult<DynamicImage> {
-    decode_reader(ImageReader::new(Cursor::new(bytes)).with_guessed_format()?)
+    decode_reader(
+        ImageReader::new(Cursor::new(bytes)).with_guessed_format()?,
+        false,
+    )
 }
 
 pub fn load_source(source: &str) -> Option<DynamicImage> {
@@ -40,17 +48,40 @@ pub fn encode_srgb_png(image: &RgbaImage) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn decode_reader(reader: ImageReader<impl BufRead + Seek>) -> ImageResult<DynamicImage> {
+fn decode_reader(
+    reader: ImageReader<impl BufRead + Seek>,
+    rgba8: bool,
+) -> ImageResult<DynamicImage> {
+    let png = reader.format() == Some(image::ImageFormat::Png);
     let mut decoder = reader.into_decoder()?;
     let mut limits = Limits::default();
-    limits.reserve(decoder.total_bytes())?;
+    let decoded_bytes = decoder.total_bytes();
+    limits.reserve(decoded_bytes)?;
+    let expand_rgb = rgba8
+        && png
+        && decoder.color_type() == ColorType::Rgb8
+        && limits.reserve(decoded_bytes / 3).is_ok();
     decoder.set_limits(limits)?;
     let profile = decoder
         .icc_profile()
         .ok()
         .flatten()
         .and_then(|bytes| ColorProfile::new_from_slice(&bytes).ok());
-    let decoded = DynamicImage::from_decoder(decoder)?;
+    let decoded = if expand_rgb {
+        let (width, height) = decoder.dimensions();
+        let count = decoded_bytes as usize / 3;
+        let mut pixels = vec![0; count * 4];
+        decoder.read_image(&mut pixels[..count * 3])?;
+        for index in (0..count).rev() {
+            let src = index * 3;
+            let dst = index * 4;
+            let rgba = [pixels[src], pixels[src + 1], pixels[src + 2], 255];
+            pixels[dst..dst + 4].copy_from_slice(&rgba);
+        }
+        DynamicImage::ImageRgba8(RgbaImage::from_raw(width, height, pixels).unwrap())
+    } else {
+        DynamicImage::from_decoder(decoder)?
+    };
     Ok(match profile {
         Some(profile)
             if profile.color_space == DataColorSpace::Rgb && decoded.color().has_color() =>
@@ -133,6 +164,27 @@ mod tests {
                 decode(&bytes).unwrap().into_rgba8().get_pixel(0, 0).0,
                 pixel
             );
+        }
+    }
+
+    #[test]
+    fn expands_rgb_to_rgba_without_changing_screenshot_pixels() {
+        let pixels = [35, 108, 207, 10, 81, 190, 100, 204, 101, 199, 72, 3];
+        for profile in [None, Some(ColorProfile::new_display_p3())] {
+            let mut bytes = Vec::new();
+            let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+            if let Some(profile) = profile {
+                encoder.set_icc_profile(profile.encode().unwrap()).unwrap();
+            }
+            encoder
+                .write_image(&pixels, 2, 2, ExtendedColorType::Rgb8)
+                .unwrap();
+            let reader = ImageReader::new(Cursor::new(&bytes))
+                .with_guessed_format()
+                .unwrap();
+            let expanded = decode_reader(reader, true).unwrap();
+            assert!(expanded.as_rgba8().is_some());
+            assert_eq!(expanded.into_rgba8(), decode(&bytes).unwrap().into_rgba8());
         }
     }
 
