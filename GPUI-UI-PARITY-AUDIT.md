@@ -9013,6 +9013,25 @@ on Apple Silicon and Rosetta, and 77 Electron reference tests
 passed. Physical mixed-DPI displays remain open.
 [Native geometry and workflow evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Save sheet open and cancel timing
+
+The screenshot probe opened and canceled the native Save sheet
+three times per appearance. Each opening kept the isolated
+directory and a separate PNG filename. Each cancel cleared Save
+state and produced no file. The probe then saved an annotated
+640×360 PNG through the background writer and reopened it.
+All 1,790 changed pixels matched the editor composition in both
+appearances. The probe removes its temporary profile on exit.
+
+The first GPUI sheet opened in 1.04–1.09 seconds. Later opens took
+511–589 ms. A standalone AppKit sheet took 1.19–1.31 seconds for
+the first open and 505–659 ms on later opens. The AppKit cancel
+call itself took 265–427 ms to return; GPUI cleared Save state
+1–22 ms after its own cancel call returned. These are app-local
+samples. The physical Save button and native file confirmation
+remain outside this probe.
+[Per-trial Save timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

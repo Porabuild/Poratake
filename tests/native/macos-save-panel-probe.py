@@ -19,7 +19,9 @@ subprocess.run(
 )
 executable = root / "src/main/target/debug/poratake-gpui"
 env = os.environ.copy()
-env["PORATAKE_NATIVE_UI_THEME"] = "dark"
+theme = env.setdefault("PORATAKE_NATIVE_UI_THEME", "dark")
+scratch = tempfile.TemporaryDirectory(prefix="poratake-save-panel-")
+env["TMPDIR"] = scratch.name
 env["PORATAKE_NATIVE_UI_NORMAL_LEVEL"] = "1"
 env.pop("PORATAKE_NATIVE_UI_AUTO_DISMISS", None)
 env.pop("PORATAKE_PARITY_DAEMON", None)
@@ -65,16 +67,15 @@ def wait_for(predicate, timeout=30):
             return line
 
 
-def wait_for_save_completion():
+def wait_for_panel_state(query, matches, complete):
     deadline = time.monotonic() + 30
-    while True:
-        command("save-status")
-        line = wait_for(
-            lambda value: value.startswith("isolated save pending="),
-            timeout=max(0.01, deadline - time.monotonic()),
-        )
-        if line == "isolated save pending=false":
-            return
+    while time.monotonic() < deadline:
+        command(query)
+        line = wait_for(matches, timeout=deadline - time.monotonic())
+        if complete(line):
+            return line
+        time.sleep(0.01)
+    raise TimeoutError(f"timed out waiting for {query}")
 
 
 try:
@@ -88,28 +89,37 @@ try:
     command("annotation-status")
     annotation = wait_for(lambda line: line.startswith("isolated annotation changed pixels="))
     assert int(annotation.rsplit("=", 1)[1]) > 0, annotation
-    started = time.monotonic()
-    command("save-open")
-    wait_for(lambda line: line == "isolated editor requested save dialog")
-    deadline = time.monotonic() + 30
-    while True:
-        command("save-panel-status")
-        line = wait_for(
+    expected = Path(scratch.name) / f"poratake-native-ui-probe-{process.pid}"
+    for trial in range(1, 4):
+        started = time.monotonic()
+        command("save-open")
+        wait_for(lambda line: line == "isolated editor requested save dialog")
+        line = wait_for_panel_state(
+            "save-panel-status",
             lambda value: value.startswith("save panel directory=")
             or value == "isolated save panel is not visible",
-            timeout=max(0.01, deadline - time.monotonic()),
+            lambda value: value.startswith("save panel directory="),
         )
-        if line.startswith("save panel directory="):
-            break
-    print(f"save panel visible in {(time.monotonic() - started) * 1000:.1f} ms")
-    directory, filename = line.removeprefix("save panel directory=").split(", name=", 1)
-    expected = Path(tempfile.gettempdir()) / f"poratake-native-ui-probe-{process.pid}"
-    assert Path(directory).resolve() == expected.resolve(), (directory, expected)
-    assert filename.startswith("Screenshot ") and filename.endswith(".png"), filename
-    command("save-cancel")
-    wait_for(lambda line: line == "isolated save panel canceled")
-    wait_for_save_completion()
-    assert not (expected / filename).exists()
+        shown = time.monotonic()
+        directory, filename = line.removeprefix("save panel directory=").split(", name=", 1)
+        assert Path(directory).resolve() == expected.resolve(), (directory, expected)
+        assert filename.startswith("Screenshot ") and filename.endswith(".png"), filename
+        cancel_started = time.monotonic()
+        command("save-cancel")
+        wait_for(lambda value: value == "isolated save panel canceled")
+        cancel_returned = time.monotonic()
+        wait_for_panel_state(
+            "save-status",
+            lambda value: value.startswith("isolated save pending="),
+            lambda value: value == "isolated save pending=false",
+        )
+        canceled = time.monotonic()
+        assert not (expected / filename).exists()
+        print(
+            f"{theme} trial {trial}: save panel visible in {(shown - started) * 1000:.1f} ms, "
+            f"cancel returned in {(cancel_returned - cancel_started) * 1000:.1f} ms, "
+            f"save state cleared in {(canceled - cancel_started) * 1000:.1f} ms"
+        )
     command("save-to-fixture")
     wait_for(lambda line: line == "isolated fixture PNG saved")
     command("reopen-saved")
@@ -128,12 +138,15 @@ try:
     print("native save panel uses the isolated directory and a separate PNG filename")
     print("PNG saved by the background writer and reopened editor match the annotated editor pixel for pixel")
 finally:
-    if process.poll() is None:
-        try:
-            command("quit")
-            process.wait(timeout=5)
-        except BrokenPipeError:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait(timeout=5)
+    try:
+        if process.poll() is None:
+            try:
+                command("quit")
+                process.wait(timeout=5)
+            except BrokenPipeError:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+    finally:
+        scratch.cleanup()
