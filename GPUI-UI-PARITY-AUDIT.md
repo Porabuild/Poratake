@@ -10975,6 +10975,37 @@ The targeted GPUI and Electron reference suites passed 422 and 66
 tests, respectively.
 [Preview allocation and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Accelerate video frame conversion
+
+The video editor and exporter now use macOS Accelerate to reorder
+decoded BGRA pixels into the shared RGBA composition buffer. An
+isolated 100-frame 4K conversion took a median of 120 ms with
+Accelerate, compared with 964 ms using the prior Rust loop across
+seven paired rounds. Both produced identical pixels. The native
+helper matched all four channels at odd and even row widths on
+Apple Silicon and Rosetta.
+[Apple Accelerate documentation](<https://developer.apple.com/documentation/accelerate/vimagepermutechannels_argb8888(_:_:_:_:)>)
+
+In four paired two-second playback samples with two competing
+software encoders, both builds applied 119–121 preview updates.
+The updated editor primarily used 432×243 to 640×360 previews,
+up from 384×216 and with lower GPUI CPU time in every pair. Without
+the test encoders, the updated editor reached 853×480 in each trial.
+The process footprint varied across trials.
+
+The 18-second stress sample varied by run. The updated build applied
+1,079 of 1,080 expected light-mode updates with a 27 ms maximum gap.
+In the dark repeat it applied 523 updates, with a 2.83 s maximum gap.
+The longest decode request there took 2.826 s, including a single
+raw frame that took 1.616 s to finish after the first byte arrived.
+Sustained 4K60 playback under contention remains open.
+
+Opening previews matched across all runs in light and dark. A
+split-and-export check matched the first 12 decoded 4K frames.
+The targeted GPUI and Electron reference suites passed 423 and 66
+tests, respectively.
+[Frame conversion and playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

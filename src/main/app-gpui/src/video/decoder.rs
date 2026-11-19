@@ -51,6 +51,10 @@ impl DecodedFrame {
         if target.len() != self.bgra.len() {
             return None;
         }
+        #[cfg(target_os = "macos")]
+        if permute_bgra(&self.bgra, target, self.width.max(1), self.height.max(1)) {
+            return Some(());
+        }
         for (out, pixel) in target
             .as_chunks_mut::<4>()
             .0
@@ -63,6 +67,54 @@ impl DecodedFrame {
             out[3] = pixel[3];
         }
         Some(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn permute_bgra(source: &[u8], target: &mut [u8], width: u32, height: u32) -> bool {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct ImageBuffer {
+        data: *mut c_void,
+        height: usize,
+        width: usize,
+        row_bytes: usize,
+    }
+
+    #[link(name = "Accelerate", kind = "framework")]
+    unsafe extern "C" {
+        fn vImagePermuteChannels_ARGB8888(
+            source: *const ImageBuffer,
+            target: *const ImageBuffer,
+            channel_map: *const u8,
+            flags: u32,
+        ) -> isize;
+    }
+
+    const DO_NOT_TILE: u32 = 16;
+    const BGRA_TO_RGBA: [u8; 4] = [2, 1, 0, 3];
+    let width = width as usize;
+    let height = height as usize;
+    let row_bytes = width * 4;
+    let Some(size) = row_bytes.checked_mul(height) else {
+        return false;
+    };
+    if source.len() != size || target.len() != size {
+        return false;
+    }
+    let source = ImageBuffer {
+        data: source.as_ptr().cast_mut().cast(),
+        height,
+        width,
+        row_bytes,
+    };
+    let target = ImageBuffer {
+        data: target.as_mut_ptr().cast(),
+        ..source
+    };
+    unsafe {
+        vImagePermuteChannels_ARGB8888(&source, &target, BGRA_TO_RGBA.as_ptr(), DO_NOT_TILE) == 0
     }
 }
 

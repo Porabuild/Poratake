@@ -4732,3 +4732,82 @@ manifest for the first 12 frames matched, SHA-256
 d75c3ccce540d12a5b7430f6b665ae8710dfc195a4022c5603f2eb6668ee16a0.
 Both builds applied two preview updates in the timed interval on that
 separate export trial.
+
+2026-11-19 macOS Accelerate video frame conversion
+=================================================
+
+A standalone Apple Silicon benchmark reused one 3840x2160 destination
+and alternated two 4K input buffers. Each round converted 100 frames
+at the development optimization level. Each path matched every pixel
+channel. The portable word-mask experiment is included for comparison.
+
+Round    Original loop ms    Word mask ms    Accelerate ms
+    1            1122.508         690.702          162.729
+    2             921.099         685.186          119.687
+    3            1162.585         900.637          113.255
+    4            1078.197         746.527          133.472
+    5             963.768         701.891           98.361
+    6             929.344         431.247          118.587
+    7             949.630         680.771          133.180
+
+A direct call of the production helper verified valid rows, red/blue
+swapping, green and alpha preservation and invalid buffer sizes on
+Apple Silicon and Rosetta. The fixtures included 1x1, 7x11, 16x2,
+101x7, and 3840x2160 images.
+
+The native recording preview opened a 4K60 H.264 fixture in the
+development editor. Measurements ran from 0.4 to 2.4 s after Play.
+App CPU combines GPUI user and system time in seconds. Memory is its
+physical footprint in MiB at the end of the sample. Each preview
+tuple is dimensions, applied image count, and median composition
+time in ms after subtracting decoder wait. The loaded rows used
+two software encoders, each with two input and two output threads,
+and verified that both encoders continued reporting progress.
+
+Build Theme Load Pair Updates CPU_s GPUI_MiB Largest_gap_ms Preview_tuples
+baseline light idle 1 120 1.549 423.0 18.22 [('384x216', 120, 7.591)]
+updated light idle 1 120 1.151 389.0 19.21 [('640x360', 99, 3.908), ('853x480', 21, 6.201)]
+updated dark two 1 120 1.580 466.8 23.30 [('640x360', 120, 4.027)]
+baseline dark two 1 120 2.849 478.5 32.24 [('384x216', 120, 11.797)]
+updated dark idle 2 120 1.239 391.7 19.85 [('640x360', 96, 3.967), ('853x480', 24, 6.33)]
+baseline dark idle 2 121 1.605 389.5 18.67 [('384x216', 121, 7.572)]
+baseline light two 2 119 2.286 424.0 20.39 [('384x216', 119, 11.005)]
+updated light two 2 119 1.784 482.6 24.75 [('480x270', 94, 4.016), ('432x243', 25, 3.592)]
+updated light idle 3 120 1.220 388.7 21.83 [('640x360', 108, 3.947), ('853x480', 12, 6.258)]
+baseline light idle 3 121 1.623 388.5 18.75 [('432x243', 47, 7.897), ('384x216', 74, 7.597)]
+baseline dark two 3 120 2.502 479.7 24.56 [('384x216', 120, 11.542)]
+updated dark two 3 121 1.912 455.2 20.15 [('640x360', 1, 5.748), ('480x270', 2, 4.152), ('432x243', 118, 3.828)]
+baseline dark idle 4 120 1.616 386.2 19.64 [('432x243', 48, 7.869), ('384x216', 72, 7.592)]
+updated dark idle 4 120 1.205 390.3 19.29 [('640x360', 109, 3.98), ('853x480', 11, 6.333)]
+updated light two 4 121 1.768 436.5 20.01 [('640x360', 121, 4.636)]
+baseline light two 4 120 2.996 424.7 22.46 [('384x216', 120, 12.472)]
+
+All 18 opening 4K preview PNGs matched with SHA-256
+48716dcff624d69996bb95a973c4e64fd576c4e5b73c5cff7aa6cfc1c0b82b92.
+A light baseline and dark updated trial split at one second and
+exported the recording. The first 12 decoded 4K frames matched,
+with framehash manifest SHA-256
+d75c3ccce540d12a5b7430f6b665ae8710dfc195a4022c5603f2eb6668ee16a0.
+
+GPUI video tests: 423 passed, 24 ignored. Electron video editor
+and export reference tests: 66 passed. The parity dev build passed.
+
+A longer stress run repeated the source five times in a 20-second
+lossless container remux. Two software encoders processed the same
+source while the native editor played. The sample window was 0.4 to
+18.4 s after Play, with 1,080 expected update intervals. Light ran the
+updated build first and dark ran the baseline first.
+
+Build     Theme  Updates  GPUI CPU_s  GPUI MiB  Max gap ms  Max decode ms
+Updated   light     1079      17.417     398.6       26.94           6.052
+Baseline  light      758      22.944     419.5      461.05         449.503
+Baseline  dark       721      22.113     400.0      978.14         965.832
+Updated   dark       523      13.788     401.5     2827.76        2825.646
+
+Both baseline runs kept 384x216. The updated light run used 640x360
+for 57 updates, 480x270 for 644, 432x243 for 212 and 384x216 for 166.
+The updated dark run used those sizes for 22, 10, 73 and 418 updates,
+respectively. In its longest completed decode, a reused raw buffer's
+payload read took 1615.622 ms. Waiting for the first byte took 0.004 ms
+and reading the remainder took 1615.618 ms for that frame. These
+measure preview updates and decoder delivery with generated media.

@@ -443,6 +443,26 @@ mod tests {
     }
 
     #[test]
+    fn decoded_frame_conversion_preserves_all_channels_at_row_boundaries() {
+        let (width, height) = (101, 7);
+        let bgra: Vec<_> = (0..width * height * 4)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let rgba = bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|[b, g, r, a]| [*r, *g, *b, *a])
+            .collect::<Vec<_>>();
+        let frame = DecodedFrame {
+            width,
+            height,
+            bgra: Arc::new(bgra),
+        };
+        assert_eq!(frame.to_pixmap().unwrap().data(), rgba);
+    }
+
+    #[test]
     fn a_mismatched_buffer_is_rejected() {
         let frame = DecodedFrame {
             width: 4,
