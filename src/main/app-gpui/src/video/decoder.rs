@@ -601,6 +601,7 @@ mod backend {
                     })
         });
         let mut process = if restart {
+            drop(decoder.take());
             start(ffmpeg, path, info, start_time, (time - 2.0).max(0.0))?
         } else {
             decoder.take()?
@@ -808,7 +809,25 @@ mod backend {
             let executable = directory.path().join("ffmpeg");
             std::fs::write(
                 &executable,
-                "#!/bin/sh\ncase \"$*\" in\n  *'-i'*'showinfo=checksum=0'*'-threads:v 1'*'rawvideo'*) printf x >> \"$0.count\"; printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\\n' >&2; printf '\\003\\002\\001\\377\\006\\005\\004\\377'; printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\\n' >&2; printf '\\011\\010\\007\\377\\014\\013\\012\\377' ;;\n  *) printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\\n' >&2; exit 1 ;;\nesac\n",
+                r#"#!/bin/sh
+case "$*" in
+  *'-i'*'showinfo=checksum=0'*'-threads:v 1'*'rawvideo'*)
+    if [ -f "$0.previous" ]; then
+      read -r previous < "$0.previous"
+      if kill -0 "$previous" 2>/dev/null; then exit 1; fi
+    fi
+    printf x >> "$0.count"
+    printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\n' >&2
+    printf '\003\002\001\377\006\005\004\377'
+    printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\n' >&2
+    printf '\011\010\007\377\014\013\012\377'
+    ;;
+  *)
+    printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\n' >&2
+    exit 1
+    ;;
+esac
+"#,
             )
             .expect("fake FFmpeg");
             let mut permissions = std::fs::metadata(&executable)
@@ -953,6 +972,50 @@ mod backend {
             assert_eq!(parse_rotation("rotation of -90.00 degrees"), Some(-90.0));
             assert!(rotation_swaps_dimensions(-90.0));
             assert!(!rotation_swaps_dimensions(180.0));
+        }
+
+        #[test]
+        fn a_seek_retires_the_old_decoder_before_launching_its_replacement() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            let source = directory.path().join("source.mp4");
+            let media = describe(&ffmpeg, &source).expect("video metadata");
+            let child = ProcessCommand::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("stand-in for the active decoder");
+            let (_, frames) = mpsc::channel();
+            let mut decoder = Some(DecoderProcess {
+                child,
+                frames,
+                current: Some(TimedFrame {
+                    timestamp: 10.0,
+                    frame: DecodedFrame {
+                        width: 2,
+                        height: 1,
+                        bgra: vec![9, 8, 7, 255, 12, 11, 10, 255].into(),
+                    },
+                }),
+                next: None,
+            });
+            let old_pid = decoder.as_ref().unwrap().child.id();
+            std::fs::write(
+                directory.path().join("ffmpeg.previous"),
+                old_pid.to_string(),
+            )
+            .expect("decoder PID for the replacement to check");
+
+            let frame = read_frame(
+                &ffmpeg,
+                &source,
+                0.25,
+                media.video,
+                media.start_time,
+                &mut decoder,
+            )
+            .expect("replacement decoder must run after the old process exits");
+
+            assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
         }
 
         #[test]

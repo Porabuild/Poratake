@@ -7818,6 +7818,26 @@ stalls remains open. These counts measure preview updates delivered to
 the editor, and do not measure display presentation.
 [Per-run measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 Unix video decoder replacement during seeks
+
+A large or backward seek can restart the GPUI FFmpeg decoder. The
+old process used to stay alive until the replacement returned a
+frame. GPUI now closes and reaps it before launching the next
+process. The regression leaves a stand-in process running and
+has the replacement verify the original PID has exited. It
+also checks the replacement's exact BGRA output. All nine decoder
+tests passed, including the development FFmpeg cases. The editor
+suite passed 164 tests with five marked ignored.
+
+In an isolated follow-up, reading 180 4K60 frames from FFmpeg
+through a raw BGRA pipe took 3.55 to 21.56 seconds during periods
+of host contention. This probe excludes GPUI's compositor and
+display. It shows that raw frame delivery can fall below real time
+before the editor receives frames. It does not identify the cause
+of the intermittent playback stalls or establish that the seek fix
+changes continuous playback.
+[Raw pipe measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

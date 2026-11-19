@@ -1016,3 +1016,25 @@ about 25 ms. The revised build's steady interval is a single sample
 because only two updates arrived in that window. These runs establish
 lower per-frame allocation and a higher interactive resolution in
 the three full-rate pairs. The stall persisted and is unclassified.
+
+2026-11-19 macOS 4K60 raw pipe under host contention
+
+A standalone Rust probe read 180 frames from a generated 3840×2160
+H.264 clip at 60 fps. FFmpeg wrote raw BGRA with one output thread.
+The reader used the app's read_exact and fresh frame buffer, or a
+bounded read_to_end alternative. The same sampled-byte digest was
+observed in all runs. This probe excludes the editor, GPU, showinfo
+timestamp channel and display presentation.
+
+Pair  App-style read_exact (ms)  Bounded read_to_end (ms)
+  1                     4418.99                   6308.44
+  2                    21561.24                  15559.91
+  3                     5726.70                   2870.57
+  4                     3798.69                   4104.82
+  5                     3552.60                   2218.19
+
+Order alternated. The read_exact samples spanned about 8–51
+frames per second. The reader strategy was kept as the timings
+varied widely, and the probe does not isolate the stall cause.
+The decoder seek test separately confirms the previous subprocess
+is reaped before the replacement opens.
