@@ -561,6 +561,76 @@ struct ScrollCapturePreviewTest {
         }
     }
 
+    @MainActor
+    static func verifyTooltipOwnerMove() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 600 else { return }
+        let work = screen.visibleFrame
+        let initial = NSRect(x: work.midX - 160, y: work.midY, width: 100, height: 48)
+        let owner = NSWindow(contentRect: initial, styleMask: [.borderless], backing: .buffered, defer: false)
+        owner.animationBehavior = .none
+        owner.hasShadow = false
+        owner.ignoresMouseEvents = true
+        owner.orderFrontRegardless()
+        defer { owner.orderOut(nil) }
+        let ownerID = CGWindowID(owner.windowNumber)
+        await waitUntil("The tooltip owner was not visible") {
+            let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, ownerID) as? [[String: Any]]
+            return rows?.first?[kCGWindowIsOnscreen as String] as? Bool == true
+        }
+        let anchor = TooltipOwner(windowID: ownerID, fallbackFrame: initial)
+
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var pointer = NSPoint(x: initial.midX, y: initial.midY)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: ownerID, text: "Close preview"))
+        let pending = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 1, owner: ownerID, text: "Close preview", dark: false,
+                at: pointer, ownerFrame: anchor.frame
+            )
+        }
+        await waitUntil("The tooltip did not reach the owner-move barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        let panel = tooltip.testPanel!
+        let number = CGWindowID(panel.windowNumber)
+        precondition(panel.alphaValue == 0)
+        owner.setFrameOrigin(NSPoint(x: initial.minX + 140, y: initial.minY + 32))
+        let moved = owner.frame
+        pointer = NSPoint(x: moved.midX, y: moved.midY)
+        precondition(!initial.contains(pointer) && moved.contains(pointer))
+        await waitUntil("WindowServer did not report the moved owner bounds") { anchor.frame == moved }
+        registry.finishScreenshot()
+        let visible = try await pending.value
+        print("tooltip owner move: visible=\(visible)")
+        fflush(stdout)
+        precondition(visible && tooltip.testPanel === panel, "The tooltip must follow the moved owner")
+        precondition(registry.currentWindowIDs() == [number])
+        precondition(panel.frame.minX == pointer.x + 12)
+        precondition(panel.frame.maxY == moved.minY - 4)
+        precondition(!tooltip.accept(sequence: 2, owner: ownerID, text: nil))
+        await waitUntil("The moved owner tooltip was not unregistered") { registry.currentWindowIDs().isEmpty }
+
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 3, owner: ownerID, text: "Close preview"))
+        let pendingHide = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 3, owner: ownerID, text: "Close preview", dark: true,
+                at: pointer, ownerFrame: anchor.frame
+            )
+        }
+        await waitUntil("The tooltip did not reach the hidden-owner barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        owner.orderOut(nil)
+        await waitUntil("WindowServer still reported the hidden owner") { anchor.frame.isNull }
+        registry.finishScreenshot()
+        let visibleAfterHide = try await pendingHide.value
+        precondition(!visibleAfterHide && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
+        print("tooltip owner hide: no reveal after screenshot barrier")
+    }
+
     static func verifyWideFixedHeaderSeam() {
         let wideWidth = 1280
         let wideViewport = 160
@@ -668,6 +738,7 @@ struct ScrollCapturePreviewTest {
                 } else if tooltipPointerExit {
                     try await verifyTooltipPointerExit()
                     try await verifyTooltipPointerMove()
+                    try await verifyTooltipOwnerMove()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                 } else {
@@ -1126,6 +1197,7 @@ struct ScrollCapturePreviewTest {
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
         try await verifyTooltipPointerExit()
         try await verifyTooltipPointerMove()
+        try await verifyTooltipOwnerMove()
         try await verifyTooltipControlReplacement()
         try await verifyTallTooltipPlacement()
         _ = NSApplication.shared

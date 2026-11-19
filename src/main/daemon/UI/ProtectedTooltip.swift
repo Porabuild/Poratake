@@ -3,6 +3,38 @@ import Foundation
 import QuartzCore
 
 @MainActor
+struct TooltipOwner {
+    private let windowID: CGWindowID
+    private let fallbackFrame: NSRect
+    private let processID: Int?
+
+    init(windowID: CGWindowID, fallbackFrame: NSRect) {
+        self.windowID = windowID
+        self.fallbackFrame = fallbackFrame
+        self.processID = Self.visibleWindow(windowID)?[kCGWindowOwnerPID as String] as? Int
+    }
+
+    var frame: NSRect {
+        guard let processID else { return fallbackFrame }
+        guard let window = Self.visibleWindow(windowID),
+              window[kCGWindowOwnerPID as String] as? Int == processID,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              let top = NSScreen.screens.first?.frame.maxY else { return .null }
+        return NSRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
+    }
+
+    private static func visibleWindow(_ id: CGWindowID) -> [String: Any]? {
+        let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]]
+        guard let window = windows?.first,
+              window[kCGWindowNumber as String] as? UInt32 == id,
+              window[kCGWindowIsOnscreen as String] as? Bool == true,
+              (window[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { return nil }
+        return window
+    }
+}
+
+@MainActor
 final class ProtectedTooltip {
     private let registry: RecordingCaptureWindowRegistry
     private var sequence: UInt64 = 0
@@ -36,13 +68,14 @@ final class ProtectedTooltip {
         text: String,
         dark: Bool,
         at pointerLocation: @autoclosure () -> NSPoint,
-        ownerFrame: NSRect? = nil
+        ownerFrame: @autoclosure () -> NSRect? = nil
     ) async throws -> Bool {
         guard isCurrent(sequence, owner: owner), !text.isEmpty else { return false }
         await registry.waitForCaptureStartIfNeeded()
         guard isCurrent(sequence, owner: owner) else { return false }
         let point = pointerLocation()
-        guard ownerFrame?.contains(point) != false else { return false }
+        let initialFrame = ownerFrame()
+        guard initialFrame?.contains(point) != false else { return false }
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main else {
             return false
         }
@@ -50,7 +83,7 @@ final class ProtectedTooltip {
             text: text,
             dark: dark,
             point: point,
-            ownerFrame: ownerFrame,
+            ownerFrame: initialFrame,
             screen: screen
         )
         self.panel = panel
@@ -70,17 +103,20 @@ final class ProtectedTooltip {
             throw error
         }
         let revealPoint = pointerLocation()
+        let revealFrame = ownerFrame()
+        let onInitialScreen = screen.frame.contains(revealPoint)
         guard isCurrent(sequence, owner: owner), self.panel === panel,
-              ownerFrame?.contains(revealPoint) != false else {
+              revealFrame?.contains(revealPoint) != false,
+              revealFrame == initialFrame || onInitialScreen else {
             if self.panel === panel {
                 self.panel = nil
                 await retire(panel)
             }
             return false
         }
-        if revealPoint != point && screen.frame.contains(revealPoint) {
+        if onInitialScreen && (revealPoint != point || revealFrame != initialFrame) {
             panel.setFrameOrigin(panelOrigin(
-                size: panel.frame.size, point: revealPoint, ownerFrame: ownerFrame, screen: screen
+                size: panel.frame.size, point: revealPoint, ownerFrame: revealFrame, screen: screen
             ))
         }
         panel.alphaValue = 1

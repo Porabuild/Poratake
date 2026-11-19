@@ -52,13 +52,14 @@ class RecordingControlModule: Module {
                     return
                 }
                 do {
+                    let anchor = ownerFrame.map { TooltipOwner(windowID: owner, fallbackFrame: $0) }
                     let visible = try await self.tooltip.show(
                         sequence: sequence,
                         owner: owner,
                         text: text,
                         dark: dark,
                         at: NSEvent.mouseLocation,
-                        ownerFrame: ownerFrame
+                        ownerFrame: anchor?.frame
                     )
                     self.respond(id: requestId, result: ["visible": visible])
                 } catch {

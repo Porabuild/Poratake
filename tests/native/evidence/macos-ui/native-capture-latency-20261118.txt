@@ -2999,3 +2999,26 @@ tooltip pointer move: horizontal change 18.0 points
 The complete native Swift suites passed on arm64 and Rosetta
 x86_64, as did full daemon typechecks for both architectures and
 56 Electron scroll tests.
+
+2026-11-19 macOS tooltip positioning while the owner moves
+
+The Swift fixture moved a real AppKit owner 140 points horizontally
+and 32 vertically while a screenshot barrier held the registered
+tooltip transparent. The app-local pointer moved inside the new
+owner bounds. WindowServer reported the updated frame before the
+fixture released the barrier. The tooltip kept its original panel
+and exclusion ID, appeared at pointer x plus 12 and kept a four-point
+gap below the new owner. Dismissal cleared the ID. A second trial
+ordered the owner out while a screenshot held the tooltip and
+confirmed that the tooltip stayed hidden and cleared its registration.
+
+Baseline at d731e0e0
+tooltip owner move: visible=false
+
+Current
+tooltip owner move: visible=true
+tooltip owner hide: no reveal after screenshot barrier
+
+The focused fixture, complete arm64 and Rosetta x86_64 fixtures,
+full daemon typechecks on both architectures and 56 Electron scroll
+tests passed. The fixture used a single display and app-local points.

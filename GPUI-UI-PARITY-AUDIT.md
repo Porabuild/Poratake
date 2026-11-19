@@ -9618,6 +9618,26 @@ Electron scroll tests passed. Verification used
 app-local pointer coordinates.
 [Pointer and capture-barrier evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltip anchors while owners move
+
+WindowServer bounds now refresh before the protected tooltip is
+placed and again before it appears. If the owner is hidden during
+the capture wait, the tooltip retires and releases its exclusion ID.
+If changed bounds move the anchor to a different display during that
+wait, the pending tooltip is suppressed.
+
+A generated AppKit owner moved 140 points horizontally and 32
+points vertically while the screenshot barrier held. The previous
+tooltip failed to appear at a pointer position over the moved owner.
+The updated panel appeared with its original exclusion ID and a
+four-point gap below the moved owner. A second trial hid the owner
+while the tooltip waited and verified dismissal.
+
+Both native Swift suites and both full daemon typechecks passed.
+All 56 targeted Electron scroll tests passed. Verification used
+app-local pointer coordinates on one display.
+[Native tooltip owner evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
