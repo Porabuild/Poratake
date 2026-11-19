@@ -11112,6 +11112,22 @@ devices. All 21 targeted GPUI and 82 Electron reference and
 daemon contract tests passed.
 [Device menu evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS recording device refresh without a menu rebuild
+
+An identical device response now leaves the recording menu instance
+in place. Microphone and camera replies compare the requested list
+and its system default. The connected iPhone and iPad list also
+skips unchanged replies. This avoids resetting the menu's keyboard
+state when it already has the requested entries.
+
+The regression failed on the old code for an identical list. It
+now confirms that a default-only change still refreshes the menu
+and that stale replies are ignored. The 2× macOS Metal fixture
+rendered 18 light and 18 dark scenes. All corresponding PNGs
+matched byte for byte. All 22 targeted GPUI tests and 82 Electron
+reference and daemon contract tests passed with fixture devices.
+[Recording-device refresh evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

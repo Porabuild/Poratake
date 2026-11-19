@@ -2131,7 +2131,7 @@ impl RecordingControl {
                 .spawn(async move { crate::system::devices::list_ios(&daemon) })
                 .await;
             let _ = entity.update_in(cx, |this, window, cx| {
-                if this.device_request != request {
+                if this.device_request != request || this.ios_devices == listed {
                     return;
                 }
                 this.ios_devices = listed;
@@ -2846,16 +2846,25 @@ fn merge_device_refresh(
     if current_request != request {
         return false;
     }
-    match kind {
-        crate::system::devices::DeviceKind::Microphone => {
-            devices.microphones = listed.microphones;
-            devices.default_microphone_id = listed.default_microphone_id;
-        }
-        crate::system::devices::DeviceKind::Camera => {
-            devices.cameras = listed.cameras;
-            devices.default_camera_id = listed.default_camera_id;
-        }
+    let (current_devices, current_default, reported_devices, reported_default) = match kind {
+        crate::system::devices::DeviceKind::Microphone => (
+            &mut devices.microphones,
+            &mut devices.default_microphone_id,
+            listed.microphones,
+            listed.default_microphone_id,
+        ),
+        crate::system::devices::DeviceKind::Camera => (
+            &mut devices.cameras,
+            &mut devices.default_camera_id,
+            listed.cameras,
+            listed.default_camera_id,
+        ),
+    };
+    if *current_devices == reported_devices && *current_default == reported_default {
+        return false;
     }
+    *current_devices = reported_devices;
+    *current_default = reported_default;
     true
 }
 
@@ -4541,6 +4550,48 @@ mod tests {
         assert_eq!(devices.cameras[0].id, "camera-1");
         assert_eq!(devices.default_microphone_id.as_deref(), Some("mic-1"));
         assert_eq!(devices.default_camera_id.as_deref(), Some("camera-1"));
+    }
+
+    #[test]
+    fn unchanged_device_refresh_does_not_reopen_the_menu() {
+        use crate::system::devices::{DeviceKind, MediaDevice, MediaDeviceLists};
+
+        for kind in [DeviceKind::Microphone, DeviceKind::Camera] {
+            let mut devices = MediaDeviceLists {
+                microphones: vec![MediaDevice {
+                    id: "mic-1".into(),
+                    label: "Built-in microphone".into(),
+                }],
+                cameras: vec![MediaDevice {
+                    id: "camera-1".into(),
+                    label: "Built-in camera".into(),
+                }],
+                default_microphone_id: Some("mic-1".into()),
+                default_camera_id: Some("camera-1".into()),
+            };
+            let mut reply = devices.clone();
+            match kind {
+                DeviceKind::Microphone => {
+                    reply.cameras.clear();
+                    reply.default_camera_id = None;
+                }
+                DeviceKind::Camera => {
+                    reply.microphones.clear();
+                    reply.default_microphone_id = None;
+                }
+            }
+            let before = devices.clone();
+            assert!(
+                !merge_device_refresh(&mut devices, 3, 3, kind, reply.clone()),
+                "an identical list must not replace the open menu"
+            );
+            assert_eq!(devices, before);
+            match kind {
+                DeviceKind::Microphone => reply.default_microphone_id = None,
+                DeviceKind::Camera => reply.default_camera_id = None,
+            }
+            assert!(merge_device_refresh(&mut devices, 3, 3, kind, reply));
+        }
     }
 
     #[test]

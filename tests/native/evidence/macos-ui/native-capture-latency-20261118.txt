@@ -5070,3 +5070,21 @@ came from the fixture daemon.
 
 The GPUI recording-control tests passed all 21 cases. Electron
 recording-control and daemon contract tests passed all 82 cases.
+
+2026-11-20 macOS recording device refresh without a menu rebuild
+===============================================================
+
+The regression supplied an identical list and system default for
+an already-known device kind. The old merge reported a change
+and the caller reopened the menu. The updated merge reports no
+change. It still accepts a default-only change and ignores stale
+responses. The iOS device refresh also skips identical lists.
+
+The developer app's macOS Metal recording-control fixture rendered
+18 scenes per theme at 2x, including configured and active device
+menus. All 36 corresponding PNGs matched across the baseline and
+updated builds. The regressions used generated device lists.
+No physical device permission was involved.
+
+GPUI recording-control tests: 22 passed. Electron recording-control
+and daemon contract tests: 82 passed.
