@@ -9986,6 +9986,24 @@ and Rosetta x86_64, along with 27 Electron and daemon contract tests.
 The fixture did not move the physical pointer.
 [Countdown cursor evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS countdown pointer state on restart
+
+A replacement countdown could inherit its predecessor's hover
+caption and cancel when the predecessor's mouse press was released.
+Each presentation now clears the old press and recalculates hover
+from the pointer position. An inside release cancels only after a
+press on the current countdown.
+
+The AppKit regression pressed the visible timer, replaced it, and
+sent the old mouse-up through NSWindow. The old code showed Cancel
+and emitted cancellation. The revised fixture moved the panel to the
+other side of the display. It showed the new countdown and stayed
+visible after the old release. The CI lifecycle workflow now runs
+this regression. The native lifecycle fixtures passed on arm64 and
+Rosetta x86_64, along with 27 Electron and daemon contract tests.
+The fixture used app-local events.
+[Countdown restart evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

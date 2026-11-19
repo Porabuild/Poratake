@@ -109,7 +109,7 @@ class TimerButton: NSView {
     func applyTheme() {
         let darkShade = accentColor.blended(withFraction: 0.12, of: .black) ?? accentColor
         
-        if isPressed {
+        if isPressed && isHovered {
             let pressedAccent = accentColor.blended(withFraction: 0.1, of: .black) ?? accentColor
             let pressedDark = accentColor.blended(withFraction: 0.2, of: .black) ?? accentColor
             gradientLayer.colors = [pressedAccent.cgColor, pressedDark.cgColor, pressedAccent.cgColor]
@@ -131,6 +131,15 @@ class TimerButton: NSView {
         applyTheme()
     }
     
+    func resetInteraction() {
+        isPressed = false
+        isHovered = window.map {
+            bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil))
+        } ?? false
+        applyTheme()
+        updateDisplay()
+    }
+
     private func updateDisplay() {
         if isHovered {
             label.stringValue = "Cancel"
@@ -165,13 +174,13 @@ class TimerButton: NSView {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         isHovered = true
+        applyTheme()
         updateDisplay()
     }
     
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         isHovered = false
-        isPressed = false
         applyTheme()
         updateDisplay()
     }
@@ -182,10 +191,13 @@ class TimerButton: NSView {
 
     override func mouseDown(with event: NSEvent) {
         isPressed = true
+        isHovered = true
         applyTheme()
+        updateDisplay()
     }
     
     override func mouseUp(with event: NSEvent) {
+        guard isPressed else { return }
         isPressed = false
         applyTheme()
         let point = convert(event.locationInWindow, from: nil)

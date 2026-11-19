@@ -38,6 +38,7 @@ final class Fixture {
 #if TIMER_CONTROL_TEST
     var hiddenCase: String?
     var visibleAccessibility = false
+    var restartPress = false
     var resumedAt: ContinuousClock.Instant?
 
     func startHiddenCase(_ name: String) {
@@ -168,6 +169,10 @@ final class Fixture {
             checkVisibleAccessibility(button, in: panel)
             return
         }
+        if restartPress {
+            checkRestartPress(button, in: panel, restarted: index == 1)
+            return
+        }
 #endif
         if id == "cleanup" {
             module.handle(method: "hide", params: nil, requestId: "hidden")
@@ -215,6 +220,43 @@ final class Fixture {
     }
 
 #if TIMER_CONTROL_TEST
+    func checkRestartPress(_ button: TimerButton, in panel: NSWindow, restarted: Bool) {
+        let location = NSPoint(x: 49, y: 26)
+        guard let event = NSEvent.mouseEvent(with: restarted ? .leftMouseUp : .leftMouseDown,
+            location: location, modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: restarted ? 2 : 1, clickCount: 1, pressure: restarted ? 0 : 1
+        ) else {
+            fail("could not construct the countdown press")
+            return
+        }
+        if !restarted {
+            guard let entered = NSEvent.enterExitEvent(
+                with: .mouseEntered, location: location, modifierFlags: [], timestamp: 0,
+                windowNumber: panel.windowNumber, context: nil, eventNumber: 0,
+                trackingNumber: 0, userData: nil
+            ) else {
+                fail("could not construct the countdown hover")
+                return
+            }
+            button.mouseEntered(with: entered)
+            panel.sendEvent(event)
+            show(1, duration: 30)
+            return
+        }
+        let label = button.subviews.compactMap { $0 as? NSStackView }.first?
+            .arrangedSubviews.compactMap { $0 as? NSTextField }.first
+        let caption = label?.stringValue
+        print("restart caption: \(caption ?? "missing")")
+        fflush(stdout)
+        panel.sendEvent(event)
+        guard panel.isVisible, button.remainingSeconds == 30, caption == "30" else {
+            fail("the previous countdown's pointer state survived the restart")
+            return
+        }
+        print("restart: new countdown stayed visible after the old mouse-up")
+        module.handle(method: "hide", params: nil, requestId: "hidden")
+    }
+
     func checkVisibleAccessibility(_ button: TimerButton, in panel: NSWindow) {
         let frame = panel.frame
         let center = NSPoint(x: frame.midX, y: frame.midY)
@@ -248,6 +290,10 @@ final class Fixture {
 
     func event(_ name: String) {
 #if TIMER_CONTROL_TEST
+        if restartPress {
+            fail("the previous press sent \(name) to the restarted countdown")
+            return
+        }
         if visibleAccessibility {
             guard name == "cancel", module.testTimerButton == nil else {
                 fail("visible accessibility press did not cancel the countdown")
@@ -313,6 +359,18 @@ struct TimerControlLifecycleTest {
         fixture.positions = [(numbers[0], numbers[1]), (numbers[2], numbers[3])]
         DispatchQueue.main.async {
 #if TIMER_CONTROL_TEST
+            if CommandLine.arguments.last == "--restart-press" {
+                let work = NSScreen.screens.first!.visibleFrame
+                let pointer = NSEvent.mouseLocation
+                let left = Int(work.minX)
+                let right = Int(work.maxX - 140)
+                fixture.positions = pointer.x < work.midX
+                    ? [(left, numbers[1]), (right, numbers[3])]
+                    : [(right, numbers[1]), (left, numbers[3])]
+                fixture.restartPress = true
+                fixture.show(0, duration: 30)
+                return
+            }
             if CommandLine.arguments.last == "--visible-accessibility" {
                 fixture.visibleAccessibility = true
                 fixture.show(0, duration: 2)

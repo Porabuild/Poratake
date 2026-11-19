@@ -121,6 +121,7 @@ class TimerControlModule: Module {
         guard !testKeepPanelHidden else { return }
 #endif
         panel?.makeKeyAndOrderFront(nil)
+        timerButton?.resetInteraction()
         if activate { NSApp.activate(ignoringOtherApps: true) }
     }
     

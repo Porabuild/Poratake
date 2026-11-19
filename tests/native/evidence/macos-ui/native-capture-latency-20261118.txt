@@ -3501,3 +3501,23 @@ hover dismissal: cursor stack restored without a mouse-exit event
 The mouse-enter and button events were app-local. The fixture verified
 cancellation without moving the desktop pointer. The cursor rectangle
 is scoped to the live countdown view.
+
+2026-11-19 macOS restarted countdown after an active click at d46e65be
+
+A native fixture sent a mouse-enter event and a down event to the
+visible AppKit timer. It then sent another show request before
+releasing the previous press.
+
+Baseline
+restart caption: Cancel
+fixture failure: the previous press sent cancel to the restarted countdown
+
+Revised
+restart caption: 30
+restart: new countdown stayed visible after the old mouse-up
+
+The revised fixture also moved the reused panel to the opposite
+side of the display. The default lifecycle check still cancelled
+on a fresh click and verified completion and explicit hide. Both
+accessibility checks remained available. No physical pointer input
+was used.
