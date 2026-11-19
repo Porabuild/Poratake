@@ -2681,3 +2681,47 @@ before 12.56, 11.70, 11.64, 12.16, 12.50, 12.40, 12.60, 13.37
 after 13.15, 13.22, 13.51, 13.34, 13.17, 13.92, 13.16, 13.67
 before 24 samples, median 12.55 ms, range 11.64–13.37 ms
 after 24 samples, median 13.68 ms, range 13.15–15.64 ms
+
+2026-11-19 macOS live wide fixed-header scroll seam
+
+The AppKit fixture rendered the generated wide-page regression in
+a 640x80-point sRGB window on the built-in 2x display. The test
+redrew stage zero after opening. It advanced the body 86 physical
+rows and resized the same window to show the full reference. The
+broker verified the generated process and current bounds and sent
+only that window's ID to the already-granted screen-only daemon.
+It accepted consecutive identical PNGs for each settled stage.
+No pointer input or privacy settings changed. The listed capture
+durations include the native RPC and PNG write.
+
+Screen Recording preflight already granted
+capture dimensions 1280 160
+capture dimensions 1280 160
+target 16790, stable frame 0 captured in 35.5 ms
+capture dimensions 1280 160
+capture dimensions 1280 160
+target 16790, stable frame 86 captured in 35.5 ms
+capture dimensions 1280 246
+capture dimensions 1280 246
+target 16790, stable full reference captured in 46.1 ms
+
+The same two captured PNGs ran through the production matcher
+and preview/save code compiled from 1894616a and edf4e9cf.
+
+Prior
+result [120] 2 200 1280 200
+profiles Optional(kCGColorSpaceDisplayP3) Optional(kCGColorSpaceDisplayP3)
+
+Current
+result [74] 2 246 1280 246
+profiles Optional(kCGColorSpaceDisplayP3) Optional(kCGColorSpaceDisplayP3)
+channel max Optional(0) above two 0
+channel max Optional(0) above two 0
+
+The two zero-difference lines compare preview and saved PNG to
+the live reference after uniform sRGB conversion. The raw check
+also compared the fixed header independently in the scrolled frame.
+
+Both frames match their expected fixed header and body rows; 1,259,520 raw RGBA bytes match.
+
+The current arm64 Swift fixture completed successfully.

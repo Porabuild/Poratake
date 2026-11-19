@@ -9419,6 +9419,28 @@ scroll tests passed. The matcher-only median for an ordinary
 Identical full-frame histories remain ambiguous.
 [Native fixture and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS live wide fixed-header scroll seam
+
+A generated AppKit window displayed a fixed header and repeated
+center rows with one changed pixel in the repeat. The preflight-
+granted screen-only fixture captured that window by ID at 2×.
+Two 1280×160 frames showed the page at offsets zero and 86.
+The same window rendered and supplied a full 1280×246 reference.
+
+With the captured frames, the previous matcher chose a 120-row
+overlap and saved a 200-row image. The current matcher chose 74
+and saved all 246 rows. The preview and saved PNG matched the
+live reference after sRGB conversion, with zero channel difference.
+The saved PNG retained Display P3 and all 1,259,520 decoded
+RGBA bytes matched the live reference. The arm64 Swift fixture
+suite also passed.
+
+The fixture advanced the target through app-local commands and
+fed the captured frames into the native stitch and preview code.
+Physical scrolling and the capture panel lifecycle were outside
+this run.
+[Live capture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
