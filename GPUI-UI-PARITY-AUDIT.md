@@ -10125,6 +10125,24 @@ and daemon typechecks passed on arm64 and Rosetta x86_64, along
 with 62 Electron and daemon contract tests.
 [Scroll retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS retry through the real scroll matcher
+
+The native retry regression now uses the production image matcher
+with a generated 2× capture. It rejects a non-overlapping frame,
+publishes the verified two-frame preview, then recovers from the
+accepted image. The saved 640×352 PNG matches the expected page
+in every pixel.
+
+A separate replay used three previously captured Retina images
+of the generated fixed-header page. After a rejected frame, the
+retry joined the last captured image to the verified prefix. The
+920×1824 PNG matched the expected crop of the three native images
+in every pixel. These cases verify recovery when the source data
+contains an unambiguous overlap. They use injected frames and
+app-local scheduling. The native suite passed on arm64 and Rosetta
+x86_64, along with 62 Electron and daemon contract tests.
+[Real-matcher retry evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

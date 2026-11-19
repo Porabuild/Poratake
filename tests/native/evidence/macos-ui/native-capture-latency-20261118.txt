@@ -3655,3 +3655,26 @@ A failure was reported once and the rejected frame contributed no
 pixels. The fixture intercepted scroll scheduling and supplied
 alignment results to exercise lifecycle ordering. It posted no
 desktop input.
+
+2026-11-19 macOS real matcher recovery at 1d51e7fe
+
+The native regression used 640x160 images for a 320x80-point capture.
+The production matcher accepted two overlapping images. A third
+used row offsets in a different color range, so it failed alignment.
+The second preview render was held during that failure and published
+after release. The retry matched the last accepted image and saved
+the expected 640x352 three-frame PNG exactly.
+
+A temporary replay repeated the same lifecycle with previously
+captured 920x760 images of the generated fixed-header AppKit page.
+The original fixture 460x380-point viewport was captured at 2x at
+scroll offsets 0, 266 and 532 points. The replay injected a
+synthetic non-overlapping image before the retry. The saved
+920x1824 PNG matched the source composite, with 228 overlapping
+rows trimmed at each join.
+
+scroll rejected seam: verified previews=[1, 2]
+captured fixed-header retry: 920x1824, all replay pixels match
+
+Both used production alignment and no wheel input. The Retina replay
+did not capture fresh screenshots.

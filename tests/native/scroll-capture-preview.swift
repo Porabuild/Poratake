@@ -2346,8 +2346,8 @@ struct ScrollCapturePreviewTest {
         print("scroll restart: three post-scroll duplicates stop without changing saved pixels")
 
         let retryModule = ScrollCaptureModule()
-        retryModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
-        let rejected = frame(start: footerStep * 5, width: footerWidth, height: footerHeight)
+        retryModule.testPrepareAutoScrollPreview(width: footerWidth / 2, height: footerHeight / 2, step: footerStep / 2)
+        let rejected = frame(start: 60_000, width: footerWidth, height: footerHeight)
         let recovered = frame(start: footerStep * 2, width: footerWidth, height: footerHeight)
         let encoderEntered = DispatchSemaphore(value: 0)
         let releaseEncoder = DispatchSemaphore(value: 0)
@@ -2355,11 +2355,6 @@ struct ScrollCapturePreviewTest {
         var retryEnds: [[String: Any]] = []
         var retryCaptures: [(CGImage?) -> Void] = []
         var retrySteps = 0
-        retryModule.testSetPreviewAlignment { top, bottom, _, _ in
-            if bottom === rejected { return nil }
-            precondition((top === frames[0] && bottom === frames[1]) || (top === frames[1] && bottom === recovered))
-            return footerHeight - footerStep
-        }
         retryModule.testSetPreviewEncoder { image in
             if image.height == 96 {
                 encoderEntered.signal()
