@@ -63,7 +63,7 @@ def fixture_daemon():
 
 
 @contextmanager
-def held_history(path, contents="[]"):
+def held_read(path, contents=b"[]", *, response=None):
     deadline = monotonic() + 12
     while True:
         try:
@@ -77,10 +77,12 @@ def held_history(path, contents="[]"):
         yield
     finally:
         replacement = path.with_suffix(".ready")
-        replacement.write_text(contents)
-        replacement.replace(path)
-        os.write(writer, contents.encode())
-        os.close(writer)
+        try:
+            replacement.write_bytes(contents)
+            replacement.replace(path)
+            os.write(writer, contents if response is None else response)
+        finally:
+            os.close(writer)
 
 
 def drain(stream, replies):
@@ -89,7 +91,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable, recording=False, opening=None, mutation=None):
+def verify(executable, recording=False, opening=None, mutation=None, copy=False):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -170,6 +172,29 @@ def verify(executable, recording=False, opening=None, mutation=None):
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if copy:
+                capture_area()
+                eventually("preview ready")
+                source, = captured_files(1)
+                original = source.read_bytes()
+                source.unlink()
+                os.mkfifo(source)
+                send("preview copy")
+                with held_read(source, original, response=b"invalid PNG"):
+                    start = monotonic()
+                    send("status")
+                    assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
+                    elapsed_ms = (monotonic() - start) * 1000
+                    assert command("preview copying")
+                    assert command("preview ready")
+                eventually("preview copying", expected=False)
+                assert command("preview ready")
+                assert source.read_bytes() == original
+                print(f"app status replied in {elapsed_ms:.1f} ms while the source read was held")
+                print("failed copy retained the capture and preview")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
             if opening or mutation:
                 capture_area()
                 eventually("preview ready")
@@ -187,7 +212,7 @@ def verify(executable, recording=False, opening=None, mutation=None):
                     assert command("preview editor")
                 else:
                     send("open history")
-                with held_history(history_path, contents):
+                with held_read(history_path, contents.encode()):
                     start = monotonic()
                     send("status")
                     assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
@@ -222,7 +247,7 @@ def verify(executable, recording=False, opening=None, mutation=None):
                         captures.chmod(0o500)
                         try:
                             send(mutation)
-                            with held_history(history_path, contents):
+                            with held_read(history_path, contents.encode()):
                                 assert command("preview deleting")
                             eventually("preview deleting", expected=False)
                             assert command("preview ready")
@@ -254,7 +279,7 @@ def verify(executable, recording=False, opening=None, mutation=None):
                 command("stop")
             else:
                 capture_area()
-            with held_history(history_path):
+            with held_read(history_path):
                 start = monotonic()
                 send(preview)
                 assert wait(f"NATIVE_SMOKE {preview} ", timeout=4).endswith(" false")
@@ -303,11 +328,13 @@ if __name__ == "__main__":
         ["--history-delete"],
         ["--history-clear"],
         ["--preview-delete"],
+        ["--preview-copy"],
     ):
         root = Path(__file__).resolve().parents[2]
         verify(
             root / "src/main/target/debug/poratake-gpui",
             recording=sys.argv[1:] == ["--recording"],
+            copy=sys.argv[1:] == ["--preview-copy"],
             mutation=next(
                 (mode for mode in ("delete", "clear") if sys.argv[1:] == [f"--history-{mode}"]),
                 "preview delete" if sys.argv[1:] == ["--preview-delete"] else None,
@@ -318,4 +345,4 @@ if __name__ == "__main__":
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear | --preview-delete]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

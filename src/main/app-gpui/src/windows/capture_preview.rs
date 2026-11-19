@@ -207,6 +207,7 @@ struct CapturePreview {
     hovered: bool,
     busy: bool,
     deleting: bool,
+    copying: bool,
     completed: Option<Instant>,
     export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
@@ -218,7 +219,7 @@ struct CapturePreview {
 
 impl CapturePreview {
     fn is_busy(&self) -> bool {
-        self.busy || self.deleting
+        self.busy || self.deleting || self.copying
     }
 }
 
@@ -350,7 +351,11 @@ impl CapturePreviewWindow {
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
-    pub(crate) fn delete_latest_for_parity(handle: gpui::WindowHandle<Self>, cx: &mut App) -> bool {
+    pub(crate) fn act_on_latest_for_parity(
+        handle: gpui::WindowHandle<Self>,
+        copy: bool,
+        cx: &mut App,
+    ) -> bool {
         handle
             .update(cx, |view, window, cx| {
                 let Some(preview) = view.previews.last() else {
@@ -359,7 +364,11 @@ impl CapturePreviewWindow {
                 let id = preview.id;
                 let entity = cx.entity().downgrade();
                 window.defer(cx, move |window, cx| {
-                    delete_preview(&entity, id, window, cx)
+                    if copy {
+                        copy_screenshot(&entity, id, false, window, cx);
+                    } else {
+                        delete_preview(&entity, id, window, cx);
+                    }
                 });
                 true
             })
@@ -367,8 +376,14 @@ impl CapturePreviewWindow {
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
-    pub(crate) fn deleting_for_parity(&self) -> bool {
-        self.previews.last().is_some_and(|preview| preview.deleting)
+    pub(crate) fn action_pending_for_parity(&self, copy: bool) -> bool {
+        self.previews.last().is_some_and(|preview| {
+            if copy {
+                preview.copying
+            } else {
+                preview.deleting
+            }
+        })
     }
 
     #[cfg(feature = "parity")]
@@ -441,6 +456,7 @@ impl CapturePreviewWindow {
                 hovered: false,
                 busy: false,
                 deleting: false,
+                copying: false,
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -492,6 +508,7 @@ impl CapturePreviewWindow {
                 hovered: false,
                 busy: false,
                 deleting: false,
+                copying: false,
                 completed: None,
                 export_progress: None,
                 dismiss_token,
@@ -1762,71 +1779,111 @@ fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset
         .cloned()
 }
 
-/// Composes the capture with the starred preset and puts the result on the
-/// clipboard -- `polish` in `use-polish-copy.ts`, which renders the capture over
-/// the preset's wallpaper and copies it rather than saving it.
-fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
-    let Some(preset) = starred_preset(cx) else {
-        return false;
+fn prepare_screenshot_copy(
+    path: &Path,
+    polish: Option<&crate::config::schema::WallpaperPreset>,
+    scale_factor: f32,
+) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|_| format!("could not read {}", path.display()))?;
+    let decoded =
+        crate::render::images::decode(&bytes).map_err(|_| "could not decode the capture")?;
+    let image = match polish {
+        None => decoded.into_rgba8(),
+        Some(preset) => {
+            let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
+            crate::editor::wallpaper::apply_preset(&mut settings, preset);
+            let native_scale = crate::editor::wallpaper::native_scale(
+                f64::from(decoded.width()),
+                f64::from(decoded.height()),
+                f64::from(scale_factor),
+            );
+            crate::editor::export::compose(
+                Some(&decoded),
+                decoded.width(),
+                decoded.height(),
+                &[],
+                &settings.for_scale(native_scale),
+                native_scale,
+            )
+        }
     };
-    let Ok(bytes) = std::fs::read(path) else {
-        report_copy_failure(cx, &format!("could not read {}", path.display()));
-        return false;
-    };
-    let Ok(decoded) = crate::render::images::decode(&bytes) else {
-        report_copy_failure(cx, "could not decode the capture");
-        return false;
-    };
-
-    let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
-    crate::editor::wallpaper::apply_preset(&mut settings, &preset);
-    let native_scale = crate::editor::wallpaper::native_scale(
-        f64::from(decoded.width()),
-        f64::from(decoded.height()),
-        f64::from(scale_factor),
-    );
-    let settings = settings.for_scale(native_scale);
-    let canvas = crate::editor::export::compose(
-        Some(&decoded),
-        decoded.width(),
-        decoded.height(),
-        &[],
-        &settings,
-        native_scale,
-    );
-
-    let (width, height) = (canvas.width(), canvas.height());
-    let copied = crate::system::clipboard::ClipboardService::write_rgba(
-        cx,
-        width,
-        height,
-        canvas.into_raw(),
-    )
-    .is_ok();
-    if !copied {
-        report_copy_failure(cx, "could not reach the clipboard");
-    }
-    copied
+    crate::render::images::encode_srgb_png(&image)
+        .map_err(|error| format!("could not prepare the clipboard image: {error}"))
 }
 
-fn copy_image(path: &Path, cx: &mut App) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
-        report_copy_failure(cx, &format!("could not read {}", path.display()));
-        return false;
+fn copy_screenshot(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    polish: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let preset = if polish {
+        let Some(preset) = starred_preset(cx) else {
+            return;
+        };
+        Some(preset)
+    } else {
+        None
     };
-    let Ok(decoded) = crate::render::images::decode(&bytes) else {
-        report_copy_failure(cx, "could not decode the capture");
-        return false;
+    let Ok(Some(path)) = preview_entity.update(cx, |view, cx| {
+        if view.previews.iter().any(|preview| preview.copying) {
+            return None;
+        }
+        let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+        if preview.kind != PreviewKind::Screenshot
+            || preview.is_busy()
+            || preview.completed.is_some()
+            || preview.dismiss_animation.is_some()
+        {
+            return None;
+        }
+        preview.copying = true;
+        cx.notify();
+        Some(preview.path.clone())
+    }) else {
+        return;
     };
-    let rgba = decoded.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
-    let copied =
-        crate::system::clipboard::ClipboardService::write_rgba(cx, width, height, rgba.into_raw())
-            .is_ok();
-    if !copied {
-        report_copy_failure(cx, "could not reach the clipboard");
-    }
-    copied
+    let scale = window.scale_factor();
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { prepare_screenshot_copy(&path, preset.as_ref(), scale) })
+            .await;
+        cx.update(|cx| {
+            let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+                return;
+            };
+            let _ = handle.update(cx, |view, window, cx| {
+                let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                else {
+                    return;
+                };
+                preview.copying = false;
+                if preview.dismiss_animation.is_some() {
+                    return;
+                }
+                match result {
+                    Ok(bytes) => {
+                        crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                        begin_remove_preview(
+                            view,
+                            id,
+                            DismissBehavior::PreserveControls,
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        report_copy_failure(cx, &error);
+                        cx.notify();
+                    }
+                }
+            });
+        });
+    })
+    .detach();
 }
 
 fn report_copy_failure(cx: &mut App, message: &str) {
@@ -2195,6 +2252,7 @@ impl CapturePreviewWindow {
             self.clear_native_tooltip(window);
         }
         let keyboard_controls = self.keyboard_controls_visible(window);
+        let stack_copying = self.previews.iter().any(|preview| preview.copying);
         let preview = &mut self.previews[index];
         let is_video = preview.kind == PreviewKind::Video;
         let polish = if is_video { None } else { polish };
@@ -2204,6 +2262,7 @@ impl CapturePreviewWindow {
         let finished = preview.completed.map(|at| finished_progress(at, now));
         let export_progress = preview.export_progress.clone();
         let deleting = preview.deleting;
+        let copying = preview.copying;
         let gated = preview.is_busy() || finished.is_some();
         let (show_controls, progress, animating) =
             Self::control_frame(preview, window_hovered, menu_open, keyboard_controls, now);
@@ -2445,7 +2504,7 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .when_some(polish, |el, preset| {
+                        .when_some(polish.filter(|_| !gated && !stack_copying), |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
                             el.child(preview::pill(
                                 cx,
@@ -2455,24 +2514,8 @@ impl CapturePreviewWindow {
                                 TooltipPlacement::Bottom,
                                 theme,
                                 {
-                                    let path = path.clone();
                                     let preview_entity = preview_entity.clone();
-                                    move |window, cx| {
-                                        if gated {
-                                            return;
-                                        }
-                                        if polish_and_copy(&path, window.scale_factor(), cx) {
-                                            let _ = preview_entity.update(cx, |view, cx| {
-                                                begin_remove_preview(
-                                                    view,
-                                                    id,
-                                                    DismissBehavior::PreserveControls,
-                                                    window,
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    }
+                                    move |window, cx| copy_screenshot(&preview_entity, id, true, window, cx)
                                 },
                             ))
                         })
@@ -2519,29 +2562,16 @@ impl CapturePreviewWindow {
                                 cx,
                                 ("preview-copy", id),
                                 "copy",
-                                false,
-                                "Copy",
+                                copying,
+                                if copying { "Copying…" } else { "Copy" },
                                 TooltipPlacement::TopStart,
                                 theme,
                                 theme.primary,
                             {
-                                let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
-                                    if gated {
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    if copy_image(&path, cx) {
-                                        let _ = preview_entity.update(cx, |view, cx| {
-                                            begin_remove_preview(
-                                                view,
-                                                id,
-                                                DismissBehavior::PreserveControls,
-                                                window,
-                                                cx,
-                                            )
-                                        });
+                                    if !gated && !stack_copying {
+                                        copy_screenshot(&preview_entity, id, false, window, cx);
                                     }
                                     cx.stop_propagation();
                                 }
@@ -3257,6 +3287,7 @@ mod tests {
             hovered: false,
             busy: false,
             deleting: false,
+            copying: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -4259,6 +4290,63 @@ mod tests {
         );
         visual.click_at(gpui::point(px(24.), px(480.)));
         assert!(visual.update(|_, cx| check.read(cx).previews[0].dismiss_animation.is_some()));
+    }
+
+    fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
+        let Some(preset) = starred_preset(cx) else {
+            return false;
+        };
+        let Ok(bytes) = prepare_screenshot_copy(path, Some(&preset), scale_factor) else {
+            return false;
+        };
+        crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+        true
+    }
+
+    #[herogpui::test]
+    fn screenshot_copy_publishes_pixels_before_dismissing(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        let source = image::RgbaImage::from_fn(320, 240, |x, y| {
+            image::Rgba([(x % 256) as u8, y as u8, 64, 255])
+        });
+        source.save(&path).unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        cx.run_until_parked();
+        let handle = stack_handle(cx)
+            .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+            .unwrap();
+        handle
+            .update(cx, |view, window, cx| {
+                let id = view.previews[0].id;
+                let entity = cx.weak_entity();
+                window.defer(cx, move |window, cx| {
+                    copy_screenshot(&entity, id, false, window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let clipboard = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            assert_eq!(
+                image::load_from_memory(&clipboard.bytes)
+                    .unwrap()
+                    .into_rgba8(),
+                source
+            );
+            handle
+                .update(cx, |view, _, _| {
+                    assert!(view.previews[0].dismiss_animation.is_some());
+                    assert!(!view.previews[0].is_busy());
+                })
+                .unwrap();
+        });
     }
 
     #[herogpui::test]
@@ -5359,6 +5447,7 @@ mod tests {
             hovered: true,
             busy: false,
             deleting: false,
+            copying: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
@@ -5402,6 +5491,7 @@ mod tests {
             hovered: false,
             busy: false,
             deleting: false,
+            copying: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),

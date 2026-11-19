@@ -8255,6 +8255,26 @@ stacking, editor handoff, thumbnail pixels and automatic dismissal.
 python3 tests/native/macos-capture-history-probe.py --preview-delete
 ```
 
+### 2026-11-19 macOS screenshot preview copy responsiveness
+
+Copy and Polish now read and decode the capture, compose the wallpaper
+when requested, and encode the sRGB PNG on the background executor.
+The preview shows a spinner while it prepares the image. The UI publishes
+the finished PNG to the pasteboard and dismisses the preview. If preparation
+fails, the preview remains available for retry.
+
+The isolated macOS probe answered status in 0.2 ms in light mode and
+1.0 ms in dark mode while the source read was held. Supplying invalid
+image bytes to that read left the original file and preview available.
+The native probe used a failed copy and left the system pasteboard
+untouched. A GPUI test published a generated image to the test clipboard,
+checked every pixel, and verified that the preview started dismissing.
+The arm64 GPUI suite passed 1,180 tests with 23 ignored.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --preview-copy
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

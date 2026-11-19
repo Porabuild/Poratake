@@ -1611,18 +1611,22 @@ pub fn open(cx: &mut App) {
                         .update(cx, |editor, _, _| editor.preview_image().is_some())
                         .unwrap_or(false);
                 }
-                if matches!(command.as_str(), "preview delete" | "preview deleting") {
+                if matches!(
+                    command.as_str(),
+                    "preview delete" | "preview deleting" | "preview copy" | "preview copying"
+                ) {
                     use crate::windows::capture_preview::CapturePreviewWindow;
                     let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
                         .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
                     else {
                         return false;
                     };
-                    return if command == "preview delete" {
-                        CapturePreviewWindow::delete_latest_for_parity(handle, cx)
+                    let copy = matches!(command.as_str(), "preview copy" | "preview copying");
+                    return if matches!(command.as_str(), "preview delete" | "preview copy") {
+                        CapturePreviewWindow::act_on_latest_for_parity(handle, copy, cx)
                     } else {
                         handle
-                            .update(cx, |preview, _, _| preview.deleting_for_parity())
+                            .update(cx, |preview, _, _| preview.action_pending_for_parity(copy))
                             .unwrap_or(false)
                     };
                 }
