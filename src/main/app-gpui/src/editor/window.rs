@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::{
@@ -49,6 +50,33 @@ impl PersistedEditorState {
         crate::history_store::editor_state_for_path(std::path::Path::new(path))
             .and_then(|state| serde_json::from_value(state).ok())
             .unwrap_or_default()
+    }
+}
+
+struct EditorStateWriter {
+    revision: AtomicU64,
+    persisted: parking_lot::Mutex<Option<Arc<serde_json::Value>>>,
+}
+
+impl EditorStateWriter {
+    fn next_revision(&self) -> u64 {
+        self.revision
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+    }
+
+    fn write(&self, path: &Path, state: Arc<serde_json::Value>, revision: u64) -> bool {
+        let mut persisted = self.persisted.lock();
+        if self.revision.load(Ordering::Relaxed) != revision
+            || persisted.as_ref() == Some(&state)
+        {
+            return true;
+        }
+        if !crate::history_store::update_editor_state_by_path(path, (*state).clone()) {
+            return false;
+        }
+        *persisted = Some(state);
+        true
     }
 }
 
@@ -459,8 +487,8 @@ pub struct EditorWindow {
     /// Pointer position and scroll offset a pan started from.
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
-    persisted_editor_state: RefCell<Option<serde_json::Value>>,
-    pending_editor_state: Option<serde_json::Value>,
+    editor_state_writer: Arc<EditorStateWriter>,
+    requested_editor_state: Option<Arc<serde_json::Value>>,
     editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
     save_dialog_open: bool,
@@ -529,7 +557,7 @@ impl EditorWindow {
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
-        let persisted_value = serde_json::to_value(&persisted).ok();
+        let persisted_value = serde_json::to_value(&persisted).ok().map(Arc::new);
         let next_id = persisted
             .annotations
             .iter()
@@ -647,8 +675,11 @@ impl EditorWindow {
             })),
             bounds: Rc::new(RefCell::new(None)),
             next_id,
-            persisted_editor_state: RefCell::new(persisted_value),
-            pending_editor_state: None,
+            editor_state_writer: Arc::new(EditorStateWriter {
+                revision: 0.into(),
+                persisted: parking_lot::Mutex::new(persisted_value.clone()),
+            }),
+            requested_editor_state: persisted_value,
             editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
             save_dialog_open: false,
@@ -1068,28 +1099,26 @@ impl EditorWindow {
         let Some(state) = self.editor_state_value() else {
             return;
         };
-        if self.persisted_editor_state.borrow().as_ref() == Some(&state) {
-            self.pending_editor_state = None;
-            self.editor_state_write_task.take();
+        if self.requested_editor_state.as_deref() == Some(&state) {
             return;
         }
 
-        if self.pending_editor_state.as_ref() == Some(&state)
-            && self
-                .editor_state_write_task
-                .as_ref()
-                .is_some_and(|task| !task.is_ready())
-        {
-            return;
-        }
-
-        self.editor_state_write_task.take();
-        self.pending_editor_state = Some(state);
+        let state = Arc::new(state);
+        self.requested_editor_state = Some(state.clone());
+        let writer = self.editor_state_writer.clone();
+        let revision = writer.next_revision();
+        let path = std::path::PathBuf::from(&self.file_path);
         self.editor_state_write_task = Some(cx.spawn(async move |editor, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(500))
                 .await;
-            let _ = editor.update(cx, |editor, _| editor.flush_pending_editor_state());
+            let written = cx
+                .background_executor()
+                .spawn(async move { writer.write(&path, state, revision) })
+                .await;
+            if !written {
+                let _ = editor.update(cx, |editor, _| editor.requested_editor_state = None);
+            }
         }));
     }
 
@@ -1129,31 +1158,32 @@ impl EditorWindow {
         .ok()
     }
 
-    fn flush_pending_editor_state(&mut self) {
-        let Some(state) = self.pending_editor_state.take() else {
-            return;
-        };
-        self.write_editor_state(state);
-    }
-
-    fn write_editor_state(&mut self, state: serde_json::Value) {
-        if crate::history_store::update_editor_state_by_path(
-            std::path::Path::new(&self.file_path),
-            state.clone(),
-        ) {
-            *self.persisted_editor_state.borrow_mut() = Some(state);
-        }
-    }
-
     fn force_persist_editor_state(&mut self) {
         self.editor_state_write_task.take();
-        self.pending_editor_state = None;
         let Some(state) = self.editor_state_value() else {
             return;
         };
-        if self.persisted_editor_state.borrow().as_ref() != Some(&state) {
-            self.write_editor_state(state);
-        }
+        let revision = self.editor_state_writer.next_revision();
+        self.editor_state_writer
+            .write(Path::new(&self.file_path), Arc::new(state), revision);
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn add_annotation_for_parity(&mut self, cx: &mut Context<Self>) {
+        let mut annotations = self.history.current().to_vec();
+        annotations.push(Annotation::Rectangle {
+            id: self.annotation_id(),
+            x: 24.,
+            y: 24.,
+            width: 80.,
+            height: 60.,
+            stroke: "#ff0000".into(),
+            stroke_width: 3.,
+            fill: None,
+        });
+        self.push_annotations(annotations, cx);
+        self.sync_snapshot(cx);
+        cx.notify();
     }
 
     fn annotation_id(&mut self) -> String {

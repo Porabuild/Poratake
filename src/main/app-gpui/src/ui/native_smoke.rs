@@ -1658,6 +1658,16 @@ pub fn open(cx: &mut App) {
                         handle.downcast::<crate::editor::EditorWindow>().is_some()
                     });
                 }
+                if command == "editor annotate" {
+                    let Some(handle) = cx.windows().iter().find_map(|handle| {
+                        handle.downcast::<crate::editor::EditorWindow>()
+                    }) else {
+                        return false;
+                    };
+                    return handle
+                        .update(cx, |editor, _, cx| editor.add_annotation_for_parity(cx))
+                        .is_ok();
+                }
                 if command == "close editor" {
                     let Some(handle) = cx
                         .windows()

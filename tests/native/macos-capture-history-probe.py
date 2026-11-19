@@ -196,6 +196,41 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 assert command("quit")
                 assert app.wait(timeout=6) == 0
                 return
+            if opening == "annotation-save":
+                capture_area()
+                eventually("preview ready")
+                eventually("preview finalizing", expected=False)
+                assert command("preview editor")
+                eventually("editor ready")
+                contents = history_path.read_bytes()
+                history_path.unlink()
+                os.mkfifo(history_path)
+                assert command("editor annotate")
+                with held_read(history_path, contents):
+                    start = monotonic()
+                    send("status")
+                    assert wait("NATIVE_SMOKE status ", timeout=4).endswith(" false")
+                    elapsed_ms = (monotonic() - start) * 1000
+                    assert command("editor annotate")
+                deadline = monotonic() + 10
+                while True:
+                    saved, = json.loads(history_path.read_text())
+                    annotations = (saved.get("editorState") or {}).get("annotations", [])
+                    if len(annotations) == 2:
+                        break
+                    if monotonic() >= deadline:
+                        raise RuntimeError("latest annotation state was not persisted")
+                    sleep(0.01)
+                assert command("editor annotate")
+                assert command("close editor")
+                eventually("editor ready", expected=False)
+                saved, = json.loads(history_path.read_text())
+                assert len(saved["editorState"]["annotations"]) == 3
+                print(f"app status replied in {elapsed_ms:.1f} ms while annotation autosave was held")
+                print("the queued edit and final close saved the latest annotation state")
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                return
             if copy:
                 capture_area()
                 eventually("preview ready")
@@ -365,6 +400,7 @@ if __name__ == "__main__":
         ["--recording"],
         ["--editor-open"],
         ["--direct-editor"],
+        ["--annotation-save"],
         ["--history-open"],
         ["--history-delete"],
         ["--history-clear"],
@@ -382,8 +418,11 @@ if __name__ == "__main__":
             ),
             opening=next(
                 (mode for mode in ("editor", "history") if sys.argv[1:] == [f"--{mode}-open"]),
-                "direct-editor" if sys.argv[1:] == ["--direct-editor"] else None,
+                next(
+                    (mode for mode in ("direct-editor", "annotation-save") if sys.argv[1:] == [f"--{mode}"]),
+                    None,
+                ),
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --editor-open | --direct-editor | --annotation-save | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

@@ -8361,6 +8361,25 @@ history release. End-to-end timing on a real 4K capture remains open.
 python3 tests/native/macos-capture-history-probe.py --direct-editor
 ```
 
+### 2026-11-19 macOS screenshot annotation autosave responsiveness
+
+The screenshot editor now writes debounced annotation state to Recent
+Captures on the background executor. A later edit supersedes a queued
+write, and a write already in progress finishes before the next revision.
+The editor still flushes the most recent state synchronously on close
+so a subsequent open can restore it immediately.
+
+The native probe held the first history write with a FIFO. App status
+replied in 0.2 ms in light mode and 0.1 ms in dark mode. The editor
+accepted a second annotation while the write was held, saved both
+after release, and flushed a third on immediate close. The screenshot
+editor opening probe passed. The GPUI suite passed 1,181 tests with
+23 ignored.
+
+```sh
+python3 tests/native/macos-capture-history-probe.py --annotation-save
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
