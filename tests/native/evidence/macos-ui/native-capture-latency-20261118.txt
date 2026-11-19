@@ -4973,3 +4973,35 @@ The fixture supplied no physical camera or audio input.
 GPUI video editor tests: 174 passed and 5 ignored. The development FFmpeg
 camera visibility test passed separately. Electron video editor and export
 reference tests: 66 passed. The development build passed.
+
+2026-11-19 macOS paused video editor after losing focus
+======================================================
+
+A development recording fixture supplied a generated 3840x2160
+60 fps H.264 clip. The app-local probe opened and focused the
+video editor, started playback and used Recent Captures to
+take key-window focus. It checked that the inactive editor was
+still visible. The pause-first probe checked that the focused
+paused editor retained its decoder before the focus switch.
+The blur-first probe confirmed that the inactive editor still
+applied frames before pausing.
+
+Memory is the decoder process physical footprint. Resume is from
+the app-local Play reply to the first applied preview image.
+All trials saved and compared their paused PNG before focus
+restoration and after refocus. These within-trial hashes matched
+byte for byte. Pause time followed the playback clock.
+
+Build    Theme  Order         Decoder MiB  Resume ms
+base     light pause-first        883.58       21.5
+updated  light pause-first        exited      115.2
+updated  dark  blur-first         exited      116.5
+base     dark  blur-first         882.67       22.8
+base     light blur-first         883.34       22.4
+updated  light blur-first         exited      118.0
+updated  dark  pause-first        exited      114.1
+base     dark  pause-first        883.41       21.1
+
+GPUI editor tests: 174 passed and 5 ignored. Electron editor
+and export reference tests: 66 passed. The parity development
+build passed. The fixture supplied no physical camera or audio.

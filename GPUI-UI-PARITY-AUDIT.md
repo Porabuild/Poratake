@@ -11045,6 +11045,27 @@ passed 174 tests, the development FFmpeg camera fixture passed, and
 66 Electron reference tests passed.
 [Paused opening memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS paused video editor after losing focus
+
+A visible macOS video editor now releases its decoder processes
+when paused and inactive. It keeps the displayed preview and the
+source pixmaps. Playback can continue while the visible editor
+is inactive. The decoder stays available during a foreground pause.
+
+An AppKit focus change to Recent Captures verified both orders
+in light and dark. Pausing before switching focus and pausing after
+switching both released an FFmpeg process that held about 883 MiB
+in the baseline. Each paused preview matched its own pixels
+through focus loss and regain. Refocusing kept the decoder
+released until Play.
+
+The first applied image after resuming took 114–118 ms in the
+updated build and 21–23 ms with the resident decoder. These
+timings use app-local commands and generated 4K60 media. The
+GPUI editor suite passed 174 tests and the Electron reference
+suites passed 66.
+[Paused background memory and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

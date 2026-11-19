@@ -224,6 +224,10 @@ pub struct VideoEditorWindow {
     #[cfg(target_os = "macos")]
     preview_visibility_sub: Option<gpui::Subscription>,
     #[cfg(target_os = "macos")]
+    preview_activation_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_window_active: bool,
+    #[cfg(target_os = "macos")]
     preview_window_hidden: bool,
     #[cfg(target_os = "macos")]
     refresh_preview_on_show: bool,
@@ -299,6 +303,14 @@ impl VideoEditorWindow {
                     {
                         editor.preview_window_hidden =
                             crate::system::window_visibility::is_minimized_or_hidden(window);
+                        editor.preview_window_active = window.is_window_active();
+                        editor.preview_activation_sub = Some(cx.observe_window_activation(
+                            window,
+                            |editor, window, _| {
+                                editor.preview_window_active = window.is_window_active();
+                                editor.release_inactive_preview_buffers();
+                            },
+                        ));
                         editor.preview_visibility_sub = Some(cx.observe_window_visibility(
                             window,
                             |editor, visibility, window, cx| {
@@ -471,6 +483,10 @@ impl VideoEditorWindow {
             bounds_sub: None,
             #[cfg(target_os = "macos")]
             preview_visibility_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_activation_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_window_active: true,
             #[cfg(target_os = "macos")]
             preview_window_hidden: false,
             #[cfg(target_os = "macos")]
@@ -902,7 +918,7 @@ impl VideoEditorWindow {
                 self.invalidate_preview_frames();
                 self.refresh_preview_on_show = true;
             }
-            self.release_hidden_preview_buffers();
+            self.release_inactive_preview_buffers();
             return;
         }
         if std::mem::take(&mut self.refresh_preview_on_show) || self.is_playing {
@@ -913,12 +929,20 @@ impl VideoEditorWindow {
     }
 
     #[cfg(target_os = "macos")]
-    fn release_hidden_preview_buffers(&mut self) {
-        if !self.preview_window_hidden || self.compose_in_flight {
+    fn release_inactive_preview_buffers(&mut self) {
+        let paused_in_background = !self.preview_window_active
+            && !self.is_playing
+            && !self.is_scrubbing
+            && self.gesture_snapshot.is_none();
+        if self.compose_in_flight || (!self.preview_window_hidden && !paused_in_background) {
             return;
         }
         if let Some(mut source) = self.source.as_ref().and_then(|source| source.try_lock()) {
-            source.release_buffered_frames();
+            if self.preview_window_hidden {
+                source.release_buffered_frames();
+            } else {
+                source.park_decoders();
+            }
         }
     }
 
@@ -927,7 +951,7 @@ impl VideoEditorWindow {
         #[cfg(target_os = "macos")]
         if self.preview_window_hidden {
             self.refresh_preview_on_show = true;
-            self.release_hidden_preview_buffers();
+            self.release_inactive_preview_buffers();
             return;
         }
         let Some(source) = self.source.clone() else {
@@ -1044,7 +1068,7 @@ impl VideoEditorWindow {
                     this.request_frame(cx);
                 }
                 #[cfg(target_os = "macos")]
-                this.release_hidden_preview_buffers();
+                this.release_inactive_preview_buffers();
             });
         })
         .detach();

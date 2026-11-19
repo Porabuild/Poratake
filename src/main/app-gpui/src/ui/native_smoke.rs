@@ -1726,7 +1726,10 @@ pub fn open(cx: &mut App) {
                         })
                         .unwrap_or(false);
                 }
-                if matches!(command.as_str(), "video editor play" | "video editor playing") {
+                if matches!(
+                    command.as_str(),
+                    "video editor play" | "video editor pause" | "video editor playing"
+                ) {
                     let Some(handle) =
                         registry::handle(WindowKind::VideoEditor, cx).and_then(|handle| {
                             handle.downcast::<crate::windows::video_editor::VideoEditorWindow>()
@@ -1736,11 +1739,13 @@ pub fn open(cx: &mut App) {
                     };
                     return handle
                         .update(cx, |editor, _, cx| {
-                            if command == "video editor play" && !editor.playback_active_for_parity()
+                            let active = editor.playback_active_for_parity();
+                            if (command == "video editor play" && !active)
+                                || (command == "video editor pause" && active)
                             {
                                 editor.toggle_playback(cx);
                             }
-                            editor.playback_active_for_parity()
+                            editor.playback_active_for_parity() == (command != "video editor pause")
                         })
                         .unwrap_or(false);
                 }
@@ -1752,7 +1757,8 @@ pub fn open(cx: &mut App) {
                         "video editor export" | "video editor export done" | "video editor snapshot"
                             | "video editor scrub begin" | "video editor hide"
                             | "video editor show" | "video editor minimize"
-                            | "video editor visible"
+                            | "video editor visible" | "video editor active"
+                            | "video editor focus"
                     )
                 {
                     let Some(handle) =
@@ -1799,6 +1805,12 @@ pub fn open(cx: &mut App) {
                                     true
                                 }
                                 "video editor visible" => window.is_visible(),
+                                "video editor active" => window.is_window_active(),
+                                "video editor focus" => {
+                                    cx.activate(true);
+                                    window.activate_window();
+                                    true
+                                }
                                 "video editor scrub begin" => {
                                     editor.begin_scrub();
                                     true
