@@ -1368,7 +1368,9 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_balance_samples_match_premultiplied_images() {
+    fn borrowed_border_samples_match_premultiplied_images() {
+        use crate::render::color_detection;
+
         for border_alpha in [0, 1, 127, 128, 254, 255] {
             for content_alpha in [127, 128, 199, 255] {
                 let source = RgbaImage::from_fn(56, 64, |x, y| {
@@ -1385,6 +1387,21 @@ mod tests {
                     balance_pixmap(old_pixmap.as_ref()),
                     "border alpha {border_alpha}, content alpha {content_alpha}",
                 );
+                for crop in [
+                    color_detection::ContentBounds::default(),
+                    color_detection::ContentBounds {
+                        top: 19,
+                        right: 20,
+                        bottom: 25,
+                        left: 17,
+                    },
+                ] {
+                    assert_eq!(
+                        color_detection::dominant_inset_color_rgba(&source, crop),
+                        color_detection::dominant_inset_color(old_pixmap.as_ref(), crop),
+                        "border alpha {border_alpha}, content alpha {content_alpha}, crop {crop:?}",
+                    );
+                }
                 if border_alpha == 255 && content_alpha == 255 {
                     assert_eq!(
                         borrowed.unwrap(),

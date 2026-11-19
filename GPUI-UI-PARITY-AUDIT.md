@@ -10496,6 +10496,32 @@ save probes passed, along with 378 GPUI tests and 24 Electron
 reference tests.
 [Screenshot export measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS inset preview samples the editor image
+
+The screenshot editor now samples inset color directly from the
+decoded RGBA image. It uses the same Balance crop and translucent
+channel rounding as the premultiplied export path. The previous
+preview path built a full-image pixmap just to read the border.
+
+In the development app, reopening generated 3840×2160 images
+with Balance and an eight-point inset reduced measured peak
+footprint by 8.5–11.3 MiB. The fixture covered opaque and
+translucent borders in light and dark.
+
+The median isolated inset-color calculation fell from 11.30 ms
+to 0.96 ms for the opaque border and from 13.76 ms to 1.14 ms
+for the translucent border. All 21 paired runs per border type
+returned identical colors. These timings cover sampling and the
+former pixel conversion.
+
+The light and dark checks passed for fractional frames, scaled
+wallpaper and Balance effects. The scaled wallpaper check
+compared preview and saved pixels at 1.25× and 2× with transparent
+content. The unit regression compares cropped and uncropped inset
+colors across 24 alpha combinations. All 384 targeted GPUI tests
+and 16 Electron reference tests passed.
+[Inset preview measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

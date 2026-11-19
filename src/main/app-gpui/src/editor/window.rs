@@ -987,12 +987,13 @@ impl EditorWindow {
         let task = cx.background_executor().spawn(async move {
             background.timer(std::time::Duration::from_millis(16)).await;
             let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
-                base_image.as_ref().and_then(|base| {
-                    let pixmap = crate::editor::export::from_dynamic_image(base)?;
-                    crate::render::color_detection::dominant_inset_color(
-                        pixmap.as_ref(),
-                        balance_crop,
-                    )
+                use crate::render::color_detection;
+                base_image.as_ref().and_then(|base| match base.as_rgba8() {
+                    Some(rgba) => color_detection::dominant_inset_color_rgba(rgba, balance_crop),
+                    None => {
+                        let pixmap = crate::editor::export::from_dynamic_image(base)?;
+                        color_detection::dominant_inset_color(pixmap.as_ref(), balance_crop)
+                    }
                 })
             } else {
                 inset_color

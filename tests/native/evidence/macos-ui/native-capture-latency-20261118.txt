@@ -4050,3 +4050,29 @@ All output PNGs matched with SHA-256
 587fefb06b73eb70158a902f1fd2c6e23868a2df4efa4daad627bd16b434c761.
 Both builds retained 126.6 MiB in empty large malloc regions
 after editor close in these trials.
+
+2026-11-19 macOS inset preview samples the editor image at f5cf46b2
+
+The normal file-open path loaded a generated 3840x2160 RGBA PNG
+with Balance and an eight-point inset in a temporary History
+entry. The border used alpha 255 or 128. vmmap sampled each
+fresh editor process after three seconds. Values are MiB.
+
+Border alpha   Appearance   Peak before/after   Empty large before/after
+255            light            405.1 / 393.8               — / 23.0
+255            dark             403.6 / 395.1            31.6 / 23.0
+128            light            405.4 / 395.1            31.6 / 23.0
+128            dark             404.8 / 395.0            31.6 / 23.0
+
+The first light baseline vmmap summary had no empty large
+malloc region at sampling time. Its peak is recorded above.
+
+The standalone optimized Rust timing used the prior conversion
+and production sampling functions against the same preloaded
+images. Twenty-one measured pairs per border type alternated
+run order after warm-up, with offscreen rendering checks
+running on the host. All pairs matched the resulting color.
+
+Border alpha   Result    Before min/median/max (ms)   After min/median/max (ms)
+255            #b5cbed       10.91 / 11.30 / 12.62         0.79 / 0.96 / 1.22
+128            #b3c9eb       12.24 / 13.76 / 15.02         0.96 / 1.14 / 1.42

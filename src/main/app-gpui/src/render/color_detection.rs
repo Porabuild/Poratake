@@ -191,7 +191,14 @@ fn balance_bounds(image: Samples<'_>) -> Option<ContentBounds> {
 /// `sampleDominantInsetColor` — the colour the inset band is filled with,
 /// sampled from the (possibly cropped) image's own border.
 pub fn dominant_inset_color(image: PixmapRef<'_>, crop: BalanceCrop) -> Option<String> {
-    let image = Samples::pixmap(image);
+    inset_color(Samples::pixmap(image), crop)
+}
+
+pub fn dominant_inset_color_rgba(image: &image::RgbaImage, crop: BalanceCrop) -> Option<String> {
+    inset_color(Samples::rgba(image), crop)
+}
+
+fn inset_color(image: Samples<'_>, crop: BalanceCrop) -> Option<String> {
     let width = image.width.checked_sub(crop.left + crop.right)?;
     let height = image.height.checked_sub(crop.top + crop.bottom)?;
     if width == 0 || height == 0 {
