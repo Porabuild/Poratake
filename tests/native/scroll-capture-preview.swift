@@ -492,7 +492,7 @@ struct ScrollCapturePreviewTest {
         let wideWidth = 1280
         let wideViewport = 160
         let wideShift = 86
-        for perturbed in [false, true] {
+        for (perturbed, noisyOverlap) in [(false, false), (true, false), (true, true)] {
             let repeatedCenter: (Int, Int) -> Int = { x, row in
                 guard (240..<1040).contains(x), (166..<206).contains(row) else { return row }
                 return x == 640 && row == 172 && perturbed ? row - 45 : row - 46
@@ -500,13 +500,17 @@ struct ScrollCapturePreviewTest {
             let wideFrames = (0..<2).map { index in
                 fixedFooterFrame(
                     index: index, periodic: false, width: wideWidth, height: wideViewport,
-                    footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
+                    footerHeight: 0, step: wideShift, headerHeight: 24,
+                    bodyRow: { x, row in
+                        if index == 1 && noisyOverlap && x == 0 && row == 140 { return row + 1 }
+                        return repeatedCenter(x, row)
+                    }
                 )
             }
             let wideOverlap = ScrollCaptureModule().testFindOverlap(
                 topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
             )
-            print("wide fixed-header overlap (perturbed center: \(perturbed)):", wideOverlap as Any)
+            print("wide fixed-header overlap (perturbed center: \(perturbed), noisy overlap: \(noisyOverlap)):", wideOverlap as Any)
             fflush(stdout)
             precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
             let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -523,6 +527,22 @@ struct ScrollCapturePreviewTest {
             precondition(wideOverlaps == [wideViewport - wideShift])
             precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
         }
+
+        let ambiguousFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: false, width: wideWidth, height: 240,
+                footerHeight: 0, step: 166, headerHeight: 24,
+                bodyRow: { x, row in
+                    if (300..<340).contains(row) { return row - 100 }
+                    if (240..<1040).contains(x), (250..<290).contains(row) { return row - 50 }
+                    if index == 1 && x == 0 && row == 220 { return row + 1 }
+                    return row
+                }
+            )
+        }
+        precondition(ScrollCaptureModule().testFindOverlap(
+            topFrame: ambiguousFrames[0], bottomFrame: ambiguousFrames[1], expectedOverlap: 74
+        ) == nil, "A full-width retry must preserve the prefix when two overlaps fit almost equally")
     }
 
     @MainActor

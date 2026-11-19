@@ -2725,3 +2725,35 @@ also compared the fixed header independently in the scrolled frame.
 Both frames match their expected fixed header and body rows; 1,259,520 raw RGBA bytes match.
 
 The current arm64 Swift fixture completed successfully.
+
+2026-11-19 macOS full-width retry for a noisy scroll overlap
+
+The arm64 baseline at 06cfd0bf still selected a 74-row overlap
+for the earlier exact fixtures. With one changed pixel inside the
+true overlap it returned nil. The revised matcher returned 74
+for all three variants. Each expected 1280x246 image contains
+one fixed 24-row header. The saved image and preview matched
+it byte for byte. The changed pixel was inside the discarded
+overlap. The distinct ambiguous fixture preserved the prefix.
+A Swift build with only the uniqueness guard removed from the
+unpruned retry failed that fixture.
+
+The complete arm64 and Rosetta x86_64 runs passed. The three
+Electron suites passed all 56 scroll tests. No screen capture,
+pointer input or privacy permission was needed.
+
+The matcher benchmark used a generated 3456x640 wide fixture
+with a fixed header, a repeated center, and a one-pixel change
+in its true overlap. Both retry implementations selected the
+274-row seam. Six alternating launches each measured eight
+requests after two warmups. No capture or presentation time
+was included.
+
+final 174.33, 170.72, 171.74, 173.92, 174.43, 176.59, 174.32, 175.65
+verified 45.70, 45.86, 44.85, 44.67, 44.41, 44.68, 44.82, 44.77
+verified 44.82, 44.07, 44.14, 44.06, 44.20, 44.39, 44.14, 44.72
+final 174.43, 172.16, 173.22, 172.45, 171.68, 173.04, 171.86, 173.69
+final 171.37, 170.79, 175.03, 171.70, 172.54, 170.36, 175.32, 175.15
+verified 44.50, 44.67, 45.23, 46.92, 43.83, 44.90, 45.67, 46.01
+final 24 samples median 173.13 ms, range 170.36–176.59 ms
+verified 24 samples median 44.70 ms, range 43.83–46.92 ms

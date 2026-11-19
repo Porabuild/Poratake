@@ -9441,6 +9441,28 @@ Physical scrolling and the capture panel lifecycle were outside
 this run.
 [Live capture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS full-width retry for a noisy scroll overlap
+
+A changed pixel inside the true overlap made exact full-image
+matching unavailable. The prior matcher rejected the second frame
+because the repeated center's proposed seam failed the full-width
+confidence check. The revised matcher searches the full width in
+that case and accepts a seam only if it meets the existing score
+threshold and wins by the existing score margin.
+
+The fixture recovered the 74-row seam and saved the same
+1280×246 pixels as the preview and expected page. A separate
+fixture with two plausible full-width seams preserved the accepted
+prefix. Removing the uniqueness check from a test build made that
+fixture fail.
+
+A 3456×640 fixture triggered the retry. Its matcher-only median
+was 173.13 ms with an unpruned scan and 44.70 ms with row-by-row
+error bounds, across 24 measurements each. The native Swift
+suites passed on arm64 and x86_64 under Rosetta, and 56 Electron
+scroll tests passed. Identical full-frame histories remain ambiguous.
+[Native recovery and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

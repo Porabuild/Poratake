@@ -1385,11 +1385,14 @@ class ScrollCaptureModule: NSObject, Module {
         let step = 4
         let scoreMargin = 1.0
 
+        func overlapRange(_ overlap: Int, rowBytes: Int) -> Range<Int> {
+            let height = min(stripHeight, overlap - headerHeight)
+            return (overlap - height) * rowBytes..<overlap * rowBytes
+        }
+
         func checkMatch(_ overlap: Int) -> Bool {
             guard !isCancelled() else { return false }
-            let height = min(stripHeight, overlap - headerHeight)
-            let range = (overlap - height) * bytesPerRow..<overlap * bytesPerRow
-            let score = compareStrips(topStrip, bottomStrip[range])
+            let score = compareStrips(topStrip, bottomStrip[overlapRange(overlap, rowBytes: bytesPerRow)])
             scores.append((overlap, score))
             if score < bestScore - scoreMargin {
                 bestScore = score
@@ -1454,6 +1457,40 @@ class ScrollCaptureModule: NSObject, Module {
                 wideScore = fullWidthScore > centerScore ? fullWidthScore / 3 : nil
             }
         }
+        func recoverFullWidthOverlap() -> Int? {
+            let width = topFrame.width
+            guard !isCancelled(),
+                  let top = extractStrip(from: topFrame, y: contentHeight - stripHeight, height: stripHeight, width: width),
+                  !isCancelled(),
+                  let bottom = extractStrip(from: bottomFrame, y: 0, height: contentHeight, width: width) else {
+                return nil
+            }
+            let rowBytes = width * 4
+            let maximumScore = maxMeanOverlapChannelDifference * 3
+            var overlap = contentHeight
+            var score = Double.infinity
+            var alternativeScore = Double.infinity
+            for candidate in minOverlap...maxOverlap {
+                guard !isCancelled() else { return nil }
+                let range = overlapRange(candidate, rowBytes: rowBytes)
+                let ceiling = min(score, maximumScore) + scoreMargin
+                guard let candidateScore = boundedStripScore(
+                    top, bottom[range], rowBytes: rowBytes, ceiling: ceiling
+                ) else { continue }
+                if candidateScore < score {
+                    alternativeScore = score
+                    score = candidateScore
+                    overlap = candidate
+                } else {
+                    alternativeScore = min(alternativeScore, candidateScore)
+                }
+            }
+            guard !isCancelled(), overlap < contentHeight,
+                  score <= maximumScore,
+                  alternativeScore > score + scoreMargin else { return nil }
+            return overlap
+        }
+
         if requiresExactOverlap || wideScore != nil {
             if let (overlap, alternative) = exactFullImageOverlap(
                 topFrame: topFrame,
@@ -1465,8 +1502,10 @@ class ScrollCaptureModule: NSObject, Module {
                 guard alternative < minimumOverlapRows else { return nil }
                 return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
             }
-            guard !requiresExactOverlap, let wideScore, wideScore <= maxMeanOverlapChannelDifference else {
-                return nil
+            guard !requiresExactOverlap, let wideScore else { return nil }
+            if wideScore > maxMeanOverlapChannelDifference {
+                guard let overlap = recoverFullWidthOverlap() else { return nil }
+                return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
             }
         }
 
@@ -1643,27 +1682,36 @@ class ScrollCaptureModule: NSObject, Module {
         return pixelData
     }
 
+    private func stripDifference(_ first: ArraySlice<UInt8>, _ second: ArraySlice<UInt8>) -> Int {
+        var difference = 0
+        for offset in stride(from: 0, to: second.count, by: 4) {
+            let a = first.startIndex + offset
+            let b = second.startIndex + offset
+            difference += abs(Int(first[a]) - Int(second[b]))
+            difference += abs(Int(first[a + 1]) - Int(second[b + 1]))
+            difference += abs(Int(first[a + 2]) - Int(second[b + 2]))
+        }
+        return difference
+    }
+
     private func compareStrips(_ strip1: [UInt8], _ strip2: ArraySlice<UInt8>) -> Double {
         guard !strip2.isEmpty, strip1.count >= strip2.count else { return Double.infinity }
+        return Double(stripDifference(strip1.suffix(strip2.count), strip2)) / Double(strip2.count / 4)
+    }
 
-        var totalDiff: Int = 0
-        let strideAmount = 4
-        let start = strip1.count - strip2.count
-
-        for i in Swift.stride(from: 0, to: strip2.count, by: strideAmount) {
-            let r1 = Int(strip1[start + i])
-            let g1 = Int(strip1[start + i + 1])
-            let b1 = Int(strip1[start + i + 2])
-
-            let index = strip2.startIndex + i
-            let r2 = Int(strip2[index])
-            let g2 = Int(strip2[index + 1])
-            let b2 = Int(strip2[index + 2])
-
-            totalDiff += abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
+    private func boundedStripScore(
+        _ first: [UInt8], _ second: ArraySlice<UInt8>, rowBytes: Int, ceiling: Double
+    ) -> Double? {
+        let pixels = Double(second.count / 4)
+        let start = first.count - second.count
+        var difference = 0
+        for offset in stride(from: 0, to: second.count, by: rowBytes) {
+            let a = start + offset
+            let b = second.startIndex + offset
+            difference += stripDifference(first[a..<(a + rowBytes)], second[b..<(b + rowBytes)])
+            guard Double(difference) / pixels <= ceiling else { return nil }
         }
-
-        return Double(totalDiff) / Double(strip2.count / strideAmount)
+        return Double(difference) / pixels
     }
 
     private func screenForDisplayId(_ displayId: CGDirectDisplayID) -> NSScreen? {
