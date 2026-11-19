@@ -35,6 +35,12 @@ struct TooltipOwner {
 
 @MainActor
 final class ProtectedTooltip {
+    struct Screen: Equatable {
+        let frame: NSRect
+        let visibleFrame: NSRect
+    }
+
+    private let screenAt: @MainActor (NSPoint) -> Screen?
     private let registry: RecordingCaptureWindowRegistry
     private var sequence: UInt64 = 0
     private var presentationSequence: UInt64 = 0
@@ -44,8 +50,16 @@ final class ProtectedTooltip {
     var testPanel: NSPanel? { panel }
     #endif
 
-    init(registry: RecordingCaptureWindowRegistry = .shared) {
+    init(
+        registry: RecordingCaptureWindowRegistry = .shared,
+        screenAt: @escaping @MainActor (NSPoint) -> Screen? = { point in
+            NSScreen.screens.first { $0.frame.contains(point) }.map {
+                Screen(frame: $0.frame, visibleFrame: $0.visibleFrame)
+            }
+        }
+    ) {
         self.registry = registry
+        self.screenAt = screenAt
     }
 
     func accept(sequence: UInt64, owner: UInt32, text: String?) -> Bool {
@@ -75,16 +89,9 @@ final class ProtectedTooltip {
         let point = pointerLocation()
         let initialFrame = ownerFrame()
         guard initialFrame?.contains(point) != false else { return false }
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main else {
-            return false
-        }
-        let panel = makePanel(
-            text: text,
-            dark: dark,
-            point: point,
-            ownerFrame: initialFrame,
-            screen: screen
-        )
+        guard let screen = screenAt(point) else { return false }
+        let (panel, label) = makePanel(text: text, dark: dark)
+        placePanel(panel, label: label, point: point, ownerFrame: initialFrame, screen: screen)
         self.panel = panel
         panel.orderFrontRegardless()
         guard registry.register(panel) != nil else {
@@ -103,19 +110,20 @@ final class ProtectedTooltip {
         }
         let revealPoint = pointerLocation()
         let revealFrame = ownerFrame()
-        let onInitialScreen = screen.frame.contains(revealPoint)
         guard isCurrent(sequence, owner: owner), self.panel === panel,
               revealFrame?.contains(revealPoint) != false,
-              revealFrame == initialFrame || onInitialScreen else {
+              let revealScreen = screenAt(revealPoint) else {
             if self.panel === panel {
                 self.panel = nil
                 await retire(panel)
             }
             return false
         }
-        if onInitialScreen && (revealPoint != point || revealFrame != initialFrame) {
+        if revealScreen != screen {
+            placePanel(panel, label: label, point: revealPoint, ownerFrame: revealFrame, screen: revealScreen)
+        } else if revealPoint != point || revealFrame != initialFrame {
             panel.setFrameOrigin(panelOrigin(
-                size: panel.frame.size, point: revealPoint, ownerFrame: revealFrame, screen: screen
+                size: panel.frame.size, point: revealPoint, ownerFrame: revealFrame, screen: revealScreen
             ))
         }
         panel.alphaValue = 1
@@ -139,28 +147,9 @@ final class ProtectedTooltip {
         }
     }
 
-    private func makePanel(
-        text: String,
-        dark: Bool,
-        point: NSPoint,
-        ownerFrame: NSRect?,
-        screen: NSScreen
-    ) -> NSPanel {
-        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        let maxTextWidth = max(1, min(360, screen.visibleFrame.width - 24))
-        let label = NSTextField(labelWithString: text)
-        label.font = font
-        label.textColor = .labelColor
-        label.lineBreakMode = .byWordWrapping
-        label.maximumNumberOfLines = 4
-        label.cell?.truncatesLastVisibleLine = true
-        let fitted = label.sizeThatFits(NSSize(width: maxTextWidth, height: 80))
-        let labelSize = NSSize(width: min(maxTextWidth, ceil(fitted.width)), height: ceil(fitted.height))
-        let padding = NSSize(width: 8, height: 4)
-        let size = NSSize(width: labelSize.width + padding.width * 2, height: labelSize.height + padding.height * 2)
-        let origin = panelOrigin(size: size, point: point, ownerFrame: ownerFrame, screen: screen)
+    private func makePanel(text: String, dark: Bool) -> (NSPanel, NSTextField) {
         let panel = NSPanel(
-            contentRect: NSRect(origin: origin, size: size),
+            contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -174,20 +163,42 @@ final class ProtectedTooltip {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.alphaValue = 0
         panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        let effect = NSVisualEffectView(frame: .zero)
         effect.material = .toolTip
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 5
         effect.layer?.masksToBounds = true
-        label.frame = NSRect(origin: NSPoint(x: padding.width, y: padding.height), size: labelSize)
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .labelColor
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 4
+        label.cell?.truncatesLastVisibleLine = true
         effect.addSubview(label)
         panel.contentView = effect
-        return panel
+        return (panel, label)
     }
 
-    private func panelOrigin(size: NSSize, point: NSPoint, ownerFrame: NSRect?, screen: NSScreen) -> NSPoint {
+    private func placePanel(
+        _ panel: NSPanel,
+        label: NSTextField,
+        point: NSPoint,
+        ownerFrame: NSRect?,
+        screen: Screen
+    ) {
+        let maxTextWidth = max(1, min(360, screen.visibleFrame.width - 24))
+        let fitted = label.sizeThatFits(NSSize(width: maxTextWidth, height: 80))
+        let labelSize = NSSize(width: min(maxTextWidth, ceil(fitted.width)), height: ceil(fitted.height))
+        let padding = NSSize(width: 8, height: 4)
+        let size = NSSize(width: labelSize.width + padding.width * 2, height: labelSize.height + padding.height * 2)
+        let origin = panelOrigin(size: size, point: point, ownerFrame: ownerFrame, screen: screen)
+        label.frame = NSRect(origin: NSPoint(x: padding.width, y: padding.height), size: labelSize)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+    }
+
+    private func panelOrigin(size: NSSize, point: NSPoint, ownerFrame: NSRect?, screen: Screen) -> NSPoint {
         let visible = screen.visibleFrame
         var x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
         let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }

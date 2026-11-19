@@ -641,6 +641,58 @@ struct ScrollCapturePreviewTest {
         precondition(!visibleForHiddenOwner && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
     }
 
+    @MainActor
+    static func verifyTooltipDisplayTransition() async throws {
+        guard let work = NSScreen.main?.visibleFrame, work.width >= 700 else {
+            print("SKIP tooltip display transition: no suitable AppKit display")
+            return
+        }
+        let seam = work.maxX - 220
+        let wide = NSRect(x: work.minX, y: work.minY, width: seam - work.minX, height: work.height)
+        let narrow = NSRect(x: seam, y: work.minY, width: 220, height: work.height)
+        let screens = [wide, narrow].map { ProtectedTooltip.Screen(frame: $0, visibleFrame: $0) }
+        for ownerMoves in [false, true] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+                screens.first { $0.frame.contains(point) }
+            })
+            var ownerFrame = NSRect(x: seam - 50, y: work.midY, width: 100, height: 40)
+            var pointer = NSPoint(x: seam - 25, y: ownerFrame.midY)
+            let text = String(repeating: "Preview action ", count: 9)
+            _ = registry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: text))
+            let pending = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 1, text: text, dark: ownerMoves,
+                                       at: pointer, ownerFrame: ownerFrame)
+            }
+            await waitUntil("The tooltip did not reach the display transition barrier") {
+                registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            let panel = tooltip.testPanel!
+            let id = CGWindowID(panel.windowNumber)
+            let originalFrame = panel.frame
+            precondition(panel.alphaValue == 0 && wide.contains(originalFrame))
+            precondition(originalFrame.width > narrow.width)
+            if ownerMoves {
+                ownerFrame.origin.x += 90
+            }
+            pointer.x = seam + (ownerMoves ? 65 : 25)
+            precondition(ownerFrame.contains(pointer) && narrow.contains(pointer))
+            registry.finishScreenshot()
+            let visible = try await pending.value
+            let fits = narrow.contains(panel.frame)
+            print("tooltip display transition: movedOwner=\(ownerMoves), visible=\(visible), destinationFit=\(fits)")
+            fflush(stdout)
+            precondition(visible && tooltip.testPanel === panel && fits, "Tooltip must reveal on the pointer's display")
+            precondition(panel.frame.height > originalFrame.height)
+            precondition(panel.frame.maxY == ownerFrame.minY - 4)
+            precondition(panel.contentView?.frame.size == panel.frame.size)
+            precondition(registry.currentWindowIDs() == [id] && CGWindowID(panel.windowNumber) == id)
+            precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+            await waitUntil("The moved tooltip stayed registered") { registry.currentWindowIDs().isEmpty }
+        }
+    }
+
     static func verifyWideFixedHeaderSeam() {
         let wideWidth = 1280
         let wideViewport = 160
@@ -749,6 +801,7 @@ struct ScrollCapturePreviewTest {
                     try await verifyTooltipPointerExit()
                     try await verifyTooltipPointerMove()
                     try await verifyTooltipOwnerMove()
+                    try await verifyTooltipDisplayTransition()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                 } else {
@@ -1208,6 +1261,7 @@ struct ScrollCapturePreviewTest {
         try await verifyTooltipPointerExit()
         try await verifyTooltipPointerMove()
         try await verifyTooltipOwnerMove()
+        try await verifyTooltipDisplayTransition()
         try await verifyTooltipControlReplacement()
         try await verifyTallTooltipPlacement()
         _ = NSApplication.shared

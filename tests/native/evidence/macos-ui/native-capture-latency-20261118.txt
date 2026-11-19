@@ -3274,3 +3274,24 @@ The first-frame time in the loaded batch had medians of 60.0,
 establish editor cadence or parity for untested formats.
 The three FFmpeg sparse timeline tests and the 56 related
 Electron tests passed.
+
+2026-11-19 macOS tooltip display transition while a screenshot waits
+
+The AppKit fixture used two adjacent rectangles inside the built-in
+Retina display. The destination rectangle was 220 points wide. The
+fixture held the screenshot barrier after the panel was registered
+at alpha zero. The pointer crossed within a straddling owner in light
+mode. For the dark trial the owner also moved into the destination.
+
+Baseline placement with the test's display geometry injected
+tooltip display transition: movedOwner=false, visible=true, destinationFit=false
+
+Revised placement
+tooltip display transition: movedOwner=false, visible=true, destinationFit=true
+tooltip display transition: movedOwner=true, visible=true, destinationFit=true
+
+Both revised panels rewrapped the label on the destination, fit the
+destination rectangle, and kept a four-point owner gap. The original
+panel and WindowServer exclusion ID survived the move. Each dismissal
+cleared its registration. The test used generated coordinates and one
+display, so physical mixed-DPI transitions remain unverified.

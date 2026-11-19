@@ -9792,6 +9792,27 @@ opacity check for production use. Three development FFmpeg
 timeline tests and 56 Electron reference tests passed.
 [Packed RGB evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltips crossing displays during capture
+
+The protected tooltip now resolves the current pointer's display
+after the capture wait. If the display changes, AppKit fits the
+existing panel to the destination work area before revealing it.
+The panel retains its capture-exclusion ID. If the pointer no
+longer has a display or a visible owner, the pending panel retires.
+
+A native fixture simulated adjacent displays inside the built-in
+Retina screen. The old panel became visible outside the destination
+work area when the pointer crossed within a straddling owner.
+The revised panel fit the 220-point destination after both a
+pointer-only crossing and an owner move. The long label rewrapped,
+the panel kept a four-point gap below the owner, and dismissal
+removed its exclusion entry. The fixture used light and dark
+appearances and app-local coordinates. The full Swift fixtures
+and daemon typechecks passed on arm64 and Rosetta x86_64. All 70
+related Electron and contract tests passed. Physical multi-display
+and mixed-DPI behavior remain open.
+[Display transition results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
