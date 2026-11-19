@@ -428,6 +428,76 @@ struct ScrollCapturePreviewTest {
     }
 
     @MainActor
+    static func verifyNarrowTooltipEllipsis() async throws {
+        guard let frame = NSScreen.screens.first?.visibleFrame, frame.width >= 104,
+              frame.height >= 180 else {
+            print("SKIP tooltip ellipsis: no suitable AppKit display")
+            return
+        }
+        let work = NSRect(x: frame.midX - 52, y: frame.midY - 90, width: 104, height: 180)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+            work.contains(point) ? .init(frame: work, visibleFrame: work) : nil
+        })
+        let labels = [(String(repeating: "A", count: 200), false), (String(repeating: "חדשות וכותרת", count: 20), true)]
+        var sequence: UInt64 = 0
+        for dark in [false, true] {
+            for (text, rightToLeft) in labels {
+                sequence += 1
+                precondition(tooltip.accept(sequence: sequence, owner: 1, text: text))
+                let shown = try await tooltip.show(
+                    sequence: sequence, owner: 1, text: text, dark: dark,
+                    at: NSPoint(x: work.midX, y: work.midY)
+                )
+                guard shown, let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let font = label.font else {
+                    preconditionFailure("The narrow tooltip label was not available")
+                }
+                precondition(panel.isVisible && work.contains(panel.frame))
+                precondition(label.bounds.width <= 80)
+                func paintsEllipsis() -> Bool {
+                    let bitmap = NSBitmapImageRep(
+                        bitmapDataPlanes: nil, pixelsWide: Int(label.bounds.width * 2),
+                        pixelsHigh: Int(label.bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4,
+                        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                        bytesPerRow: 0, bitsPerPixel: 0
+                    )!
+                    bitmap.size = label.bounds.size
+                    label.cacheDisplay(in: label.bounds, to: bitmap)
+                    let lastLine = 3 * bitmap.pixelsHigh / 4..<bitmap.pixelsHigh
+                    var spans: [(width: Int, height: Int)] = []
+                    var previousInk = -2
+                    for x in 0..<bitmap.pixelsWide {
+                        let count = lastLine.filter { (bitmap.colorAt(x: x, y: $0)?.alphaComponent ?? 0) > 0.15 }.count
+                        guard count > 0 else { continue }
+                        if previousInk == x - 1 {
+                            spans[spans.count - 1].width += 1
+                            spans[spans.count - 1].height = max(spans[spans.count - 1].height, count)
+                        } else {
+                            spans.append((width: 1, height: count))
+                        }
+                        previousInk = x
+                    }
+                    let trailing = rightToLeft ? Array(spans.reversed()) : spans
+                    let dots = trailing.suffix(3)
+                    let dotLimit = Int(ceil(font.pointSize / 2))
+                    return trailing.count > 3
+                        && dots.allSatisfy { $0.width <= dotLimit && $0.height <= dotLimit }
+                        && trailing[trailing.count - 4].height > dotLimit
+                }
+                precondition(paintsEllipsis(), "The final visible line must paint an ellipsis at the reading end")
+                label.cell?.truncatesLastVisibleLine = false
+                precondition(!paintsEllipsis(), "The pixel check must detect a missing ellipsis")
+                sequence += 1
+                precondition(!tooltip.accept(sequence: sequence, owner: 1, text: nil))
+                await waitUntil("The narrow tooltip was not dismissed") { registry.currentWindowIDs().isEmpty }
+                print("visible narrow tooltip: \(dark ? "dark" : "light"), ellipsis on the \(rightToLeft ? "left" : "right")")
+            }
+        }
+    }
+
+    @MainActor
     static func captureStrictScrollFrame(_ args: [String]) async {
         guard CGPreflightScreenCaptureAccess() else {
             print("SKIP strict scroll frame: Screen Recording permission was not already granted")
@@ -1042,6 +1112,7 @@ struct ScrollCapturePreviewTest {
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                     try await verifyTooltipFallbackClearsPointer()
+                    try await verifyNarrowTooltipEllipsis()
                 } else {
                     await verifyAsyncScrollComparison()
                     try await runRecordingCoordinationChecks()
@@ -1506,6 +1577,7 @@ struct ScrollCapturePreviewTest {
         try await verifyTooltipWaitsForOverlappingCaptures()
         try await verifyTallTooltipPlacement()
         try await verifyTooltipFallbackClearsPointer()
+        try await verifyNarrowTooltipEllipsis()
         _ = NSApplication.shared
         if let screen = NSScreen.screens.first {
             let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)

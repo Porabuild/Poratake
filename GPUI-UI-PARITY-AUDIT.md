@@ -11084,6 +11084,19 @@ and daemon contract tests. The probe used app-local coordinates
 on the built-in display.
 [Tooltip fallback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS ellipsis in narrow protected tooltips
+
+The native fixture renders an unbroken English token and Hebrew
+text at 2× in an injected 104-point work area. The tooltip fits
+the area with a label at most 80 points wide. The fourth line
+paints an ellipsis on the right for English and on the left for
+Hebrew, in both light and dark.
+
+The regression reads the label pixels and detects the three dots
+at the reading end. Disabling truncation in the test panel makes
+the check fail, so the result verifies the rendered glyphs.
+[Native ellipsis verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

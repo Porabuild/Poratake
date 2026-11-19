@@ -5027,3 +5027,25 @@ The focused placement command and complete Swift fixture passed
 on arm64 and Rosetta x86_64. Both full daemon typechecks and 138
 Electron reference and contract tests passed. This used app-local
 coordinates and checked the registry without capturing the desktop.
+
+2026-11-19 macOS ellipsis in narrow protected tooltips
+====================================================
+
+The AppKit fixture injected a 104x180-point work area on the built-in
+display, then showed the real protected tooltip with an 80-point
+maximum text width. It used a 200-character English token and a
+long Hebrew label. The harness rendered the NSTextField at 2x in
+light and dark.
+
+The last visible line had three short ink spans at its reading
+end. For English they were on the right, and for Hebrew they
+were on the left. Disabling truncation on the same visible label
+made the pixel check fail in all four cases. Independent AppKit
+label renders on a white backdrop were inspected at 80 points.
+Both showed four text lines with the visible ellipsis at the
+expected end.
+
+Focused --tooltip-placement and complete Swift fixtures passed
+on Apple Silicon and Rosetta. The six Electron reference and
+daemon contract files passed all 138 tests. The probe used
+app-local coordinates and captured only the generated label.
