@@ -2343,3 +2343,64 @@ Capture fixture RPC medians were 0.2 ms in light and 0.4 ms in dark,
 with a 1.7 ms maximum. The pane and thumbnail times exclude native
 ScreenCaptureKit work. Physical input and presentation were outside
 this run. Units are milliseconds.
+
+2026-11-19 macOS video frame socket under encoding load
+
+The GPUI arm64 development app at 6ae1c224 played a generated
+3840x2160, 60 fps H.264 clip. The fixture broker supplied the clip
+and synthetic app-local commands. Each test encoder processed
+the same input with libx264 veryfast and two input/output threads,
+discarding its output. Other host work was uncontrolled. Samples
+count applied preview updates from 0.4 to 2.4 seconds after Play.
+They time the app and decoder stages rather than display presentation.
+All timing values are milliseconds unless specified.
+
+The first test compared buffered and direct FFmpeg I/O using the
+same 1 MiB socket. Standalone 120-frame transfer median with one
+encoder was 756 ms buffered and 683 ms direct. All eight no-load
+editor runs applied 120 updates. With one encoder, both arms
+applied 119–120. With two encoders, four baseline runs applied
+120, 120, 120 and 25 updates. Their paired direct runs applied
+120, 119, 7 and 105. The direct run with seven updates waited
+473 ms on its slowest completed decoder request. The test kept
+the existing buffered output.
+
+The send-buffer test used the same wrapper in both arms. It set
+only SO_SNDBUF on inherited FFmpeg stdout and verified the value
+read back from the kernel. Reader settings and all FFmpeg arguments
+were identical. The arms alternated within both appearance batches.
+One interrupted repeat was excluded after the encoder progress pipe
+blocked on process shutdown. The completed retry drained that pipe.
+
+Run Theme  Updates  Median payload  Max payload   Max decode     Max query
+  1 light           1/4  181.88/22.82  235.50/49.99 1830.71/605.75    27.53/8.87
+  2 dark          27/68   15.80/15.12   60.28/34.16  204.57/83.50    17.84/4.17
+  3 dark          5/118   16.68/12.65   44.08/33.06   388.06/9.01     5.38/6.71
+  4 light           1/1   93.43/58.75 195.66/129.58 518.41/658.60   35.58/26.30
+  5 light           2/4   21.94/22.23  382.45/63.87 1683.33/693.11   42.15/35.83
+  6 dark            2/5   36.14/18.18 119.11/150.77 826.12/678.48   15.32/17.60
+  7 dark            1/1   71.42/33.64 216.23/187.98 405.29/667.72   11.57/44.35
+  8 light           2/2   44.93/28.86 220.02/197.52 960.82/530.32   33.58/76.12
+
+Each cell gives the 1 MiB / 4 MiB result in that order.
+The worst 1 MiB payload read broke down into 0.491 ms allocation,
+0.009 ms to first byte and 381.952 ms for the remaining bytes.
+The timings locate the wait in payload delivery.
+
+The compiled baseline and updated app repeated two loaded pairs.
+The wrapper observed SO_SNDBUF without changing it.
+
+Theme Buffer MiB  Updates  Median payload  Max payload  Max decode  Max query
+light          4           3       15.09      229.85      780.31        5.60
+light          1          19       16.01      144.58      240.42       10.91
+dark           1           1       26.76      235.19      659.78      128.43
+dark           4           7       19.33       91.93      498.68        9.58
+
+Standalone FFmpeg socket probes verified identical frame SHA-256
+hashes and timestamps across 30 startup and 30 no-accurate-seek
+frames with both socket sizes. The native app captured matching
+editor preview PNGs and exported video after a 1.25-second split
+in each appearance. All 120 decoded output frames and timestamps
+matched the respective baseline. The EOF regression and three
+development FFmpeg sparse timeline tests passed. The larger
+buffer preserves the fallback on systems that reject the request.

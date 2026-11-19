@@ -748,6 +748,9 @@ mod backend {
     const FRAME_SOCKET_BUFFER: usize = 1024 * 1024;
 
     #[cfg(target_os = "macos")]
+    const MAX_FRAME_SOCKET_SEND_BUFFER: usize = 4 * 1024 * 1024;
+
+    #[cfg(target_os = "macos")]
     fn frame_socket(frame_size: usize) -> Option<(std::os::unix::net::UnixStream, Stdio)> {
         use std::ffi::{c_int, c_void};
         use std::os::fd::{AsRawFd, OwnedFd};
@@ -771,20 +774,27 @@ mod backend {
             return None;
         }
         let (reader, writer) = UnixStream::pair().ok()?;
-        let capacity = FRAME_SOCKET_BUFFER as c_int;
-        for (fd, option) in [(reader.as_raw_fd(), SO_RCVBUF), (writer.as_raw_fd(), SO_SNDBUF)] {
-            let result = unsafe {
+        let configure_buffer = |fd, option, capacity: usize| {
+            let capacity = capacity as c_int;
+            unsafe {
                 setsockopt(
                     fd,
                     SOL_SOCKET,
                     option,
                     (&capacity as *const c_int).cast(),
                     std::mem::size_of::<c_int>() as u32,
-                )
-            };
-            if result != 0 {
-                return None;
+                ) == 0
             }
+        };
+        if !configure_buffer(reader.as_raw_fd(), SO_RCVBUF, FRAME_SOCKET_BUFFER) {
+            return None;
+        }
+        let capacity = frame_size.min(MAX_FRAME_SOCKET_SEND_BUFFER);
+        let writer_fd = writer.as_raw_fd();
+        if !configure_buffer(writer_fd, SO_SNDBUF, capacity)
+            && !configure_buffer(writer_fd, SO_SNDBUF, FRAME_SOCKET_BUFFER)
+        {
+            return None;
         }
         Some((reader, Stdio::from(OwnedFd::from(writer))))
     }
@@ -1064,7 +1074,7 @@ esac
             let mut command = ProcessCommand::new("/usr/bin/printf");
             command.arg("frame");
             let (mut child, mut output) =
-                spawn_frame_reader(command, FRAME_SOCKET_BUFFER + 1).unwrap();
+                spawn_frame_reader(command, MAX_FRAME_SOCKET_SEND_BUFFER).unwrap();
             let mut bytes = Vec::new();
             output.read_to_end(&mut bytes).unwrap();
             assert!(child.wait().unwrap().success());

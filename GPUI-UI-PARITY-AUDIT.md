@@ -9265,6 +9265,32 @@ in the area and Retina window sections. Physical input-to-display
 latency and consistent 4K60 playback under encoding load remain open.
 [Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video frame socket under encoding load
+
+For large decoded frames, the macOS transport now requests a send
+buffer up to 4 MiB, capped at the frame size. The receive buffer
+uses 1 MiB. If macOS denies the larger size, the sender retries at
+1 MiB before falling back to a pipe.
+
+Eight paired trials alternated 1 and 4 MiB sends with two concurrent
+4K encoders. The median of each trial's longest payload read fell
+from 206 to 97 ms. Seven pairs improved on that measure. Applied
+preview updates increased or held steady in all eight pairs, with
+medians of two and four out of 120. Some runs still applied only
+one update. In the slowest 1 MiB payload sample, the remainder after
+the first byte took 382 ms and allocation took less than 1 ms.
+FFmpeg's direct output mode also stalled and the default stays buffered.
+
+The compiled app reported the expected socket sizes in both themes.
+Its two loaded pairs were mixed, with 19 to three applied updates
+in light and one to seven in dark. Editor preview PNGs matched byte for byte between builds. All 120
+decoded export frames and their timestamps matched in each theme
+after splitting the 4K recording. The raw transport also preserved
+all 60 sampled frame hashes and timestamps across startup and a
+seek. All 1,192 GPUI tests and three sparse timeline FFmpeg tests
+passed. Sustained 4K60 playback under contention remains open.
+[Per-trial timing and frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
