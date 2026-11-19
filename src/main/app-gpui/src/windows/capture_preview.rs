@@ -448,7 +448,7 @@ impl CapturePreviewWindow {
                 id,
                 kind: PreviewKind::Video,
                 image: None,
-                thumbnail_loading: false,
+                thumbnail_loading: true,
                 thumbnail_cancel: None,
                 thumbnail_generation: 0,
                 #[cfg(all(test, feature = "parity"))]
@@ -1091,6 +1091,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     .spawn(async move { crate::video::decoder::VideoDecoder::open(&video_path) })
                     .await;
                 let Some(decoder) = decoder else {
+                    cx.update(|cx| apply_video_preview_frame(handle.into(), &entity, id, None, cx));
                     return;
                 };
                 let duration = decoder.info().duration;
@@ -1183,23 +1184,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                         })
                         .await;
                     cx.update(|cx| {
-                        let _ = entity.update(cx, |view, cx| {
-                            let Some(preview) =
-                                view.previews.iter_mut().find(|preview| preview.id == id)
-                            else {
-                                return;
-                            };
-                            let Some(playback) = preview.video.as_mut() else {
-                                return;
-                            };
-                            playback.in_flight = false;
-                            if let Some((image, blurred)) = frame {
-                                release_preview_images(preview, cx, None);
-                                preview.image = Some(image);
-                                preview.blurred = blurred;
-                            }
-                            cx.notify();
-                        });
+                        apply_video_preview_frame(handle.into(), &entity, id, frame, cx)
                     });
                 }
             })
@@ -1209,6 +1194,40 @@ fn pump_video_preview(cx: &mut App, id: u64) {
         .ok()
         .flatten();
     let _ = started;
+}
+
+type VideoThumbnails = (Arc<gpui::RenderImage>, Option<Arc<gpui::RenderImage>>);
+
+fn apply_video_preview_frame(
+    handle: AnyWindowHandle,
+    entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    frame: Option<VideoThumbnails>,
+    cx: &mut App,
+) {
+    let dismiss_token = entity
+        .update(cx, |view, cx| {
+            let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+            if preview.dismiss_animation.is_some() {
+                return None;
+            }
+            if let Some(playback) = preview.video.as_mut() {
+                playback.in_flight = false;
+            }
+            if let Some((image, blurred)) = frame {
+                release_preview_images(preview, cx, None);
+                preview.image = Some(image);
+                preview.blurred = blurred;
+            }
+            let finished_loading = std::mem::take(&mut preview.thumbnail_loading);
+            cx.notify();
+            (finished_loading && view.revealed).then(|| preview.dismiss_token.clone())
+        })
+        .ok()
+        .flatten();
+    if let Some(dismiss_token) = dismiss_token {
+        schedule_auto_dismiss(handle, id, cx, dismiss_token);
+    }
 }
 
 fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
@@ -1223,7 +1242,7 @@ fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
 fn video_thumbnails(
     frame: &crate::video::decoder::DecodedFrame,
     blur: bool,
-) -> Option<(Arc<gpui::RenderImage>, Option<Arc<gpui::RenderImage>>)> {
+) -> Option<VideoThumbnails> {
     if frame.width == 0 || frame.height == 0 {
         return None;
     }
@@ -5114,7 +5133,11 @@ mod tests {
                     .update(cx, |view, _, _| {
                         view.previews
                             .iter()
-                            .map(|preview| (preview.kind, preview.path.clone()))
+                            .map(|preview| {
+                                assert!(!preview.thumbnail_loading);
+                                assert!(preview.dismiss_token.load(Ordering::Relaxed) > 0);
+                                (preview.kind, preview.path.clone())
+                            })
                             .collect::<Vec<_>>()
                     })
                     .ok()
@@ -5142,6 +5165,16 @@ mod tests {
         cx.update(|cx| {
             crate::state::set_test_state(cx, config);
             CapturePreviewWindow::open_video(cx, project);
+            let handle = registry::handle(WindowKind::CapturePreview, cx)
+                .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+                .unwrap();
+            handle
+                .update(cx, |view, _, _| {
+                    let preview = &view.previews[0];
+                    assert!(preview.thumbnail_loading);
+                    assert_eq!(preview.dismiss_token.load(Ordering::Relaxed), 0);
+                })
+                .unwrap();
         });
         cx.run_until_parked();
 
@@ -5163,7 +5196,12 @@ mod tests {
             });
         };
         let first = stack
-            .update(cx, |view, _, _| view.previews[0].image.clone())
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(!preview.thumbnail_loading);
+                assert!(preview.dismiss_token.load(Ordering::Relaxed) > 0);
+                preview.image.clone()
+            })
             .unwrap()
             .expect("the video thumbnail should be ready");
         redraw(cx, &first, None);

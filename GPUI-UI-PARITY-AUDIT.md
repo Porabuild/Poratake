@@ -7860,6 +7860,25 @@ time of 1,170 ms for 180 full-resolution frames. Scaling to
 took 1,157 ms and matched all output bytes and timestamps.
 The decoder settings were kept. [Raw pipe benchmark](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS recording preview dismissal after loading
+
+A recording preview used to start its auto-dismiss countdown before
+the first frame arrived. The card now uses the shared loading
+indicator while waiting. The countdown starts when the first frame
+is applied or the initial decode attempt fails. A failed decoder
+open clears loading and restores normal dismissal. Clipped cards
+still receive their full countdown after becoming visible.
+
+The first-frame regression failed on the old build before decoding
+finished. It now verifies that the countdown has not started during
+loading and that it is armed after the first frame, before the first
+autoplay tick. The missing-project case verifies that a failed open
+clears loading and arms the countdown. The existing image-atlas
+checks cover retiring old images after playback and dismissal. All
+46 preview tests passed. Before-and-after Metal renders of the 4K
+thumbnail matched byte for byte at 2× in light and dark for idle,
+hover and pointer exit.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
