@@ -778,18 +778,42 @@ mod backend {
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
                     let mut bytes = vec![0; frame_size];
-                    if output.read_exact(&mut bytes).is_err() {
+                    let payload = bytes.as_mut_slice();
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let (payload, payload_phases) = if trace_pid.is_some() {
+                        let allocated = std::time::Instant::now();
+                        let (first, rest) = payload.split_at_mut(1);
+                        if output.read_exact(first).is_err() {
+                            break;
+                        }
+                        (rest, Some((allocated, std::time::Instant::now())))
+                    } else {
+                        (payload, None)
+                    };
+                    if output.read_exact(payload).is_err() {
                         break;
                     }
                     #[cfg(all(feature = "parity", target_os = "macos"))]
-                    if let (Some(pid), Some(started), Some(received)) =
-                        (trace_pid, timestamp_started, timestamp_received)
-                    {
+                    if let (
+                        Some(pid),
+                        Some(started),
+                        Some(received),
+                        Some((allocated, first_byte)),
+                    ) = (
+                        trace_pid,
+                        timestamp_started,
+                        timestamp_received,
+                        payload_phases,
+                    ) {
+                        let finished = std::time::Instant::now();
                         println!(
-                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3}",
+                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3} {:.3} {:.3} {:.3}",
                             timestamp - start_time,
                             received.duration_since(started).as_secs_f64() * 1000.,
-                            received.elapsed().as_secs_f64() * 1000.,
+                            finished.duration_since(received).as_secs_f64() * 1000.,
+                            allocated.duration_since(received).as_secs_f64() * 1000.,
+                            first_byte.duration_since(allocated).as_secs_f64() * 1000.,
+                            finished.duration_since(first_byte).as_secs_f64() * 1000.,
                         );
                     }
                     if frame_tx

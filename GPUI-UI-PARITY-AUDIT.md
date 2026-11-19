@@ -8882,6 +8882,30 @@ latency remain open. The earlier intermittent 4K60 decoder stall
 also remains open.
 [Per-trial evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS 4K60 frame delivery during playback stalls
+
+GPUI played a generated 3840×2160 H.264 clip at 60 fps with the
+development FFmpeg binary. Four of six initial runs delivered 180
+preview updates in three seconds. The other two delivered 164 and 87. A second batch reproduced longer waits with both the software
+and VideoToolbox decoders. In the slowest completed software
+request, frame delivery took 1,121 ms. App-local command replies
+still completed within 22 ms across both batches.
+
+The VideoToolbox trial matched all 300 BGRA frame checksums and
+timestamps from the software decoder. It reduced FFmpeg user CPU
+time in the standalone comparison and still stalled in the app.
+The default remains software decoding.
+
+The opt-in trace now separates buffer allocation, the wait for
+the first byte, and the rest of the payload read. Six unmodified
+GPUI runs with this trace delivered 180 preview updates each.
+Controlled 200 ms holds before and after the first byte appeared
+in the expected trace fields. The earlier long stalls occurred
+after timestamp delivery. Their cause within payload delivery
+remains open. All 1,189 GPUI tests and both sparse-timeline
+development FFmpeg tests passed.
+[Per-run evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

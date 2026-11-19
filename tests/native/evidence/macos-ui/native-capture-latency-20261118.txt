@@ -1590,3 +1590,70 @@ dark      3   38.0     51.0    33.6    41.7            44.3            66.5     
 dark      4   69.0     51.5    20.9    47.0            50.4            62.7      122.9   145.6
 dark      5   50.1     56.9    17.8    44.3            21.5            49.2      162.0   172.7
 dark      6   49.9     54.3    36.1    74.8            78.0            78.0      169.9   233.6
+
+2026-11-19 macOS 4K60 frame delivery during playback stalls
+
+The Apple M5 Pro development app used a generated five-second
+3840x2160 H.264, 60 fps clip at 109 Mbps and the bundled FFmpeg
+9.0.1 binary. The fixture daemon supplied the recording and
+app-local commands opened the editor and started playback.
+The test counted applied GPUI updates between 0.5 and 3.5 seconds
+from the Play acknowledgement. It queried playback state every
+250 ms. Command timing includes local pipe transport and the
+editor handler. No system input or display presentation was timed.
+All timing columns are milliseconds.
+
+Initial batch        Updates   Decode wait max   Payload read max   Command max
+Light 1                   87            143.90              45.04          0.90
+Dark 1                   180              0.04              11.88          0.10
+Light 2                  180              0.07              14.12          0.20
+Dark 2                   180              0.04              12.54          0.20
+Light 3                  164             56.19              24.97          0.30
+Dark 3                   180              0.03              11.11          0.10
+
+The second batch ran the variants sequentially in the order below.
+The wrapper added -hwaccel videotoolbox only for raw video decode.
+Other application and decoder arguments stayed the same. Host load
+was uncontrolled. A dash means no frame request completed within
+the interval. All samples queried the app 12 times in the interval.
+
+Second batch         Updates   Decode wait max   Payload read max   Command max
+VideoToolbox light         2          1,190.56             117.41          2.40
+Software dark              1            847.50             413.44         21.40
+Software light             0                 –             835.65          8.70
+VideoToolbox dark          1            698.67             117.43          1.80
+VideoToolbox light         3          1,526.47             197.45          3.00
+Software dark              4          1,120.95              62.00          7.10
+
+In this batch the largest wait on the frame timestamp channel was
+0.29 ms. Multiple payload reads can be needed for one frame
+request as it catches up to the requested time. The total can
+therefore exceed any individual payload read. In a separate single
+pair of FFmpeg-only runs, software and VideoToolbox matched the
+CRC32, frame size and timestamps for all 300 BGRA frames. Software
+took 0.98 s elapsed and 4.80 s user CPU. VideoToolbox took 1.51 s
+elapsed and 1.46 s user CPU. This pair covered the generated clip
+and measured decoding and hashing without GPUI or pipe transfer.
+
+The revised trace appended buffer allocation, first byte wait
+and remainder read to the total payload timing. Six software
+playbacks, three per appearance, applied 180 updates each. Their
+maximum per-run command round trip was 0.20 ms. Their largest
+completed decoder request was 0.032 ms. Buffered frames explain
+why decoder request times can be smaller than each payload read.
+
+Revised trace          Allocation max   First byte max   Remainder max
+Light 1                          1.68             0.01           14.06
+Dark 1                           0.30             0.00           10.74
+Light 2                          0.32             0.01           11.40
+Dark 2                           0.36             0.01           10.49
+Light 3                          0.36             0.01            9.99
+Dark 3                           0.37             0.01           10.80
+Held before first byte           0.55           209.74           18.93
+Held after first byte            1.03             0.01          230.83
+
+Each controlled run relayed the original bytes and added a 200 ms
+hold every 40 frames through frame 240. The relay introduced its
+own overhead. The unmodified runs with the revised trace did not
+reproduce the long stalls in the earlier batch. The original
+payload delay has not yet been isolated to an FFmpeg or host phase.
