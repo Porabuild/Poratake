@@ -491,11 +491,13 @@ struct ScrollCapturePreviewTest {
     static func verifyWideFixedHeaderSeam() {
         let wideWidth = 1280
         let wideViewport = 160
-        let wideShift = 86
-        for (perturbed, noisyOverlap) in [(false, false), (true, false), (true, true)] {
+        let cases = [(86, false, false), (86, true, false), (86, true, true), (88, false, true)]
+        for (wideShift, perturbed, noisyOverlap) in cases {
+            let duplicateStart = 80 + wideShift
             let repeatedCenter: (Int, Int) -> Int = { x, row in
-                guard (240..<1040).contains(x), (166..<206).contains(row) else { return row }
-                return x == 640 && row == 172 && perturbed ? row - 45 : row - 46
+                guard (240..<1040).contains(x), (duplicateStart..<(duplicateStart + 40)).contains(row) else { return row }
+                let originalRow = row - duplicateStart + wideViewport - 40
+                return x == 640 && row == 172 && perturbed ? originalRow + 1 : originalRow
             }
             let wideFrames = (0..<2).map { index in
                 fixedFooterFrame(
@@ -510,9 +512,14 @@ struct ScrollCapturePreviewTest {
             let wideOverlap = ScrollCaptureModule().testFindOverlap(
                 topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
             )
-            print("wide fixed-header overlap (perturbed center: \(perturbed), noisy overlap: \(noisyOverlap)):", wideOverlap as Any)
+            print("wide fixed-header overlap (shift: \(wideShift), perturbed center: \(perturbed), noisy overlap: \(noisyOverlap)):", wideOverlap as Any)
             fflush(stdout)
             precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
+            if wideShift == 88 {
+                precondition(ScrollCaptureModule().testFindOverlap(
+                    topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: 120
+                ) == 72, "The expected scroll step must not choose between tied center matches")
+            }
             let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("poratake-scroll-wide-fixed-header-\(UUID().uuidString).png")
             defer { try? FileManager.default.removeItem(at: wideOutput) }
@@ -527,6 +534,20 @@ struct ScrollCapturePreviewTest {
             precondition(wideOverlaps == [wideViewport - wideShift])
             precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
         }
+
+        let tiedFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: false, width: wideWidth, height: wideViewport,
+                footerHeight: 0, step: 88, headerHeight: 24,
+                bodyRow: { x, row in
+                    if index == 1 && x == 0 && row == 140 { return row + 1 }
+                    return (168..<208).contains(row) ? row - 48 : row
+                }
+            )
+        }
+        precondition(ScrollCaptureModule().testFindOverlap(
+            topFrame: tiedFrames[0], bottomFrame: tiedFrames[1], expectedOverlap: 72
+        ) == nil, "A center tie must still stop when the full-width scores tie")
 
         let ambiguousFrames = (0..<2).map { index in
             fixedFooterFrame(

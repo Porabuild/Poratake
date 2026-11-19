@@ -2757,3 +2757,32 @@ final 171.37, 170.79, 175.03, 171.70, 172.54, 170.36, 175.32, 175.15
 verified 44.50, 44.67, 45.23, 46.92, 43.83, 44.90, 45.67, 46.01
 final 24 samples median 173.13 ms, range 170.36–176.59 ms
 verified 24 samples median 44.70 ms, range 43.83–46.92 ms
+
+2026-11-19 macOS scroll seam recovery for tied center matches
+
+The Swift fixture used 1280x160 frames with a fixed 24-row header.
+The genuine 88-row translation yields overlap 72. The center also
+contains a repeated 40-row block at overlap 120. One changed pixel
+outside the center and inside the true overlap precludes an exact
+whole-image match. The baseline at 27b4d102 stopped. The revised
+matcher used the full-width score to select 72. It selected the
+same seam with an expected overlap of 120. The changed pixel was
+in a row retained from the first frame, so the 1280x248 preview and
+saved PNG both matched the generated document. A separate fixture
+repeated the 40 rows across the full width and verified that the
+tie leaves the accepted prefix intact.
+
+Baseline focused output
+wide fixed-header overlap (shift: 86, perturbed center: false, noisy overlap: false): Optional(74)
+wide fixed-header overlap (shift: 86, perturbed center: true, noisy overlap: false): Optional(74)
+wide fixed-header overlap (shift: 86, perturbed center: true, noisy overlap: true): Optional(74)
+wide fixed-header overlap (shift: 88, perturbed center: false, noisy overlap: true): nil
+
+Current focused output
+wide fixed-header overlap (shift: 86, perturbed center: false, noisy overlap: false): Optional(74)
+wide fixed-header overlap (shift: 86, perturbed center: true, noisy overlap: false): Optional(74)
+wide fixed-header overlap (shift: 86, perturbed center: true, noisy overlap: true): Optional(74)
+wide fixed-header overlap (shift: 88, perturbed center: false, noisy overlap: true): Optional(72)
+
+Both native Swift fixture suites passed on arm64 and Rosetta x86_64.
+Three Electron scroll suites passed all 56 tests.

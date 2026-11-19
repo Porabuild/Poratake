@@ -1436,10 +1436,12 @@ class ScrollCaptureModule: NSObject, Module {
         } else {
             hasAmbiguousMatches = false
         }
-        let requiresExactOverlap = !footer.isExact
-            || hasAmbiguousMatches
-            || bestScore / 3 > maxMeanOverlapChannelDifference
-            || (headerHeight == 0 && bestMatch == minOverlap)
+        let isConfidentCenterScore = bestScore / 3 <= maxMeanOverlapChannelDifference
+        let isMinimumOverlapWithoutHeader = headerHeight == 0 && bestMatch == minOverlap
+        let requiresExactOverlap = !footer.isExact || hasAmbiguousMatches
+            || !isConfidentCenterScore || isMinimumOverlapWithoutHeader
+        let canResolveCenterTie = hasAmbiguousMatches && isConfidentCenterScore
+            && !isMinimumOverlapWithoutHeader && footer.isExact && stripWidth < topFrame.width
         var wideScore: Double?
         if !requiresExactOverlap, stripWidth < topFrame.width,
            let centerScore = scores.first(where: { $0.overlap == bestMatch })?.score {
@@ -1502,11 +1504,11 @@ class ScrollCaptureModule: NSObject, Module {
                 guard alternative < minimumOverlapRows else { return nil }
                 return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
             }
-            guard !requiresExactOverlap, let wideScore else { return nil }
-            if wideScore > maxMeanOverlapChannelDifference {
+            if canResolveCenterTie || wideScore.map({ $0 > maxMeanOverlapChannelDifference }) == true {
                 guard let overlap = recoverFullWidthOverlap() else { return nil }
                 return ScrollFrameAlignment(overlap: overlap, footerHeight: footerHeight)
             }
+            guard !requiresExactOverlap else { return nil }
         }
 
         guard !isCancelled(), bestMatch < contentHeight else { return nil }

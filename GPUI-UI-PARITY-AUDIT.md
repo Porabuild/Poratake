@@ -9463,6 +9463,24 @@ suites passed on arm64 and x86_64 under Rosetta, and 56 Electron
 scroll tests passed. Identical full-frame histories remain ambiguous.
 [Native recovery and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS scroll seam recovery for tied center matches
+
+Two seams tied in the center strip of a wide fixed-header capture.
+A changed pixel inside the real overlap prevented the exact
+whole-image match. The previous matcher stopped after the first
+frame. The updated matcher checks the full width when strong center
+matches tie and the footer passes the existing exactness rule.
+It still requires a unique full-width score within the existing
+confidence limits.
+
+The regression recovered the 72-row seam even when the requested
+step favored the false 120-row seam. Its preview and saved
+1280×248 PNG matched the generated page pixel for pixel. When
+both candidates also tied at full width, the matcher stopped.
+The arm64 and x86_64 native Swift fixtures passed, along with
+56 Electron scroll tests. These tests used generated frames.
+[Native seam evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
