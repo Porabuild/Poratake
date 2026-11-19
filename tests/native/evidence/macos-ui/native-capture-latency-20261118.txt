@@ -2457,3 +2457,69 @@ decoded all 120 output frames in each appearance, and frame digests
 and timestamps matched the baseline. Only the built-in 3456x2234
 Retina display was online. The shared Unix FFmpeg implementation
 was exercised on macOS.
+
+2026-11-19 macOS exact video seeks avoid unnecessary preroll
+
+The arm64 development app compared the baseline at 8c07f3cf
+with the revised decoder. Both used bundled FFmpeg 9.0.1 and
+a generated six-second 3840x2160 H.264 clip at 60 fps with
+one-second keyframe intervals. The four temporary app sessions
+opened the recording via its fixture thumbnail and ran the same
+seek sequence. Times run from app-local command submission to
+the preview update. Payload counts include decoder read-ahead. A
+separate development test batch and other host work overlapped
+this comparison. These are individual observations.
+
+1 light before t=2.020000 ms=2725.7 payloads=125 decoders=1
+1 light before t=5.100000 ms=2705.5 payloads=130 decoders=1
+1 light before t=3.999990 ms=1441.8 payloads=123 decoders=1
+1 light before t=4.500000 ms=452.6 payloads=31 decoders=1
+1 light after t=2.020000 ms=281.1 payloads=5 decoders=1
+1 light after t=5.100000 ms=456.9 payloads=10 decoders=1
+1 light after t=3.999990 ms=3266.3 payloads=124 decoders=2
+1 light after t=4.500000 ms=802.5 payloads=31 decoders=1
+1 dark after t=2.020000 ms=404.0 payloads=5 decoders=1
+1 dark after t=5.100000 ms=435.1 payloads=10 decoders=1
+1 dark after t=3.999990 ms=3369.0 payloads=124 decoders=2
+1 dark after t=4.500000 ms=1239.4 payloads=31 decoders=1
+1 dark before t=2.020000 ms=3218.3 payloads=125 decoders=1
+1 dark before t=5.100000 ms=2510.5 payloads=130 decoders=1
+1 dark before t=3.999990 ms=4175.8 payloads=123 decoders=1
+1 dark before t=4.500000 ms=2399.4 payloads=29 decoders=1
+
+The synthetic 3.999990-second target made the direct attempt
+start at 4.0 seconds. The fallback selected the same preceding
+frame as the baseline. All five editor PNGs per appearance matched
+byte for byte. All 180 decoded export frames per appearance matched
+the baseline after splitting at 1.25 seconds. The fallback regression
+also passed in the Rust suite.
+
+Standalone measurements compared the previous preroll seek with
+a request at the target. The reader stopped at the first following
+timestamp without transferring that following frame's payload.
+Rows with valid=False exercised a forward rounding case that uses
+the preroll fallback in the app. The camera probes use the actual
+64x64 fixture dimensions.
+
+closed.mp4 2.020000 pts=2.0166666666666666/2.0166666666666666 same=True valid=True frames=122/2 ms=6526.2/396.4
+closed.mp4 3.999990 pts=3.9833333333333334/4.0 same=False valid=False frames=120/1 ms=6416.2/114.4
+closed.mp4 4.000000 pts=4.0/4.0 same=True valid=True frames=121/1 ms=6364.7/425.2
+closed.mp4 4.080000 pts=4.066666666666666/4.066666666666666 same=True valid=True frames=125/5 ms=4901.7/1292.9
+closed.mp4 5.660000 pts=5.65/5.65 same=True valid=True frames=160/40 ms=4503.9/1411.3
+closed.mp4 5.990000 pts=5.983333333333333/5.983333333333333 same=True valid=True frames=180/60 ms=4483.2/2555.9
+open-offset.mp4 2.015000 pts=2.0/2.0 same=True valid=True frames=61/1 ms=230.9/192.4
+open-offset.mp4 2.999990 pts=2.966666666666667/3.0 same=False valid=False frames=60/1 ms=81.4/77.2
+open-offset.mp4 3.000000 pts=3.0/3.0 same=True valid=True frames=61/1 ms=76.7/39.2
+open-offset.mp4 3.100000 pts=3.0999999999999996/3.0999999999999996 same=True valid=True frames=64/4 ms=150.0/41.4
+open-offset.mp4 4.000000 pts=4.0/4.0 same=True valid=True frames=61/1 ms=179.2/110.2
+open-offset.mp4 4.600000 pts=4.6/4.6 same=True valid=True frames=79/19 ms=199.8/79.2
+open-offset.mp4 5.980000 pts=5.966666666666667/5.966666666666667 same=True valid=True frames=60/30 ms=240.6/75.3
+sparse-screen-pause.mov 12.000000 pts=0.0/0.0 same=True valid=True frames=1/1 ms=19.2/20.7
+sparse-screen-pause.mov 29.500000 pts=0.0/0.0 same=True valid=True frames=1/1 ms=25.9/21.8
+sparse-screen-pause.mov 30.100000 pts=30.0/30.0 same=True valid=True frames=2/2 ms=17.8/19.5
+sparse-screen-pause.mov 30.980000 pts=30.966666666666665/30.966666666666665 same=True valid=True frames=3/3 ms=23.7/20.3
+camera-delayed-toggle.mov 3.000000 pts=0.0/0.0 same=True valid=True frames=1/1 ms=67.9/17.6
+camera-delayed-toggle.mov 10.100000 pts=10.0/10.0 same=True valid=True frames=2/2 ms=17.2/19.2
+camera-delayed-toggle.mov 11.100000 pts=11.0/11.0 same=True valid=True frames=3/3 ms=18.5/15.7
+camera-delayed-toggle.mov 16.100000 pts=16.0/16.0 same=True valid=True frames=4/4 ms=18.1/17.8
+camera-delayed-toggle.mov 19.000000 pts=19.0/19.0 same=True valid=True frames=6/6 ms=17.7/18.4

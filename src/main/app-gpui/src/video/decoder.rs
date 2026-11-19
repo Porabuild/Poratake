@@ -518,6 +518,7 @@ mod backend {
         frames: smol::channel::Receiver<Option<TimedFrame>>,
         spare_frame: smol::channel::Sender<Vec<u8>>,
         seek_start: f64,
+        fallback_seek_start: Option<f64>,
         current: Option<TimedFrame>,
         next: Option<TimedFrame>,
     }
@@ -670,17 +671,23 @@ mod backend {
         });
         let mut process = if restart {
             drop(decoder.take());
-            start(
-                ffmpeg,
-                path,
-                info,
-                start_time,
-                (time - STREAM_SEEK_PREROLL).max(0.0),
-            )?
+            let preroll_start = (time - STREAM_SEEK_PREROLL).max(0.0);
+            let seek_start = if preroll_start > 0.0 { time } else { 0.0 };
+            let mut process = start(ffmpeg, path, info, start_time, seek_start)?;
+            process.fallback_seek_start = (preroll_start > 0.0).then_some(preroll_start);
+            process
         } else {
             decoder.take()?
         };
-        let frame = smol::block_on(wait_for_frame(&mut process, time, cancelled));
+        let mut frame = smol::block_on(wait_for_frame(&mut process, time, cancelled));
+        if process.current.is_some() {
+            process.fallback_seek_start = None;
+        }
+        if let Some(preroll_start) = process.fallback_seek_start.filter(|_| frame.is_ok()) {
+            drop(process);
+            process = start(ffmpeg, path, info, start_time, preroll_start)?;
+            frame = smol::block_on(wait_for_frame(&mut process, time, cancelled));
+        }
         if matches!(frame, Ok(Some(_)) | Err(FrameReadError::Cancelled)) {
             *decoder = Some(process);
         }
@@ -972,6 +979,7 @@ mod backend {
             frames,
             spare_frame,
             seek_start,
+            fallback_seek_start: None,
             current: None,
             next: None,
         })
@@ -1049,6 +1057,7 @@ esac
                 frames,
                 spare_frame: smol::channel::bounded(1).0,
                 seek_start: 0.0,
+                fallback_seek_start: None,
                 current: None,
                 next: None,
             };
@@ -1085,6 +1094,7 @@ esac
                 frames: smol::channel::bounded(1).1,
                 spare_frame,
                 seek_start: 0.0,
+                fallback_seek_start: None,
                 current: None,
                 next: None,
             };
@@ -1281,6 +1291,7 @@ esac
                     frames,
                     spare_frame: smol::channel::bounded(1).0,
                     seek_start: 0.0,
+                    fallback_seek_start: None,
                     current: last_frame.map(|timestamp| TimedFrame {
                         timestamp,
                         frame: DecodedFrame {
@@ -1311,6 +1322,51 @@ esac
 
                 assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
             }
+        }
+
+        #[test]
+        fn direct_seek_retries_if_the_first_frame_is_ahead_of_the_target() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                r#"#!/bin/sh
+case "$5 $6" in
+  *'-ss 8.000000') printf d >> "$0.calls" ;;
+  *'-ss 6.000000')
+    printf p >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:7 pts_time:7\n' >&2
+    printf '\021\000\000\377'
+    ;;
+  *) exit 1 ;;
+esac
+printf '[Parsed_showinfo] n:1 pts:9 pts_time:9\n' >&2
+printf '\042\000\000\377'
+"#,
+            )
+            .unwrap();
+            let mut decoder = None;
+            let info = VideoInfo {
+                width: 1,
+                height: 1,
+                duration: 10.0,
+                frame_rate: 1.0,
+            };
+            let frame = read_frame(
+                &ffmpeg,
+                &directory.path().join("source.mov"),
+                8.0,
+                info,
+                0.0,
+                &mut decoder,
+                None,
+            )
+            .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [17, 0, 0, 255]);
+            assert_eq!(
+                std::fs::read(directory.path().join("ffmpeg.calls")).unwrap(),
+                b"dp"
+            );
         }
 
         #[test]

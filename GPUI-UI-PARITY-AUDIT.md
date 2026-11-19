@@ -9315,6 +9315,31 @@ matched the baseline in each appearance after the same split. All
 1,193 GPUI tests and three sparse timeline FFmpeg tests passed.
 [Per-run timing and pixel evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS exact video seeks avoid unnecessary preroll
+
+When a new FFmpeg stream is needed for a distant time, the decoder
+asks for the target position. If that stream ends or starts above
+the target, it retries the previous preroll position. This preserves
+the frame just before a keyframe when the first seek rounds forward.
+
+In both appearances, a native editor test sought to 2.02 and 5.10
+seconds in a generated 3840×2160 video. The first seek read five
+payloads instead of 125 and the second read ten instead of 130.
+The longer-seek pairs measured 2.51–3.22 seconds before and
+0.28–0.46 seconds after. The reverse seek to 3.99999 seconds
+required the fallback and read one more payload than the baseline.
+Its latency varied. The next nearby seek read about 30 payloads
+in both builds.
+
+The startup and four seek snapshots matched byte for byte in
+each appearance. All 180 decoded export frames and timestamps
+matched the baseline in each appearance after the same split.
+Standalone checks covered an open GOP with a five-second start
+offset and the sparse screen and camera fixtures. All 1,194 GPUI
+tests and three sparse FFmpeg tests passed. Sustained playback
+under contention remains open.
+[Per-seek evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
