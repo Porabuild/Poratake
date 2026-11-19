@@ -9481,6 +9481,22 @@ The arm64 and x86_64 native Swift fixtures passed, along with
 56 Electron scroll tests. These tests used generated frames.
 [Native seam evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Save confirmation probe limits
+
+The isolated editor opened a Save sheet for an annotated 640×360
+fixture. Cancel dismissed it and returned the editor to idle without
+writing a file. The reopened sheet exposed its generated PNG name,
+temporary directory and enabled Save button in the AppKit
+accessibility tree.
+
+Direct AppKit confirmation raised an unimplemented-action exception.
+Poracode's accessibility invocation reported a stale snapshot. The
+window-targeted background and foreground input attempts left the
+sheet present and produced no PNG. This leaves native confirmation
+unverified. The 55 Electron screenshot and annotation reference
+tests passed. The temporary confirmation code was removed.
+[Native Save probe evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -2786,3 +2786,28 @@ wide fixed-header overlap (shift: 88, perturbed center: false, noisy overlap: tr
 
 Both native Swift fixture suites passed on arm64 and Rosetta x86_64.
 Three Electron scroll suites passed all 56 tests.
+
+2026-11-19 macOS Save confirmation probe limits
+
+The isolated development process created a 640x360 checkerboard and
+rendered a rectangle with 1,790 changed pixels. It opened a native
+Save sheet and cancelled it. The sheet closed, Save pending cleared,
+and the temporary profile contained only the source PNG.
+
+The next sheet showed an enabled Save action, the generated PNG
+name and the temporary folder. The sheet was visible in the parent
+editor's accessibility tree and in a window-scoped screenshot.
+The independent sheet window was listed by WindowServer but could
+not be inspected as its own desktop-control target.
+
+A temporary test-only call to NSSavePanel ok: raised
+NSGenericException, not implemented. It was removed. The desktop
+helper returned stale_snapshot on accessibility invocation of
+OKButton. A background pointer event reported unverified delivery.
+Two foreground clicks reported unchanged state. Return after
+foreground activation also left the sheet present. The probe's
+file check timed out and the isolated process was terminated.
+
+Computer Use was disabled after the attempts. The user's existing
+editor process remained open. All 55 selected Electron tests passed.
+Native confirmation remains unverified.
