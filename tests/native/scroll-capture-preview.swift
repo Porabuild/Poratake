@@ -523,6 +523,44 @@ struct ScrollCapturePreviewTest {
         print("tooltip pointer exit: no reveal after either capture barrier")
     }
 
+    @MainActor
+    static func verifyTooltipPointerMove() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 400 else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var pointer = NSPoint(x: owner.midX - 10, y: owner.midY)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Copy"))
+        let pending = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 1, owner: 1, text: "Copy", dark: false,
+                at: pointer, ownerFrame: owner
+            )
+        }
+        await waitUntil("The tooltip did not reach the screenshot barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        let panel = tooltip.testPanel!
+        let number = CGWindowID(panel.windowNumber)
+        let initialX = panel.frame.minX
+        precondition(panel.alphaValue == 0)
+        pointer.x += 18
+        registry.finishScreenshot()
+        let visible = try await pending.value
+        precondition(visible && tooltip.testPanel === panel)
+        precondition(registry.currentWindowIDs() == [number])
+        print("tooltip pointer move: horizontal change \(panel.frame.minX - initialX) points")
+        fflush(stdout)
+        precondition(panel.frame.minX == pointer.x + 12, "The tooltip must use the current pointer at reveal")
+        precondition(panel.frame.maxY == owner.minY - 4, "The tooltip must keep the owner gap")
+        precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+        await waitUntil("The moved tooltip was not unregistered") {
+            registry.currentWindowIDs().isEmpty
+        }
+    }
+
     static func verifyWideFixedHeaderSeam() {
         let wideWidth = 1280
         let wideViewport = 160
@@ -629,6 +667,7 @@ struct ScrollCapturePreviewTest {
                     await captureStrictScrollFrame(Array(CommandLine.arguments.dropFirst(2)))
                 } else if tooltipPointerExit {
                     try await verifyTooltipPointerExit()
+                    try await verifyTooltipPointerMove()
                 } else if tooltipPlacement {
                     try await verifyTallTooltipPlacement()
                 } else {
@@ -1086,6 +1125,7 @@ struct ScrollCapturePreviewTest {
 
         FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
         try await verifyTooltipPointerExit()
+        try await verifyTooltipPointerMove()
         try await verifyTooltipControlReplacement()
         try await verifyTallTooltipPlacement()
         _ = NSApplication.shared

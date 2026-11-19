@@ -69,13 +69,19 @@ final class ProtectedTooltip {
             await retire(panel)
             throw error
         }
+        let revealPoint = pointerLocation()
         guard isCurrent(sequence, owner: owner), self.panel === panel,
-              ownerFrame?.contains(pointerLocation()) != false else {
+              ownerFrame?.contains(revealPoint) != false else {
             if self.panel === panel {
                 self.panel = nil
                 await retire(panel)
             }
             return false
+        }
+        if revealPoint != point && screen.frame.contains(revealPoint) {
+            panel.setFrameOrigin(panelOrigin(
+                size: panel.frame.size, point: revealPoint, ownerFrame: ownerFrame, screen: screen
+            ))
         }
         panel.alphaValue = 1
         return true
@@ -117,32 +123,9 @@ final class ProtectedTooltip {
         let labelSize = NSSize(width: min(maxTextWidth, ceil(fitted.width)), height: ceil(fitted.height))
         let padding = NSSize(width: 8, height: 4)
         let size = NSSize(width: labelSize.width + padding.width * 2, height: labelSize.height + padding.height * 2)
-        let visible = screen.visibleFrame
-        var x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
-        let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
-        let below = anchorFrame.map { $0.minY - size.height - 4 } ?? point.y - 18 - size.height
-        let above = anchorFrame.map { $0.maxY + 4 } ?? point.y + 18
-        let belowFits = below >= visible.minY
-        let aboveFits = above + size.height <= visible.maxY
-        var preferredY = point.y - 18 - size.height
-        if belowFits {
-            preferredY = below
-        } else if aboveFits {
-            preferredY = above
-        } else if let anchorFrame {
-            let right = max(visible.minX, anchorFrame.maxX + 4)
-            let left = min(visible.maxX - size.width, anchorFrame.minX - size.width - 4)
-            if right + size.width <= visible.maxX {
-                x = right
-                preferredY = point.y - size.height / 2
-            } else if left >= visible.minX {
-                x = left
-                preferredY = point.y - size.height / 2
-            }
-        }
-        let y = min(max(preferredY, visible.minY), max(visible.minY, visible.maxY - size.height))
+        let origin = panelOrigin(size: size, point: point, ownerFrame: ownerFrame, screen: screen)
         let panel = NSPanel(
-            contentRect: NSRect(origin: NSPoint(x: x, y: y), size: size),
+            contentRect: NSRect(origin: origin, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -167,5 +150,33 @@ final class ProtectedTooltip {
         effect.addSubview(label)
         panel.contentView = effect
         return panel
+    }
+
+    private func panelOrigin(size: NSSize, point: NSPoint, ownerFrame: NSRect?, screen: NSScreen) -> NSPoint {
+        let visible = screen.visibleFrame
+        var x = min(max(point.x + 12, visible.minX), max(visible.minX, visible.maxX - size.width))
+        let anchorFrame = ownerFrame.flatMap { screen.frame.intersects($0) ? $0 : nil }
+        let below = anchorFrame.map { $0.minY - size.height - 4 } ?? point.y - 18 - size.height
+        let above = anchorFrame.map { $0.maxY + 4 } ?? point.y + 18
+        let belowFits = below >= visible.minY
+        let aboveFits = above + size.height <= visible.maxY
+        var preferredY = point.y - 18 - size.height
+        if belowFits {
+            preferredY = below
+        } else if aboveFits {
+            preferredY = above
+        } else if let anchorFrame {
+            let right = max(visible.minX, anchorFrame.maxX + 4)
+            let left = min(visible.maxX - size.width, anchorFrame.minX - size.width - 4)
+            if right + size.width <= visible.maxX {
+                x = right
+                preferredY = point.y - size.height / 2
+            } else if left >= visible.minX {
+                x = left
+                preferredY = point.y - size.height / 2
+            }
+        }
+        let y = min(max(preferredY, visible.minY), max(visible.minY, visible.maxY - size.height))
+        return NSPoint(x: x, y: y)
     }
 }

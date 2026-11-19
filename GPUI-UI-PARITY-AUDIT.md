@@ -9601,6 +9601,23 @@ app-local pointer coordinates on the built-in Retina display.
 Physical hover and mixed-display placement remain open.
 [Visible-tooltip evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS tooltip placement after a capture wait
+
+A protected tooltip could appear at an earlier pointer position
+after waiting for a screenshot to finish. The native panel now uses
+the current pointer position when it is ready to appear on the same
+display. It moves while transparent, retains its capture-exclusion ID,
+and keeps the four-point gap from the owner.
+
+A held-screenshot fixture moved the pointer 18 points within the
+owner. The old panel stayed at its initial position. The updated
+panel moved all 18 points. Existing pointer-exit and tooltip-owner
+replacement checks passed. The arm64 and Rosetta x86_64 Swift
+suites, full daemon typechecks on both architectures, and all 56
+Electron scroll tests passed. Verification used
+app-local pointer coordinates.
+[Pointer and capture-barrier evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

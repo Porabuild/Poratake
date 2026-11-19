@@ -2976,3 +2976,26 @@ The AppKit panel stayed in the visible frame and ignored mouse
 events. The tooltip window ID was registered until dismissal.
 Both complete native suites on arm64 and Rosetta x86_64 passed.
 The three Electron scroll cases covered 56 passing tests.
+
+2026-11-19 macOS tooltip placement after a capture wait
+
+The Swift test held the screenshot barrier after ProtectedTooltip
+created and registered its transparent AppKit panel. The fixture
+moved the coordinate 18 points while it remained inside the
+generated owner. Screen selection stayed on the built-in display.
+The previous panel showed at its original x position. The updated
+panel moved to pointer x plus 12 before reveal, with the same
+window ID and a four-point gap below the owner. Dismissal cleared
+its registration. No physical input or screen capture was posted.
+
+Baseline at c3a08c06
+tooltip pointer exit: no reveal after either capture barrier
+tooltip pointer move: horizontal change 0.0 points
+
+Current
+tooltip pointer exit: no reveal after either capture barrier
+tooltip pointer move: horizontal change 18.0 points
+
+The complete native Swift suites passed on arm64 and Rosetta
+x86_64, as did full daemon typechecks for both architectures and
+56 Electron scroll tests.
