@@ -5105,3 +5105,25 @@ device and requested no physical media access.
 
 The GPUI recording-control suite passed 22 tests. The Electron
 recording-control and daemon contract suites passed 82 tests.
+
+2026-11-20 macOS recording menus after an enumeration error
+===========================================================
+
+The recording toolbar's device refresh now consumes the RPC
+result directly and merges a list only when enumeration succeeds.
+The regression verifies that a failed reply retains cached rows
+and defaults for both microphone and camera. A successful empty
+reply clears only the refreshed device kind and its default.
+
+The native AppKit development probe opened the light microphone
+and dark camera menus with app-local input. A temporary fixture
+returned a list containing two named devices, a JSON-RPC failure,
+then a successful empty list. The probe compared raw RGBA bytes
+below the toolbar, including the menu contents and bounds. For both
+menus, the baseline error frame matched the empty frame. The
+updated error frame matched the frame containing both device rows.
+
+All 38 corresponding light and dark 2x Metal recording-control
+scenes matched byte for byte. The GPUI recording-control suite
+passed 23 tests. Electron reference and daemon contract tests
+passed all 82 cases. No live device access was needed.

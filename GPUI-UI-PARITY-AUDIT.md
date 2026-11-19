@@ -11144,6 +11144,24 @@ matched byte for byte. All 22 GPUI tests and 82 Electron reference
 and daemon contract tests passed.
 [Disconnected-device evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS recording device menus after an enumeration error
+
+A failed microphone or camera lookup now keeps the last successful
+device list and system-default label in the recording menu. A
+successful empty response still removes the corresponding options.
+
+The native AppKit probe opened a light microphone menu and a dark
+camera menu with generated devices. Each received a successful
+populated list, an injected error, and a successful empty list.
+The old error response rendered the same menu pixels as the empty
+list. The revised error response matched the populated menu.
+
+All 38 existing light and dark Metal scenes matched byte for byte.
+The targeted GPUI suite passed 23 tests and the Electron reference
+and daemon contract suites passed 82. The probes used fixture
+devices and app-local input.
+[Device enumeration error evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

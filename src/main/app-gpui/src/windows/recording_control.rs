@@ -2094,7 +2094,7 @@ impl RecordingControl {
         cx.spawn_in(window, async move |entity, cx| {
             let listed = cx
                 .background_executor()
-                .spawn(async move { crate::system::devices::list(&daemon, &[kind]) })
+                .spawn(async move { daemon.media_devices().list(&[kind]) })
                 .await;
             let _ = entity.update_in(cx, |this, window, cx| {
                 if !merge_device_refresh(
@@ -2859,11 +2859,18 @@ fn merge_device_refresh(
     current_request: u64,
     request: u64,
     kind: crate::system::devices::DeviceKind,
-    listed: crate::system::devices::MediaDeviceLists,
+    listed: anyhow::Result<crate::system::devices::MediaDeviceLists>,
 ) -> bool {
     if current_request != request {
         return false;
     }
+    let listed = match listed {
+        Ok(listed) => listed,
+        Err(error) => {
+            eprintln!("[devices] list failed: {error}");
+            return false;
+        }
+    };
     let (current_devices, current_default, reported_devices, reported_default) = match kind {
         crate::system::devices::DeviceKind::Microphone => (
             &mut devices.microphones,
@@ -4562,7 +4569,7 @@ mod tests {
             3,
             3,
             crate::system::devices::DeviceKind::Microphone,
-            listed,
+            Ok(listed),
         ));
         assert_eq!(devices.microphones[0].id, "mic-1");
         assert_eq!(devices.cameras[0].id, "camera-1");
@@ -4600,7 +4607,7 @@ mod tests {
             }
             let before = devices.clone();
             assert!(
-                !merge_device_refresh(&mut devices, 3, 3, kind, reply.clone()),
+                !merge_device_refresh(&mut devices, 3, 3, kind, Ok(reply.clone())),
                 "an identical list must not replace the open menu"
             );
             assert_eq!(devices, before);
@@ -4608,7 +4615,50 @@ mod tests {
                 DeviceKind::Microphone => reply.default_microphone_id = None,
                 DeviceKind::Camera => reply.default_camera_id = None,
             }
-            assert!(merge_device_refresh(&mut devices, 3, 3, kind, reply));
+            assert!(merge_device_refresh(&mut devices, 3, 3, kind, Ok(reply)));
+        }
+    }
+
+    #[test]
+    fn failed_device_refresh_preserves_the_last_successful_list() {
+        use crate::system::devices::{DeviceKind, MediaDevice, MediaDeviceLists};
+
+        let known = MediaDeviceLists {
+            microphones: vec![MediaDevice {
+                id: "mic-1".into(),
+                label: "Built-in microphone".into(),
+            }],
+            cameras: vec![MediaDevice {
+                id: "camera-1".into(),
+                label: "Built-in camera".into(),
+            }],
+            default_microphone_id: Some("mic-1".into()),
+            default_camera_id: Some("camera-1".into()),
+        };
+        for kind in [DeviceKind::Microphone, DeviceKind::Camera] {
+            let mut devices = known.clone();
+            let failure = Err(anyhow::anyhow!("enumeration failed"));
+            assert!(!merge_device_refresh(&mut devices, 3, 3, kind, failure));
+            assert_eq!(devices, known);
+            assert!(merge_device_refresh(
+                &mut devices,
+                4,
+                4,
+                kind,
+                Ok(MediaDeviceLists::default())
+            ));
+            match kind {
+                DeviceKind::Microphone => {
+                    assert!(devices.microphones.is_empty());
+                    assert!(devices.default_microphone_id.is_none());
+                    assert_eq!(devices.cameras, known.cameras);
+                }
+                DeviceKind::Camera => {
+                    assert!(devices.cameras.is_empty());
+                    assert!(devices.default_camera_id.is_none());
+                    assert_eq!(devices.microphones, known.microphones);
+                }
+            }
         }
     }
 
@@ -4628,7 +4678,7 @@ mod tests {
             4,
             3,
             crate::system::devices::DeviceKind::Microphone,
-            listed,
+            Ok(listed),
         ));
         assert!(devices.microphones.is_empty());
     }
