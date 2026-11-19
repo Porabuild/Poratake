@@ -7879,6 +7879,23 @@ checks cover retiring old images after playback and dismissal. All
 thumbnail matched byte for byte at 2× in light and dark for idle,
 hover and pointer exit.
 
+### 2026-11-19 macOS keyboard focus in short video export settings
+
+Tab moved focus from Compression to Frame Rate while the latter
+remained hidden behind the export footer. The macOS video editor
+now reuses its focus-scrolling behavior on the vertical Export
+Settings pane. The pane brings the newly focused field into view
+and the footer stays in place.
+
+The offscreen Metal regression reproduced the clipping at 950×520.
+The fix passed the keyboard transition and footer checks at 950×520
+in dark mode at 1× and 720×520 in light mode at 2×. Those profiles
+rendered 201 and 176 PNGs. The initial Export Settings render at
+950×520 was byte-identical.
+In the Electron reference at 950×460, Tab scrolled the settings pane
+21 pixels and brought the full Frame Rate row into view.
+[Focused GPUI export field](tests/native/evidence/macos-ui/video-export-frame-rate-focused-20261119.png)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

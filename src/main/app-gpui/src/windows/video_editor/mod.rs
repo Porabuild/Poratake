@@ -2835,6 +2835,16 @@ impl VideoEditorWindow {
     }
 
     #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
+    pub(crate) fn parity_export_field_bounds(
+        &self,
+        index: usize,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.export_scroll
+            .bounds_for_item(index)
+            .map(|bounds| bounds + self.export_scroll.offset())
+    }
+
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
     pub(crate) fn begin_export_for_parity(&mut self, cx: &mut Context<Self>) {
         self.is_exporting = true;
         self.export_progress = 0.4;

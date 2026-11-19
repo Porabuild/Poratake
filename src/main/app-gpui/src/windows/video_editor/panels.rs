@@ -46,9 +46,16 @@ pub fn render(
         SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, cx),
         SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
         SidebarTab::FirstFrame => first_frame_panel(view, state, theme, cx),
-        SidebarTab::Export => {
-            export_panel(view, state, is_exporting, export_progress, menu, theme, cx)
-        }
+        SidebarTab::Export => export_panel(
+            view,
+            state,
+            is_exporting,
+            export_progress,
+            menu,
+            theme,
+            window,
+            cx,
+        ),
     }
 }
 
@@ -2375,6 +2382,7 @@ fn export_panel(
     export_progress: f32,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.export_settings.clone();
@@ -2693,6 +2701,21 @@ fn export_panel(
         .border_color(theme.border)
         .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
         .children(footer);
+    let reveal = crate::ui::chrome::is_macos().then(|| {
+        crate::ui::focus_reveal::FocusReveal::vertical(
+            "video-export-field-scroll",
+            &view.export_scroll,
+            window,
+            cx,
+        )
+    });
+    let settings_children = settings_children
+        .into_iter()
+        .enumerate()
+        .map(|(index, field)| match &reveal {
+            Some(reveal) => reveal.wrap(format!("video-export-field-{index}"), field, window, cx),
+            None => field,
+        });
     let panel = div()
         .flex()
         .flex_col()

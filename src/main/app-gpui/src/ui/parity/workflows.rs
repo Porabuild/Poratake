@@ -11231,6 +11231,49 @@ pub(super) fn video(
         assert_eq!(saved.ui.sidebar_tab, tab.id());
         capture(cx, window, output, &format!("video-loaded-{}", tab.id()));
     }
+    if cfg!(target_os = "macos") && height == 520. {
+        let bounds = |cx: &mut HeadlessAppContext, index| {
+            cx.update(|cx| {
+                video
+                    .read(cx)
+                    .unwrap()
+                    .parity_export_field_bounds(index)
+                    .unwrap()
+            })
+        };
+        let footer = super::measured("video-export-panel", 1);
+        let before = bounds(cx, 4);
+        assert!(
+            before.bottom() > footer.top(),
+            "frame rate should start below the fold"
+        );
+        let quality = bounds(cx, 3);
+        click(
+            cx,
+            window,
+            f32::from(quality.center().x),
+            f32::from(quality.bottom() - px(14.)),
+        );
+        super::key(cx, window, "escape");
+        let quality_focus = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap()
+            .expect("Compression should be focused");
+        super::key(cx, window, "tab");
+        settle(cx, window);
+        let rate_focus = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap()
+            .expect("Frame Rate should receive focus");
+        assert_ne!(rate_focus, quality_focus);
+        let after = bounds(cx, 4);
+        assert!(
+            after.bottom() <= footer.top(),
+            "tab left Frame Rate behind the footer: {after:?}"
+        );
+        assert_eq!(super::measured("video-export-panel", 1), footer);
+        capture(cx, window, output, "video-export-frame-rate-focused");
+    }
     let button = super::measured("video-export-start", 0);
     let viewport = cx
         .update_window(window, |_, window, _| window.viewport_size())
