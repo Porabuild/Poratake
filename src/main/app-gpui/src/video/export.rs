@@ -571,11 +571,11 @@ fn compose_pixmap(
     let video = session
         .decoder
         .frame_at(video_time)
-        .and_then(|frame| to_pixmap(&frame));
+        .and_then(|frame| frame.to_pixmap());
     let camera_frame = session
         .camera
         .and_then(|decoder| decoder.frame_at(video_time))
-        .and_then(|frame| to_pixmap(&frame));
+        .and_then(|frame| frame.to_pixmap());
 
     session
         .engine
@@ -589,26 +589,6 @@ fn compose_pixmap(
             session.dimensions.height,
         )
         .ok_or_else(|| "the frame could not be composed".to_string())
-}
-
-fn to_pixmap(frame: &crate::video::decoder::DecodedFrame) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(frame.width.max(1), frame.height.max(1))?;
-    let target = pixmap.data_mut();
-    if target.len() != frame.bgra.len() {
-        return None;
-    }
-    for (out, pixel) in target
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(frame.bgra.as_chunks::<4>().0)
-    {
-        out[0] = pixel[2];
-        out[1] = pixel[1];
-        out[2] = pixel[0];
-        out[3] = pixel[3];
-    }
-    Some(pixmap)
 }
 
 fn build_audio(

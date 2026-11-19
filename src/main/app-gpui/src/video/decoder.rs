@@ -36,6 +36,36 @@ pub struct DecodedFrame {
     pub bgra: Arc<Vec<u8>>,
 }
 
+impl DecodedFrame {
+    pub(crate) fn to_pixmap(&self) -> Option<tiny_skia::Pixmap> {
+        let mut pixmap = tiny_skia::Pixmap::new(self.width.max(1), self.height.max(1))?;
+        self.write_to_pixmap(&mut pixmap)?;
+        Some(pixmap)
+    }
+
+    pub(crate) fn write_to_pixmap(&self, pixmap: &mut tiny_skia::Pixmap) -> Option<()> {
+        if (pixmap.width(), pixmap.height()) != (self.width.max(1), self.height.max(1)) {
+            return None;
+        }
+        let target = pixmap.data_mut();
+        if target.len() != self.bgra.len() {
+            return None;
+        }
+        for (out, pixel) in target
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.bgra.as_chunks::<4>().0)
+        {
+            out[0] = pixel[2];
+            out[1] = pixel[1];
+            out[2] = pixel[0];
+            out[3] = pixel[3];
+        }
+        Some(())
+    }
+}
+
 pub(crate) type FrameCancellation = smol::channel::Receiver<()>;
 
 async fn wait_for_cancellation(signal: Option<&FrameCancellation>) {

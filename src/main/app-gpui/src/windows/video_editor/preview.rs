@@ -351,41 +351,24 @@ fn cached_frame(
     let frame = decoded?;
     let decoded = Arc::downgrade(&frame.bgra);
     if let Some(cached) = cached.as_mut().filter(|cached| {
-        cached.decoded.ptr_eq(&decoded)
-            && cached.pixmap.width() == frame.width.max(1)
-            && cached.pixmap.height() == frame.height.max(1)
+        cached.pixmap.width() == frame.width.max(1) && cached.pixmap.height() == frame.height.max(1)
     }) {
+        if !cached.decoded.ptr_eq(&decoded) {
+            match Arc::get_mut(&mut cached.pixmap) {
+                Some(pixmap) => frame.write_to_pixmap(pixmap)?,
+                None => cached.pixmap = Arc::new(frame.to_pixmap()?),
+            }
+            cached.decoded = decoded;
+        }
         cached.time = time;
         return Some(cached.pixmap.clone());
     }
-    let pixmap = Arc::new(to_pixmap(&frame)?);
+    let pixmap = Arc::new(frame.to_pixmap()?);
     *cached = Some(CachedFrame {
         time,
         decoded,
         pixmap: pixmap.clone(),
     });
-    Some(pixmap)
-}
-
-/// A decoded BGRA frame as a tiny-skia RGBA pixmap. Decoded frames are opaque,
-/// so premultiplication is a no-op and only the channel order changes.
-fn to_pixmap(frame: &DecodedFrame) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(frame.width.max(1), frame.height.max(1))?;
-    let target = pixmap.data_mut();
-    if target.len() != frame.bgra.len() {
-        return None;
-    }
-    for (out, pixel) in target
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(frame.bgra.as_chunks::<4>().0)
-    {
-        out[0] = pixel[2];
-        out[1] = pixel[1];
-        out[2] = pixel[0];
-        out[3] = pixel[3];
-    }
     Some(pixmap)
 }
 
@@ -455,7 +438,7 @@ mod tests {
             height: 1,
             bgra: vec![10, 20, 30, 255].into(),
         };
-        let pixmap = to_pixmap(&frame).expect("pixmap");
+        let pixmap = frame.to_pixmap().expect("pixmap");
         assert_eq!(pixmap.data(), &[30, 20, 10, 255]);
     }
 
@@ -466,7 +449,7 @@ mod tests {
             height: 4,
             bgra: vec![0; 8].into(),
         };
-        assert!(to_pixmap(&frame).is_none());
+        assert!(frame.to_pixmap().is_none());
     }
 
     #[test]
@@ -634,6 +617,28 @@ mod tests {
         let changed = cached_frame(&mut cached, 0.02, || Some(different)).unwrap();
         assert!(!Arc::ptr_eq(&first, &changed));
         assert_eq!(changed.data(), &[60, 50, 40, 255]);
+    }
+
+    #[test]
+    fn a_distinct_frame_reuses_unshared_pixmap_storage() {
+        let mut cached = None;
+        let first = DecodedFrame {
+            width: 2,
+            height: 1,
+            bgra: vec![10, 20, 30, 255, 40, 50, 60, 255].into(),
+        };
+        let original = cached_frame(&mut cached, 0., || Some(first)).unwrap();
+        let allocation = original.data().as_ptr();
+        drop(original);
+
+        let next = DecodedFrame {
+            width: 2,
+            height: 1,
+            bgra: vec![15, 25, 35, 255, 45, 55, 65, 255].into(),
+        };
+        let reused = cached_frame(&mut cached, 0.1, || Some(next.clone())).unwrap();
+        assert_eq!(reused.data().as_ptr(), allocation);
+        assert_eq!(reused.data(), next.to_pixmap().unwrap().data());
     }
 
     #[cfg(any(windows, target_os = "macos"))]

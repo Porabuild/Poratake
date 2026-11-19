@@ -10950,6 +10950,31 @@ composition and playback ending while hidden. The targeted GPUI
 and Electron reference suites passed 172 and 66 tests, respectively.
 [Hidden playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS preview pixmap storage reuse
+
+The video editor now writes successive decoded frames into the same
+conversion buffer when it owns that buffer and the dimensions match.
+It allocates a fresh buffer when a caller still holds the prior image.
+Preview and export use the same BGRA-to-RGBA conversion.
+
+An isolated 120-frame 4K test eliminated 3.71 GiB of cumulative
+allocation requests after the first pixmap. Median conversion time
+fell from 776 ms to 750 ms across seven paired batches. Both paths
+produced identical pixels.
+
+The visible 4K60 editor applied 71–121 preview updates over two
+seconds with two concurrent encoders, compared with 86–120 for the
+baseline. Composition at the same 384×216 active preview size was
+faster in each loaded pair. Cadence and process footprint varied.
+Sustained 4K60 playback under contention remains open. All opening
+4K preview PNGs matched across the light and dark runs. A split and
+export produced identical decoded checksums for the first 12 4K
+frames in both builds.
+
+The targeted GPUI and Electron reference suites passed 422 and 66
+tests, respectively.
+[Preview allocation and timing measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

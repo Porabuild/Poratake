@@ -4672,3 +4672,63 @@ ranged from 81 to 291 ms.
 GPUI video editor suite: 172 passed and 5 ignored. Electron timeline,
 camera, music and export reference suites: 66 passed. The GPUI parity
 development executable built successfully.
+
+2026-11-19 macOS video preview pixmap storage reuse
+===================================================
+
+The isolated conversion benchmark used the two production RGBA conversion
+paths at the development optimization level, alternating two opaque
+3840x2160 source buffers. The 120-conversion batches excluded allocation
+of the input buffers and the initial reusable pixmap. An instrumented
+system allocator counted 3,981,312,000 requested bytes per old-path batch
+and zero in each reuse batch. Every compared converted byte matched.
+
+Pair  Fresh pixmap ms  Reused pixmap ms
+   1          779.056           748.413
+   2          765.998           744.937
+   3          757.607           730.422
+   4          775.533           749.579
+   5          768.019           765.172
+   6         1465.591          1379.459
+   7         1852.135          1321.765
+
+The native app-local probe supplied a generated 3840x2160 60 fps H.264
+clip through the recording preview on the M5 Pro. It counted completed
+preview images from 0.4 to 2.4 seconds after Play. All active previews
+in this sample were 384x216. Composition is median background time less
+the decoder wait. CPU is GPUI user and system time over the two-second
+sample. Memory is GPUI physical footprint at the end of the sample.
+The two-encoder arm ran two independent libx264 software encoders and
+verified both continued reporting progress. Host load also varied,
+including targeted test compilation in the first unloaded pair.
+
+Build     Theme  Encoders  Pair  Updates   CPU s  GPUI MiB  Compose ms   Gap ms
+Baseline  light         0     1       11   1.342     473.3      11.774    380.4
+Updated   light         0     1       17   1.544     476.1      11.326    445.0
+Updated   dark          2     1      120   2.943     477.8      12.322     22.5
+Baseline  dark          2     1       86   2.680     464.8      12.769     65.0
+Updated   dark          0     2      120   1.903     469.9       8.400     19.8
+Baseline  dark          0     2      120   2.686     480.4      11.735     24.9
+Baseline  light         2     2      110   2.909     461.5      12.216     51.6
+Updated   light         2     2      121   2.889     480.9      12.053     25.9
+Updated   light         0     3      120   2.287     462.0      10.895     23.2
+Baseline  light         0     3       32   1.946     475.4      11.839    344.0
+Baseline  dark          2     3      120   2.971     472.8      12.719     20.8
+Updated   dark          2     3      120   2.939     479.5      12.127     25.7
+Baseline  dark          0     4      121   1.623     460.5       7.728     20.3
+Updated   dark          0     4      120   1.622     461.5       7.561     20.0
+Updated   light         2     4       71   2.373     463.4      11.287     75.4
+Baseline  light         2     4      118   3.087     475.0      13.026     41.2
+
+All 16 opening preview PNGs had SHA-256
+48716dcff624d69996bb95a973c4e64fd576c4e5b73c5cff7aa6cfc1c0b82b92.
+This measures applied preview images and excludes physical display paint.
+GPUI video tests: 422 passed, 24 ignored. Electron video editor and
+export reference tests: 66 passed.
+
+A separate light baseline and dark updated trial split the recording at
+one second and exported 3840x2160 H.264 at 30 fps. The decoded framehash
+manifest for the first 12 frames matched, SHA-256
+d75c3ccce540d12a5b7430f6b665ae8710dfc195a4022c5603f2eb6668ee16a0.
+Both builds applied two preview updates in the timed interval on that
+separate export trial.
