@@ -1192,3 +1192,48 @@ Direct  Dark    1     203.7  101.2   28.9   46.5   27.7    2.7   186.7  108.5   
 Direct  Dark    2     100.7   53.4   21.8   43.3   30.7   11.7   103.4   90.6   205.6    –
 Direct  Dark    3      37.3   45.5   14.3   32.9   55.8    1.9   112.5   67.3   181.6    –
 Direct  Dark    4      45.2   53.9   11.8   48.8   24.6    1.2    94.7   71.5   167.4    –
+
+2026-11-19 macOS editor window content timing with a 4K source
+
+The current GPUI development build used the generated-capture
+daemon to supply a 3840x2160 opaque PNG with RGB (64,112,192).
+Recent Captures was enabled. Clipboard copying and Freeze were
+disabled. A separate, preflight-granted native screen fixture
+sampled only the temporary editor's WindowServer ID. The built-in
+Retina display was the only online display. Every first sample
+contained the expected solid image across at least 66 percent
+of the captured editor pixels. Samples were decoded after timing,
+converted to sRGB, and compared within two RGB channel levels.
+
+Preview mode starts timing at the app-local edit command. Direct
+mode starts at capture confirmation with Preview disabled. Listed
+ends at the first observed editor window ID from WindowServer.
+Dispatch is the time from that observation to the external sample
+request, including ownership confirmation. Sample RPC is from
+request to reply, including reading the window surface and returning
+PNG. Verified is total time through the reply of the first sample
+that later passed the pixel check. Values are millisecond upper
+bounds on observing the image. The sampling cost and polling
+interval leave the exact first presentation timestamp unresolved.
+
+Mode    Theme Trial Listed Dispatch Sample RPC Verified
+Preview Light   1    80.9    0.4      128.2      209.5
+Preview Light   2    66.0    0.5       84.5      151.0
+Preview Light   3    65.0    0.4       85.1      150.5
+Preview Light   4    62.7    0.4       84.6      147.7
+Preview Light   5    59.9    0.6       85.5      146.0
+Preview Dark    1    82.4    2.0      131.7      216.2
+Preview Dark    2    76.3    0.7       86.5      163.6
+Preview Dark    3    61.4    0.8       85.8      148.0
+Preview Dark    4    59.3    0.9       94.6      154.7
+Preview Dark    5    65.4    0.7       84.7      150.7
+Direct  Light   1    83.6    2.0      126.4      212.0
+Direct  Light   2    74.3    0.7       86.3      161.3
+Direct  Light   3    69.2    0.7       90.5      160.5
+Direct  Light   4    64.0    0.8       85.1      149.9
+Direct  Light   5    65.9    0.8       86.9      153.7
+Direct  Dark    1    76.5    1.9      128.2      206.7
+Direct  Dark    2    71.7    0.7       83.2      155.7
+Direct  Dark    3    66.4    0.7       86.3      153.4
+Direct  Dark    4    69.1    0.7       87.2      157.0
+Direct  Dark    5    65.8    0.7       84.4      150.9

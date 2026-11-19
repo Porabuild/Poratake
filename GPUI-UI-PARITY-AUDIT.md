@@ -8509,6 +8509,24 @@ cold runs took 364 and 298 ms. First composited editor frames,
 physical input latency and 4K-resolution capture remain open.
 [Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS editor window content timing with a 4K source
+
+The development app opened an editor for a generated 3840×2160
+PNG in both light and dark mode. WindowServer identified the
+editor window, then the preflight-granted screen fixture sampled
+that window by ID. The first sample contained the generated image
+in all 20 trials.
+
+With Preview enabled, warm median editor availability was 64 ms in
+light mode and 63 ms in dark mode. The first verified sample returned
+by a warm median of 149 and 153 ms from the preview edit action.
+With Preview disabled, the corresponding times from confirmation
+were 68 ms in both themes for availability and 157 and 155 ms for
+the verified sample. The sampling RPC accounts for about 85–87 ms
+of those warm upper bounds. The exact first composited frame time
+and physical input latency remain open.
+[Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
