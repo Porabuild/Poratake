@@ -9517,6 +9517,23 @@ recording fixture hit its held-start state assertion and passed
 on retry. The Windows-native gate skipped on this host.
 [Checks and decoder evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS recording fixture startup ordering
+
+The earlier light recording fixture observed Idle where it expected
+Starting. Startup awaits an asynchronous camera protection reply,
+and rendering alone cannot establish that the daemon accepted Start.
+The held-start fixture now checks Idle while the protection reply
+is deliberately held. It then waits for the daemon to hold the
+start reply after writing the fixture recording, and checks Starting
+before continuing the existing stop and target-closure assertions.
+At teardown, a third barrier observes the protection disable request
+before the fixture resets. Each phase has its own listener.
+
+The rebuilt Metal recording workflow passed twice per appearance.
+Each run exercised all seven held-start cases. The fixture uses
+generated media and app-local input. This verifies the test ordering.
+[Recording fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

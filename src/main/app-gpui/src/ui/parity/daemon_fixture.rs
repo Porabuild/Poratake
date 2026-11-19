@@ -35,15 +35,13 @@ fn wait_for_fixture_barrier(fixture: &serde_json::Value) {
     let Some(address) = fixture["barrier"].as_str() else {
         return;
     };
+    wait_for_barrier(address, if fixture["scroll"] == "finish-long-held" { 40 } else { 10 });
+}
+
+fn wait_for_barrier(address: &str, seconds: u64) {
     let mut stream = std::net::TcpStream::connect(address).unwrap();
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(
-            if fixture["scroll"] == "finish-long-held" {
-                40
-            } else {
-                10
-            },
-        )))
+        .set_read_timeout(Some(std::time::Duration::from_secs(seconds)))
         .unwrap();
     stream.write_all(&[1]).unwrap();
     stream.read_exact(&mut [0]).unwrap();
@@ -723,6 +721,9 @@ pub fn run() {
                     }
                     if fixture["recordingHoldStartUntilStop"] == true {
                         held_recording_start = Some(request.id.clone());
+                        if let Some(address) = fixture["recordingHeldStartBarrier"].as_str() {
+                            wait_for_barrier(address, 10);
+                        }
                         continue;
                     }
                 }
@@ -867,6 +868,9 @@ pub fn run() {
             }
             ("camera-preview", "setContentProtection")
                 if held_recording_start.is_some()
+                    && request.params.as_ref().is_some_and(|params| {
+                        params["enabled"].as_bool() == Some(true)
+                    })
                     && optional_capture_fixture(&output).is_some_and(|fixture| {
                         fixture["recordingReleaseHeldStartOnProtection"] == true
                     }) =>
@@ -906,10 +910,16 @@ pub fn run() {
                     _ => "recordingProtectionBarrier",
                 };
                 if let Some(fixture) =
-                    optional_capture_fixture(&output).filter(|fixture| fixture[barrier] == true)
+                    optional_capture_fixture(&output).filter(|fixture| {
+                        fixture[barrier] == true || fixture[barrier].is_string()
+                    })
                 {
                     std::thread::spawn(move || {
-                        wait_for_fixture_barrier(&fixture);
+                        if let Some(address) = fixture[barrier].as_str() {
+                            wait_for_barrier(address, 10);
+                        } else {
+                            wait_for_fixture_barrier(&fixture);
+                        }
                         protocol::respond_success(&request.id, json!({"protected": enabled}));
                     });
                     continue;

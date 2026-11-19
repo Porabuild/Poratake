@@ -2838,3 +2838,31 @@ light run stopped at the held-start assertion with Idle instead
 of Starting. Both themes passed in fresh profiles on retry. Selection
 and scroll fixtures also passed in both themes. The Metal runs
 used generated media and a fixture daemon.
+
+2026-11-19 macOS recording fixture startup ordering
+
+At 28dea127 the first light fixture had previously failed at the
+held-start assertion with Idle instead of Starting. Three additional
+unmodified light runs passed. The revised fixture uses the existing
+loopback barrier to deliberately delay the initial protection reply.
+The same test verifies Idle during that hold, releases it, and waits
+for a second barrier after the daemon writes the recording and stores
+the pending start reply. It checks Starting at that boundary. Then
+it runs the same late-start success, failure, stop and target-close
+cases. After the startup barriers were added, a dark run exposed a
+second gap: the toolbar closed before the daemon logged the protection
+disable request. The trace contained the request after the assertion.
+An intermediate shared listener accepted the preceding case’s late
+disable as the next phase. The final fixture uses separate listeners
+for enable, start and disable, and arms the disable listener only
+after the current start is held. Teardown releases the disable reply
+and waits for recording cleanup before the next case.
+
+All seven held-start cases completed on each of the four development
+Metal runs. The full recording fixtures also checked toolbar handoff
+and editor/export output using generated media.
+
+light 1 passed
+dark 1 passed
+light 2 passed
+dark 2 passed

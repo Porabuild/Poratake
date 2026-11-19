@@ -993,14 +993,21 @@ fn recording_start_timeout_handoff(
     use crate::video::recorder::{RecorderState, RecordingTarget};
     use crate::windows::recording_control::{PreferenceScope, RecordingControl};
     use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
 
     let recordings = output.join(format!(
         "recording-held-start-{succeeds}-{release_before_stop}-{target_closed}-{stop_first}"
     ));
     std::fs::create_dir_all(&recordings).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let protection = accept_fixture_barrier(&listener);
+    let start_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut fixture = serde_json::json!({
         "freeze": "live",
+        "barrier": listener.local_addr().unwrap().to_string(),
+        "recordingProtectionStartBarrier": true,
         "recordingHoldStartUntilStop": true,
+        "recordingHeldStartBarrier": start_listener.local_addr().unwrap().to_string(),
         "recordingHeldStartFails": !succeeds,
         "recordingReleaseHeldStartOnProtection": release_before_stop || stop_first,
         "recordingHeldStartStopFirst": stop_first,
@@ -1045,8 +1052,40 @@ fn recording_start_timeout_handoff(
     click_measured(cx, control, "recording-controls", 0);
     assert!(start_requested_at.elapsed() < std::time::Duration::from_secs(5));
     settle(cx, control);
+    let mut protection = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(crate::video::recorder::state(), RecorderState::Idle);
+    let await_barrier = |cx: &mut HeadlessAppContext,
+                         ready: std::sync::mpsc::Receiver<std::net::TcpStream>,
+                         phase: &str| {
+        let waiting = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            match ready.try_recv() {
+                Ok(stream) => break stream,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => panic!("{phase} barrier closed"),
+            }
+            assert!(waiting.elapsed() < std::time::Duration::from_secs(5), "{phase} barrier timed out");
+            std::thread::yield_now();
+        }
+    };
+    let start_barrier = accept_fixture_barrier(&start_listener);
+    protection.write_all(&[1]).unwrap();
+    let mut held_start = await_barrier(cx, start_barrier, "held start");
+    settle(cx, control);
     assert_eq!(crate::video::recorder::state(), RecorderState::Starting);
     assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    let cleanup_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cleanup_barrier = accept_fixture_barrier(&cleanup_listener);
+    fixture["recordingProtectionBarrier"] = cleanup_listener.local_addr().unwrap().to_string().into();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    held_start.write_all(&[1]).unwrap();
     capture(
         cx,
         control,
@@ -1126,10 +1165,13 @@ fn recording_start_timeout_handoff(
         capture(cx, control, output, "recording-start-rejected-controls");
         assert!(cx.update(RecordingControl::cancel_pre_recording));
     }
+    let mut cleanup = await_barrier(cx, cleanup_barrier, "protection cleanup");
+    cleanup.write_all(&[1]).unwrap();
     let started = std::time::Instant::now();
     loop {
         cx.run_until_parked();
-        if !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+        if !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx))
+            && !cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
             break;
         }
         assert!(
