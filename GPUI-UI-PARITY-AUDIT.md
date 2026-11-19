@@ -9115,6 +9115,25 @@ caps varied too much across runs to select either. The playback
 stall remains reproducible under concurrent encoding.
 [Concurrent playback and diagnostic evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS VideoToolbox with the tuned frame socket
+
+With the tuned socket in both GPUI runs, software decoding applied
+85–120 updates per two-second interval without a competing test
+job. VideoToolbox applied 7–41. With concurrent 4K encoding, both
+showed stalls and neither had a consistent cadence advantage.
+Both sparse-timeline seek tests passed with the hardware flag.
+
+The generated 4K60 H.264 clip matched frame checksums and timestamps
+through both decoders, including after seeking. The full-range
+H.264 and 10-bit HEVC fixtures also matched. Rotated H.264 and
+4:2:2 H.264 produced different RGB values with VideoToolbox.
+The rotated first frame differed by more than five RGB levels in
+13,141 pixels. Current GPUI software-decoded preview pixels matched
+FFmpeg exactly for the rotated, 4:2:2, and 10-bit HEVC fixtures.
+These results favor software as the default. The contention stall
+remains open.
+[Decoder and format evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

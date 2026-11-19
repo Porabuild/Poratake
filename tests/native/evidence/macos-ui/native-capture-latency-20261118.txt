@@ -2086,3 +2086,54 @@ Producing three seconds of raw BGRA sometimes took longer than
 realtime with the null device as the sink. The timing ranges
 leave swscale, raw output preparation and scheduling inside
 FFmpeg open.
+
+2026-11-19 macOS VideoToolbox with the tuned frame socket
+
+Both arms used the same development GPUI binary, tuned socket
+and bundled FFmpeg 9.0.1. Both used a wrapper. The hardware arm
+added -hwaccel videotoolbox to raw BGRA decoding. The clip was a
+generated four-second 3840x2160 H.264 source at 60 fps. The loaded
+arm ran a second FFmpeg process with two input and output threads
+using libx264 veryfast and discarded that encoder's output.
+Host load outside the test was uncontrolled.
+
+The interval was 0.4 to 2.4 seconds after Play. The playback query
+measured the app-local command round trip. The dash indicates no
+completed request during the interval. Timing values are ms.
+
+Test load  Decoder       Theme   Updates   Max decode   Payload median/max   Max query
+Off        Software      Light       120         0.28        7.05/16.36           0.59
+Off        VideoToolbox  Light        41       377.89       10.85/81.96          19.12
+Off        VideoToolbox  Dark          7       560.41       19.25/109.81          4.43
+Off        Software      Dark         85        80.47       14.07/34.86           1.27
+On         Software      Light        27       149.41       15.70/75.74           9.57
+On         VideoToolbox  Light         4       529.18       14.69/90.47           7.46
+On         VideoToolbox  Dark          0            –      144.87/569.26         27.08
+On         Software      Dark          1       779.25      129.36/265.13         20.48
+On         Software      Dark          1       857.25      102.12/255.92         14.48
+On         VideoToolbox  Dark          3       689.84       15.88/95.45          12.57
+On         VideoToolbox  Light        38       137.92       13.38/65.98           2.26
+On         Software      Light        20       250.50       15.76/42.88           5.19
+
+The two decoders emitted the same frame hashes, dimensions and
+timestamps for all 240 frames of the 4K clip. Seeking to 1.1 s
+with the production no-accurate-seek option yielded the same
+180 frames beginning at the preceding keyframe. Both GPUI
+sparse seek tests passed with VideoToolbox requested.
+
+Each additional format was a generated 24-frame 640x360 clip,
+with the rotated clip carrying 90-degree display metadata. The
+full-range BT.709 H.264 and HEVC Main 10 fixtures emitted identical
+hashes. The rotated and 4:2:2 H.264 fixtures preserved dimensions
+and timestamps while changing decoded pixels. The first-frame
+comparison counted a pixel when any of its RGB channels differed.
+
+Format                Different pixels   Difference above 5   Maximum difference
+Rotated H.264                    30,838               13,141                  101
+H.264 4:2:2                     227,288                    0                    3
+
+The development app used fixture media to open the rotated clip
+in both themes, 4:2:2 in light and Main 10 in dark. The software
+preview matched the independent FFmpeg raw reference in every
+RGB channel. The rotated editor image was 360x640. The other
+editor images were 640x360.
