@@ -11006,6 +11006,25 @@ The targeted GPUI and Electron reference suites passed 423 and 66
 tests, respectively.
 [Frame conversion and playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS raw video socket buffer sweep
+
+Five rotated 180-frame batches with two competing encoders found
+that a 6 MiB send buffer lowered the median longest raw transfer
+from 69 to 38 ms. It increased the unloaded median total from
+2.29 to 2.42 s. Larger receive buffers and 32 KiB read and write
+wake-up thresholds also produced mixed results.
+
+In the native editor, the 6 MiB build produced fewer updates in
+both two-second runs with fresh encoders. It produced more updates
+in both 18-second runs, though the gaps still reached 2.83 s.
+With the same encoders running continuously across four additional
+pairs, the larger buffer produced one to three more updates in
+each two-second sample and a longer measured gap in three pairs.
+The experiment used the current 4 MiB default for the final
+development binary. Opening preview pixels matched in both themes.
+The decoder transport remains an open performance issue.
+[Socket timing and frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -4811,3 +4811,131 @@ respectively. In its longest completed decode, a reused raw buffer's
 payload read took 1615.622 ms. Waiting for the first byte took 0.004 ms
 and reading the remainder took 1615.618 ms for that frame. These
 measure preview updates and decoder delivery with generated media.
+
+2026-11-19 macOS raw video socket buffer sweep
+=============================================
+
+A standalone reader used the bundled FFmpeg binary and the app's raw
+BGRA and showinfo options. Each test processed 180 3840x2160 H.264
+frames at 60 fps through a local stream socket. It reused one payload
+buffer. Five rounds in each load condition rotated the order of the
+socket variants. The loaded group ran two independent libx264 encoders,
+and confirmed both stayed active and continued reporting progress.
+The unloaded group had no test encoders and other host load varied.
+
+Three variants raised send or receive capacity and the fourth set
+both read and write low-water marks to 32 KiB. getsockopt reported
+the requested values. Two default low-water marks were 1 and 2048
+bytes for read and write. Each entry below is total transfer,
+per-frame p95 and per-frame maximum in ms. The read count records
+the median of each trial's mean reads per payload.
+
+Load  Variant        Total ms    P95 ms    Max ms   Reads    Wins total/p95/max
+idle  base            2290.62     19.37     47.38   431.81 0/0/0
+idle  receive4        2402.99     23.88     38.02   358.56 1/1/2
+idle  send6           2423.42     23.87     54.56   256.58 1/1/2
+idle  both4_6         2764.54     26.91     43.41   157.68 1/1/3
+idle  low32           2561.46     26.91     53.19   307.58 0/0/2
+two   base            2549.78     20.47     68.83   423.19 0/0/0
+two   receive4        2979.87     29.43     68.18   240.84 3/3/2
+two   send6           2442.82     19.41     38.43   376.63 4/4/4
+two   both4_6         2667.44     20.66     45.67   332.94 3/3/3
+two   low32           2630.15     26.79     48.51   307.73 4/4/2
+
+The raw per-round values follow in the same total/p95/maximum order.
+The fourth value after the variant is the mean read count per payload.
+
+idle   1      base   1184.77     11.18     14.88    603.09
+idle   1  receive4   1368.28     12.28     17.31    643.41
+idle   1     send6   2423.42     28.23    103.03    416.13
+idle   1   both4_6   3222.51     40.63    105.25    138.07
+idle   1     low32  11357.10    206.54    630.48     73.74
+idle   2      base   3161.85     31.81     71.80    112.70
+idle   2  receive4   3135.06     30.72     83.62    222.83
+idle   2     send6   2839.30     23.87     54.56     89.02
+idle   2   both4_6   2764.54     26.91     43.41    157.68
+idle   2     low32   3400.06     35.29     57.48    121.80
+idle   3      base   2393.46     21.05     48.64    273.92
+idle   3  receive4   2617.59     25.66     38.02    239.39
+idle   3     send6   3003.69     31.92     62.93    151.63
+idle   3   both4_6   3703.81     35.83     74.30     69.54
+idle   3     low32   2519.91     26.91     53.19    307.58
+idle   4      base   2290.62     19.37     47.38    431.81
+idle   4  receive4   2402.99     23.88     36.41    358.56
+idle   4     send6   2344.11     19.65     34.86    256.58
+idle   4   both4_6   2689.40     24.87     33.95    190.51
+idle   4     low32   2561.46     25.41     47.98    328.97
+idle   5      base   2180.10     17.30     39.05    496.49
+idle   5  receive4   2230.67     19.20     39.08    450.52
+idle   5     send6   2207.27     18.38     42.41    562.22
+idle   5   both4_6   2299.85     20.52     38.22    402.83
+idle   5     low32   2212.58     20.80     36.56    374.44
+two    1      base  13174.03    226.05    594.84    143.14
+two    1  receive4   3640.54     36.81     68.18    162.78
+two    1     send6   2546.32     19.41     38.86    331.81
+two    1   both4_6   2667.44     20.66     45.67    151.49
+two    1     low32  11492.56    210.62   2343.43    152.32
+two    2      base   2483.74     19.39     68.83    540.71
+two    2  receive4   8638.41    114.63    170.40    103.29
+two    2     send6   4468.57     48.44     97.21    101.59
+two    2   both4_6   2825.34     28.67     67.52    338.09
+two    2     low32   2939.03     28.68     55.97    233.37
+two    3      base   2925.63     42.68     78.77    395.96
+two    3  receive4   2710.55     21.46    113.11    316.84
+two    3     send6   2442.82     19.71     38.43    378.17
+two    3   both4_6   2364.65     17.62     32.60    332.94
+two    3     low32   2630.15     26.79     35.53    307.73
+two    4      base   2549.78     20.47     37.67    455.81
+two    4  receive4   2979.87     29.43     53.50    240.84
+two    4     send6   2286.48     17.58     37.01    376.63
+two    4   both4_6   2414.46     16.62     43.60    411.70
+two    4     low32   2516.77     20.30     48.51    447.96
+two    5      base   2343.87     17.74     39.35    423.19
+two    5  receive4   2246.17     15.06     34.60    514.72
+two    5     send6   2208.14     15.80     33.68    425.92
+two    5   both4_6   3324.26     35.79     59.36     69.18
+two    5     low32   2253.85     15.50     40.83    504.82
+
+Every 180-frame run matched the sampled pixel and timestamp digests.
+Separate 12-frame runs compared all bytes and all timestamps for each
+variant. The full-byte SHA-256 matched:
+17002709c6f711cbb0ccffbc0157aa90801de6bac2df9005bbedf1ce99676e3c.
+
+The native app compared the 4 MiB send default with a temporary
+6 MiB build, retaining a 1 MiB receive buffer. The measurement
+started 400 ms after Play. It counted completed preview images
+and measured the gaps between them. Each first pair started new
+test encoders per launch. The 18-second arm used a 20-second
+remux of the same four-second generated source.
+
+Build      Theme  Sample_s  Updates  Max gap ms  Max payload ms
+base       light      2.0        4      566.94           92.98
+candidate  light      2.0        2      749.71          206.42
+candidate  dark       2.0        3      981.95          160.53
+base       dark       2.0        7      634.43           52.10
+candidate  light     18.0      339     2833.66          222.78
+base       light     18.0        3    14242.38          533.78
+base       dark      18.0        4     4644.47          422.48
+candidate  dark      18.0       12     2715.09          222.06
+
+The follow-up kept two encoders running through every launch and
+verified their progress. The final column counts progress reports
+per encoder during each launch. A 1-update run has no inter-update
+gap.
+
+Pair  Build      Theme  Updates  Max gap ms  Max payload ms  Encoder reports
+   1  base       light        3      795.46           53.84  [25, 25]
+   1  candidate  light        4     1003.35           60.94  [24, 24]
+   2  candidate  dark         3     1409.61           78.85  [25, 25]
+   2  base       dark         2      641.40           83.19  [24, 24]
+   3  candidate  light        4      896.60          140.10  [22, 21]
+   3  base       light        1           —          110.74  [22, 24]
+   4  base       dark         2      719.18           67.28  [24, 23]
+   4  candidate  dark         3      843.88           62.09  [24, 24]
+
+All 16 opening 4K preview PNGs matched across both modes:
+48716dcff624d69996bb95a973c4e64fd576c4e5b73c5cff7aa6cfc1c0b82b92.
+The larger buffer was a temporary benchmark build. Production uses
+the existing socket defaults.
+The default configuration passed 20 GPUI decoder tests and the
+three development FFmpeg tests for sparse and anamorphic timelines.
