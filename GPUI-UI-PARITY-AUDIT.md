@@ -10687,6 +10687,24 @@ The times measure ready frames in the app using a fixture daemon.
 All 178 GPUI tests and 48 Electron reference tests passed.
 [Playback and delayed camera evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS playback past a delayed camera frame
+
+The editor can now stop waiting for a camera frame when playback
+leaves its segment. It can also stop waiting while that request is
+still queued behind camera warmup. The decoder can serve later
+camera frames when playback or a seek returns to the segment.
+
+In a generated clip with a camera segment ending at 0.8 seconds,
+the updated preview resumed at 802–813 ms after Play in light and
+dark with camera frame delivery deliberately held. The baseline
+waited for the gate to open at 1.2 seconds. After release, paused
+camera and screen snapshots matched the baseline byte for byte.
+
+This app-local fixture held decoded frame delivery after the camera
+metadata query. The timing ends at the app's frame update.
+All 191 targeted GPUI tests and 48 Electron reference tests passed.
+[Delayed camera frame measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

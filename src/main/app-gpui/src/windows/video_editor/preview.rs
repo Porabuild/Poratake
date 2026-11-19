@@ -104,8 +104,8 @@ impl Source {
             .unwrap_or_default()
     }
 
-    pub(super) fn camera_metadata_pending(&self) -> bool {
-        self.camera_opening.is_some()
+    pub(super) fn has_camera_decoder(&self) -> bool {
+        self.camera.is_some() || self.camera_opening.is_some()
     }
 
     /// Applies edited state to the engine so the next composed frame reflects
@@ -186,7 +186,7 @@ impl Source {
         }
 
         let video = cached_frame(&mut self.video_frame, video_time, || {
-            decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled)
+            decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled, None)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             if let Some(opening) = self.camera_opening.take() {
@@ -200,9 +200,19 @@ impl Source {
             }
             let had_camera_frame = self.camera_frame.is_some();
             let camera = cached_frame(&mut self.camera_frame, video_time, || {
-                decode_frame(self.camera.as_ref(), video_time, decode_wait, cancelled)
+                decode_frame(
+                    self.camera.as_ref(),
+                    video_time,
+                    decode_wait,
+                    cancelled,
+                    camera_wait_superseded,
+                )
             });
-            if had_camera_frame && camera.is_none() {
+            if camera.is_none()
+                && (had_camera_frame
+                    || cancelled.is_some_and(FrameCancellation::is_closed)
+                    || camera_wait_superseded.is_some_and(FrameCancellation::is_closed))
+            {
                 return None;
             }
             camera
@@ -269,10 +279,11 @@ fn decode_frame(
     time: f64,
     decode_wait: &mut Duration,
     cancelled: Option<&FrameCancellation>,
+    superseded: Option<&FrameCancellation>,
 ) -> Option<DecodedFrame> {
     let decoder = decoder?;
     let started = Instant::now();
-    let frame = decoder.frame_at_interruptible(time, cancelled);
+    let frame = decoder.frame_at_supersedable(time, cancelled, superseded);
     *decode_wait += started.elapsed();
     frame
 }

@@ -59,9 +59,28 @@ enum FramePosition {
 
 struct Command {
     position: FramePosition,
-    reply: Sender<Option<DecodedFrame>>,
+    reply: FrameReply,
     cancelled: Option<FrameCancellation>,
+    superseded: Option<FrameCancellation>,
     abandoned: FrameCancellation,
+}
+
+enum FrameReply {
+    Blocking(Sender<Option<DecodedFrame>>),
+    Supersedable(smol::channel::Sender<Option<DecodedFrame>>),
+}
+
+impl FrameReply {
+    fn send(self, frame: Option<DecodedFrame>) {
+        match self {
+            Self::Blocking(reply) => {
+                let _ = reply.send(frame);
+            }
+            Self::Supersedable(reply) => {
+                let _ = reply.try_send(frame);
+            }
+        }
+    }
 }
 
 struct PendingFrame {
@@ -185,6 +204,41 @@ impl VideoDecoder {
         .wait()
     }
 
+    pub(crate) fn frame_at_supersedable(
+        &self,
+        time: f64,
+        cancelled: Option<&FrameCancellation>,
+        superseded: Option<&FrameCancellation>,
+    ) -> Option<DecodedFrame> {
+        let Some(superseded) = superseded else {
+            return self.frame_at_interruptible(time, cancelled);
+        };
+        let (reply, received) = smol::channel::bounded(1);
+        let _waiting = queue_frame(
+            &self.commands,
+            FramePosition::Time(time.max(0.0)),
+            FrameReply::Supersedable(reply),
+            cancelled.cloned(),
+            Some(superseded.clone()),
+        )?;
+        smol::block_on(smol::future::or(
+            async { received.recv().await.ok().flatten() },
+            async {
+                smol::future::or(
+                    smol::future::or(
+                        wait_for_cancellation(cancelled),
+                        wait_for_cancellation(Some(superseded)),
+                    ),
+                    async {
+                        smol::Timer::after(Duration::from_secs(10)).await;
+                    },
+                )
+                .await;
+                None
+            },
+        ))
+    }
+
     pub(crate) fn request_warmup(
         &self,
         time: f64,
@@ -200,19 +254,31 @@ fn request_frame(
     cancelled: Option<FrameCancellation>,
 ) -> Option<PendingFrame> {
     let (reply, received) = mpsc::channel();
+    let waiting = queue_frame(commands, position, FrameReply::Blocking(reply), cancelled, None)?;
+    Some(PendingFrame {
+        reply: received,
+        _waiting: waiting,
+    })
+}
+
+fn queue_frame(
+    commands: &Sender<Command>,
+    position: FramePosition,
+    reply: FrameReply,
+    cancelled: Option<FrameCancellation>,
+    superseded: Option<FrameCancellation>,
+) -> Option<smol::channel::Sender<()>> {
     let (waiting, abandoned) = smol::channel::bounded(1);
     commands
         .send(Command {
             position,
             reply,
             cancelled,
+            superseded,
             abandoned,
         })
         .ok()?;
-    Some(PendingFrame {
-        reply: received,
-        _waiting: waiting,
-    })
+    Some(waiting)
 }
 
 fn request_warmup(
@@ -280,11 +346,15 @@ mod backend {
                 position,
                 reply,
                 cancelled,
+                superseded,
                 abandoned,
             }) = commands.recv()
             {
-                if abandoned.is_closed() || cancelled.as_ref().is_some_and(FrameCancellation::is_closed) {
-                    let _ = reply.send(None);
+                if abandoned.is_closed()
+                    || cancelled.as_ref().is_some_and(FrameCancellation::is_closed)
+                    || superseded.as_ref().is_some_and(FrameCancellation::is_closed)
+                {
+                    reply.send(None);
                     continue;
                 }
                 let time = match position {
@@ -292,7 +362,7 @@ mod backend {
                     FramePosition::Time(time) => time,
                 };
                 let frame = read_frame(&reader, time, info, &mut cursor);
-                let _ = reply.send(frame);
+                reply.send(frame);
             }
 
             drop(reader);
@@ -660,11 +730,13 @@ mod backend {
             position,
             reply,
             cancelled,
+            superseded,
             abandoned,
         }) = commands.recv()
         {
             let wait = FrameWait {
                 cancelled: cancelled.as_ref(),
+                superseded: superseded.as_ref(),
                 abandoned: Some(&abandoned),
             };
             let frame = match position {
@@ -673,7 +745,7 @@ mod backend {
                     read_frame(&ffmpeg, &path, time, media, &mut decoder, wait)
                 }
             };
-            let _ = reply.send(frame);
+            reply.send(frame);
         }
     }
 
@@ -792,24 +864,30 @@ mod backend {
     #[derive(Clone, Copy, Default)]
     struct FrameWait<'a> {
         cancelled: Option<&'a FrameCancellation>,
+        superseded: Option<&'a FrameCancellation>,
         abandoned: Option<&'a FrameCancellation>,
     }
 
     impl FrameWait<'_> {
         fn is_interrupted(self) -> bool {
             self.cancelled.is_some_and(FrameCancellation::is_closed)
+                || self.superseded.is_some_and(FrameCancellation::is_closed)
                 || self.abandoned.is_some_and(FrameCancellation::is_closed)
         }
 
         async fn interrupted(self) -> FrameReadError {
             smol::future::or(
                 async {
-                    wait_for_cancellation(self.abandoned).await;
-                    FrameReadError::TimedOut
+                    smol::future::or(
+                        wait_for_cancellation(self.cancelled),
+                        wait_for_cancellation(self.superseded),
+                    )
+                    .await;
+                    FrameReadError::Cancelled
                 },
                 async {
-                    wait_for_cancellation(self.cancelled).await;
-                    FrameReadError::Cancelled
+                    wait_for_cancellation(self.abandoned).await;
+                    FrameReadError::TimedOut
                 },
             )
             .await
@@ -1275,6 +1353,7 @@ esac
             smol::block_on(async {
                 let wait = FrameWait {
                     cancelled: Some(&cancelled),
+                    superseded: None,
                     abandoned: None,
                 };
                 let mut pending = std::pin::pin!(wait_for_frame(&mut decoder, 1.0, wait));
@@ -1307,6 +1386,7 @@ esac
             smol::block_on(async {
                 let wait = FrameWait {
                     cancelled: None,
+                    superseded: None,
                     abandoned: Some(&abandoned),
                 };
                 let mut pending = std::pin::pin!(wait_for_frame(&mut decoder, 1.0, wait));
@@ -1838,6 +1918,24 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_superseded_frame_returns_while_the_decoder_is_still_busy() {
+        let (commands, receiver) = mpsc::channel();
+        let decoder = VideoDecoder { commands, info: VideoInfo::default() };
+        let (supersede, superseded) = smol::channel::bounded(1);
+        let (done, finished) = mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let _ = done.send(decoder.frame_at_supersedable(1.0, None, Some(&superseded)));
+        });
+        let command = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        supersede.close();
+        assert!(finished.recv_timeout(Duration::from_secs(2)).unwrap().is_none());
+        assert!(command.abandoned.is_closed());
+        assert!(command.superseded.as_ref().unwrap().is_closed());
+        drop(command);
+        waiting.join().unwrap();
+    }
 
     #[test]
     fn a_cancelled_metadata_wait_preserves_the_pending_decoder() {

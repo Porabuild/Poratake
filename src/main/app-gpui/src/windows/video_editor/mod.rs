@@ -894,7 +894,7 @@ impl VideoEditorWindow {
             || (camera_visible_in_playback
                 && source
                     .try_lock()
-                    .is_none_or(|source| source.camera_metadata_pending()));
+                    .is_none_or(|source| source.has_camera_decoder()));
         let (camera_wait, camera_wait_superseded) =
             interruptible_camera_wait.then(|| smol::channel::bounded(1)).unzip();
         self.preview_camera_wait = camera_wait;

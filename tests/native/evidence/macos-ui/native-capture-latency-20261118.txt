@@ -4324,3 +4324,29 @@ signal. After the gate released and playback ended, snapshots
 from paused seeks to 0.45 s and 1.2 s matched the baseline bytes
 in each appearance in both runs. The segment boundary regression
 also covers the first-frame still's timeline offset.
+
+2026-11-19 macOS playback past a delayed camera frame at 0db08ac7
+
+The H.264 fixture used a 320x180 screen clip and a 160x90 camera
+sidecar. The camera was visible from 0.3 to 0.8 s. Bundled
+FFmpeg answered both metadata queries. A wrapper held the
+camera raw-video command before delivering the first frame.
+The gate was active during camera warmup, before the visible
+camera frame request. Tracing confirmed a screen decode inside
+the camera segment.
+
+Version   Theme   First screen-only playhead (s)   Time from Play (ms)
+Before    light                          1.2354                  1249.5
+Before    dark                           1.3017                  1341.1
+Updated   light                          0.8021                   812.3
+Updated   dark                           0.8006                   813.1
+
+The baseline gate released at 1.2 s after Play. The updated gate
+released after the first later screen-only frame arrived.
+After playback ended, the snapshots from paused seeks at 0.45 s
+and 1.2 s matched baseline bytes in each appearance.
+
+In a repeat after the build completed, the before paths resumed
+1226.4 and 1235.7 ms after Play. The updated paths resumed at
+802.4 and 805.2 ms with the frame gate still closed. All four
+paused PNG comparisons passed again.
