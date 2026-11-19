@@ -3429,3 +3429,47 @@ all within an eight-pixel band around the ordinary window edge. The direct
 recording harness and GPUI bridge ran as separate processes. Physical input,
 camera hardware, and the app's real start and stop RPC handoff were outside
 this run.
+
+2026-11-19 real GPUI Start and Stop handoff during a macOS capture overlap at bdff6139
+
+A temporary arm64 Swift daemon built from current sources preflighted
+Screen Recording. It limited the recorder's content filters to generated
+AppKit windows, disabled stream audio and cursor tracking, and resolved the
+normal recorded-window exclusions. The broker forwarded the GPUI Start and
+Stop RPCs and verified that Start included the native toolbar's window ID.
+It disabled the requested keyboard tracking in the isolated test. Microphone,
+camera, system audio, and iOS recording remained off.
+
+After the recording overlay showed, the broker held Start and requested a
+540x326 screenshot of the generated backdrop. It held the screenshot
+coordinator after the actual window capture callback and injected a tooltip
+request for the real GPUI toolbar window. The broker forwarded Start, waited
+for the recording-start barrier, and completed the screenshot. The tooltip
+still waited behind startup. Releasing startup allowed the real recorder
+to start, apply its exclusions, and display the tooltip. A second scene
+color marked its visible phase and a third marked an ordinary red window
+added at the same position after tooltip dismissal.
+
+Appearance  MOV frames  Tooltip phase  Ordinary phase  Protected region  Maximum RGB delta
+light       21          10             8               14040 pixels      0
+dark        19          9              6               14040 pixels      0
+
+Both 1040x620 video-only MOV files had strictly increasing decoded frame
+timestamps. Each opened from the normal recording preview and saved two
+segments split at 0.45 s. Both MP4 exports contained 67 frames with strictly
+increasing timestamps, and all protected-phase frames kept the 14040-pixel
+sample region byte-identical to the backdrop. FFmpeg counted frames with
+passthrough timestamps.
+
+Appearance  Protected editor/export match             Ordinary editor/export match
+light       100% within 5 RGB levels at 0.700000 s    99.7270% at 1.766667 s
+dark        100% within 5 RGB levels at 0.700000 s    99.7270% at 1.800000 s
+
+Write-path timings in ms
+Appearance  Startup release to Start RPC reply  Stop RPC  Stop to preview  Preview to editor image
+light       286.7                               10.0      114.7            107.2
+dark        217.9                               11.1       79.9            113.1
+
+The startup and screenshot waits were deliberately coordinated in the fixture.
+Input was app-local and first compositor paint was outside the measurement.
+The 87 related Electron reference tests passed.

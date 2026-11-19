@@ -9924,6 +9924,38 @@ the finished clip through the bridge. All 87 related Electron tests
 passed.
 [Encoded overlap evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS overlap through the GPUI Start and Stop handoff
+
+GPUI sent its normal Start and Stop requests to a temporary
+screen-only daemon under the existing Screen Recording grant.
+The bridge held Start after the recording overlay had prepared.
+A real 540×326 window screenshot held registry completion while
+the daemon began startup. The tooltip request stayed pending until
+startup resumed and its native panel appeared. The app passed the
+recording toolbar's window ID in the Start exclusion list.
+
+The generated-window allowlist kept the scene isolated. Both
+1040×620 MOVs and the editor's 1040×620 MP4 exports preserved
+all 14,040 sampled pixels around the tooltip in every protected
+frame. An ordinary red window appeared at the former tooltip
+position. Each project saved a split at 0.45 s. At matched
+timestamps, all protected-frame pixels and 99.727% of ordinary
+sample-frame pixels were within five RGB levels of the preview.
+
+| Measured interval                           | Light |  Dark |
+| ------------------------------------------- | ----: | ----: |
+| Startup barrier release to Start reply (ms) | 286.7 | 217.9 |
+| Stop RPC round trip (ms)                    |  10.0 |  11.1 |
+| Stop command to decoded preview (ms)        | 114.7 |  79.9 |
+| Preview to editor frame ready (ms)          | 107.2 | 113.1 |
+
+The probe used app-local Start and Stop commands and an injected
+owner-relative tooltip request. The bridge disabled keyboard
+tracking on the test request. Microphone, camera and system audio
+were off. These timings exclude physical input and first display
+paint. All 87 related Electron tests passed.
+[GPUI handoff and decoded frame evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
