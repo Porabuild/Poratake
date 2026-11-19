@@ -5268,3 +5268,33 @@ All six idle, hover and exit PNGs matched across the light and
 dark 2x macOS Metal runs. The GPUI capture-preview tests passed
 48 cases. The Electron preview and thumbnail tests passed 70.
 This measures app readiness with fixture media.
+
+2026-11-20 macOS decoder memory for covered recording previews
+=============================================================
+
+A temporary daemon supplied a generated 4K H.264 recording to the
+native GPUI preview. An opaque, click-through AppKit window first
+covered half of the preview, then its whole frame. The existing
+decoder stayed live during partial coverage. During full coverage
+the baseline kept its decoder, while the updated preview released
+it. The updated preview started another decoder after the cover
+was removed.
+
+GPUI CPU is user plus system time over one second of full
+coverage. Footprint is the FFmpeg child's physical footprint.
+Release starts at the cover acknowledgement. Restart runs from
+requesting the cover removal to the first payload trace from a
+new decoder. These times include polling.
+
+Build   Theme  Initial MiB  Covered MiB  Covered GPUI CPU ms  Release ms  Restart ms
+Before  light        882.1        884.2              230.66           —           —
+After   light        882.4       exited                1.19       158.3       221.4
+Before  dark         879.9        881.6              234.62           —           —
+After   dark         880.2       exited                1.49       147.3       161.5
+
+The GPUI regression covers a recording card fully outside the
+scrollable viewport. It now checks that the decoder releases
+its buffers while clipped and that decoding resumes after the
+card scrolls into view. All six light and dark 2x Metal idle,
+hover and exit PNGs matched across builds. All 48 GPUI tests
+and 70 Electron preview and thumbnail tests passed.

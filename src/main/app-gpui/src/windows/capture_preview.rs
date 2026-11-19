@@ -119,6 +119,8 @@ struct VideoPlayback {
     duration: f64,
     started: Instant,
     in_flight: bool,
+    #[cfg(target_os = "macos")]
+    frames_released: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1208,6 +1210,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 duration,
                                 started: cx.background_executor().now(),
                                 in_flight: false,
+                                #[cfg(target_os = "macos")]
+                                frames_released: false,
                             });
                             cx.notify();
                             Some(())
@@ -1230,9 +1234,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 let index =
                                     view.previews.iter().position(|preview| preview.id == id)?;
                                 #[cfg(target_os = "macos")]
-                                if view.preview_is_clipped(&view.previews[index], _window) {
-                                    return None;
-                                }
+                                let can_play = !view.preview_is_clipped(&view.previews[index], _window)
+                                    && (_window.is_visible() || view.previews[index].thumbnail_loading);
                                 let now = cx.background_executor().now();
                                 let menu_open = view
                                     .display_menu
@@ -1247,6 +1250,17 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 let playback = preview.video.as_mut()?;
                                 if playback.in_flight {
                                     return None;
+                                }
+                                #[cfg(target_os = "macos")]
+                                {
+                                    if !can_play {
+                                        if !playback.frames_released {
+                                            playback.decoder.release_frames();
+                                            playback.frames_released = true;
+                                        }
+                                        return None;
+                                    }
+                                    playback.frames_released = false;
                                 }
                                 playback.in_flight = true;
                                 let time = (!preview.thumbnail_loading).then(|| {
@@ -4934,6 +4948,7 @@ mod tests {
             .update(&mut visual, |view, window, _| {
                 let newest = view.previews.last().unwrap();
                 assert!(view.preview_is_clipped(newest, window));
+                assert!(newest.video.as_ref().unwrap().frames_released);
                 (
                     newest.id,
                     newest.dismiss_token.clone(),
@@ -4994,6 +5009,12 @@ mod tests {
             !Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
             "a revealed card must decode frames again"
         );
+        handle
+            .update(&mut visual, |view, _, _| {
+                let preview = view.previews.iter().find(|preview| preview.id == id).unwrap();
+                assert!(!preview.video.as_ref().unwrap().frames_released);
+            })
+            .unwrap();
         visual
             .executor()
             .advance_clock(Duration::from_millis(1_500));

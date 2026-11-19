@@ -11250,6 +11250,26 @@ borrowed-buffer slowdown. The 48 GPUI preview tests and 70 Electron
 preview and thumbnail tests passed.
 [Thumbnail allocation measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS decoder memory for covered recording previews
+
+A recording preview fully covered by another window now releases
+the decoder's buffered frames. Cards outside the scrollable
+viewport also release their decoder buffers. They retain the last
+thumbnail and resume decoding when visible again.
+
+A generated AppKit cover left a partially visible preview playing
+and then fully covered the same window. The updated light and
+dark 4K previews released a decoder that had used about 880 MiB.
+During a one-second covered sample, GPUI CPU time fell from
+231–235 ms to 1.2–1.5 ms. The new decoder delivered frame data
+162–221 ms after the cover was removed.
+
+The clipped-card regression now checks release and playback
+resumption. All six 2× idle, hover and exit images matched across
+builds. The 48 GPUI preview tests and 70 Electron reference tests
+passed. These results use generated media and an app-local cover.
+[Covered preview measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
