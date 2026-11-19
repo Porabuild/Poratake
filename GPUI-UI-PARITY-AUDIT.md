@@ -8090,6 +8090,24 @@ and window preview-to-decoded-export checks.
 python3 tests/native/macos-capture-history-probe.py --recording
 ```
 
+### 2026-11-19 macOS recording discard cleanup
+
+Discard closed the recording toolbar, then recursively removed the
+project on the app thread. A removal failure left the recording
+in place without feedback. Cleanup now runs on the background
+executor after the toolbar closes. If removal fails, the app reports
+the project path and the filesystem error.
+
+The regression makes an isolated recording project read-only before
+the fixture daemon releases a held Stop request. It reproduced the
+missing warning before the fix. The revised case confirms the toolbar
+closes, the warning names the retained folder, and the source movie
+still contains the original bytes. Existing cases verify successful
+discard removes the project and the retry path keeps its recording.
+Both light and dark Metal recording workflows passed, including
+preview-to-decoded-export for screen, area and window. The arm64
+GPUI suite passed 1,178 tests with 23 ignored.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

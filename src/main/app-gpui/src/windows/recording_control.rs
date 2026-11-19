@@ -2537,7 +2537,30 @@ impl RecordingControl {
             return true;
         };
         if discard {
-            let _ = std::fs::remove_dir_all(&project);
+            cx.spawn(async move |_, cx| {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        std::fs::remove_dir_all(&project).map_err(|error| (project, error))
+                    })
+                    .await;
+                let Err((project, error)) = result else {
+                    return;
+                };
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    cx.update(|cx| {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Recording could not be discarded",
+                            format!(
+                                "Check the recording folder at {}. {error}",
+                                project.display()
+                            ),
+                        );
+                    });
+                }
+            })
+            .detach();
             return true;
         }
 

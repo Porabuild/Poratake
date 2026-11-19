@@ -1187,14 +1187,18 @@ fn recording_stop_timeout_handoff(
     cx: &mut HeadlessAppContext,
     output: &Path,
     case: (bool, bool, bool, bool, bool, bool),
+    deny_discard: bool,
 ) {
+    use std::os::unix::fs::PermissionsExt;
+
     use crate::video::recorder::{RecorderState, RecordingTarget};
     use crate::windows::recording_control::{PreferenceScope, RecordingControl};
     use crate::windows::registry::{self, WindowKind};
 
     let (fails, discard, terminal, start_pending, paused, target_closed) = case;
+    let suffix = if deny_discard { "-read-only" } else { "" };
     let recordings = output.join(format!(
-        "held-stop-{fails}-{discard}-{terminal}-{start_pending}-{paused}-{target_closed}"
+        "held-stop-{fails}-{discard}-{terminal}-{start_pending}-{paused}-{target_closed}{suffix}"
     ));
     std::fs::create_dir_all(&recordings).unwrap();
     let mut fixture = serde_json::json!({
@@ -1264,6 +1268,12 @@ fn recording_stop_timeout_handoff(
         .unwrap();
     let recording = Path::new(start["params"]["outputPath"].as_str().unwrap()).to_owned();
     let bytes = std::fs::read(&recording).unwrap();
+    let project = recording.parent().unwrap();
+    let original_permissions = deny_discard.then(|| {
+        let permissions = std::fs::metadata(project).unwrap().permissions();
+        std::fs::set_permissions(project, std::fs::Permissions::from_mode(0o555)).unwrap();
+        permissions
+    });
     take_notifications();
     let stop_requested_at = std::time::Instant::now();
     click_measured(
@@ -1277,12 +1287,14 @@ fn recording_stop_timeout_handoff(
     assert_eq!(crate::video::recorder::state(), RecorderState::Stopping);
     assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
     assert_eq!(std::fs::read(&recording).unwrap(), bytes);
-    capture(
-        cx,
-        control,
-        output,
-        &format!("recording-held-stop-{fails}-{discard}-{terminal}-{start_pending}"),
-    );
+    if !deny_discard {
+        capture(
+            cx,
+            control,
+            output,
+            &format!("recording-held-stop-{fails}-{discard}-{terminal}-{start_pending}"),
+        );
+    }
     click_measured(cx, control, "recording-controls", 1);
     assert_eq!(
         super::daemon_fixture::calls(output)[before..]
@@ -1346,8 +1358,32 @@ fn recording_stop_timeout_handoff(
     }
     assert_eq!(crate::video::recorder::state(), RecorderState::Idle);
     assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
-    if discard && !terminal {
-        assert!(!recording.parent().unwrap().exists());
+    if let Some(original_permissions) = original_permissions {
+        let started = std::time::Instant::now();
+        let warning = loop {
+            cx.run_until_parked();
+            if let Some(warning) = take_notifications()
+                .into_iter()
+                .find(|(title, _, _)| title == "Recording could not be discarded")
+            {
+                break Some(warning);
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(8) {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        std::fs::set_permissions(project, original_permissions).unwrap();
+        let (_, message, _) = warning.expect("a failed discard must report the recording path");
+        assert!(message.contains(project.to_str().unwrap()));
+        assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+    } else if discard && !terminal {
+        let started = std::time::Instant::now();
+        while project.exists() {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
     } else {
         assert_eq!(std::fs::read(&recording).unwrap(), bytes);
     }
@@ -2111,8 +2147,10 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         (true, false, false, false, false, true),
         (true, true, false, false, false, true),
     ] {
-        recording_stop_timeout_handoff(cx, output, case);
+        recording_stop_timeout_handoff(cx, output, case, false);
     }
+    #[cfg(target_os = "macos")]
+    recording_stop_timeout_handoff(cx, output, (false, true, false, false, false, false), true);
     #[cfg(windows)]
     {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
