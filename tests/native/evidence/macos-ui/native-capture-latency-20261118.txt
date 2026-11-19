@@ -3615,3 +3615,21 @@ CGPreflightPostEventAccess probe measured 9.121 ms median and
 fixture posted no wheel event and requested no permission. Core
 Graphics event delivery after successful creation was outside this
 run.
+
+2026-11-19 GPUI scroll input error recovery at f72bc6a7
+
+The 1280-point 1x Metal parity workflow ran the scroll session with an
+isolated profile and protocol fixture in light and dark. The fixture sent
+input-error with zero accepted frames, then normal-stop events and
+recoverable failures with two accepted frames. The coordinator delivered
+the expected four warnings and saved the generated image on Done. Both
+runs checked the history entry and reopened the PNG in the editor.
+
+Both saved PNGs were 640x900 and had SHA-256
+ac2e0edbd6a6b5dd37a9f0d3721bb3c7c1c9e2b20c9713d17d3257b26e34cae5.
+Independent RGBA decoding returned the expected (32,168,96,255) at
+each of 576000 pixels. The GPUI Auto Scroll start and stop icons
+measured at least 9.99:1 contrast in the offscreen snapshots.
+This fixture asserted notification text rather than drawing an OS
+notification. It did not post real scroll input. All 62 Electron and
+daemon contract tests also passed.

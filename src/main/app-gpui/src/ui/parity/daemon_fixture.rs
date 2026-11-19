@@ -337,16 +337,17 @@ pub fn run() {
                 }
                 scrolling = true;
                 if fixture["scroll"] == "interrupted" {
-                    for reason in [
-                        "duplicate",
-                        "max-height",
-                        "no-overlap",
-                        "capture-error",
-                        "input-error",
+                    for (reason, frame_count) in [
+                        ("input-error", 0),
+                        ("duplicate", 2),
+                        ("max-height", 2),
+                        ("no-overlap", 2),
+                        ("capture-error", 2),
+                        ("input-error", 2),
                     ] {
                         protocol::send_event(
                             poratake_daemon_common::contract::SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
-                            Some(json!({ "reason": reason, "frameCount": 2 })),
+                            Some(json!({ "reason": reason, "frameCount": frame_count })),
                         );
                     }
                 }

@@ -554,6 +554,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             ]
         } else if name == "interrupted" {
             [
+                "Auto Scroll could not send input.",
                 "The latest frame could not be aligned. You can save the captured portion.",
                 "A frame could not be captured. You can save the captured portion.",
                 "Scrolling could not be continued. You can save the captured portion.",
@@ -701,7 +702,7 @@ fn wait_for_scroll_result(
     saved: bool,
 ) -> Vec<(String, String, bool)> {
     let expected_notification_count = match name {
-        "interrupted" => 3,
+        "interrupted" => 4,
         "burst-finish" | "burst-cancel" => 20,
         "start-failed"
         | "finish-failed"

@@ -10088,6 +10088,22 @@ fixtures and daemon typechecks passed on arm64 and Rosetta x86_64.
 The 14 GPUI scroll tests and 62 Electron and contract tests passed.
 [Auto Scroll input evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 GPUI save and reopen after Auto Scroll input errors
+
+The GPUI interruption workflow now checks both input-error messages.
+With zero frames the message reports the input failure. With a
+retained portion it also offers Save. The fixture sends the simulated
+daemon events through the normal capture coordinator before finishing.
+
+The offscreen macOS workflow passed in light and dark. Both saves
+produced byte-identical 640×900 PNGs with all 576,000 pixels matching
+the generated capture. Each image entered history and reopened in
+the editor. The fixture verifies notification text, while the separate
+control snapshots verify light and dark icon contrast. It uses a
+simulated scroll daemon and app-local input. All 62 related Electron
+and contract tests passed.
+[Scroll input workflow evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
