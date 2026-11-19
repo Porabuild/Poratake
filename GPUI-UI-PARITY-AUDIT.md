@@ -7974,6 +7974,23 @@ measured 13.56:1 and 13.43:1. The light comparison changed only
 the Auto-scroll icon pixels. Both full scroll workflows passed.
 [Light Auto-scroll control](tests/native/evidence/macos-ui/scroll-control-auto-scroll-contrast-light-20261119.png)
 
+### 2026-11-19 macOS primary recording control contrast
+
+The recording-control Metal fixture now measures the colored Start
+and Stop glyphs against the surrounding button pixels. It checks
+Start in area setup and Stop during active and paused window
+recording. The device icons retain their existing contrast and
+clipping checks. Device menus use generated data from the fixture
+daemon.
+
+Four macOS profiles passed at 1× and 2×. Both scales measured
+3.87:1 for Start and 3.10:1 for Stop in light mode, and 6.88:1
+for Start and 5.38:1 for Stop in dark mode. Stop retained the
+same contrast while paused. All 36 before-and-after PNGs at 2×
+matched byte for byte. These runs cover fixture device menus and
+toolbar rendering. Physical input and media permissions were
+outside the run.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -4,6 +4,28 @@ use super::{
 };
 use herogpui::gpui;
 
+#[cfg(target_os = "macos")]
+fn assert_recording_action_contrast(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    index: usize,
+    action: &str,
+) {
+    let button = measured("recording-controls", index);
+    let scale = cx
+        .update_window(window, |_, window, _| window.scale_factor())
+        .unwrap();
+    let pixel = |point: gpui::Pixels| (f32::from(point) * scale).round() as u32;
+    let image = cx.capture_screenshot(window).unwrap();
+    let y = pixel(button.center().y);
+    let contrast = super::pixel_contrast(
+        image.get_pixel(pixel(button.center().x), y),
+        image.get_pixel(pixel(button.right() - px(4.)), y),
+    );
+    assert!(contrast >= 3., "{action} glyph contrast: {contrast:.2}:1");
+    println!("{action} glyph contrast: {contrast:.2}:1");
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     use crate::video::recorder::{self, RecorderState, RecordingTarget};
     use crate::windows::recording_control::RecordingControl;
@@ -77,6 +99,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         };
         capture(cx, window, output, &format!("{prefix}-default"));
         if area {
+            #[cfg(target_os = "macos")]
+            assert_recording_action_contrast(cx, window, 0, "Start recording");
             let image = cx.capture_screenshot(window).unwrap();
             let bounds = measured("microphone-icon", 0);
             let x = (f32::from(bounds.left()) * scale).round() as u32;
@@ -390,6 +414,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         super::workflows::wait_for_recording_start(cx);
         assert_eq!(recorder::state(), RecorderState::Recording);
         capture(cx, window, output, "record-control-active");
+        #[cfg(target_os = "macos")]
+        assert_recording_action_contrast(cx, window, 3, "Stop recording");
         #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 2);
         #[cfg(target_os = "macos")]
@@ -398,6 +424,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         });
         assert_eq!(recorder::state(), RecorderState::Paused);
         capture(cx, window, output, "record-control-paused");
+        #[cfg(target_os = "macos")]
+        assert_recording_action_contrast(cx, window, 3, "Stop paused recording");
         escape(cx, window);
         assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
         #[cfg(not(target_os = "macos"))]
