@@ -492,34 +492,37 @@ struct ScrollCapturePreviewTest {
         let wideWidth = 1280
         let wideViewport = 160
         let wideShift = 86
-        let repeatedCenter: (Int, Int) -> Int = { x, row in
-            (240..<1040).contains(x) && (166..<206).contains(row) ? row - 46 : row
-        }
-        let wideFrames = (0..<2).map { index in
-            fixedFooterFrame(
-                index: index, periodic: false, width: wideWidth, height: wideViewport,
+        for perturbed in [false, true] {
+            let repeatedCenter: (Int, Int) -> Int = { x, row in
+                guard (240..<1040).contains(x), (166..<206).contains(row) else { return row }
+                return x == 640 && row == 172 && perturbed ? row - 45 : row - 46
+            }
+            let wideFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: wideWidth, height: wideViewport,
+                    footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
+                )
+            }
+            let wideOverlap = ScrollCaptureModule().testFindOverlap(
+                topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
+            )
+            print("wide fixed-header overlap (perturbed center: \(perturbed)):", wideOverlap as Any)
+            fflush(stdout)
+            precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
+            let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-wide-fixed-header-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: wideOutput) }
+            let (widePreview, wideSaved, _, wideOverlaps, wideCount, wideHeight) = ScrollCaptureModule().testPreviewAndSave(
+                frames: wideFrames, step: wideShift, outputPath: wideOutput.path
+            )
+            let wideDocument = fixedFooterFrame(
+                index: 0, periodic: false, width: wideWidth, height: wideViewport + wideShift,
                 footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
             )
+            precondition(wideCount == 2 && wideHeight == wideViewport + wideShift)
+            precondition(wideOverlaps == [wideViewport - wideShift])
+            precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
         }
-        let wideOverlap = ScrollCaptureModule().testFindOverlap(
-            topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
-        )
-        print("wide fixed-header overlap:", wideOverlap as Any)
-        fflush(stdout)
-        precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
-        let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("poratake-scroll-wide-fixed-header-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: wideOutput) }
-        let (widePreview, wideSaved, _, wideOverlaps, wideCount, wideHeight) = ScrollCaptureModule().testPreviewAndSave(
-            frames: wideFrames, step: wideShift, outputPath: wideOutput.path
-        )
-        let wideDocument = fixedFooterFrame(
-            index: 0, periodic: false, width: wideWidth, height: wideViewport + wideShift,
-            footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
-        )
-        precondition(wideCount == 2 && wideHeight == wideViewport + wideShift)
-        precondition(wideOverlaps == [wideViewport - wideShift])
-        precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
     }
 
     @MainActor

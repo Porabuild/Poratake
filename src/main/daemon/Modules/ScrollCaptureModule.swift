@@ -1439,7 +1439,7 @@ class ScrollCaptureModule: NSObject, Module {
             || (headerHeight == 0 && bestMatch == minOverlap)
         var wideScore: Double?
         if !requiresExactOverlap, stripWidth < topFrame.width,
-           scores.contains(where: { $0.overlap == bestMatch && $0.score == 0 }) {
+           let centerScore = scores.first(where: { $0.overlap == bestMatch })?.score {
             let height = min(stripHeight, bestMatch - headerHeight)
             guard !isCancelled(),
                   let top = extractStrip(
@@ -1450,7 +1450,8 @@ class ScrollCaptureModule: NSObject, Module {
                       from: bottomFrame, y: bestMatch - height, height: height, width: bottomFrame.width
                   ) else { return nil }
             if top != bottom {
-                wideScore = compareStrips(top, bottom[...]) / 3
+                let fullWidthScore = compareStrips(top, bottom[...])
+                wideScore = fullWidthScore > centerScore ? fullWidthScore / 3 : nil
             }
         }
         if requiresExactOverlap || wideScore != nil {

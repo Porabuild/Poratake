@@ -9401,6 +9401,24 @@ the matcher. Histories that produce identical complete frames
 remain ambiguous.
 [Native seam and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS wide scroll seams with a changed center pixel
+
+A one-pixel change in the repeated center region reproduced the
+120-row false overlap after the previous exact-center fix. The
+true 74-row seam remained exact across the full frame. The matcher
+now compares the selected center score with the full-width score,
+so disagreement from the outer columns can trigger the existing
+exact match even when the center differs slightly.
+
+The exact-center and changed-pixel fixtures each recovered the
+74-row overlap and saved a 1280×246 image matching the generated
+document and preview pixel for pixel. Both native Swift suites
+passed on arm64 and x86_64 under Rosetta, and 56 Electron
+scroll tests passed. The matcher-only median for an ordinary
+3456×640 seam with noise was 12.55 ms before and 13.68 ms after.
+Identical full-frame histories remain ambiguous.
+[Native fixture and timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
