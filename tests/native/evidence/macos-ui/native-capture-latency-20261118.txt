@@ -2811,3 +2811,30 @@ file check timed out and the isolated process was terminated.
 Computer Use was disabled after the attempts. The user's existing
 editor process remained open. All 55 selected Electron tests passed.
 Native confirmation remains unverified.
+
+2026-11-19 macOS decoder reply deadline and current checks
+
+The initial repository check failed the GPUI timer-ban test in
+tests/unit/check-daemon-win.test.ts. The existing standard-library
+reply timeout now owns the deadline. The request carries a receiver
+that wakes when the caller drops the corresponding sender. A
+separate cancellation channel continues to retire superseded reads
+while preserving an available FFmpeg process.
+
+The decoder test blocked a read without sending a frame. Closing
+the cancellation signal returned Cancelled and the same decoder
+returned a subsequent frame. Dropping the reply waiter during
+another blocked read returned TimedOut. These assertions require
+no wall-clock timer. Three sparse screen and camera tests plus the
+camera visibility test passed using the development FFmpeg binary.
+
+bun run checks passed, including contract generation, typecheck,
+lint, format, React Compiler and 2,415 Vitest cases (three skipped).
+The Windows-native stage skipped on macOS. The full GPUI suite
+passed 1,194 tests. The full Swift daemon typechecked for arm64
+and x86_64. The local development binary ran the light and dark
+Metal recording handoff fixtures after the decoder fix. The first
+light run stopped at the held-start assertion with Idle instead
+of Starting. Both themes passed in fresh profiles on retry. Selection
+and scroll fixtures also passed in both themes. The Metal runs
+used generated media and a fixture daemon.

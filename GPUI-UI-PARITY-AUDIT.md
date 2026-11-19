@@ -9497,6 +9497,26 @@ unverified. The 55 Electron screenshot and annotation reference
 tests passed. The temporary confirmation code was removed.
 [Native Save probe evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS decoder reply deadline and current checks
+
+The full repository check found that the Unix video decoder used a
+timer prohibited by the GPUI check. The decoder now uses the existing
+blocking reply deadline. When the caller stops waiting, it releases
+the reply's lifetime signal and the FFmpeg worker can retire an
+abandoned read. A superseded seek still cancels the individual read
+and retains the decoder for the next request. Camera warmup uses the
+same reply deadline through the blocking executor.
+
+Repository checks passed with 2,415 Vitest cases and three skipped.
+All 1,194 GPUI tests passed, including the deterministic cancellation
+and abandonment check. Three sparse timeline tests and the camera
+visibility test passed with development FFmpeg. The Swift daemon
+typechecked for arm64 and x86_64. Light and dark Metal selection,
+scroll, and recording handoff fixtures passed. The initial light
+recording fixture hit its held-start state assertion and passed
+on retry. The Windows-native gate skipped on this host.
+[Checks and decoder evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
