@@ -10449,6 +10449,31 @@ sampled difference was one RGB level. All 376 active GPUI editor
 tests and 22 Electron reference tests passed.
 [Balance and blackout memory measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS Balance sampling from the editor image
+
+Balance now samples the existing editor image directly. Each
+translucent sample retains the channel rounding used by the
+premultiplied export image. Both paths share the crop calculation.
+The editor skips the full-size premultiplied sampling image.
+
+For generated 3840×2160 screenshots with opaque and translucent
+borders, light and dark editor peaks fell from about 402 MiB to
+392 MiB. The resident empty large malloc region went from
+31.6 MiB to 22.4 MiB.
+
+Across 21 paired trials per border type, the median isolated Balance
+calculation fell from 56 to 15 ms for an opaque border and from 44
+to 19 ms for a translucent border. Both implementations returned the
+same four crop margins in every trial. The timing covers only the
+crop calculation, including the prior full-image conversion.
+
+The light and dark offscreen checks passed for Balance with frames,
+effects and attachments. Forty-nine GPUI tests and 24 Electron
+reference tests passed. The new regression compares the crop from
+borrowed samples with the premultiplied image across 24 combinations
+of border and content alpha, including the content cutoff.
+[Balance sampling measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -8,7 +8,10 @@ use tiny_skia::{Color, FillRule, Pixmap};
 use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::WallpaperSettings;
 use crate::render::canvas::{paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
+use crate::render::color_detection::balance_pixmap;
 use crate::render::{annotations as annotation_renderer, color, gradient};
+
+pub use crate::render::color_detection::balance_rgba as balance_bounds;
 
 #[derive(Clone)]
 pub struct PreviewEdgeImage {
@@ -105,7 +108,7 @@ pub fn compose_with_layers(
     }
     let original_balance = wallpaper
         .balance
-        .then(|| balance_bounds_pixmap(canvas.pixmap()))
+        .then(|| balance_pixmap(canvas.pixmap().as_ref()))
         .flatten();
     let original_inset_color = layers.is_empty().then(|| {
         (wallpaper.inset > 0.0)
@@ -173,7 +176,7 @@ pub fn compose_with_layers(
         let bounds = if layers.is_empty() {
             original_balance
         } else {
-            balance_bounds_pixmap(&annotated)
+            balance_pixmap(annotated.as_ref())
         };
         if let Some(cropped) = bounds.and_then(|bounds| balance_crop(&annotated, bounds)) {
             annotated = cropped;
@@ -482,23 +485,6 @@ fn compose_framed_layers(
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())
-}
-
-/// The margin the balance option trims, in image pixels. The preview shifts
-/// and clips by the same amounts so it shows what the export writes.
-pub fn balance_bounds(
-    image: &image::RgbaImage,
-) -> Option<crate::render::color_detection::ContentBounds> {
-    let pixmap = from_rgba(image)?;
-    balance_bounds_pixmap(&pixmap)
-}
-
-fn balance_bounds_pixmap(pixmap: &Pixmap) -> Option<crate::render::color_detection::ContentBounds> {
-    use crate::render::color_detection;
-
-    let edge = color_detection::dominant_edge_color(pixmap.as_ref())?;
-    let bounds = color_detection::content_bounds(pixmap.as_ref(), &edge)?;
-    (bounds != color_detection::ContentBounds::default()).then_some(bounds)
 }
 
 /// Crops the uniform margin the balance option removes, or `None` when there
@@ -867,7 +853,7 @@ pub fn render_backdrop(
         let primary = from_dynamic_image(base?)?;
         let cropped = wallpaper
             .balance
-            .then(|| balance_bounds_pixmap(&primary))
+            .then(|| balance_pixmap(primary.as_ref()))
             .flatten()
             .and_then(|bounds| balance_crop(&primary, bounds));
         let primary = cropped.as_ref().unwrap_or(&primary);
@@ -884,7 +870,7 @@ pub fn render_backdrop(
         let primary = from_dynamic_image(base?)?;
         let balance = wallpaper
             .balance
-            .then(|| balance_bounds_pixmap(&primary))
+            .then(|| balance_pixmap(primary.as_ref()))
             .flatten();
         let cropped = balance.and_then(|bounds| balance_crop(&primary, bounds));
         let primary = cropped.as_ref().unwrap_or(&primary);
@@ -911,7 +897,7 @@ pub fn render_backdrop(
         let primary = from_dynamic_image(base?)?;
         let cropped = wallpaper
             .balance
-            .then(|| balance_bounds_pixmap(&primary))
+            .then(|| balance_pixmap(primary.as_ref()))
             .flatten()
             .and_then(|bounds| balance_crop(&primary, bounds));
         let primary = cropped.as_ref().unwrap_or(&primary);
@@ -1346,6 +1332,39 @@ mod tests {
                 actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 4),
                 "{x},{y}: {actual:?} vs {expected:?}"
             );
+        }
+    }
+
+    #[test]
+    fn borrowed_balance_samples_match_premultiplied_images() {
+        for border_alpha in [0, 1, 127, 128, 254, 255] {
+            for content_alpha in [127, 128, 199, 255] {
+                let source = RgbaImage::from_fn(56, 64, |x, y| {
+                    if (17..36).contains(&x) && (19..39).contains(&y) {
+                        image::Rgba([42, 111, 183, content_alpha])
+                    } else {
+                        image::Rgba([181, 182, 183, border_alpha])
+                    }
+                });
+                let old_pixmap = from_rgba(&source).unwrap();
+                let borrowed = balance_bounds(&source);
+                assert_eq!(
+                    borrowed,
+                    balance_pixmap(old_pixmap.as_ref()),
+                    "border alpha {border_alpha}, content alpha {content_alpha}",
+                );
+                if border_alpha == 255 && content_alpha == 255 {
+                    assert_eq!(
+                        borrowed.unwrap(),
+                        crate::render::color_detection::ContentBounds {
+                            top: 9,
+                            right: 10,
+                            bottom: 15,
+                            left: 7,
+                        }
+                    );
+                }
+            }
         }
     }
 
