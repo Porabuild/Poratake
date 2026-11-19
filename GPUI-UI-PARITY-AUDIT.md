@@ -9186,6 +9186,24 @@ wallpaper, frame and annotation export tests passed. Physical
 display transitions remain outside the fixture.
 [Framed preview evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS narrow frame lights and attachment insets
+
+A narrow right attachment cropped its green title-bar light in
+both GPUI and Electron. Both renderers now scale the group to the
+available frame width while keeping it vertically centered.
+An Electron regression reproduced a light extending to x=59 in a
+40-pixel frame. The revised Rust and Electron tests cover all
+three lights in that width.
+
+The attachment fixture now also covers a six-point inset and
+seven-point spacing. The 24 GPUI Metal preview/reopen comparisons
+at 73% and 137% zoom differed by at most one channel level.
+Electron 43.4.0 emitted six offscreen PNGs through its export hook.
+Their dimensions, three content anchors, right inset and clear
+spacing matched GPUI. In the sampled 125% export, all changed
+pixels were inside the narrow title bar.
+[Frame and attachment evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -122,6 +122,23 @@ describe('renderWallpaperComposite', () => {
     expect(result.width).toBe(800);
   });
 
+  it('fits all three macOS title-bar lights inside a narrow frame', async () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    await renderWallpaperComposite(createImageStub(40, 70), {
+      gradient: null,
+      padding: 0,
+      corners: 0,
+      shadow: 0,
+      windowFrame: { style: 'macos-dark' },
+    });
+
+    expect(ctx.arc).toHaveBeenCalledTimes(3);
+    for (const [centerX, , radius] of ctx.arc.mock.calls) {
+      expect(centerX - radius).toBeGreaterThan(0);
+      expect(centerX + radius).toBeLessThan(40);
+    }
+  });
+
   it('renders at 1x when the display is not scaled', async () => {
     vi.stubGlobal('window', { devicePixelRatio: 1 });
 

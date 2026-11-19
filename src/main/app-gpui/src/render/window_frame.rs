@@ -189,12 +189,7 @@ pub fn render_chrome(
     if is_windows_frame(style) {
         draw_windows_controls(canvas, x, y, frame_width, theme.control, scale);
     } else {
-        draw_traffic_lights(
-            canvas,
-            x + TRAFFIC_LIGHT_OFFSET_X * scale,
-            y + bar_height / 2.0,
-            scale,
-        );
+        draw_traffic_lights(canvas, x, y + bar_height / 2.0, frame_width, scale);
     }
 
     if let Some(inset_color) = inset_color.filter(|_| inset > 0.0) {
@@ -286,11 +281,15 @@ pub fn preview_edges(
     )
 }
 
-fn draw_traffic_lights(canvas: &mut Canvas, x: f64, y: f64, scale: f64) {
-    let size = TRAFFIC_LIGHT_SIZE * scale;
-    let spacing = TRAFFIC_LIGHT_SPACING * scale;
+fn draw_traffic_lights(canvas: &mut Canvas, x: f64, y: f64, frame_width: f64, scale: f64) {
+    let group_width = TRAFFIC_LIGHT_OFFSET_X * 2.0
+        + (TRAFFIC_LIGHT_COLORS.len() - 1) as f64 * (TRAFFIC_LIGHT_SIZE + TRAFFIC_LIGHT_SPACING);
+    let fitted_scale = scale.min(frame_width / group_width);
+    let size = TRAFFIC_LIGHT_SIZE * fitted_scale;
+    let spacing = TRAFFIC_LIGHT_SPACING * fitted_scale;
+    let start_x = x + TRAFFIC_LIGHT_OFFSET_X * fitted_scale;
     for (index, value) in TRAFFIC_LIGHT_COLORS.iter().enumerate() {
-        let center_x = x + index as f64 * (size + spacing);
+        let center_x = start_x + index as f64 * (size + spacing);
         if let Some(path) = circle_path(center_x as f32, y as f32, (size / 2.0) as f32) {
             canvas.fill_path(
                 &path,
@@ -473,6 +472,30 @@ mod tests {
         // The title bar is the theme's grey, the content below it is the image.
         assert_ne!(pixel(100, 20), [255, 0, 0]);
         assert_eq!(pixel(100, 60), [255, 0, 0]);
+    }
+
+    #[test]
+    fn narrow_macos_frame_renders_all_three_title_bar_lights() {
+        let mut canvas = Canvas::new(40, 98).unwrap();
+        let image = Pixmap::new(40, 70).unwrap();
+        render(
+            &mut canvas,
+            image.as_ref(),
+            0.,
+            0.,
+            40.,
+            70.,
+            "macos-dark",
+            None,
+            1.,
+            0.,
+            None,
+        );
+        let pixels = canvas.pixmap().data();
+        for (column, color) in [(8, [255, 95, 87]), (20, [255, 189, 46]), (32, [40, 200, 64])] {
+            let offset = (14 * 40 + column) * 4;
+            assert_eq!(&pixels[offset..offset + 3], &color);
+        }
     }
 
     #[test]

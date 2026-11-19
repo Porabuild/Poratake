@@ -2229,3 +2229,39 @@ in both themes. The Electron window frame, wallpaper and
 annotation export suites passed all 13 tests. The new comparison
 uses generated captures and app-local input in the headless
 renderer.
+
+2026-11-19 macOS narrow frame lights and attachment insets
+
+The offscreen GPUI Metal fixture applied a six-point inset and
+seven-point spacing to two framed compositions with top and right
+attachments. The balanced source used the dark macOS frame; the
+source with a half-alpha region used the light frame. At 73% and
+137% zoom with simulated 1x, 1.25x and 2x displays, all 24 preview
+crops matched the reopened PNG within one channel level. Both app
+appearances were included. The preceding no-inset checks also passed.
+
+A separate local Electron 43.4.0 offscreen renderer ran the actual
+useCanvasExport hook with identical generated image pixels and
+layout settings. It exported six cases. For both shells, the
+dimensions matched Electron's layout result. Each of the three
+sampled content rectangles, the right inset color and transparency
+in the horizontal gap matched. Samples were taken away from the
+annotation added by the GPUI fixture.
+
+Frame source        1x dimensions   1.25x dimensions   2x dimensions
+Balanced dark            226x273            236x302          255x378
+Translucent light        246x287            256x318          275x398
+
+The 1.25x balanced fixture exposed a clipped green light on a
+71-pixel-wide right attachment. The old Electron green pixels
+extended through x=234 of a frame whose last column was x=235.
+After fitting the group, the last fully green pixel was x=227
+in both renderers. The old and revised GPUI PNGs differed in 551
+pixels, all within that narrow title bar. The old and revised
+Electron PNGs differed in 558 pixels in the same title bar.
+
+The Electron unit regression originally placed a circle edge
+at x=59 in a 40-pixel frame. Both revised renderers fit all three
+circles using their existing sizes, spacing and left margin as
+the group proportions. The fixture uses generated image data and
+app-local input.
