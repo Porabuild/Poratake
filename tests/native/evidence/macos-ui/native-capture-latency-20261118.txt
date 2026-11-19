@@ -4505,3 +4505,21 @@ BGRA conversion. A decoder regression with a five-second start
 offset makes the filtered stream deliver its first frame above
 the target, then verifies the unfiltered restart chooses the
 earlier held frame.
+
+2026-11-19 macOS startup with Freeze Screen disabled at c37c8caf
+
+Fresh GPUI profiles supplied Freeze Screen on or off before
+startup. A fixture daemon logged the capture RPCs. After startup,
+the smoke command selected a live area and waited for the preview.
+
+Appearance   Startup Freeze Screen   Before prewarm count   Updated prewarm count
+Light        off                                        1                       0
+Light        on                                         1                       1
+Dark         off                                        1                       0
+Dark         on                                         1                       1
+
+Each live capture request carried one selector exclusion ID
+and cached=false. The fixture returned the same PNG bytes in
+all four pairs. The persistent --freeze-prewarm probe passed in
+both appearances. The fixture measures RPC selection and the
+capture handoff with generated pixels.

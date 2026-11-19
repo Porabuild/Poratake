@@ -53,6 +53,12 @@ def fixture_daemon():
         method = request["module"], request["method"]
         if method == ("system", "quit"):
             break
+        if os.environ.get("PORATAKE_HISTORY_PROBE_PREWARM") == "1":
+            if method == ("freeze-screen", "prewarm"):
+                (output / "prewarm-requested").touch()
+            if method == ("screenshot", "capture-area"):
+                assert request["params"]["cached"] is False
+                assert request["params"]["excludedWindowIds"]
         result = {}
         if method == ("screenshot", "capture-area"):
             path = Path(request["params"]["path"])
@@ -125,7 +131,7 @@ def drain(stream, replies):
     replies.put(None)
 
 
-def verify(executable, recording=False, opening=None, mutation=None, copy=False):
+def verify(executable, recording=False, opening=None, mutation=None, copy=False, startup_freeze=None):
     with TemporaryDirectory(prefix="poratake-history-hold-") as directory:
         root = Path(directory)
         profile = root / "profile"
@@ -140,6 +146,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 "startOnLogin": (Path.home() / "Library/LaunchAgents/com.porabuild.poratake-gpui.plist").exists(),
             },
             "shortcuts": {},
+            **({"screenshot": {"freezeScreen": startup_freeze}} if startup_freeze is not None else {}),
             "appearance": {"mode": os.environ.get("PORATAKE_HISTORY_PROBE_THEME", "system")},
             "history": {"enabled": True},
         }))
@@ -163,6 +170,7 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
                 "PORATAKE_NATIVE_SMOKE_FREEZE": "0",
                 "PORATAKE_NATIVE_SMOKE_HISTORY": "1",
                 **direct_editor_env,
+                **({"PORATAKE_HISTORY_PROBE_PREWARM": "1"} if opening == "freeze-prewarm" else {}),
                 **({"PORATAKE_NATIVE_UI_FAKE_DAEMON": "1", "PORATAKE_HISTORY_PROBE_CAMERA_RETRY": "1"}
                    if opening == "camera-retry" else {}),
                 **({"PORATAKE_HISTORY_PROBE_LARGE_CAPTURE": "1"} if opening in {"direct-editor", "editor-print"} else {}),
@@ -215,6 +223,16 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
         preview_delete = mutation == "preview delete"
         try:
             wait("NATIVE_SMOKE ready")
+            if opening == "freeze-prewarm":
+                assert command("cancel pre-recording")
+                capture_area()
+                eventually("preview ready")
+                captured_files(1)
+                assert (captures / "prewarm-requested").exists() == startup_freeze
+                assert command("quit")
+                assert app.wait(timeout=6) == 0
+                print(f"live capture retained exclusions with startup Freeze Screen {startup_freeze}")
+                return
             if opening == "system-appearance":
                 assert command("cancel pre-recording")
                 selected = os.environ.get("PORATAKE_HISTORY_PROBE_THEME", "system")
@@ -529,6 +547,10 @@ def verify(executable, recording=False, opening=None, mutation=None, copy=False)
 if __name__ == "__main__":
     if sys.argv[1:] == ["--daemon"]:
         fixture_daemon()
+    elif sys.argv[1:] == ["--freeze-prewarm"]:
+        executable = Path(__file__).resolve().parents[2] / "src/main/target/debug/poratake-gpui"
+        for enabled in (False, True):
+            verify(executable, opening="freeze-prewarm", startup_freeze=enabled)
     elif sys.argv[1:] in (
         [],
         ["--recording"],
@@ -563,4 +585,4 @@ if __name__ == "__main__":
             ),
         )
     else:
-        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--recording | --camera-retry | --system-appearance | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")
+        raise SystemExit("Usage: python3 tests/native/macos-capture-history-probe.py [--freeze-prewarm | --recording | --camera-retry | --system-appearance | --editor-open | --direct-editor | --standalone-pin | --annotation-save | --editor-print | --history-open | --history-delete | --history-clear | --preview-delete | --preview-copy]")

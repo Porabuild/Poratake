@@ -10813,6 +10813,25 @@ held frame on a track with a nonzero start timestamp. All 195
 targeted GPUI tests and 48 Electron reference tests passed.
 [Cold seek measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS startup with Freeze Screen disabled
+
+GPUI now checks the Freeze Screen preference before scheduling
+startup prewarm. On macOS that call can take a display snapshot
+when Screen Recording access is already available. The desktop
+daemon still starts through its normal startup path.
+
+The light and dark app-local probes saw one prewarm with either
+preference in the baseline. The updated build sent zero prewarms
+with Freeze Screen off and one with it on. A separate live-mode
+area selection passed the selector's exclusion ID to the fixture
+daemon in every case and saved byte-identical PNGs before and after.
+
+The regression is available in the native capture history probe
+with `--freeze-prewarm`. All 121 GPUI capture tests, 100 Electron
+reference tests, and the Apple Silicon and Rosetta screenshot
+geometry fixtures passed.
+[Startup and live capture probe results](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -600,6 +600,9 @@ pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
         return;
     }
     let service = crate::state::state(cx);
+    if !service.config.read(|config| config.screenshot.freeze_screen) {
+        return;
+    }
     cx.background_executor()
         .spawn(async move { service.prewarm_freeze() })
         .detach();
