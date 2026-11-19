@@ -1125,14 +1125,19 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     }
                     first_frame = false;
                     let job = cx.update(|cx| {
-                        entity
-                            .update(cx, |view, cx| {
+                        handle
+                            .update(cx, |view, _window, cx| {
+                                let index =
+                                    view.previews.iter().position(|preview| preview.id == id)?;
+                                #[cfg(target_os = "macos")]
+                                if view.preview_is_clipped(&view.previews[index], _window) {
+                                    return None;
+                                }
                                 let now = cx.background_executor().now();
                                 let menu_open = view
                                     .display_menu
                                     .is_open_for(&format!("preview-display-menu-{id}"), cx);
-                                let preview =
-                                    view.previews.iter_mut().find(|preview| preview.id == id)?;
+                                let preview = &mut view.previews[index];
                                 let blur = preview.hovered
                                     || preview.busy
                                     || menu_open
@@ -4625,11 +4630,19 @@ mod tests {
         image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
             .save(&path)
             .unwrap();
+        let project = dir.path().join("Take.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            crate::video::project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
         cx.update(|cx| {
             crate::state::set_test_state(cx, store.clone());
-            for _ in 0..PREVIEW_MAX_STACK {
+            for _ in 1..PREVIEW_MAX_STACK {
                 CapturePreviewWindow::open(cx, path.clone());
             }
+            CapturePreviewWindow::open_video(cx, project);
         });
         cx.run_until_parked();
         let stack = stack_handle(cx).unwrap();
@@ -4638,15 +4651,33 @@ mod tests {
         visual.simulate_resize(size(px(208.), px(300.)));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
-        let (id, token) = handle
-            .update(&mut visual, |view, _, _| {
+        let (id, token, hidden_frame) = handle
+            .update(&mut visual, |view, window, _| {
                 let newest = view.previews.last().unwrap();
-                (newest.id, newest.dismiss_token.clone())
+                assert!(view.preview_is_clipped(newest, window));
+                (
+                    newest.id,
+                    newest.dismiss_token.clone(),
+                    newest.image.clone().expect("initial video frame"),
+                )
             })
             .unwrap();
         store.update(|config| config.preview.auto_dismiss = true);
         visual.update(|_, cx| schedule_auto_dismiss(stack, id, cx, token));
         visual.settle();
+        let current_frame = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.previews
+                        .iter()
+                        .find(|preview| preview.id == id)
+                        .unwrap()
+                        .image
+                        .clone()
+                        .unwrap()
+                })
+                .unwrap()
+        };
         let pending = |visual: &mut gpui::VisualTestContext| {
             handle
                 .update(visual, |view, _, _| {
@@ -4662,6 +4693,10 @@ mod tests {
             pending(&mut visual),
             "a completely clipped card must stay available"
         );
+        assert!(
+            Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
+            "a completely clipped card must stop decoding frames"
+        );
 
         visual.simulate_event(gpui::ScrollEvent {
             position: gpui::point(px(100.), px(240.)),
@@ -4676,6 +4711,10 @@ mod tests {
             .advance_clock(Duration::from_millis(1_500));
         visual.settle();
         assert!(pending(&mut visual), "the revealed card gets a full delay");
+        assert!(
+            !Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
+            "a revealed card must decode frames again"
+        );
         visual
             .executor()
             .advance_clock(Duration::from_millis(1_500));

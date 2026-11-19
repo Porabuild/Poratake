@@ -7838,6 +7838,28 @@ of the intermittent playback stalls or establish that the seek fix
 changes continuous playback.
 [Raw pipe measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video thumbnails outside the preview viewport
+
+A recording preview continued requesting decoded frames while it
+was completely outside a short, scrollable preview window. The
+playback loop now uses the same card bounds as auto-dismiss.
+A clipped card keeps its last image and skips frame requests.
+Playback resumes when the card scrolls into view, and the card
+still receives its full visible auto-dismiss delay.
+
+The macOS regression renders a four-card stack in a 208×300
+viewport. It reproduced image updates on the hidden video card
+before the change, and checks that scrolling restores updates.
+All 46 preview tests passed. The native Metal fixture also
+rendered idle, hover and exit states for a 4K video at 2× in
+light and dark.
+
+A separate six-round 4K60 H.264 pipe benchmark measured median
+time of 1,170 ms for 180 full-resolution frames. Scaling to
+1920×1080 before transfer took 1,259 ms. FFmpeg direct buffering
+took 1,157 ms and matched all output bytes and timestamps.
+The decoder settings were kept. [Raw pipe benchmark](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

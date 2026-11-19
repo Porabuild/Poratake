@@ -1038,3 +1038,24 @@ frames per second. The reader strategy was kept as the timings
 varied widely, and the probe does not isolate the stall cause.
 The decoder seek test separately confirms the previous subprocess
 is reaped before the replacement opens.
+
+2026-11-19 macOS 4K60 FFmpeg scale and direct-buffering comparison
+
+A standalone process decoded 180 generated 3840×2160 H.264 frames
+and read the BGRA output through a pipe. The source was 60 fps.
+Variants rotated their position in six rounds. Each used the same
+input and one raw output thread. The scale variant added FFmpeg
+scale=1920:1080 ahead of the timestamp filter.
+
+Round  Default first two / total (ms)  Direct first two / total (ms)  Scaled first two / total (ms)
+  1          99.7 / 1174.2                   92.7 / 1151.2                  88.6 / 1253.8
+  2          90.7 / 1154.7                   91.3 / 1148.8                  89.1 / 1254.6
+  3          93.8 / 1166.5                   90.9 / 1163.1                  89.2 / 1256.3
+  4          90.9 / 1150.3                   90.7 / 1147.2                  88.9 / 1261.6
+  5          92.4 / 1204.6                   90.5 / 1169.3                  90.9 / 1268.3
+  6          96.5 / 1230.6                   93.8 / 1217.0                  92.9 / 1273.9
+
+Separate verification runs hashed all raw bytes and compared all
+180 timestamps for default and direct buffering. Both matched.
+The probe measures decode, scaling where applicable, and pipe
+transport. GPUI rendering and the display were outside the run.
