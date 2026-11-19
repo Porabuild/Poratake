@@ -60,7 +60,9 @@ impl FocusReveal {
         let scope =
             window.use_keyed_state(ElementId::Name(id.into()), cx, |_, cx| cx.focus_handle());
         let scope = scope.read(cx).clone();
-        let focused = self.changed && scope.contains_focused(window, cx);
+        let focused = self.changed
+            && (self.axis == Axis::Horizontal || window.last_input_was_keyboard())
+            && scope.contains_focused(window, cx);
         let scroll = self.scroll.clone();
         let axis = self.axis;
         let wrapper = div().flex().flex_shrink_0();

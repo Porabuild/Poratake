@@ -7896,6 +7896,22 @@ In the Electron reference at 950×460, Tab scrolled the settings pane
 21 pixels and brought the full Frame Rate row into view.
 [Focused GPUI export field](tests/native/evidence/macos-ui/video-export-frame-rate-focused-20261119.png)
 
+### 2026-11-19 macOS keyboard focus in scrollable video settings
+
+In a 950×520 editor, Tab moved from the last wallpaper aspect-ratio
+button to the Padding slider below the visible panel. The shared
+video settings pane now uses the existing vertical focus reveal.
+Focus is tracked separately for each tab. Keyboard focus can bring a
+row into view. Mouse clicks keep the pane's current scroll position.
+
+The regression failed on the old build with the Padding row's bottom
+edge 67.5 points below the viewport. It now verifies the entire row
+is visible and the Right key changes the Padding value. The existing
+export regression still checks the fixed footer and focused
+frame-rate row. The editor suite passed 165 tests with five marked
+ignored. At 720×520 and 2×, all 176 PNGs per appearance matched the
+previous build byte for byte.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

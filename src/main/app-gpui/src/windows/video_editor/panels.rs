@@ -37,15 +37,15 @@ pub fn render(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     match tab {
-        SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, cx),
-        SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, cx),
+        SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, window, cx),
+        SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, window, cx),
         SidebarTab::Drawing => drawing_panel(view, state, theme, window, cx),
-        SidebarTab::Camera => camera_panel(view, state, has_camera, theme, cx),
-        SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
-        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, cx),
-        SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, cx),
-        SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
-        SidebarTab::FirstFrame => first_frame_panel(view, state, theme, cx),
+        SidebarTab::Camera => camera_panel(view, state, has_camera, theme, window, cx),
+        SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, window, cx),
+        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, window, cx),
+        SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, window, cx),
+        SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, window, cx),
+        SidebarTab::FirstFrame => first_frame_panel(view, state, theme, window, cx),
         SidebarTab::Export => export_panel(
             view,
             state,
@@ -64,13 +64,14 @@ fn cursor_panel(
     state: &VideoEditorState,
     has_cursor_data: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let cursor_data_summary = view
         .cursor_summary()
         .unwrap_or_else(|| SharedString::from("Edit or replace cursor movement data"));
     if !has_cursor_data {
-        return kit::panel(&view.panel_scroll, vec![
+        let children = vec![
             kit::header(
                 "Cursor Data",
                 "No cursor data available for this video",
@@ -106,7 +107,8 @@ fn cursor_panel(
                 "Cursor data is a JSON file containing mouse movement events with normalized coordinates (0-1). Each event has a timestamp, x/y position, and event type (move, down, up, scroll).",
                 theme,
             ),
-        ]);
+        ];
+        return kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx);
     }
 
     let style = state.cursor_style.clone();
@@ -127,7 +129,7 @@ fn cursor_panel(
             "Cursor overlay is disabled. Enable it to show cursor in your video.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx);
     }
 
     let has_custom = style.custom_cursor_image.is_some();
@@ -335,7 +337,7 @@ fn cursor_panel(
         this.update_cursor(cx, |style| *style = CursorStyle::default());
     }));
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx)
 }
 
 fn format_card(title: &'static str, body: &'static str, theme: &ThemeVars) -> AnyElement {
@@ -376,6 +378,7 @@ fn zoom_panel(
     state: &VideoEditorState,
     has_cursor_data: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.zoom_settings.clone();
@@ -537,7 +540,7 @@ fn zoom_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Zoom, &view.panel_scroll, children, window, cx)
 }
 
 fn zoom_speed_label(value: f64) -> &'static str {
@@ -725,7 +728,13 @@ fn drawing_panel(
             "Select a drawing segment on the timeline to edit it.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Drawing,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     };
     children.push(
         div()
@@ -757,7 +766,13 @@ fn drawing_panel(
                 .into_any_element(),
         );
     }
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Drawing,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn drawing_tool_grid(
@@ -1118,6 +1133,7 @@ fn camera_panel(
     state: &VideoEditorState,
     has_camera: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     if !has_camera {
@@ -1152,7 +1168,7 @@ fn camera_panel(
     ];
 
     if !style.visible {
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(SidebarTab::Camera, &view.panel_scroll, children, window, cx);
     }
 
     children.extend([
@@ -1231,7 +1247,7 @@ fn camera_panel(
         }),
     ]);
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Camera, &view.panel_scroll, children, window, cx)
 }
 
 fn camera_position_grid(
@@ -1299,6 +1315,7 @@ fn audio_panel(
     has_keyboard: bool,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let style = state.audio_style.clone();
@@ -1441,7 +1458,7 @@ fn audio_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Audio, &view.panel_scroll, children, window, cx)
 }
 
 /// One music track: its name, an enable toggle, a volume slider and a remove
@@ -1609,6 +1626,7 @@ fn wallpaper_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let wallpaper = state.wallpaper.clone();
@@ -1719,7 +1737,13 @@ fn wallpaper_panel(
         ));
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Wallpaper,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn video_backgrounds(
@@ -1971,6 +1995,7 @@ fn keyboard_panel(
     state: &VideoEditorState,
     has_keyboard: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     if !has_keyboard {
@@ -2020,7 +2045,13 @@ fn keyboard_panel(
         ));
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Keyboard,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn subtitle_panel(
@@ -2028,6 +2059,7 @@ fn subtitle_panel(
     state: &VideoEditorState,
     has_mic: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let (has_subtitles, count, is_transcribing, model) = {
@@ -2138,7 +2170,13 @@ fn subtitle_panel(
             "Subtitle data is a JSON file containing segments with start/end times (in seconds) and text content. You can also import standard SRT files.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Subtitle,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     }
 
     let style = state.subtitle_style.clone();
@@ -2156,7 +2194,13 @@ fn subtitle_panel(
             "Subtitles are disabled. Enable them to show subtitles in your video.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Subtitle,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     }
 
     children.extend([
@@ -2267,7 +2311,13 @@ fn subtitle_panel(
         },
     ));
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Subtitle,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 /// `WHISPER_MODELS` in `types/subtitle.ts`.
@@ -2285,6 +2335,7 @@ fn first_frame_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.first_frame.clone();
@@ -2367,7 +2418,13 @@ fn first_frame_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::FirstFrame,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 /// Port of `formatExportTime`: `m:ss`.

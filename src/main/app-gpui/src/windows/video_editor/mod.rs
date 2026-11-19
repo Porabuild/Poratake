@@ -6140,6 +6140,42 @@ mod keyboard_demo_tests {
         assert!(!cx.update(|_, cx| editor.read(cx).is_cut_tool_active));
     }
 
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn tab_reveals_wallpaper_padding_below_the_aspect_ratio_grid(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.wallpaper.enabled = true;
+            editor.state.wallpaper.padding = 12.;
+            editor.open_tab_for_test(SidebarTab::Wallpaper, cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.simulate_resize(size(px(950.), px(520.)));
+        cx.settle();
+        let scroll = cx.update(|_, cx| editor.read(cx).panel_scroll.clone());
+        let padding_bounds = || scroll.bounds_for_item(5).unwrap() + scroll.offset();
+        assert!(padding_bounds().bottom() > scroll.bounds().bottom());
+        let ratio = cx.expect("aspect-label-3:2").center();
+        cx.simulate_mouse_move(ratio, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(ratio, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(ratio, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.press("tab");
+        assert!(
+            padding_bounds().bottom() <= scroll.bounds().bottom(),
+            "Tab left Padding clipped: {:?}, viewport {:?}",
+            padding_bounds(),
+            scroll.bounds()
+        );
+        cx.press("right");
+        assert!(cx.update(|_, cx| editor.read(cx).state.wallpaper.padding) > 12.);
+    }
+
     #[herogpui::test]
     fn export_settings_stay_off_the_undo_stack(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
