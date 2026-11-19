@@ -7927,6 +7927,18 @@ The editor suite passed 166 tests with five marked ignored. The 950×520
 dark Metal profile matched all 201 previous PNGs byte for byte.
 The 720×520 light Metal profile passed at 2× with 176 PNGs.
 
+### 2026-11-19 Electron video sidebar accessible names on macOS
+
+The ten icon-only video settings buttons now use their sidebar labels
+as accessible names, matching GPUI. In a macOS Electron accessibility
+tree built from the rendered component, all ten button names were
+empty before the change and correctly exposed afterward. The rendered
+markup differs only by the ten labels.
+
+The focused renderer and sidebar tests passed all 50 cases, and
+TypeScript passed. The full editor fixture timed out during navigation.
+The accessibility-tree evidence covers the isolated component.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
