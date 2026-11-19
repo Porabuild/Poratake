@@ -3094,3 +3094,79 @@ desktop helper's Escape command left the local event log empty. The
 helper reported unverified delivery. The user ended desktop control
 and the probe apps were closed. This trial did not reproduce the
 missed Escape as a Poratake-specific issue.
+
+2026-11-19 macOS 4K60 playback and receiver scheduling at 44e80ce2
+
+A GPUI parity development build used a fresh profile per trial and
+the bundled FFmpeg 9.0.1. The fixture supplied a five-second
+3840x2160 H.264 test pattern at 60 fps through the recording preview.
+No microphone, camera, system audio or desktop input was used. The
+loaded runs started two independent FFmpeg encoders of that same
+clip using libx264 veryfast and two input and two output threads.
+Encoder output was discarded. Progress from both test encoders
+continued during each loaded sample. Background host load varied.
+
+Applied preview images were counted from 0.4 to 2.4 seconds after
+Play. Decoder payload and request times cover completed operations
+in that interval. Play is an app-local command round trip. All 12
+paused first-frame PNGs had the same SHA-256, and the decoded RGB
+matched the bundled FFmpeg's source-frame SHA-256
+a9bb74a7e92ded8a93ee0fed724b096408efd0bf44b6b6443274678d5eeb39fc.
+
+Times in ms. The final active preview in every timed run was 384x216.
+Appearance  Load    Trial  Updates   Play  Max gap  Max payload  Max decode
+light       idle        1      120   0.23    23.81        10.71        0.23
+light       idle        2      120   0.14    19.69        14.94        0.14
+light       idle        3      119   0.14    20.19        14.30        0.63
+dark        loaded      1       61   0.38   180.70        34.76      162.11
+dark        loaded      2       45   0.44    66.94        35.51       53.76
+dark        loaded      3       15   0.54   269.72        44.99      256.91
+light       loaded      1       23   0.69   276.08       139.45      260.96
+light       loaded      2        5   3.20   563.37        52.43      550.90
+light       loaded      3        5   0.46   541.51        79.91      522.29
+dark        idle        1      121  15.18    25.11        14.21        1.80
+dark        idle        2      110   0.22    79.57        67.45       71.26
+dark        idle        3      121   0.27    20.61        18.11        1.14
+
+The longest decode in each loaded trial contained the following
+completed raw payloads. The interval is reconstructed from app
+trace receipt times and the reported request duration. Payload
+reads may start before the interval. The numbers identify batches
+of consecutive work and do not sum to decoder wall time.
+
+Appearance   Trial   Decode ms   Requested sec   Completed payloads   Largest payload ms
+dark             1      162.11        0.818792                   10                23.14
+dark             2       53.76        0.868001                    3                19.36
+dark             3      256.91        0.667024                    9                44.99
+light            1      260.96        1.883818                    8                42.22
+light            2      550.90        1.385496                   27                48.51
+light            3      522.29        1.334453                   21                79.91
+
+The 27 payload timestamps advanced from 0.966667 s to 1.400000 s,
+all from the same live decoder, for a request at 1.385496 s.
+
+The standalone runner used the app's 4 MiB send and 1 MiB receive
+buffers, a reusable 4K BGRA buffer, and the same FFmpeg raw video
+arguments with a 180-frame cap. It alternated default scheduling
+and user-initiated QoS on the receiver. A separate batch alternated
+read_exact and recv with MSG_WAITALL. Test encoders ran throughout
+the loaded pairs. All transfers reported the same 180 showinfo
+timestamps and frame sample digest 99e4da1d5d4ed2dc.
+
+Times in ms. Each pair is default / candidate.
+Variant               Pair    Total                  Payload p95            Longest payload
+idle QoS                 1     1133.0 /  1018.2         7.9 /     6.8        28.6 /    14.6
+idle QoS                 2     1127.1 /  1137.8         9.1 /     8.1        16.5 /    15.0
+idle QoS                 3      958.9 /  1103.8         6.6 /     7.3        15.3 /    16.9
+loaded QoS               1     1983.5 /  1913.3        16.1 /    14.5        44.3 /    36.7
+loaded QoS               2     2036.8 /  2132.2        15.0 /    14.6        44.4 /    36.2
+loaded QoS               3     1966.5 /  1922.3        14.5 /    15.6        26.1 /    25.4
+loaded QoS               4     2525.5 /  2416.2        22.1 /    19.9        70.4 /   117.9
+loaded QoS               5     3000.9 /  2207.9        26.1 /    17.6        57.4 /    50.1
+loaded QoS               6     2262.9 /  2611.1        17.5 /    22.9        43.4 /    44.7
+loaded MSG_WAITALL       1     2155.4 /  1930.3        16.8 /    14.5        53.0 /    30.3
+loaded MSG_WAITALL       2     4825.9 /  3094.4        61.2 /    34.0        86.2 /    56.4
+loaded MSG_WAITALL       3     2484.9 /  3066.2        19.0 /    24.6        39.3 /    40.6
+loaded MSG_WAITALL       4     3106.3 /  2579.5        43.0 /    20.7       122.3 /    59.7
+loaded MSG_WAITALL       5     2703.9 /  3510.1        22.3 /    29.3        40.6 /    77.3
+loaded MSG_WAITALL       6     2285.3 /  2810.5        20.3 /    22.6        58.5 /    57.1

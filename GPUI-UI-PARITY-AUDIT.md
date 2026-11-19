@@ -9717,6 +9717,35 @@ reported unverified delivery and the window's local event monitor
 recorded no Escape. Physical Escape and drag behavior in the
 selector still need a session with verified input delivery.
 
+### 2026-11-19 macOS 4K playback with two active encoders
+
+The GPUI development app played a generated 3840×2160 H.264
+clip at 60 fps. Across three runs per appearance without test
+encoders, it applied 110–121 images in a two-second window.
+With two independent 4K encoders, the range fell to 5–61 images,
+and the longest gap between applied images was 563 ms. The
+slowest loaded Play command returned in 3.2 ms. These measurements
+end at the app and exclude display presentation. All 12 paused
+preview PNGs were identical and their RGB matched the first
+frame decoded independently with bundled FFmpeg.
+
+The slowest decoded-frame request took 551 ms. During that
+request the reader completed 27 consecutive raw payloads from
+one decoder while advancing to the requested timestamp. Each
+of those payloads took at most 49 ms. That run spent its wait
+catching up through intermediate frames.
+
+Two standalone receiver changes had mixed results. Increasing
+the raw frame reader's scheduling priority shortened four of
+six loaded transfers. Waiting inside the socket read for the
+complete payload shortened three of six. All sampled frame-byte
+digests and 180 timestamp sequences matched. The candidate
+timing results were inconclusive. The GPUI suite passed 1,194
+tests with 23 ignored. Three development FFmpeg sparse timeline
+tests and 50 Electron reference tests passed. Sustained 4K60
+playback under comparable encoding load remains open.
+[Per-trial timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
