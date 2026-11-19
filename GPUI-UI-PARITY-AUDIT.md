@@ -9534,6 +9534,23 @@ Each run exercised all seven held-start cases. The fixture uses
 generated media and app-local input. This verifies the test ordering.
 [Recording fixture evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS recording toolbar status alignment
+
+The recording toolbar kept the same AppKit window bounds when
+Starting or Stopping replaced the elapsed timer, but two separators
+and the controls beside them moved two Retina pixels to the right.
+The status text now fits inside the existing 64-point timer region.
+All three states retain the same separator positions in both themes.
+
+Window-scoped native captures verified the 276×44-point window and
+552×88 pixel output. Both pending labels remained fully visible.
+The light and dark Metal recording workflows passed the new timer
+geometry assertions. All 76 Electron recording-control reference
+tests passed. These runs used generated media and held RPC replies.
+[Light Starting toolbar](tests/native/evidence/macos-ui/recording-starting-retina-light-20261119.png)
+[Dark Stopping toolbar](tests/native/evidence/macos-ui/recording-stopping-retina-dark-20261119.png)
+[Native recording status evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

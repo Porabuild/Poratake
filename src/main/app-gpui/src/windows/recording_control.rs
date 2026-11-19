@@ -3247,7 +3247,6 @@ impl Render for RecordingControl {
             .child(
                 div()
                     .min_w(px(64.0))
-                    .px(px(4.0))
                     .font_family(crate::ui::colors::MONO_FONT)
                     .text_size(px(12.0))
                     .text_center()

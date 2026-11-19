@@ -2866,3 +2866,35 @@ light 1 passed
 dark 1 passed
 light 2 passed
 dark 2 passed
+
+2026-11-19 macOS recording toolbar status alignment
+
+The isolated GPUI development app held Start and Stop replies
+around a generated recording. The preflight-granted screen-only
+daemon captured only the probe-owned AppKit toolbar by window ID.
+All six captures per build resolved 552x88 pixels on the built-in
+Retina display. WindowServer reported one consistent 276x44-point
+toolbar at (726,57) within each run. No physical input, media
+device access or privacy setting changes were needed.
+
+Pixel columns below mark the left edges of the two right-side
+separators. The normal timer geometry stayed at (284,466).
+Removing the extra horizontal padding from the minimum-width
+timer slot fixed the shift during Starting and Stopping.
+
+before light starting 286 468
+before light recording 284 466
+before light stopping 286 468
+before dark starting 286 468
+before dark recording 284 466
+before dark stopping 286 468
+after light starting 284 466
+after light recording 284 466
+after light stopping 284 466
+after dark starting 284 466
+after dark recording 284 466
+after dark stopping 284 466
+
+The arm64 development binary passed both Metal recording workflow
+profiles, including matching timer bounds across pending transitions.
+All 76 Electron recording-control tests passed.

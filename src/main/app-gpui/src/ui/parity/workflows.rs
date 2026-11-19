@@ -1092,6 +1092,7 @@ fn recording_start_timeout_handoff(
         output,
         &format!("recording-held-start-{succeeds}"),
     );
+    let starting_timer = super::measured("recording-controls", 2);
     let calls = super::daemon_fixture::calls(output);
     let start = calls[before..]
         .iter()
@@ -1138,6 +1139,14 @@ fn recording_start_timeout_handoff(
                 } else {
                     RecorderState::Idle
                 }
+            );
+        }
+        if succeeds && !target_closed {
+            super::frame(cx, control);
+            assert_eq!(
+                super::measured("recording-controls", 2),
+                starting_timer,
+                "Starting and the running timer must occupy the same space"
             );
         }
     }
@@ -1303,6 +1312,8 @@ fn recording_stop_timeout_handoff(
         click_measured(cx, control, "recording-controls", 0);
         assert_eq!(crate::video::recorder::state(), RecorderState::Paused);
     }
+    super::frame(cx, control);
+    let active_timer = super::measured("recording-controls", 2);
     let calls = super::daemon_fixture::calls(output);
     let start = calls[before..]
         .iter()
@@ -1327,6 +1338,11 @@ fn recording_stop_timeout_handoff(
     assert!(stop_requested_at.elapsed() < std::time::Duration::from_secs(5));
     settle(cx, control);
     assert_eq!(crate::video::recorder::state(), RecorderState::Stopping);
+    assert_eq!(
+        super::measured("recording-controls", 2),
+        active_timer,
+        "Stopping must keep the timer space reserved during recording"
+    );
     assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
     assert_eq!(std::fs::read(&recording).unwrap(), bytes);
     if !deny_discard {
