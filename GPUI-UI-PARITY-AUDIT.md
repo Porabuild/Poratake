@@ -9236,6 +9236,35 @@ Four portrait samples still differ by one edge pixel between
 renderers.
 [Centering and annotation evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS capture UI latency recheck
+
+The GPUI development build at `9e2e19e5` ran six app-local trials per
+appearance on the built-in Retina display of an Apple M5 Pro. Each
+appearance started with a fresh process and temporary profile. A
+daemon fixture supplied one window target and a 3840×2160 PNG with
+Freeze off. All 12 saved PNGs matched the supplied bytes.
+
+WindowServer observations include polling time. Thumbnail readiness
+comes from the app. Each cold result is the first trial in that
+appearance. The warm results are medians of trials two through six.
+
+| Transition (ms)               | Light cold | Light warm | Dark cold | Dark warm | Slowest of 12 |
+| ----------------------------- | ---------: | ---------: | --------: | --------: | ------------: |
+| Area overlay appears          |       77.1 |       18.6 |     130.1 |      36.7 |         130.1 |
+| Area switches to window       |       32.6 |       26.3 |      53.6 |      34.1 |          53.6 |
+| Cancel hides overlay          |        8.2 |       16.7 |      20.2 |      15.6 |          24.8 |
+| Area overlay reopens          |       20.5 |       20.8 |      39.1 |      34.2 |          75.4 |
+| Confirm hides overlay         |       20.9 |       20.1 |      12.0 |      16.4 |          28.5 |
+| Confirm to preview window     |       20.9 |       21.0 |      32.1 |      31.1 |          51.1 |
+| Confirm to 4K thumbnail ready |       61.4 |       62.2 |      97.4 |      92.6 |         107.4 |
+| Preview Edit to editor window |      107.7 |       63.3 |      99.5 |      96.8 |         125.9 |
+
+The probe measures application and WindowServer readiness under
+fixture capture. Live ScreenCaptureKit trials are recorded separately
+in the area and Retina window sections. Physical input-to-display
+latency and consistent 4K60 playback under encoding load remain open.
+[Per-trial timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

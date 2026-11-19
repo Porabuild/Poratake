@@ -2310,3 +2310,36 @@ the composition's pixel grid. With both changes applied, each
 of the 48 Metal preview/reopened PNG comparisons matched within
 one channel level. The check used both app appearances and no
 physical monitor transition.
+
+2026-11-19 macOS capture UI latency recheck at 9e2e19e5
+
+Six app-local trials per appearance on an Apple M5 Pro, macOS 27.2,
+with a fresh process and isolated profile for each appearance.
+No concurrent test load was started. Other host work was uncontrolled.
+Freeze was off. A synthetic window target and a generated 3840x2160
+PNG came from a daemon fixture. No screen pixels were requested.
+WindowServer queries matched only the test process. Each trial
+opened Area, switched to Window, cancelled, reopened Area, confirmed
+a selection, waited for the thumbnail, opened the editor from the
+preview and closed all test windows. All 12 PNGs matched the input
+bytes. First window listings and app-reported thumbnail readiness are
+upper bounds that include probe polling. Only trial 1 is cold.
+
+Theme Trial    Area Switch Cancel Reopen Confirm-hidden Preview-window Thumbnail Editor
+light     1   77.1   32.6    8.2   20.5   20.9   20.9   61.4  107.7
+light     2   17.1   30.1   20.5   32.6   12.6   33.2   92.3   86.1
+light     3   18.6   17.2   16.7   15.1   20.1   20.1   62.2   65.4
+light     4   22.0   26.6   13.6   19.3   19.7   19.7   54.9   63.3
+light     5   17.6   26.3    8.1   20.8   21.8   21.8   64.6   58.7
+light     6   26.3   22.3   18.9   21.0   21.0   21.0   58.9   54.8
+dark      1  130.1   53.6   20.2   39.1   12.0   32.1   97.4   99.5
+dark      2   38.0   41.3   16.9   34.2   16.4   39.7   92.6  125.9
+dark      3   36.7   34.1   24.8   75.4   28.5   28.5   91.8   93.7
+dark      4   27.7   23.8   11.4   23.4   11.4   51.1  107.4  102.7
+dark      5   31.6   31.7   14.6   21.7   26.3   26.3   87.4   96.3
+dark      6   48.6   52.2   15.6   38.3   16.1   31.1  104.2   96.8
+
+Capture fixture RPC medians were 0.2 ms in light and 0.4 ms in dark,
+with a 1.7 ms maximum. The pane and thumbnail times exclude native
+ScreenCaptureKit work. Physical input and presentation were outside
+this run. Units are milliseconds.
