@@ -36,9 +36,31 @@ struct ItemMedia {
     features: RecordingFeatures,
 }
 
+fn load_media_batch(
+    pending: impl IntoIterator<Item = (String, PathBuf, HistoryItemType)>,
+    canceled: smol::channel::Receiver<()>,
+) -> Vec<(String, ItemMedia)> {
+    pending
+        .into_iter()
+        .take_while(|_| !canceled.is_closed())
+        .map(|(id, path, kind)| {
+            let media = ItemMedia {
+                thumbnail: crate::thumbnails::ensure(&path, kind),
+                features: if kind == HistoryItemType::Video {
+                    recording_features(&path)
+                } else {
+                    RecordingFeatures::default()
+                },
+            };
+            (id, media)
+        })
+        .collect()
+}
+
 pub struct HistoryWindow {
     items: Vec<HistoryItem>,
     media: HashMap<String, ItemMedia>,
+    media_cancel: Option<smol::channel::Sender<()>>,
     filter: HistoryFilter,
     sort_order: HistorySortOrder,
     layout: HistoryLayout,
@@ -65,6 +87,7 @@ impl HistoryWindow {
         let mut view = Self {
             items: Vec::new(),
             media: HashMap::new(),
+            media_cancel: None,
             filter: HistoryFilter::parse(&preferences.filter),
             sort_order: HistorySortOrder::parse(&preferences.sort_order),
             layout: HistoryLayout::parse(&preferences.layout),
@@ -225,6 +248,7 @@ impl HistoryWindow {
             return;
         }
         self.closing = true;
+        self.media_cancel.take();
         registry::forget(RegistryKind::History, cx);
         #[cfg(all(target_os = "macos", not(test)))]
         crate::system::window_visibility::disable_macos_transitions(window);
@@ -248,26 +272,19 @@ impl HistoryWindow {
             return;
         }
 
-        let task = cx.background_executor().spawn(async move {
-            pending
-                .into_iter()
-                .map(|(id, path, kind)| {
-                    let media = ItemMedia {
-                        thumbnail: crate::thumbnails::ensure(&path, kind),
-                        features: if kind == HistoryItemType::Video {
-                            recording_features(&path)
-                        } else {
-                            RecordingFeatures::default()
-                        },
-                    };
-                    (id, media)
-                })
-                .collect::<Vec<_>>()
-        });
+        let (cancel, canceled) = smol::channel::bounded(1);
+        self.media_cancel = Some(cancel);
+        let task = cx
+            .background_executor()
+            .spawn(async move { load_media_batch(pending, canceled) });
 
         cx.spawn(async move |entity, cx| {
             let resolved = task.await;
             let _ = entity.update(cx, |this, cx| {
+                if this.closing {
+                    return;
+                }
+                this.media_cancel.take();
                 this.media.extend(resolved);
                 cx.notify();
             });
@@ -826,6 +843,26 @@ mod tests {
     use herogpui::test::TestWindowExt;
 
     #[test]
+    fn thumbnail_batch_stops_after_cancellation_between_items() {
+        let directory = tempfile::tempdir().unwrap();
+        let (cancel, canceled) = smol::channel::bounded(1);
+        let mut cancel = Some(cancel);
+        let pending = (0..4).map(|index| {
+            if index == 1 {
+                cancel.take();
+            }
+            (
+                index.to_string(),
+                directory.path().join(format!("{index}.png")),
+                HistoryItemType::Screenshot,
+            )
+        });
+        let resolved = load_media_batch(pending, canceled);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, "0");
+    }
+
+    #[test]
     fn history_closes_when_the_window_blurs() {
         assert!(should_close_on_blur(false, false));
         assert!(!should_close_on_blur(true, false));
@@ -960,6 +997,7 @@ mod tests {
                     })
                     .collect(),
                 media: HashMap::new(),
+                media_cancel: None,
                 filter: HistoryFilter::All,
                 sort_order: HistorySortOrder::Newest,
                 layout: HistoryLayout::Grid,

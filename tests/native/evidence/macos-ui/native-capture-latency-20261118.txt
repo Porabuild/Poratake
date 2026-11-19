@@ -4607,3 +4607,29 @@ fixture recorded one prewarm. The timing runs from releasing Ready
 to the fixture receiving prewarm. Separate direct-capture
 editor probes held History, confirmed the 4K image was prepared,
 and opened the editor after release in both appearances.
+
+2026-11-19 macOS History thumbnail work after closing
+=====================================================
+
+On the M5 Pro, the app-local native UI probe opened History with 24
+generated 3840x2160 RGB PNGs in a fresh profile and no cached thumbnails.
+A second History toggle closed it as soon as the first cached JPEG appeared.
+The file count and proc_pid_rusage CPU counters were read at the close reply
+and two seconds later. CPU time combines user and system time, converted via
+mach_timebase_info. Memory values are physical footprint, with peak measured
+from process launch through the two-second sample.
+
+Build     Theme  At close  After 2s  CPU seconds  Footprint MiB  Peak MiB
+Baseline  light         1         24       0.8188          70.39    180.38
+Baseline  dark          1         24       0.8169          67.81    175.20
+Updated   light         1          1       0.0156          65.47    169.55
+Updated   dark          1          1       0.0158          65.16    169.03
+
+Each reopened window reported media ready with all 24 entries cached.
+All cached JPEGs had the same SHA-256 in each run:
+56ef573f50690552cf9d9d4f9018e454ea4d8ff206b4c2899d05160cfe294607.
+The sample includes startup and the existing preview window in memory.
+There was no physical input or capture from the real desktop.
+
+GPUI History tests: 43 passed. Electron reference History and thumbnail
+tests: 81 passed. The GPUI parity development executable built successfully.

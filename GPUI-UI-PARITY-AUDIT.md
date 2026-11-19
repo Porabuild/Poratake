@@ -10909,6 +10909,26 @@ Electron reference suites passed 59, and the non-parity GPUI
 check passed.
 [Background file-open measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS History thumbnail work after closing
+
+Closing History now tells its background worker to stop before
+starting another item. An already-started thumbnail can finish and
+remain cached. Reopening History uses the cached thumbnails and
+generates the missing ones.
+
+In light and dark development runs with 24 generated 4K screenshots,
+the old build generated 23 more thumbnails after closing History.
+The revised build generated zero more in both trials. CPU time
+during the two seconds after close fell from approximately 0.82 s
+to 0.016 s. Physical footprint at the two-second mark fell from
+68–70 MiB to 65 MiB. Reopening produced all 24 thumbnails with the
+same JPEG bytes as the baseline.
+
+The macOS probe used app-local commands and a temporary profile.
+The GPUI History suite passed 43 tests, including cancellation
+between two items, and the Electron History suites passed 81.
+[History background work measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
