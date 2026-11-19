@@ -44,6 +44,7 @@ struct ScreenshotCaptureGeometryTest {
         precondition(unresolvedVisibleScreenshotExclusions(requested: [1, 2], available: [1, 2], onScreen: [1, 2]).isEmpty)
         verifyFrozenWindowColorSpace()
         verifyFrozenWindowAlpha()
+        verifyFrozenFractionalSeams()
         print("Screenshot capture geometry passed")
     }
 
@@ -104,6 +105,36 @@ struct ScreenshotCaptureGeometryTest {
         let convertedGreen = Array(pixels(mixed, space: space).prefix(4))
         precondition(convertedGreen != green)
         precondition(pixels(mixedSeam, space: space) == Array(repeating: convertedGreen + convertedGreen + purple + purple, count: 4).flatMap { $0 })
+    }
+
+    private static func verifyFrozenFractionalSeams() {
+        let space = CGColorSpace(name: CGColorSpace.displayP3)!
+        let red: [UInt8] = [230, 20, 30, 255]
+        let blue: [UInt8] = [0, 30, 230, 255]
+        let left = FrozenFrame(
+            image: image(width: 2, height: 4, space: space, bytes: Array(repeating: red, count: 8).flatMap { $0 }),
+            rect: CGRect(x: -2, y: 0, width: 2, height: 4),
+            scale: 1
+        )
+        let rightImage = image(width: 4, height: 8, space: space, bytes: Array(repeating: blue, count: 32).flatMap { $0 })
+        let selection = CGRect(x: -1.25, y: 0.25, width: 2.5, height: 1.25)
+        FrozenFrameStore.clear()
+        defer { FrozenFrameStore.clear() }
+        FrozenFrameStore.store(left)
+        FrozenFrameStore.store(FrozenFrame(image: rightImage, rect: CGRect(x: 0, y: 0, width: 2, height: 4), scale: 2))
+
+        let seam = FrozenFrameStore.crop(to: selection)!
+        precondition(seam.width == 5 && seam.height == 3)
+        let solidRow = red + red + red + blue + blue
+        precondition(pixels(seam, space: space) == Array(repeating: solidRow, count: 3).flatMap { $0 },
+                     "Fully covered fractional crops must stay opaque at display seams and output edges")
+
+        FrozenFrameStore.clear()
+        FrozenFrameStore.store(left)
+        FrozenFrameStore.store(FrozenFrame(image: rightImage, rect: CGRect(x: 0.5, y: 0, width: 2, height: 4), scale: 2))
+        let gap = FrozenFrameStore.crop(to: selection)!
+        let gapRow = red + red + red + [0, 0, 0, 0] + blue
+        precondition(pixels(gap, space: space) == Array(repeating: gapRow, count: 3).flatMap { $0 })
     }
 
     private static func verifyFrozenWindowAlpha() {

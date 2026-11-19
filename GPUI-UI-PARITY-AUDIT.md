@@ -8994,6 +8994,25 @@ with Swift typechecking, four GPUI color tests and 77 Electron
 reference tests.
 [Color and crop timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS frozen crops at fractional display seams
+
+The Swift compositor drew each display at fractional destination
+bounds. Two opaque source images could produce a translucent
+column at the join and a translucent edge row. The compositor
+now maps each intersection to the output pixel grid and rounds
+shared boundaries consistently. The generated 1×/2× regression
+also verifies that a gap between displays stays transparent.
+
+The old 600×400 Display P3 fixture had 400 pixels at alpha 191.
+The revised PNG contains 240,000 fully opaque pixels. In both
+appearances the GPUI development app used the revised PNG in a
+cached area workflow, opened the thumbnail and history entry, and
+exported pixels matching the ColorSync reference exactly. The
+capture request preceded release. Swift geometry checks passed
+on Apple Silicon and Rosetta, and 77 Electron reference tests
+passed. Physical mixed-DPI displays remain open.
+[Native geometry and workflow evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

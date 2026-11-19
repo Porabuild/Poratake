@@ -89,6 +89,8 @@ enum FrozenFrameStore {
             return nil
         }
 
+        let scaleX = CGFloat(width) / rect.width
+        let scaleY = CGFloat(height) / rect.height
         for (frame, intersection) in intersections {
             let source = sourceRect(for: intersection, in: frame).integral.intersection(CGRect(
                 origin: .zero,
@@ -99,12 +101,11 @@ enum FrozenFrameStore {
                 continue
             }
 
-            context.draw(image, in: CGRect(
-                x: (intersection.minX - rect.minX) * scale,
-                y: (rect.maxY - intersection.maxY) * scale,
-                width: intersection.width * scale,
-                height: intersection.height * scale
-            ))
+            let left = ((intersection.minX - rect.minX) * scaleX).rounded()
+            let right = ((intersection.maxX - rect.minX) * scaleX).rounded()
+            let bottom = ((rect.maxY - intersection.maxY) * scaleY).rounded()
+            let top = ((rect.maxY - intersection.minY) * scaleY).rounded()
+            context.draw(image, in: CGRect(x: left, y: bottom, width: right - left, height: top - bottom))
         }
 
         return context.makeImage()
