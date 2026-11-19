@@ -1418,6 +1418,98 @@ fn recording_stop_timeout_handoff(
     .unwrap();
 }
 
+#[cfg(target_os = "macos")]
+fn recording_project_failure_and_retry(cx: &mut HeadlessAppContext, output: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::video::recorder::{self, RecorderState, RecordingTarget};
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+
+    let recordings = output.join("recording-project-failure");
+    std::fs::create_dir_all(&recordings).unwrap();
+    let permissions = std::fs::metadata(&recordings).unwrap().permissions();
+    std::fs::set_permissions(&recordings, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut fixture = serde_json::json!({"freeze": "live"});
+    configure_recording_fixture(&mut fixture, "area");
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+
+    let previous = cx.update(|cx| crate::state::state(cx).config.get());
+    let control = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.;
+            config.recording.camera.enabled = false;
+            config.recording.mic_enabled = false;
+            config.recording.system_audio = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    settle(cx, control);
+    let before = super::daemon_fixture::calls(output).len();
+    take_notifications();
+    click_measured(cx, control, "recording-controls", 0);
+    wait_for_recording_start(cx);
+    let notifications = take_notifications();
+    std::fs::set_permissions(&recordings, permissions).unwrap();
+
+    assert_eq!(recorder::state(), RecorderState::Idle);
+    assert!(recordings.read_dir().unwrap().next().is_none());
+    assert!(!super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+    assert!(
+        notifications.iter().any(|(title, body, _)| {
+            title == "Recording failed" && body.contains(recordings.to_str().unwrap())
+        }),
+        "project creation failure must name the recording folder"
+    );
+
+    let started = std::time::Instant::now();
+    let control_handle = control.downcast::<RecordingControl>().unwrap();
+    while !cx.update(|cx| control_handle.read(cx).unwrap().start_enabled(cx)) {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    settle(cx, control);
+    click_measured(cx, control, "recording-controls", 0);
+    wait_for_recording_start(cx);
+    assert_eq!(recorder::state(), RecorderState::Recording);
+    click_measured(cx, control, "recording-controls", 7);
+    wait_for_recording_stop(cx);
+    let started = std::time::Instant::now();
+    while recordings.read_dir().unwrap().next().is_some() {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.storage.recordings_path;
+            config.recording = previous.recording;
+        });
+    });
+}
+
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
     #[cfg(windows)]
     use std::io::Read;
@@ -2151,6 +2243,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
     }
     #[cfg(target_os = "macos")]
     recording_stop_timeout_handoff(cx, output, (false, true, false, false, false, false), true);
+    #[cfg(target_os = "macos")]
+    recording_project_failure_and_retry(cx, output);
     #[cfg(windows)]
     {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

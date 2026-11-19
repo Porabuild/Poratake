@@ -8108,6 +8108,24 @@ Both light and dark Metal recording workflows passed, including
 preview-to-decoded-export for screen, area and window. The arm64
 GPUI suite passed 1,178 tests with 23 ignored.
 
+### 2026-11-19 macOS recording project setup
+
+Recording Start created the project directory on the app thread.
+A creation failure was only logged. On macOS the start preparation
+now creates the project on a background worker while the toolbar
+retains its pending state. If the toolbar closes during preparation,
+the worker attempts to remove its unused empty project. A creation failure
+reports the destination and filesystem error and returns the toolbar
+to its retryable state.
+
+The fixture points Start at a read-only directory. The original
+build reported no warning. The revised test checks the warning,
+the absence of a recorder Start request, and a successful retry
+from the same toolbar after restoring write access. Both Metal
+recording workflows passed in light and dark, including screen,
+area and window preview-to-decoded-export checks. The arm64 GPUI
+suite passed 1,178 tests with 23 ignored.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

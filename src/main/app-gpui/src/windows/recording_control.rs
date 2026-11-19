@@ -973,12 +973,19 @@ impl RecordingControl {
         cx: &mut Context<Self>,
     ) {
         #[cfg(not(target_os = "macos"))]
-        self.start_after_handoff(excluded_window_ids, window, cx);
+        match recorder::create_project(&crate::state::state(cx).config) {
+            Ok(project) => self.start_after_handoff(project, excluded_window_ids, window, cx),
+            Err(error) => self.project_creation_failed(error, cx),
+        }
 
         #[cfg(target_os = "macos")]
         {
-            let daemon = crate::state::state(cx).daemon;
-            let wait = match daemon.camera_preview().begin_content_protection(true) {
+            let service = crate::state::state(cx);
+            let wait = match service
+                .daemon
+                .camera_preview()
+                .begin_content_protection(true)
+            {
                 Ok(wait) => wait,
                 Err(error) => {
                     self.camera_protection_failed(error, cx);
@@ -988,18 +995,41 @@ impl RecordingControl {
             self.camera_protection_pending = true;
             let generation = self.countdown_generation;
             cx.spawn_in(window, async move |entity, cx| {
-                let result = smol::unblock(wait).await;
+                let protection = smol::unblock(wait).await;
+                let current = entity
+                    .update_in(cx, |this, _, _| {
+                        this.camera_protection_pending && this.countdown_generation == generation
+                    })
+                    .unwrap_or(false);
+                if !current {
+                    return;
+                }
+                let mut prepared = Some(match protection {
+                    Ok(_) => {
+                        Ok(smol::unblock(move || recorder::create_project(&service.config)).await)
+                    }
+                    Err(error) => Err(error),
+                });
                 let _ = entity.update_in(cx, |this, window, cx| {
                     if !this.camera_protection_pending || this.countdown_generation != generation {
                         return;
                     }
                     this.camera_protection_pending = false;
-                    match result {
-                        Ok(_) => this.start_after_handoff(excluded_window_ids, window, cx),
+                    match prepared.take().expect("recording preparation result") {
+                        Ok(Ok(project)) => {
+                            this.start_after_handoff(project, excluded_window_ids, window, cx);
+                        }
+                        Ok(Err(error)) => this.project_creation_failed(error, cx),
                         Err(error) => this.camera_protection_failed(error, cx),
                     }
                     cx.notify();
                 });
+                if let Some(Ok(Ok(project))) = prepared {
+                    smol::unblock(move || {
+                        let _ = std::fs::remove_dir(project);
+                    })
+                    .await;
+                }
             })
             .detach();
             cx.notify();
@@ -1034,26 +1064,26 @@ impl RecordingControl {
         }
     }
 
+    fn project_creation_failed(&self, error: std::io::Error, cx: &mut Context<Self>) {
+        eprintln!("[recorder] {error}");
+        #[cfg(target_os = "macos")]
+        {
+            recorder::release_camera_protection(&crate::state::state(cx).daemon);
+            crate::capture::overlay::rollback_recording_handoff(cx);
+        }
+        set_pre_recording_escape(true, cx);
+        crate::windows::toast::Toast::show(cx, "Recording failed", error.to_string());
+    }
+
     fn start_after_handoff(
         &mut self,
+        project: std::path::PathBuf,
         excluded_window_ids: Vec<i64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let service = crate::state::state(cx);
         let recording = service.config.get().recording;
-        let project = match recorder::create_project(&service.config) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("[recorder] failed to create project: {error}");
-                #[cfg(target_os = "macos")]
-                {
-                    recorder::release_camera_protection(&service.daemon);
-                    crate::capture::overlay::rollback_recording_handoff(cx);
-                }
-                return;
-            }
-        };
         let config = RecordingConfig {
             x: self.rect.x,
             y: self.rect.y,

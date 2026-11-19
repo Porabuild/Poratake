@@ -117,7 +117,16 @@ pub fn project_name(store: &ConfigStore, at: chrono::DateTime<chrono::Local>) ->
 /// Port of `createRecordingProject`: a uniquely named `.poratake` folder.
 pub fn create_project(store: &ConfigStore) -> std::io::Result<PathBuf> {
     let directory = recordings_dir(store);
-    std::fs::create_dir_all(&directory)?;
+    let with_directory = |error: std::io::Error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "Could not create a recording project in {}. {error}",
+                directory.display()
+            ),
+        )
+    };
+    std::fs::create_dir_all(&directory).map_err(&with_directory)?;
 
     let generated = project_name(store, chrono::Local::now());
     let stem = generated
@@ -134,7 +143,7 @@ pub fn create_project(store: &ConfigStore) -> std::io::Result<PathBuf> {
                 path = directory.join(format!("{stem} {suffix}{PROJECT_EXTENSION}"));
                 suffix += 1;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(with_directory(error)),
         }
     }
 }
