@@ -8768,6 +8768,29 @@ light and 143 ms in dark. Preview to the editor image took 228 and
 These timings cover the editor handoff and export with fixture media.
 [Per-run details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 current live macOS timer screenshot and cancellation
+
+The current GPUI build used the current native timer and a bounded
+generated backdrop. The 140×52-point countdown was visible inside
+the selected region. Its window and the selector were absent from
+that region before the broker forwarded capture. All six completed
+light and dark runs saved a uniform 600×200 PNG, and the previews
+opened in the editor.
+
+With a persistent WindowServer guard, the five-second countdown
+completed in 4,971 ms in light mode and 5,004 ms in dark mode.
+Completion-to-thumbnail readiness took 496 and 421 ms. The real
+capture RPC accounted for 379 and 328 ms. The persistent guard
+added 14 and 21 ms. A separate run with a new guard process per
+capture measured 134–137 ms of fixture overhead.
+
+The two cancellation runs held the native Show reply. GPUI answered
+in 7.4 ms in light and 0.9 ms in dark, cleared the selector and native
+countdown, and issued no capture request. The two Electron timer
+test files passed 21 tests. Live timing measurements are from GPUI's
+app-local input on the built-in Retina display.
+[Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -1494,3 +1494,37 @@ The samples used frames 15 and 45 of the 30 fps output, corresponding
 to 0.5 and 1.5 seconds. All 7,720,704 pixels in each of the four
 matched preview/export pairs agreed within five levels in every
 RGB channel. There was a single video stream in each export.
+
+2026-11-19 current live macOS timer screenshot and cancellation
+
+The GPUI app at 151d873c used a fixture built from current Swift
+sources with a Screen Recording preflight. The broker stubbed
+startup prewarming to keep capture confined to the generated
+backdrop. Freeze was disabled. A real native countdown intersected
+the selected x=650, y=40, width=300, height=100 point region.
+The guard checked top-to-bottom WindowServer order before allowing
+the screenshot request. The expected generated backdrop was the
+first window covering that region at capture time.
+
+All measurements are milliseconds, with each trial starting a fresh
+app and native daemon. On-screen and editor observations include
+probe polling. Countdown runs from native Show reply to Complete.
+
+Checker     Theme Confirm→Show Countdown Request prep Guard Capture RPC Complete→thumbnail Preview→editor
+Fresh       Light     144.9      4986.5       8.7      133.8    302.9           489.9             118.3
+Fresh       Dark      113.4      5003.0       7.7      137.0    280.7           476.3              88.6
+Persistent  Light     199.7      4970.6      24.7       14.0    378.8           496.1              97.7
+Persistent  Dark      115.3      5004.2      23.0       20.6    328.3           420.5             139.0
+
+Request prep measures from Complete to incoming capture-request
+handling. Guard measures the WindowServer validation before
+forwarding. Thumbnail timing includes all of those phases and
+history/preview work. The initial uninstrumented pair also passed.
+All six completed 600x200 screenshots decoded to the uniform
+backdrop RGB (46,85,143) across the entire image.
+
+Cancellation held the Show reply at the broker. The light and dark
+status checks answered in 7.4 and 0.9 ms. Selector and countdown
+were removed, and the broker rejected any capture call in that test.
+No output file was created. Electron timer-capture and timer-control
+unit tests passed all 21 cases.
