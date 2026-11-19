@@ -2898,3 +2898,29 @@ after dark stopping 284 466
 The arm64 development binary passed both Metal recording workflow
 profiles, including matching timer bounds across pending transitions.
 All 76 Electron recording-control tests passed.
+
+2026-11-19 macOS long recording title keyboard tooltip
+
+The temporary native GPUI profile used an app-local target title
+and focused the isolated toolbar. The first title included Café
+and Japanese characters. The second repeated an unbroken
+identifier. The app rendered its own Metal scene, with no desktop
+pixels or physical keyboard events captured. The focus viewport
+was 445x52 points on the built-in Retina display. Scene dimensions
+were 890x104. The two-line maximum remained in place.
+
+The last three lower-line ink-component bounds show the presence
+of an ellipsis. The two light baseline scenes ended with letter
+strokes. All four updated scenes had three small dots aligned on
+the last line.
+
+before light unicode [(798, 64, 809, 76), (812, 64, 821, 76), (832, 64, 842, 80)] ellipsis False
+before light unbroken [(810, 64, 821, 76), (825, 64, 834, 76), (839, 60, 845, 76)] ellipsis False
+after light unicode [(811, 74, 813, 76), (816, 74, 818, 76), (820, 74, 822, 76)] ellipsis True
+after light unbroken [(792, 74, 794, 76), (797, 74, 799, 76), (801, 74, 803, 76)] ellipsis True
+after dark unicode [(811, 74, 814, 76), (816, 74, 818, 76), (820, 74, 822, 76)] ellipsis True
+after dark unbroken [(792, 74, 795, 76), (797, 74, 799, 76), (801, 74, 803, 76)] ellipsis True
+
+The next focused control showed Start recording in the inspected
+dark Unicode scene. Both 2x Metal control workflows passed using
+the fixture daemon. All 76 Electron recording-control tests passed.

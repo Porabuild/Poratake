@@ -9551,6 +9551,25 @@ tests passed. These runs used generated media and held RPC replies.
 [Dark Stopping toolbar](tests/native/evidence/macos-ui/recording-stopping-retina-dark-20261119.png)
 [Native recording status evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS long recording title keyboard tooltip
+
+The compact recording title chip truncates long titles. Its
+keyboard-focus tooltip now marks truncation in the two-line body
+with an ellipsis. The old light-mode captures ended with partial
+words for both the mixed Unicode title and unbroken identifier.
+
+The live GPUI toolbar probe rendered both cases at 2× in light and
+dark. Pixel checks identified the final three dots on line two
+in all four updated scenes. The 445×52-point focused viewport
+contained each tooltip. Tab moved from the title to the Start
+control and replaced the tooltip in the checked dark Unicode case.
+The light and dark 2× Metal control workflows and all 76 Electron
+recording-control tests passed. The probe used generated titles
+and app-local keyboard events.
+[Light Unicode tooltip](tests/native/evidence/macos-ui/recording-title-focus-retina-light-20261119.png)
+[Dark unbroken-title tooltip](tests/native/evidence/macos-ui/recording-title-focus-retina-dark-20261119.png)
+[Native-title evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

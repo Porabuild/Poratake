@@ -546,6 +546,7 @@ impl RecordingControl {
                     div()
                         .max_w(px(width))
                         .line_clamp(2)
+                        .text_ellipsis()
                         .child(body.clone())
                         .into_any_element()
                 })

@@ -365,7 +365,10 @@ fn open_recording_probe_toolbar(cx: &mut App, named_target: bool) {
         },
         None,
         named_target.then_some(1),
-        named_target.then(|| "Generated window".into()),
+        named_target.then(|| {
+            std::env::var("PORATAKE_NATIVE_UI_TARGET_NAME")
+                .unwrap_or_else(|_| "Generated window".into())
+        }),
         PreferenceScope::Global,
     );
 }
@@ -985,12 +988,17 @@ pub fn native_ui_probe() {
                             }
                             return;
                         }
-                        if command == "preview-activate" {
+                        if matches!(command.as_str(), "record-activate" | "preview-activate") {
+                            let (kind, surface) = if command == "record-activate" {
+                                (WindowKind::RecordingControl, "recording")
+                            } else {
+                                (WindowKind::CapturePreview, "preview")
+                            };
                             cx.activate(true);
-                            if let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) {
+                            if let Some(handle) = registry::handle(kind, cx) {
                                 let _ = cx.update_window(handle, |_, window, _| window.activate_window());
                             }
-                            println!("preview activation requested");
+                            println!("{surface} activation requested");
                             return;
                         }
                         if matches!(command.as_str(), "record-focus-status" | "preview-focus-status") {
