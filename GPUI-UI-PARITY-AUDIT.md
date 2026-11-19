@@ -11270,6 +11270,24 @@ builds. The 48 GPUI preview tests and 70 Electron reference tests
 passed. These results use generated media and an app-local cover.
 [Covered preview measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS visibility notifications for covered recording previews
+
+A fully covered preview now waits for an AppKit visibility change
+instead of polling on each 125 ms playback tick. The same
+notification resumes decoding when the window becomes visible.
+The viewport check still handles cards scrolled inside a visible
+window.
+
+Across four paired native runs, GPUI interrupt wakeups over three
+seconds of coverage fell from 32–40 to 11–25. GPUI CPU time dropped
+from 3.8–4.7 ms to 1.1–2.7 ms. First-payload timing after uncover
+varied across pairs. The regression verifies resumption without
+advancing the playback timer.
+
+The six light and dark 2× Metal scenes matched byte for byte.
+All 48 GPUI preview tests and 70 Electron reference tests passed.
+[Covered preview notification timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

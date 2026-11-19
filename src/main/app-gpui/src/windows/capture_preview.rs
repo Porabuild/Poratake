@@ -121,6 +121,8 @@ struct VideoPlayback {
     in_flight: bool,
     #[cfg(target_os = "macos")]
     frames_released: bool,
+    #[cfg(target_os = "macos")]
+    visibility_changed: smol::channel::Sender<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -333,6 +335,8 @@ pub struct CapturePreviewWindow {
     #[cfg(windows)]
     native_tooltip: Option<crate::system::native_tooltip::WindowsTooltip>,
     _display_observer: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    _visibility_observer: Option<gpui::Subscription>,
 }
 
 impl CapturePreviewWindow {
@@ -871,6 +875,21 @@ impl CapturePreviewWindow {
                     #[cfg(windows)]
                     native_tooltip: None,
                     _display_observer: Some(display_observer),
+                    #[cfg(target_os = "macos")]
+                    _visibility_observer: None,
+                });
+                #[cfg(target_os = "macos")]
+                view.update(cx, |view, cx| {
+                    view._visibility_observer = Some(cx.observe_window_visibility(
+                        window,
+                        |view, _, _, _| {
+                            for preview in &view.previews {
+                                if let Some(video) = &preview.video {
+                                    let _ = video.visibility_changed.try_send(());
+                                }
+                            }
+                        },
+                    ));
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
@@ -1197,6 +1216,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                 };
                 let duration = decoder.info().duration;
                 let decoder = Arc::new(decoder);
+                #[cfg(target_os = "macos")]
+                let (visibility_changed, visibility_changes) = smol::channel::bounded(1);
                 let attached = cx.update(|cx| {
                     entity
                         .update(cx, |view, cx| {
@@ -1212,6 +1233,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 in_flight: false,
                                 #[cfg(target_os = "macos")]
                                 frames_released: false,
+                                #[cfg(target_os = "macos")]
+                                visibility_changed,
                             });
                             cx.notify();
                             Some(())
@@ -1223,9 +1246,31 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     return;
                 };
                 let mut first_frame = true;
+                #[cfg(target_os = "macos")]
+                let mut wait_for_visibility = false;
                 loop {
                     if !first_frame {
+                        #[cfg(not(target_os = "macos"))]
                         cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                        #[cfg(target_os = "macos")]
+                        {
+                            let awake = if wait_for_visibility {
+                                visibility_changes.recv().await.is_ok()
+                            } else {
+                                smol::future::or(
+                                    async { visibility_changes.recv().await.is_ok() },
+                                    async {
+                                        cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                                        true
+                                    },
+                                )
+                                .await
+                            };
+                            if !awake {
+                                return;
+                            }
+                            wait_for_visibility = false;
+                        }
                     }
                     first_frame = false;
                     let job = cx.update(|cx| {
@@ -1254,6 +1299,7 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 #[cfg(target_os = "macos")]
                                 {
                                     if !can_play {
+                                        wait_for_visibility = !_window.is_visible();
                                         if !playback.frames_released {
                                             playback.decoder.release_frames();
                                             playback.frames_released = true;
@@ -3418,6 +3464,8 @@ mod tests {
                 #[cfg(windows)]
                 native_tooltip: None,
                 _display_observer: None,
+                #[cfg(target_os = "macos")]
+                _visibility_observer: None,
             })
         });
         let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview {
@@ -5229,6 +5277,8 @@ mod tests {
             #[cfg(windows)]
             native_tooltip: None,
             _display_observer: None,
+            #[cfg(target_os = "macos")]
+            _visibility_observer: None,
         };
         let first = start_layout_transition(&mut view, true, Instant::now());
         let second = start_layout_transition(&mut view, true, Instant::now());
@@ -5531,6 +5581,28 @@ mod tests {
             .unwrap()
             .expect("the video thumbnail should be ready");
         redraw(cx, &first, None);
+
+        cx.simulate_window_visibility_change(stack.into(), gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(preview.video.as_ref().unwrap().frames_released);
+                assert!(Arc::ptr_eq(preview.image.as_ref().unwrap(), &first));
+            })
+            .unwrap();
+        cx.simulate_window_visibility_change(stack.into(), gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        let resumed = stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(!preview.video.as_ref().unwrap().frames_released);
+                preview.image.clone().unwrap()
+            })
+            .unwrap();
+        assert!(!Arc::ptr_eq(&resumed, &first));
+        redraw(cx, &resumed, Some(&first));
+
         stack
             .update(cx, |view, _, _| view.previews[0].busy = true)
             .unwrap();
@@ -5546,7 +5618,7 @@ mod tests {
                 )
             })
             .unwrap();
-        redraw(cx, &blurred, Some(&first));
+        redraw(cx, &blurred, Some(&resumed));
 
         let decoder = stack
             .update(cx, |view, window, cx| {

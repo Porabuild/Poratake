@@ -5298,3 +5298,33 @@ its buffers while clipped and that decoding resumes after the
 card scrolls into view. All six light and dark 2x Metal idle,
 hover and exit PNGs matched across builds. All 48 GPUI tests
 and 70 Electron preview and thumbnail tests passed.
+
+2026-11-20 macOS visibility notifications for covered recording previews
+=======================================================================
+
+A generated opaque AppKit window fully covered the GPUI video
+preview in the native development app. Each measurement began
+after the decoder exited and lasted three seconds. The prior
+build checked visibility every 125 ms. The updated build awaited
+the visibility notification. The probe used generated 4K video
+and no desktop pointer input.
+
+The table measures process-wide GPUI CPU time and interrupt
+wakeups in proc_pid_rusage. Uncover time runs from the AppKit
+cover acknowledgement to a new decoder's first frame payload.
+
+Build    Theme  Pair  Covered CPU ms  Interrupt wakes  Uncover→payload ms
+base     light    1           4.725               32              278.8
+updated  light    1           1.057               11              157.8
+updated  dark     1           2.292               25              164.2
+base     dark     1           3.760               40              155.8
+updated  light    2           1.880               13              144.6
+base     light    2           4.427               38              185.9
+base     dark     2           4.055               33              151.4
+updated  dark     2           2.711               21              160.4
+
+Simulated window visibility verifies that decoding resumes without
+advancing the GPUI playback clock and that the last image stays
+available while covered. The six Retina Metal PNGs for idle,
+hover and exit matched byte for byte. The 48 GPUI preview tests
+and 70 Electron preview and thumbnail tests passed.
