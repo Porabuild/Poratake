@@ -144,6 +144,13 @@ impl Source {
         decode_wait: &mut Duration,
     ) -> Option<Pixmap> {
         let first_frame_duration = self.engine.first_frame_duration();
+        if first_frame_duration > 0. && timeline_time < first_frame_duration {
+            return self.render(
+                timeline_time,
+                max_dimensions,
+                Frames { video: None, camera: None },
+            );
+        }
         let adjusted = (timeline_time - first_frame_duration).max(0.0);
         let video_time = segments::map_timeline_to_video_time(adjusted, &self.video_segments)
             .or_else(|| self.video_segments.last().map(|segment| segment.end_time))
@@ -151,10 +158,7 @@ impl Source {
 
         let video = cached_frame(&mut self.video_frame, video_time, || {
             decode_frame(self.video.as_ref(), video_time, decode_wait)
-        });
-        if video.is_none() && timeline_time >= first_frame_duration {
-            return None;
-        }
+        })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             cached_frame(&mut self.camera_frame, video_time, || {
                 decode_frame(self.camera.as_ref(), video_time, decode_wait)
@@ -172,10 +176,22 @@ impl Source {
             None
         };
 
-        let frames = Frames {
-            video: video.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
-            camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
-        };
+        self.render(
+            timeline_time,
+            max_dimensions,
+            Frames {
+                video: Some(video.as_ref().as_ref()),
+                camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
+            },
+        )
+    }
+
+    fn render(
+        &mut self,
+        timeline_time: f64,
+        max_dimensions: Option<(u32, u32)>,
+        frames: Frames<'_>,
+    ) -> Option<Pixmap> {
         match max_dimensions {
             Some((width, height)) => {
                 self.engine
@@ -384,20 +400,23 @@ mod tests {
             video_frame: None,
             camera_frame: None,
         };
+        let video_time = 0.5;
+        let decoded = DecodedFrame {
+            width: 2,
+            height: 2,
+            bgra: [220, 140, 50, 255].repeat(4).into(),
+        };
+        let before = cached_frame(&mut source.video_frame, video_time, || Some(decoded.clone())).unwrap();
         let intro_duration = source.engine.first_frame_duration();
         assert!(intro_duration > 0.);
         let rendered_intro = source.compose(0., None).expect("intro preview");
         assert!(rendered_intro.data().chunks_exact(4).any(|pixel| pixel == [10, 20, 30, 255]));
+        assert!(Arc::ptr_eq(&before, &source.video_frame.as_ref().unwrap().pixmap));
 
         assert!(source.compose(intro_duration, None).is_none());
         assert!(source.compose(intro_duration + 0.25, Some((1, 1))).is_none());
 
-        let video_time = 0.5;
-        cached_frame(&mut source.video_frame, video_time, || Some(DecodedFrame {
-            width: 2,
-            height: 2,
-            bgra: [220, 140, 50, 255].repeat(4).into(),
-        }));
+        cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
         let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
         assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
     }
@@ -475,7 +494,10 @@ mod tests {
         let still = source.engine.first_frame_duration();
         assert!(still > 0.);
         let dimensions = Some((160, 90));
-        assert!(source.compose(0., dimensions).is_some());
+        let mut decode_wait = Duration::ZERO;
+        assert!(source.compose_measured(0., dimensions, &mut decode_wait).is_some());
+        assert_eq!(decode_wait, Duration::ZERO);
+        assert!(source.video_frame.is_none());
         assert!(source.camera_frame.is_none());
         assert!(source.compose(still + 0.75, dimensions).is_some());
         assert!(source.camera_frame.is_none());

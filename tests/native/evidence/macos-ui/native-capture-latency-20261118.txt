@@ -1328,3 +1328,24 @@ decode wait and 4.4 ms of other work. The new runs still lowered
 resolution following measured composition cost over the budget.
 The small paired sample illustrates the policy under paced input
 and does not establish a throughput improvement.
+
+2026-11-19 macOS video editor intro-still handoff
+
+The native development probe used a generated recording from the
+fixture daemon. After the recording preview was ready and finalization
+completed, the probe enabled a generated PNG intro still in the
+isolated project's state file. The FFmpeg wrapper allowed metadata
+reads and held new raw-frame decoding until the probe released it.
+The edit action was dispatched inside the temporary app.
+
+Theme   Before, no image with decode held   After, intro image ready with hold active
+Light              144.6 ms                              120.3 ms
+Dark               169.5 ms                              208.3 ms
+
+The before column records the time of observing a blocked decode and
+checking for an image. It is a lower bound on readiness under the
+hold. The after column ends
+when the editor reports its intro preview image. The FFmpeg marker
+confirmed no raw decode request had been made before that image.
+After Play reached the recording and the hold was released, the
+trace reported a successful decoded frame in both runs.

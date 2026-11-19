@@ -8611,6 +8611,25 @@ selection under controlled decode delay. The intermittent 4K60
 stall cause remains open.
 [Per-run timing evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS video editor intro-still handoff
+
+The editor composes an enabled intro still before requesting recording
+or camera frames. Both preview sizes use the same composition engine
+as before. Recording decode begins when the playhead reaches the
+recording. The regression verifies the intro pixels, preserves the
+screen-frame cache during the intro, and checks that a real FFmpeg
+source spends zero time decoding for the intro request.
+
+A native development probe used a generated recording and deliberately
+held the first FFmpeg frame request. The old build had no editor
+preview while the decode was held. The revised build published the
+intro preview in 120 ms in light mode and 208 ms in dark mode while
+the hold remained active. Starting playback reached the decoder,
+and releasing the hold produced the recording frame. Timings end
+at preview-image availability. All 1,186 GPUI tests and the
+separate development FFmpeg camera visibility test passed.
+[Timing details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |
