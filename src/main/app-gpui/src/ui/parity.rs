@@ -970,6 +970,14 @@ pub fn capture_editor_interaction_states() {
         return;
     }
     #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_PIN_ONLY").is_some() {
+        assert!(source.is_none() && width == 1280. && scale == 1.);
+        pin_workflows::run(&mut cx, &output, &scratch, scale);
+        pin_workflows::editor_roundtrip(&mut cx, &output, &scratch);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if std::env::var_os("PORATAKE_PARITY_ANALYSIS_ONLY").is_some() {
         assert!(source.is_none() && width == 1280. && scale == 1.);
         std::fs::File::create(output.join("daemon-fixture.jsonl")).unwrap();

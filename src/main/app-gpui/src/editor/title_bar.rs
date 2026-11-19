@@ -159,6 +159,7 @@ pub struct TitleBar {
     pub can_redo: bool,
     pub is_copied: bool,
     pub is_copying: bool,
+    pub is_pinning: bool,
     pub is_uploading: bool,
     pub is_upload_done: bool,
     pub is_capture_mode: bool,
@@ -274,15 +275,16 @@ impl RenderOnce for TitleBar {
             |button| button.size(Size::Sm).is_icon_only(true),
             self.is_uploading,
         ));
-        tool_items.push(action_button(
+        tool_items.push(action_button_spinning(
             "action-pin",
             "pin",
-            "Pin Screenshot",
+            if self.is_pinning { "Pinning…" } else { "Pin Screenshot" },
             String::new(),
             EditorAction::Pin,
             &handlers,
-            false,
+            self.is_pinning,
             |button| button.size(Size::Sm).is_icon_only(true),
+            self.is_pinning,
         ));
 
         let macos = chrome::is_macos();

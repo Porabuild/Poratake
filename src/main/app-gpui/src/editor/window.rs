@@ -386,6 +386,7 @@ pub struct EditorWindow {
     pub base_image: Option<Arc<image::DynamicImage>>,
     pub is_copied: bool,
     copy_pending: bool,
+    pin_pending: bool,
     copy_task: Option<gpui::Task<()>>,
     pub image_width: f32,
     pub image_height: f32,
@@ -596,6 +597,7 @@ impl EditorWindow {
             pan_origin: None,
             is_copied: false,
             copy_pending: false,
+            pin_pending: false,
             copy_task: None,
             image_width: width,
             image_height: height,
@@ -2899,6 +2901,7 @@ impl Render for EditorWindow {
                 can_redo: self.history.can_redo(),
                 is_copied: self.is_copied,
                 is_copying: self.copy_pending,
+                is_pinning: self.pin_pending,
                 is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
                 is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
                 is_capture_mode: self.capture_mode,
@@ -3183,26 +3186,6 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
             let Some(entity) = action_entity.upgrade() else {
                 return;
             };
-            if action == EditorAction::Pin {
-                let editor = entity.read(cx);
-                let png = editor.export_png().ok();
-                let file_path = editor.file_path.clone();
-                if let Some(bytes) = png {
-                    let restore_state = PersistedEditorState {
-                        annotations: editor.history.current().to_vec(),
-                        wallpaper: editor.wallpaper.clone(),
-                        layers: editor.layers.clone(),
-                    };
-                    crate::windows::pin::PinWindow::open_for_editor(
-                        cx,
-                        bytes,
-                        file_path,
-                        restore_state,
-                    );
-                    window.remove_window();
-                }
-                return;
-            }
             entity.update(cx, |editor, cx| {
                 editor.apply_action(action, window, cx);
                 cx.notify();
@@ -3914,7 +3897,7 @@ impl EditorWindow {
             EditorAction::Save => self.save_as(window, cx),
             EditorAction::CloudUpload => self.upload_to_cloud(cx),
             EditorAction::CaptureToggle => self.toggle_capture_mode(cx),
-            EditorAction::Pin => {}
+            EditorAction::Pin => self.pin_screenshot(window, cx),
         }
     }
 
@@ -4065,8 +4048,8 @@ struct ScreenshotComposition {
 }
 
 impl ScreenshotComposition {
-    fn encode(self, jpeg: bool) -> anyhow::Result<Vec<u8>> {
-        let image = crate::editor::export::compose_with_layers(
+    fn render(self) -> image::RgbaImage {
+        crate::editor::export::compose_with_layers(
             self.base_image.as_deref(),
             self.width,
             self.height,
@@ -4074,7 +4057,11 @@ impl ScreenshotComposition {
             &self.wallpaper.for_scale(self.scale),
             &self.layers,
             self.scale,
-        );
+        )
+    }
+
+    fn encode(self, jpeg: bool) -> anyhow::Result<Vec<u8>> {
+        let image = self.render();
         if !jpeg {
             return crate::render::images::encode_srgb_png(&image);
         }
@@ -4122,6 +4109,50 @@ impl EditorWindow {
             self.native_scale,
         );
         crate::render::images::encode_srgb_png(&canvas)
+    }
+
+    fn pin_screenshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::windows::pin::PinWindow;
+
+        if self.pin_pending {
+            return;
+        }
+
+        self.pin_pending = true;
+        let composition = self.composition();
+        let handle = window.window_handle();
+        cx.spawn(async move |editor, cx| {
+            let image = cx
+                .background_executor()
+                .spawn(async move { PinWindow::prepare_image(composition.render()) })
+                .await;
+            let Ok((path, state)) = editor.update(cx, |editor, cx| {
+                editor.pin_pending = false;
+                cx.notify();
+                (
+                    editor.file_path.clone(),
+                    PersistedEditorState {
+                        annotations: editor.history.current().to_vec(),
+                        wallpaper: editor.wallpaper.clone(),
+                        layers: editor.layers.clone(),
+                    },
+                )
+            }) else {
+                return;
+            };
+            cx.update(|cx| {
+                if PinWindow::open_for_editor(cx, image, path, state) {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                } else {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Pin failed",
+                        "Could not open the pinned screenshot",
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {

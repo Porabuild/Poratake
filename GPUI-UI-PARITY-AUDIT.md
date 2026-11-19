@@ -8424,6 +8424,26 @@ URL on GPUI's test clipboard. The test used a local endpoint and did
 not exercise the user's cloud configuration. The GPUI suite passed
 1,183 tests with 23 ignored.
 
+### 2026-11-19 macOS screenshot editor Pin responsiveness
+
+Pin prepares the selected composition on the background executor and
+passes the pixels directly to GPUI. The toolbar shows progress during
+preparation. The editor closes after the pin opens successfully and
+passes its latest annotation, wallpaper and layer state to the pin.
+Closing an editor-backed pin prepares the original screenshot off
+the UI thread before restoring that state. Closing a standalone pin
+dismisses it.
+
+The focused light and dark Metal profiles verified standalone pin
+layout, hover, resizing and close. In both themes, the annotated
+pin matched the editor export within two channel levels. Closing
+an editor-backed pin restored the annotations and the exact PNG
+export, with and without a history entry. All 1,183 GPUI tests passed.
+
+```sh
+PORATAKE_PARITY_PIN_ONLY=1 PORATAKE_PARITY_WIDTH=1280 PORATAKE_PARITY_SCALE=1 src/main/target/debug/poratake-gpui --parity
+```
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

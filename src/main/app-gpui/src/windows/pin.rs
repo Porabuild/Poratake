@@ -17,29 +17,33 @@ pub struct PinWindow {
 
 impl PinWindow {
     pub fn open(cx: &mut App, png_bytes: Vec<u8>) {
-        Self::open_with_restore(cx, png_bytes, None);
+        if let Ok(decoded) = crate::render::images::decode(&png_bytes) {
+            Self::open_with_restore(cx, Self::prepare_image(decoded.into_rgba8()), None);
+        }
     }
 
-    /// Port of `screenshot:pin`: the editor closes into the pin and the pin
-    /// reopens it, with its persisted state, when closed.
     pub(crate) fn open_for_editor(
         cx: &mut App,
-        png_bytes: Vec<u8>,
+        image: Arc<gpui::RenderImage>,
         file_path: String,
         state: crate::editor::window::PersistedEditorState,
-    ) {
-        Self::open_with_restore(cx, png_bytes, Some((file_path, state)));
+    ) -> bool {
+        Self::open_with_restore(cx, image, Some((file_path, state)))
+    }
+
+    pub(crate) fn prepare_image(mut rgba: image::RgbaImage) -> Arc<gpui::RenderImage> {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let frame = image::Frame::new(rgba);
+        Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]))
     }
 
     fn open_with_restore(
         cx: &mut App,
-        png_bytes: Vec<u8>,
+        render_image: Arc<gpui::RenderImage>,
         restore: Option<(String, crate::editor::window::PersistedEditorState)>,
-    ) {
-        let decoded = match crate::render::images::decode(&png_bytes) {
-            Ok(img) => img.into_rgba8(),
-            Err(_) => return,
-        };
+    ) -> bool {
         let displays = cx.displays();
         let display = displays.first();
         let scale = display
@@ -55,16 +59,11 @@ impl PinWindow {
         } else {
             scale
         };
+        let image_size = render_image.size(0);
         let (width, height) = (
-            decoded.width() as f32 / scale,
-            decoded.height() as f32 / scale,
+            image_size.width.0 as f32 / scale,
+            image_size.height.0 as f32 / scale,
         );
-        let mut buffer = decoded;
-        for pixel in buffer.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
-        }
-        let frame = image::Frame::new(buffer);
-        let render_image = Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]));
 
         let (work_width, work_height) = display
             .map(|display| {
@@ -111,13 +110,22 @@ impl PinWindow {
             });
             view
         })
-        .ok();
+        .is_ok()
     }
 
     fn restore_editor(&mut self, cx: &mut App) {
-        if let Some((path, state)) = self.restore.take() {
-            crate::open_editor_with_state(cx, &path, Some(state));
-        }
+        let Some((path, state)) = self.restore.take() else {
+            return;
+        };
+        let source = path.clone();
+        let image = cx
+            .background_executor()
+            .spawn(async move { crate::editor::window::PreparedScreenshot::open(&source) });
+        cx.spawn(async move |cx| {
+            let image = image.await;
+            cx.update(|cx| crate::open_editor_with_image(cx, &path, Some(state), image));
+        })
+        .detach();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut App) {
@@ -281,7 +289,9 @@ mod tests {
         let expected = editor
             .update(cx, |editor, _, _| editor.export_png().unwrap())
             .unwrap();
-        cx.update(|cx| PinWindow::open_for_editor(cx, expected.clone(), path.clone(), state));
+        let image =
+            PinWindow::prepare_image(image::load_from_memory(&expected).unwrap().into_rgba8());
+        cx.update(|cx| assert!(PinWindow::open_for_editor(cx, image, path.clone(), state)));
         editor
             .update(cx, |_, window, _| window.remove_window())
             .unwrap();
