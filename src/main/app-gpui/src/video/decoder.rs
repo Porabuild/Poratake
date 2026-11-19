@@ -35,9 +35,12 @@ pub struct DecodedFrame {
     pub bgra: Arc<Vec<u8>>,
 }
 
+pub(crate) type FrameCancellation = smol::channel::Receiver<()>;
+
 struct Command {
     time: f64,
     reply: Reply,
+    cancelled: Option<FrameCancellation>,
 }
 
 enum Reply {
@@ -95,11 +98,20 @@ impl VideoDecoder {
     /// Decodes the frame at `time` seconds. Blocking, so callers run it on the
     /// background executor.
     pub fn frame_at(&self, time: f64) -> Option<DecodedFrame> {
+        self.frame_at_interruptible(time, None)
+    }
+
+    pub(crate) fn frame_at_interruptible(
+        &self,
+        time: f64,
+        cancelled: Option<&FrameCancellation>,
+    ) -> Option<DecodedFrame> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.commands
             .send(Command {
                 time: time.max(0.0),
                 reply: Reply::Frame(reply_tx),
+                cancelled: cancelled.cloned(),
             })
             .ok()?;
         reply_rx
@@ -113,6 +125,7 @@ impl VideoDecoder {
             .send(Command {
                 time: time.max(0.0),
                 reply: Reply::Warmup(reply),
+                cancelled: None,
             })
             .ok()?;
         Some(completion)
@@ -161,7 +174,11 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(Command { time, reply }) = commands.recv() {
+            while let Ok(Command { time, reply, cancelled }) = commands.recv() {
+                if cancelled.as_ref().is_some_and(FrameCancellation::is_closed) {
+                    reply.send(None);
+                    continue;
+                }
                 let frame = read_frame(&reader, time, info, &mut cursor);
                 reply.send(frame);
             }
@@ -488,7 +505,7 @@ mod backend {
 
     struct DecoderProcess {
         child: Child,
-        frames: Receiver<Option<TimedFrame>>,
+        frames: smol::channel::Receiver<Option<TimedFrame>>,
         current: Option<TimedFrame>,
         next: Option<TimedFrame>,
     }
@@ -509,8 +526,16 @@ mod backend {
         let info = media.video;
         let _ = info_tx.send(Some(info));
         let mut decoder = None;
-        while let Ok(Command { time, reply }) = commands.recv() {
-            let frame = read_frame(&ffmpeg, &path, time, info, media.start_time, &mut decoder);
+        while let Ok(Command { time, reply, cancelled }) = commands.recv() {
+            let frame = read_frame(
+                &ffmpeg,
+                &path,
+                time,
+                info,
+                media.start_time,
+                &mut decoder,
+                cancelled.as_ref(),
+            );
             reply.send(frame);
         }
     }
@@ -595,7 +620,11 @@ mod backend {
         info: VideoInfo,
         start_time: f64,
         decoder: &mut Option<DecoderProcess>,
+        cancelled: Option<&FrameCancellation>,
     ) -> Option<DecodedFrame> {
+        if cancelled.is_some_and(FrameCancellation::is_closed) {
+            return None;
+        }
         let time = time.max(0.0).next_up();
         if let Some(decoder) = decoder.as_mut() {
             if decoder
@@ -629,25 +658,24 @@ mod backend {
         } else {
             decoder.take()?
         };
-        let frame = read_from_process(
-            &mut process,
-            time,
-            std::time::Instant::now() + std::time::Duration::from_secs(10),
-        );
-        match frame {
-            Ok(Some(frame)) => {
-                *decoder = Some(process);
-                Some(frame)
-            }
-            Ok(None) | Err(()) => None,
+        let frame = smol::block_on(wait_for_frame(&mut process, time, cancelled));
+        if matches!(frame, Ok(Some(_)) | Err(FrameReadError::Cancelled)) {
+            *decoder = Some(process);
         }
+        frame.ok().flatten()
     }
 
-    fn read_from_process(
+    #[derive(Debug)]
+    enum FrameReadError {
+        Cancelled,
+        TimedOut,
+    }
+
+    async fn wait_for_frame(
         decoder: &mut DecoderProcess,
         time: f64,
-        deadline: std::time::Instant,
-    ) -> Result<Option<DecodedFrame>, ()> {
+        cancelled: Option<&FrameCancellation>,
+    ) -> Result<Option<DecodedFrame>, FrameReadError> {
         if decoder
             .next
             .as_ref()
@@ -662,24 +690,35 @@ mod backend {
         {
             return Ok(selected_frame(decoder));
         }
-        loop {
-            let timeout = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .ok_or(())?;
-            let frame = match decoder.frames.recv_timeout(timeout) {
-                Ok(Some(frame)) => frame,
-                Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Ok(selected_frame(decoder));
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(()),
-            };
+
+        let timeout = async {
+            smol::Timer::after(std::time::Duration::from_secs(10)).await;
+            Err(FrameReadError::TimedOut)
+        };
+        let mut interrupt = std::pin::pin!(async {
+            if let Some(cancelled) = cancelled {
+                smol::future::race(timeout, async {
+                    let _ = cancelled.recv().await;
+                    Err(FrameReadError::Cancelled)
+                })
+                .await
+            } else {
+                timeout.await
+            }
+        });
+        while let Some(frame) = smol::future::or(interrupt.as_mut(), async {
+            Ok(decoder.frames.recv().await.ok().flatten())
+        })
+        .await?
+        {
             if frame.timestamp <= time {
                 decoder.current = Some(frame);
                 continue;
             }
             decoder.next = Some(frame);
-            return Ok(selected_frame(decoder));
+            break;
         }
+        Ok(selected_frame(decoder))
     }
 
     fn selected_frame(decoder: &DecoderProcess) -> Option<DecodedFrame> {
@@ -823,7 +862,7 @@ mod backend {
         #[cfg(all(feature = "parity", target_os = "macos"))]
         let trace_pid = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
             .map(|_| child.id());
-        let (frame_tx, frames) = mpsc::sync_channel(1);
+        let (frame_tx, frames) = smol::channel::bounded(1);
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
@@ -875,7 +914,7 @@ mod backend {
                         );
                     }
                     if frame_tx
-                        .send(Some(TimedFrame {
+                        .send_blocking(Some(TimedFrame {
                             timestamp: timestamp - start_time,
                             frame: DecodedFrame {
                                 width: info.width,
@@ -888,7 +927,7 @@ mod backend {
                         return;
                     }
                 }
-                let _ = frame_tx.send(None);
+                let _ = frame_tx.send_blocking(None);
             })
             .is_err()
         {
@@ -968,6 +1007,40 @@ esac
             directory
         }
 
+        #[test]
+        fn superseded_frame_wait_leaves_the_decoder_available() {
+            let (frames_tx, frames) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/bin/sh").args(["-c", ":"]).spawn().unwrap(),
+                frames,
+                current: None,
+                next: None,
+            };
+            let (cancel, cancelled) = smol::channel::bounded(1);
+            smol::block_on(async {
+                let mut pending =
+                    std::pin::pin!(wait_for_frame(&mut decoder, 1.0, Some(&cancelled)));
+                assert!(smol::future::poll_once(pending.as_mut()).await.is_none());
+                cancel.close();
+                assert!(matches!(pending.await, Err(FrameReadError::Cancelled)));
+            });
+
+            frames_tx
+                .send_blocking(Some(TimedFrame {
+                    timestamp: 0.5,
+                    frame: DecodedFrame {
+                        width: 1,
+                        height: 1,
+                        bgra: vec![10, 20, 30, 255].into(),
+                    },
+                }))
+                .unwrap();
+            let frame = smol::block_on(wait_for_frame(&mut decoder, 0.0, None))
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+        }
+
         #[cfg(target_os = "macos")]
         #[test]
         fn large_frame_reader_delivers_stdout_then_eof() {
@@ -1015,6 +1088,7 @@ esac
                     media.video,
                     media.start_time,
                     &mut decoder,
+                    None,
                 )
                 .expect("camera frame");
                 let red = frame.bgra[(32 * 64 + 32) * 4 + 2];
@@ -1051,6 +1125,7 @@ esac
                     media.video,
                     media.start_time,
                     &mut decoder,
+                    None,
                 )
                 .expect("screen frame");
                 let channel = frame.bgra[(32 * 64 + 32) * 4 + 2];
@@ -1105,7 +1180,7 @@ esac
                 (2.0 / 12.0, 2),
                 ((1.0 + 1.0 / 12.0) - 1.0 / 12.0, 12),
             ] {
-                let frame = read_frame(&ffmpeg, &source, time, info, 0.0, &mut decoder).unwrap();
+                let frame = read_frame(&ffmpeg, &source, time, info, 0.0, &mut decoder, None).unwrap();
                 assert_eq!(frame.bgra[0], expected, "frame at {time:.17}");
             }
         }
@@ -1127,7 +1202,7 @@ esac
                 .arg("30")
                 .spawn()
                 .expect("stand-in for the active decoder");
-            let (_, frames) = mpsc::channel();
+            let (_, frames) = smol::channel::bounded(1);
             let mut decoder = Some(DecoderProcess {
                 child,
                 frames,
@@ -1155,6 +1230,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             )
             .expect("replacement decoder must run after the old process exits");
 
@@ -1177,6 +1253,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             );
             assert!(first.is_none());
             assert!(decoder.is_none());
@@ -1188,6 +1265,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             )
             .expect("decoder should restart after delivering no frames");
             assert_eq!(recovered.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
@@ -1220,6 +1298,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             )
             .expect("first video frame");
             assert_eq!(first.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
@@ -1230,6 +1309,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             )
             .expect("sparse video gap");
             assert_eq!(gap.bgra.as_slice(), first.bgra.as_slice());
@@ -1245,6 +1325,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut decoder,
+                None,
             )
             .expect("second video frame");
             assert_eq!(second.bgra.as_slice(), [9, 8, 7, 255, 12, 11, 10, 255]);
@@ -1256,6 +1337,7 @@ esac
                 media.video,
                 media.start_time,
                 &mut None,
+                None,
             )
             .expect("random seek video frame");
             assert_eq!(random.bgra.as_slice(), first.bgra.as_slice());
@@ -1269,7 +1351,7 @@ mod backend {
 
     pub fn run(_path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
         let _ = info_tx.send(None);
-        while let Ok(Command { time, reply }) = commands.recv() {
+        while let Ok(Command { time, reply, .. }) = commands.recv() {
             let _ = time;
             drop(reply);
         }

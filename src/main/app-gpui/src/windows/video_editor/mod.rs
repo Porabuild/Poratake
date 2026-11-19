@@ -165,6 +165,7 @@ pub struct VideoEditorWindow {
     /// One compose runs at a time; a request that arrives while one is in
     /// flight replaces the queued position rather than piling up.
     compose_in_flight: bool,
+    preview_frame_cancellation: Option<smol::channel::Sender<()>>,
     queued_frame: Option<f64>,
     preview_frame_generation: u64,
     preview_quality: usize,
@@ -397,6 +398,7 @@ impl VideoEditorWindow {
             preview_status: PreviewStatus::Idle,
             preview_image: None,
             compose_in_flight: false,
+            preview_frame_cancellation: None,
             queued_frame: None,
             preview_frame_generation: 0,
             preview_quality: INITIAL_PREVIEW_QUALITY,
@@ -850,6 +852,9 @@ impl VideoEditorWindow {
 
     fn invalidate_preview_frames(&mut self) {
         self.preview_frame_generation = self.preview_frame_generation.wrapping_add(1);
+        if let Some(cancellation) = self.preview_frame_cancellation.take() {
+            cancellation.close();
+        }
     }
 
     /// Queues a compose at the current playhead.
@@ -865,6 +870,8 @@ impl VideoEditorWindow {
             self.queued_frame = Some(time);
             return;
         }
+        let (cancellation, cancelled) = smol::channel::bounded(1);
+        self.preview_frame_cancellation = Some(cancellation);
         self.compose_in_flight = true;
         self.queued_frame = None;
         let generation = self.preview_frame_generation;
@@ -877,7 +884,7 @@ impl VideoEditorWindow {
                     let mut decode_wait = Duration::ZERO;
                     let mut guard = source.lock();
                     let image = guard
-                        .compose_measured(time, max_dimensions, &mut decode_wait)
+                        .compose_measured(time, max_dimensions, &mut decode_wait, Some(&cancelled))
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
                     (image, started.elapsed(), decode_wait)
@@ -886,6 +893,7 @@ impl VideoEditorWindow {
 
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
+                this.preview_frame_cancellation = None;
                 if this.preview_frame_generation == generation {
                     if max_dimensions.is_some() && composed.is_some() {
                         (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(

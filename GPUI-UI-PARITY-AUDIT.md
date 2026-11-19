@@ -9134,6 +9134,24 @@ These results favor software as the default. The contention stall
 remains open.
 [Decoder and format evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-19 macOS preview responds to a newer seek
+
+An older preview request could wait on FFmpeg after a direct seek
+had already queued a new playhead position. The editor now signals
+cancellation when it invalidates that preview generation. The Unix
+decoder wakes from its frame wait and keeps its buffered frames
+available for the next request. The normal seek rules then decide
+whether to reuse the stream or start from a new keyframe.
+
+The native probe held the raw output for a 1.5-second seek, then
+sought to 4.5 seconds. The original editor produced no frame in
+the 1.5-second observation window. The revised editor applied the
+second seek in 92 ms in light and 90 ms in dark, while the old
+output was still held. Both preview images matched the FFmpeg
+reference at 4.5 seconds in every RGB channel. Four ordinary 4K60
+playback runs applied 120 images each over two seconds.
+[Seek and playback evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                                                               |

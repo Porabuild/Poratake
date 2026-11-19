@@ -2137,3 +2137,40 @@ in both themes, 4:2:2 in light and Main 10 in dark. The software
 preview matched the independent FFmpeg raw reference in every
 RGB channel. The rotated editor image was 360x640. The other
 editor images were 640x360.
+
+2026-11-19 macOS preview responds to a newer seek
+
+The native development probe used a generated six-second
+1280x720 H.264 clip with a red first half and a green second half.
+A fixture selected it as the recording and opened the editor.
+Once the initial red preview was ready, a wrapper held the
+existing decoder's raw output. The probe dispatched a seek to
+1.5 s while holding that output, then requested 4.5 s. A restarted
+decoder could read the later keyframe normally. The test kept the
+original output hold active throughout measurement.
+
+Build          Theme   New seek to applied editor image
+Original       Light   No frame within the 1,500 ms observation
+Revised        Light                                 91.8 ms
+Revised        Dark                                  89.9 ms
+
+The original observation ended when the probe released its hold.
+Both new captures opened the green frame and matched the FFmpeg
+RGB reference at 4.5 s exactly. Timing begins before dispatching
+the second seek and ends when the editor trace reports an applied
+image. Display presentation and physical input are outside the
+measurement.
+
+A separate unpaced test compared playback of a generated 4K60
+H.264 file. All runs exercised the tuned socket. Applied image
+counts and median payload times cover the two seconds starting
+0.4 s after Play.
+
+Build          Theme   Applied images   Median payload
+Original       Light              120           3.04 ms
+Revised        Light              120           2.99 ms
+Revised        Dark               120           2.99 ms
+Original       Dark               120           2.99 ms
+
+The unit regression verifies that canceling a pending frame wait
+still allows the same decoder to return its next available frame.

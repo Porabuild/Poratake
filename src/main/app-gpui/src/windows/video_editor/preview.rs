@@ -12,7 +12,7 @@ use tiny_skia::Pixmap;
 
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
-use crate::video::decoder::{DecodedFrame, VideoDecoder, VideoInfo};
+use crate::video::decoder::{DecodedFrame, FrameCancellation, VideoDecoder, VideoInfo};
 use crate::video::{project, sidecars};
 use crate::windows::video_editor::model::VideoEditorState;
 
@@ -137,7 +137,7 @@ impl Source {
         max_dimensions: Option<(u32, u32)>,
     ) -> Option<Pixmap> {
         let mut decode_wait = Duration::ZERO;
-        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait)
+        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait, None)
     }
 
     pub(super) fn compose_measured(
@@ -145,7 +145,11 @@ impl Source {
         timeline_time: f64,
         max_dimensions: Option<(u32, u32)>,
         decode_wait: &mut Duration,
+        cancelled: Option<&FrameCancellation>,
     ) -> Option<Pixmap> {
+        if cancelled.is_some_and(FrameCancellation::is_closed) {
+            return None;
+        }
         let first_frame_duration = self.engine.first_frame_duration();
         if first_frame_duration > 0. && timeline_time < first_frame_duration {
             return self.render(
@@ -160,12 +164,12 @@ impl Source {
             .unwrap_or(adjusted);
 
         let video = cached_frame(&mut self.video_frame, video_time, || {
-            decode_frame(self.video.as_ref(), video_time, decode_wait)
+            decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             let had_camera_frame = self.camera_frame.is_some();
             let camera = cached_frame(&mut self.camera_frame, video_time, || {
-                decode_frame(self.camera.as_ref(), video_time, decode_wait)
+                decode_frame(self.camera.as_ref(), video_time, decode_wait, cancelled)
             });
             if had_camera_frame && camera.is_none() {
                 return None;
@@ -223,10 +227,11 @@ fn decode_frame(
     decoder: Option<&VideoDecoder>,
     time: f64,
     decode_wait: &mut Duration,
+    cancelled: Option<&FrameCancellation>,
 ) -> Option<DecodedFrame> {
     let decoder = decoder?;
     let started = Instant::now();
-    let frame = decoder.frame_at(time);
+    let frame = decoder.frame_at_interruptible(time, cancelled);
     *decode_wait += started.elapsed();
     frame
 }
@@ -565,7 +570,9 @@ mod tests {
         assert!(still > 0.);
         let dimensions = Some((160, 90));
         let mut decode_wait = Duration::ZERO;
-        assert!(source.compose_measured(0., dimensions, &mut decode_wait).is_some());
+        assert!(source
+            .compose_measured(0., dimensions, &mut decode_wait, None)
+            .is_some());
         assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.video_frame.is_none());
         assert!(source.camera_frame.is_none());
@@ -573,7 +580,9 @@ mod tests {
         assert!(source.camera_frame.is_none());
         assert!(source.camera_warmup.is_some());
         let mut decode_wait = Duration::ZERO;
-        assert!(source.compose_measured(still + 0.75, dimensions, &mut decode_wait).is_some());
+        assert!(source
+            .compose_measured(still + 0.75, dimensions, &mut decode_wait, None)
+            .is_some());
         assert_eq!(decode_wait, Duration::ZERO);
         assert!(source.compose(still + 0.25, dimensions).is_some());
         let first = source.camera_frame.as_ref().unwrap().pixmap.clone();
