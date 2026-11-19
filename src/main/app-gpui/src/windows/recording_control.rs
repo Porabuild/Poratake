@@ -723,6 +723,7 @@ impl RecordingControl {
         if !self.start_enabled(cx) {
             return;
         }
+        self.device_request = self.device_request.wrapping_add(1);
         let delay = crate::state::state(cx)
             .config
             .get()
@@ -2126,15 +2127,32 @@ impl RecordingControl {
         let request = self.device_request;
         let daemon = crate::state::state(cx).daemon;
         cx.spawn_in(window, async move |entity, cx| {
-            let listed = cx
+            let reply = cx
                 .background_executor()
-                .spawn(async move { crate::system::devices::list_ios(&daemon) })
+                .spawn(async move { daemon.recording_control().list_ios_devices() })
                 .await;
+            let listed = match reply {
+                Ok(listed) => listed,
+                Err(error) => {
+                    eprintln!("[devices] iOS device list failed: {error}");
+                    return;
+                }
+            };
             let _ = entity.update_in(cx, |this, window, cx| {
-                if this.device_request != request || this.ios_devices == listed {
+                if this.device_request != request {
+                    return;
+                }
+                let disconnected = this
+                    .selected_ios_id
+                    .as_deref()
+                    .is_some_and(|id| !listed.iter().any(|device| device.id == id));
+                if this.ios_devices == listed && !disconnected {
                     return;
                 }
                 this.ios_devices = listed;
+                if disconnected {
+                    this.select_ios_device(None, cx);
+                }
                 if this.menu.is_open_for(owner.as_ref(), cx) {
                     let entries = this.ios_menu_entries(cx.entity().downgrade());
                     this.menu

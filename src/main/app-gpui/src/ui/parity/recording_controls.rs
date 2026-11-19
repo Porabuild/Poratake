@@ -787,7 +787,57 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         assert_eq!(hides_after, hides_before + 1);
     }
     #[cfg(target_os = "macos")]
+    check_disconnected_ios_device(cx, output, scale);
+    #[cfg(target_os = "macos")]
     check_camera_hide_handoff(cx, output);
+}
+
+#[cfg(target_os = "macos")]
+fn check_disconnected_ios_device(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    use crate::config::schema::IosDeviceSettings;
+    use crate::video::recorder::RecordingTarget;
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+    use std::time::{Duration, Instant};
+
+    let window = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.recording.ios_device = Some(IosDeviceSettings {
+                id: "disconnected-ipad".into(),
+                name: Some("Fixture iPad".into()),
+            });
+            config.recording.camera.enabled = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect { x: 40, y: 80, width: 640, height: 360 },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, window);
+    click_measured(cx, window, "recording-controls", 5);
+    let started = Instant::now();
+    while cx.update(|cx| crate::state::state(cx).config.get().recording.ios_device.is_some()) {
+        cx.run_until_parked();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a successful empty iOS device list must clear the disconnected selection"
+        );
+        std::thread::yield_now();
+    }
+    settle(cx, window);
+    capture(cx, window, output, "record-control-ios-device-disconnected");
+    escape(cx, window);
+    let close_index = super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
+    click_measured(cx, window, "recording-controls", close_index);
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
 }
 
 #[cfg(target_os = "macos")]

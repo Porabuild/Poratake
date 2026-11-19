@@ -5088,3 +5088,20 @@ No physical device permission was involved.
 
 GPUI recording-control tests: 22 passed. Electron recording-control
 and daemon contract tests: 82 passed.
+
+2026-11-20 macOS disconnected iPhone and iPad recording choices
+=============================================================
+
+The native 2x Metal fixture saved a generated iPad selection and
+opened the recording toolbar's iOS device menu. The fixture daemon
+returned an empty list successfully. Both baseline runs received
+the reply and retained the saved iPad, failing the assertion.
+
+The updated runs cleared the saved selection and rendered an
+in-bounds None row with a visible checkmark in light and dark.
+All 36 pre-existing recording-control scene PNGs matched between
+the baseline and updated builds. The fixture used a synthetic
+device and requested no physical media access.
+
+The GPUI recording-control suite passed 22 tests. The Electron
+recording-control and daemon contract suites passed 82 tests.

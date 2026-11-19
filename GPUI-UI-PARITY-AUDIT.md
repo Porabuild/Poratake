@@ -11128,6 +11128,22 @@ matched byte for byte. All 22 targeted GPUI tests and 82 Electron
 reference and daemon contract tests passed with fixture devices.
 [Recording-device refresh evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS disconnected iPhone and iPad recording choices
+
+When device enumeration succeeds and the selected iPhone or iPad
+is absent, GPUI now clears the saved choice and checks None in the
+recording menu, matching Electron. Failed lookups preserve the
+selection. Starting a recording invalidates pending device replies
+so a late refresh cannot change the requested target.
+
+The macOS Metal fixture reproduces the disconnect using a saved
+generated iPad and a successful empty device list. The old toolbar
+retained the saved iPad in both themes. The regenerated menu shows
+the None checkmark at 2×. The 36 existing light and dark scenes
+matched byte for byte. All 22 GPUI tests and 82 Electron reference
+and daemon contract tests passed.
+[Disconnected-device evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
