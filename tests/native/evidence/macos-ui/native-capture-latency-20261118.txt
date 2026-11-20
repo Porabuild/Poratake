@@ -6124,3 +6124,31 @@ The Electron WebCodecs frame-processing test counts submitted
 frames and checks the last timestamp. It reproduced 29 frames
 for the aligned case before the fix. The updated path submits
 28 frames for the aligned case and 29 for the partial tail.
+
+2026-11-20 current macOS Save sheet confirmation
+================================================
+
+The macOS development app opened a generated 640 × 360
+checkerboard in isolated light and dark profiles. An app-local
+drag drew a rectangle that changed 1,790 pixels. The probe
+verified the native Save sheet's proposed PNG name and
+temporary directory before using the existing Accessibility
+grant. The helper resolved an enabled OKButton beneath a
+native Save sheet in the isolated app's live tree and sent
+one AXPress to it.
+
+In both themes the native Save sheet accepted the selection,
+the editor cleared Save pending, and the proposed file existed.
+The written PNG matched the annotated editor. Opening that
+file in a fresh native editor matched it pixel for pixel.
+The default probe also ran three cancels and verified the
+separate background writer and reopen path.
+
+Theme  First open ms  Second open ms  Third open ms  Saved changed pixels
+Light          652.9           410.2          390.1                  1790
+Dark           696.8           410.6          392.3                  1790
+
+Open times come from the three canceled runs before the
+confirmation. No global keyboard or pointer event was sent.
+The pre-existing editor remained open. All 100 focused
+Electron reference tests passed.

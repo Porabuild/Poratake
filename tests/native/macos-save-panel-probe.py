@@ -21,6 +21,17 @@ executable = root / "src/main/target/debug/poratake-gpui"
 env = os.environ.copy()
 theme = env.setdefault("PORATAKE_NATIVE_UI_THEME", "dark")
 scratch = tempfile.TemporaryDirectory(prefix="poratake-save-panel-")
+confirm_save = env.get("PORATAKE_NATIVE_SAVE_CONFIRM") == "1"
+save_helper = Path(scratch.name) / "save-panel-ax"
+if confirm_save:
+    subprocess.run(
+        [
+            "xcrun", "swiftc", "-o", str(save_helper),
+            str(Path(__file__).with_name("macos-save-panel-ax.swift")),
+        ],
+        cwd=root,
+        check=True,
+    )
 env["TMPDIR"] = scratch.name
 env["PORATAKE_NATIVE_UI_NORMAL_LEVEL"] = "1"
 env.pop("PORATAKE_NATIVE_UI_AUTO_DISMISS", None)
@@ -78,6 +89,33 @@ def wait_for_panel_state(query, matches, complete):
     raise TimeoutError(f"timed out waiting for {query}")
 
 
+def open_save_panel(expected_directory):
+    command("save-open")
+    wait_for(lambda line: line == "isolated editor requested save dialog")
+    line = wait_for_panel_state(
+        "save-panel-status",
+        lambda value: value.startswith("save panel directory=")
+        or value == "isolated save panel is not visible",
+        lambda value: value.startswith("save panel directory="),
+    )
+    directory, filename = line.removeprefix("save panel directory=").split(", name=", 1)
+    assert Path(directory).resolve() == expected_directory.resolve(), (directory, expected_directory)
+    assert (
+        Path(filename).name == filename
+        and filename.startswith("Screenshot ")
+        and filename.endswith(".png")
+    ), filename
+    return expected_directory / filename
+
+
+def wait_for_save_completion():
+    wait_for_panel_state(
+        "save-status",
+        lambda value: value.startswith("isolated save pending="),
+        lambda value: value == "isolated save pending=false",
+    )
+
+
 try:
     wait_for(lambda line: line.startswith("capture preview: visible"))
     command("edit")
@@ -92,36 +130,31 @@ try:
     expected = Path(scratch.name) / f"poratake-native-ui-probe-{process.pid}"
     for trial in range(1, 4):
         started = time.monotonic()
-        command("save-open")
-        wait_for(lambda line: line == "isolated editor requested save dialog")
-        line = wait_for_panel_state(
-            "save-panel-status",
-            lambda value: value.startswith("save panel directory=")
-            or value == "isolated save panel is not visible",
-            lambda value: value.startswith("save panel directory="),
-        )
+        path = open_save_panel(expected)
         shown = time.monotonic()
-        directory, filename = line.removeprefix("save panel directory=").split(", name=", 1)
-        assert Path(directory).resolve() == expected.resolve(), (directory, expected)
-        assert filename.startswith("Screenshot ") and filename.endswith(".png"), filename
         cancel_started = time.monotonic()
         command("save-cancel")
         wait_for(lambda value: value == "isolated save panel canceled")
         cancel_returned = time.monotonic()
-        wait_for_panel_state(
-            "save-status",
-            lambda value: value.startswith("isolated save pending="),
-            lambda value: value == "isolated save pending=false",
-        )
+        wait_for_save_completion()
         canceled = time.monotonic()
-        assert not (expected / filename).exists()
+        assert not path.exists()
         print(
             f"{theme} trial {trial}: save panel visible in {(shown - started) * 1000:.1f} ms, "
             f"cancel returned in {(cancel_returned - cancel_started) * 1000:.1f} ms, "
             f"save state cleared in {(canceled - cancel_started) * 1000:.1f} ms"
         )
-    command("save-to-fixture")
-    wait_for(lambda line: line == "isolated fixture PNG saved")
+    if confirm_save:
+        path = open_save_panel(expected)
+        assert not path.exists()
+        subprocess.run([str(save_helper), str(process.pid)], check=True, timeout=15)
+        wait_for_save_completion()
+        assert path.is_file(), path
+        print(f"{theme}: native Save confirmed and wrote the proposed PNG")
+    else:
+        path = expected / "fixture-saved.png"
+        command("save-to-fixture")
+        wait_for(lambda line: line == "isolated fixture PNG saved")
     command("reopen-saved")
     saved_status = wait_for(lambda line: line.startswith("isolated saved PNG: "))
     wait_for(lambda line: line == "isolated saved PNG matches the editor output")
@@ -132,7 +165,7 @@ try:
         evidence_path = Path(evidence)
         assert evidence_path.is_absolute() and evidence_path.is_dir()
         shutil.copy2(expected / "preview.png", evidence_path / "native-save-source.png")
-        shutil.copy2(expected / "fixture-saved.png", evidence_path / "native-save-annotated.png")
+        shutil.copy2(path, evidence_path / "native-save-annotated.png")
     print(annotation)
     print(saved_status)
     print("native save panel uses the isolated directory and a separate PNG filename")

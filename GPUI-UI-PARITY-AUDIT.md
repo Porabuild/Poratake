@@ -11634,9 +11634,9 @@ display, respectively.
 
 The recording gate has raw stream and guarded encode evidence
 for the toolbar and tooltip. An unmasked desktop export remains
-open. App-local Save and reopen verification covers the writer.
-Native Save confirmation and remaining physical pointer paths
-need interactive verification. Fixed-header scroll remains
+open. The native Save sheet confirmation and file reopen are
+verified below. Remaining physical pointer paths need interactive
+verification. Fixed-header scroll remains
 ambiguous when successive images give the same pixel evidence
 for different offsets.
 
@@ -11852,6 +11852,30 @@ The focused FFmpeg integration and all 1,231 runnable GPUI
 tests passed. The repository gate passed 2,422 tests with
 three skips after rerunning with three Vitest workers.
 [Frame-count verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-20 native macOS Save confirmation and reopen
+
+The GPUI development app opened a native Save Screenshot sheet
+for a generated, annotated 640 × 360 image in light and dark.
+The opt-in probe used the established Accessibility grant to
+press the enabled Save button in the temporary app's own sheet.
+The app wrote the proposed PNG in the isolated directory and
+cleared its pending Save state.
+
+In both appearances, the saved file preserved all 1,790 changed
+pixels. It matched the annotated editor and the reopened image
+pixel for pixel. The default cancellation probe also passed.
+Six Electron screenshot and annotation suites passed 100 tests.
+Physical pointer delivery is a separate open check.
+
+Run the confirmation only on a host with existing Accessibility
+authorization.
+
+```sh
+PORATAKE_NATIVE_SAVE_CONFIRM=1 python3 tests/native/macos-save-panel-probe.py
+```
+
+[Native Save confirmation evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 
