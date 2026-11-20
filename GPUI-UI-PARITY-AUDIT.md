@@ -11457,6 +11457,24 @@ duration while covered. The full GPUI suite passed 1,220 tests.
 The Electron player, music and export reference tests passed 17.
 [Covered playback wakeup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS wakeups while waiting for FFmpeg
+
+Audio decoding and video metadata reads now wait for a macOS
+process-exit notification or their existing deadline. GIF export
+continues to check for cancellation. A timeout or cancellation
+still terminates the child process group and drains the readers.
+
+With a generated video project open and audio decoding held,
+GPUI registered three wakeups in each one-second sample, down
+from 144–145 in light and dark. The sidecar decoded successfully
+after release in both builds. A separate child-process probe
+registered zero wakeups during the wait, down from 72–75, and
+preserved stdout, stderr and the exit status.
+
+The full GPUI suite passed 1,223 tests. Four generated-media
+tests and 28 Electron player, audio and export tests also passed.
+[FFmpeg wait measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

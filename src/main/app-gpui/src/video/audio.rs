@@ -460,7 +460,7 @@ mod backend {
                 ])
                 .stdin(Stdio::null()),
             std::time::Duration::from_secs(120),
-            &|| false,
+            None,
             |stdout| {
                 let mut stdout = BufReader::new(stdout);
                 let mut samples = Vec::new();

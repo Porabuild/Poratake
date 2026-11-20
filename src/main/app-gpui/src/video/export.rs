@@ -450,7 +450,7 @@ fn convert_to_gif(
                 crate::video::command_stdout(
                     &mut command,
                     std::time::Duration::from_secs(1800),
-                    should_cancel,
+                    Some(should_cancel),
                     move |stdout| {
                         use std::io::BufRead as _;
 

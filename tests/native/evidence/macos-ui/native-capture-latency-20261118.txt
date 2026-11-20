@@ -5578,3 +5578,33 @@ playhead while the editor sleeps, the wall-clock playhead on
 reveal, and pause, seek, duration edits and end-of-playback under
 cover. All 1,220 runnable GPUI tests and 17 Electron reference
 tests passed.
+
+2026-11-20 macOS wakeups while waiting for FFmpeg
+================================================
+
+The native GPUI editor opened a generated four-second H.264
+project with a silent AAC sidecar in an isolated profile. A
+wrapper held the audio read before starting FFmpeg, then
+released it after a one-second proc_pid_rusage sample. Both
+development builds decoded the sidecar and kept the editor
+open. The fixture daemon did not capture the screen or use
+input devices.
+
+Theme  Baseline wakeups  Updated wakeups  Baseline CPU ms  Updated CPU ms
+Light               144                3            0.049           0.060
+Dark                145                3            0.086           0.067
+
+A standalone arm64 probe compiled the production wait and
+reader code from each revision. It waited for a child holding
+both pipes, then verified exact stdout, stderr and exit code 7.
+Across three paired runs the baseline registered 72–75
+interrupt wakeups per second and the updated probe registered
+zero. The total 1.5-second fixture took 1.525–1.541 s before
+and 1.523–1.524 s after.
+
+The GPUI regressions cover kernel notification after release,
+timeout, nonzero exit and cancellation of a process group.
+All 1,223 runnable GPUI tests passed. Four normally ignored
+tests passed with development FFmpeg, including decoded audio
+export and replacement music. The 28 targeted Electron tests
+passed.
