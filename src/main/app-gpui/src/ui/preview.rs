@@ -48,6 +48,9 @@ pub fn finished_badge(progress: f32, theme: &ThemeVars) -> AnyElement {
     div()
         .absolute()
         .inset_0()
+        .when(chrome::is_macos(), |el| {
+            el.rounded(px(chrome::PREVIEW_RADIUS - 1.0))
+        })
         .flex()
         .items_center()
         .justify_center()

@@ -21,7 +21,7 @@ use gpui::{prelude::*, px, size, App, Bounds};
 use herogpui::application;
 use herogpui::gpui;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::system::native::NativeCommand;
 use crate::system::native::{self, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
@@ -154,6 +154,7 @@ pub(crate) fn open_editor_with_image(
             )),
         ),
         |window, cx| {
+            native::register_dock_window(window.window_handle().window_id(), cx);
             cx.new(|cx| {
                 editor::EditorWindow::from_prepared(path, editor_state, Some(image), window, cx)
             })
@@ -213,9 +214,19 @@ fn main() {
     // resolve to nothing and the migrated components lose their indicators.
     // The app's own images are decoded to `RenderImage` rather than loaded
     // through an asset source, so there is nothing to fall back to.
-    application()
-        .with_assets(herogpui::HeroGpuiAssets)
-        .run(move |cx: &mut App| {
+    let app = application().with_assets(herogpui::HeroGpuiAssets);
+    #[cfg(target_os = "macos")]
+    app.on_reopen(|cx| {
+        if state::try_native(cx).is_none() {
+            return;
+        }
+        let store = state::state(cx).config;
+        if store.get().general.hide_menu_bar_icon {
+            store.update(|settings| settings.general.hide_menu_bar_icon = false);
+            intents::refresh_shell(cx);
+        }
+    });
+    app.run(move |cx: &mut App| {
             #[cfg(target_os = "linux")]
             display_environment.restore();
 
@@ -225,7 +236,7 @@ fn main() {
                 && argument.as_deref().is_some_and(|argument| {
                     !argument.starts_with("--") && std::path::Path::new(argument).is_file()
                 });
-            native::configure_app();
+            native::configure_app(cx);
             let config = state::init(cx, defer_daemon);
             let settings = config.get();
             let mode = resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode));
@@ -264,7 +275,7 @@ fn main() {
                 TrayMenuState::from_config(&settings, &crate::update::current_status(cx)),
                 system::hotkeys::bindings(&settings),
             );
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if settings.general.hide_menu_bar_icon {
                 bridge.send(NativeCommand::SetTrayVisible(false));
             }

@@ -882,6 +882,104 @@ fn capture(cx: &mut HeadlessAppContext, window: AnyWindowHandle, output: &Path, 
         .unwrap();
 }
 
+#[cfg(target_os = "macos")]
+fn capture_macos_shell_windows(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    use crate::windows::onboarding::OnboardingWindow;
+    use crate::windows::settings::registry::Category;
+    use crate::windows::settings::SettingsWindow;
+    use crate::windows::tray_menu::TrayMenuWindow;
+
+    let store = cx.update(|cx| crate::state::state(cx).config);
+
+    let settings = cx
+        .open_window(
+            size(
+                px(crate::ui::chrome::SETTINGS_WINDOW_WIDTH),
+                px(crate::ui::chrome::SETTINGS_WINDOW_HEIGHT),
+            ),
+            |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| SettingsWindow::new(store.clone(), Category::General, cx))
+            },
+        )
+        .unwrap();
+    let settings_window: AnyWindowHandle = settings.into();
+    settle(cx, settings_window);
+    for (category, name) in [
+        (Category::General, "settings-general"),
+        (Category::Appearance, "settings-appearance"),
+        (Category::Shortcuts, "settings-shortcuts"),
+        (Category::About, "settings-about"),
+    ] {
+        let _ = settings.update(cx, |view, _, cx| view.select_category(category, cx));
+        settle(cx, settings_window);
+        capture(cx, settings_window, output, name);
+        if category == Category::General {
+            let image = cx.capture_screenshot(settings_window).unwrap();
+            let (foreground, muted) = cx.update(|cx| {
+                let vars = crate::theme::vars::active_theme(cx);
+                let to_rgba = |color: gpui::Hsla| {
+                    let rgba = gpui::Rgba::from(color);
+                    image::Rgba([
+                        (rgba.r * 255.0).round() as u8,
+                        (rgba.g * 255.0).round() as u8,
+                        (rgba.b * 255.0).round() as u8,
+                        255,
+                    ])
+                };
+                (to_rgba(vars.foreground), to_rgba(vars.muted_foreground))
+            });
+            let sidebar_px = image.get_pixel((20.0 * scale) as u32, (600.0 * scale) as u32);
+            let fg_contrast = pixel_contrast(sidebar_px, &foreground);
+            let muted_contrast = pixel_contrast(sidebar_px, &muted);
+            assert!(
+                fg_contrast >= 4.5,
+                "settings sidebar foreground contrast too low ({fg_contrast:.2}:1) against {sidebar_px:?}"
+            );
+            assert!(
+                muted_contrast >= 3.0,
+                "settings sidebar muted contrast too low ({muted_contrast:.2}:1) against {sidebar_px:?}"
+            );
+        }
+    }
+    cx.update_window(settings_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
+    let onboarding = cx
+        .open_window(
+            size(
+                px(crate::ui::chrome::ONBOARDING_WINDOW_WIDTH),
+                px(crate::ui::chrome::ONBOARDING_WINDOW_HEIGHT),
+            ),
+            |window, cx| {
+                window.set_scale_factor(scale);
+                cx.new(|cx| OnboardingWindow::new_for_parity(store.clone(), cx))
+            },
+        )
+        .unwrap();
+    let onboarding_window: AnyWindowHandle = onboarding.into();
+    for step in 0..4 {
+        let _ = onboarding.update(cx, |view, _, cx| view.parity_set_step(step, cx));
+        settle(cx, onboarding_window);
+        capture(cx, onboarding_window, output, &format!("onboarding-step-{step}"));
+    }
+    cx.update_window(onboarding_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
+    let tray = cx
+        .update(|cx| TrayMenuWindow::open(None, false, cx).unwrap());
+    let tray_window: AnyWindowHandle = tray.into();
+    cx.update_window(tray_window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, tray_window);
+    capture(cx, tray_window, output, "tray-default");
+    cx.update_window(tray_window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
 pub fn capture_editor_interaction_states() {
     let output = std::path::PathBuf::from(std::env::var("PORATAKE_PARITY_OUTPUT").unwrap());
     let source = std::env::var("PORATAKE_PARITY_IMAGE")
@@ -969,6 +1067,12 @@ pub fn capture_editor_interaction_states() {
         crate::capture::overlay::init_bindings(cx);
         crate::ui::font::register(cx);
     });
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_SHELL_ONLY").is_some() {
+        capture_macos_shell_windows(&mut cx, &output, scale);
+        cx.update(|cx| crate::state::state(cx).daemon.stop());
+        return;
+    }
     #[cfg(target_os = "macos")]
     if let Some(video) = std::env::var_os("PORATAKE_PARITY_PREVIEW_VIDEO") {
         preview_workflows::video_blur(&mut cx, &output, Path::new(&video), scale);

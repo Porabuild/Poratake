@@ -51,14 +51,14 @@ final class ProtectedTooltip {
     #endif
 
     init(
-        registry: RecordingCaptureWindowRegistry = .shared,
+        registry: RecordingCaptureWindowRegistry? = nil,
         screenAt: @escaping @MainActor (NSPoint) -> Screen? = { point in
             NSScreen.screens.first { $0.frame.contains(point) }.map {
                 Screen(frame: $0.frame, visibleFrame: $0.visibleFrame)
             }
         }
     ) {
-        self.registry = registry
+        self.registry = registry ?? .shared
         self.screenAt = screenAt
     }
 

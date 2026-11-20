@@ -745,16 +745,12 @@ fn sidebar(
         .is_focused(ui_window);
     let active = window.active;
     let categories = Category::supported();
-    let sidebar_percentage = if active_mode(cx) == ThemeMode::Dark {
-        if cfg!(windows) {
-            85.0
-        } else {
-            65.0
-        }
-    } else if cfg!(windows) {
-        65.0
+    let sidebar_percentage = if cfg!(target_os = "macos") {
+        90.0
+    } else if active_mode(cx) == ThemeMode::Dark {
+        85.0
     } else {
-        35.0
+        65.0
     };
 
     let entry = |category: Category, cx: &mut Context<SettingsWindow>| {
@@ -810,17 +806,24 @@ fn sidebar(
         footer = footer.child(entry(category, cx));
     }
 
+    let sidebar_bg = if crate::system::reduced_transparency::enabled() {
+        theme.sidebar_background
+    } else {
+        let base = if cfg!(target_os = "macos") {
+            theme.sidebar_background
+        } else {
+            theme.content_background
+        };
+        crate::theme::color::mix_hsla(base, sidebar_percentage, base.opacity(0.0))
+    };
+
     div()
         .flex()
         .flex_col()
         .w(px(SIDEBAR_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(crate::theme::color::mix_hsla(
-            theme.content_background,
-            sidebar_percentage,
-            theme.content_background.opacity(0.0),
-        ))
+        .bg(sidebar_bg)
         .border_r_1()
         .border_color(theme.hairline)
         .child(

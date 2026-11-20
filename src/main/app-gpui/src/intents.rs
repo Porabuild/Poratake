@@ -369,6 +369,7 @@ pub fn open_settings(category: Category, cx: &mut App) {
             WindowBackgroundAppearance::Blurred,
         );
         cx.open_window(options, move |window, cx| {
+            crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
             #[cfg(not(windows))]
             let _ = (window, translucent);
             #[cfg(windows)]

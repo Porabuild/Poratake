@@ -156,7 +156,8 @@ fn cursor_panel(
                         .child(
                             gpui::img(std::path::PathBuf::from(path))
                                 .size(px(40.0))
-                                .object_fit(gpui::ObjectFit::Contain),
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .when(crate::ui::chrome::is_macos(), |el| el.rounded(px(3.0))),
                         ),
                 )
                 .child(kit::tertiary_button(
@@ -2363,7 +2364,8 @@ fn first_frame_panel(
                         gpui::img(std::path::PathBuf::from(path))
                             .w_full()
                             .h_full()
-                            .object_fit(gpui::ObjectFit::Cover),
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .when(crate::ui::chrome::is_macos(), |el| el.rounded(px(7.0))),
                     )
                     .into_any_element(),
             );

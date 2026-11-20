@@ -67,47 +67,70 @@ impl ItemView<'_> {
         icons
     }
 
-    fn thumbnail_element(&self, width: f32, height: f32) -> AnyElement {
+    fn thumbnail_element(&self, width: f32, height: f32, radius: f32, top_only: bool) -> AnyElement {
+        let apply_radius = |el: gpui::Div| {
+            if !chrome::is_macos() {
+                return el;
+            }
+            if top_only {
+                el.rounded_tl(px(radius)).rounded_tr(px(radius))
+            } else {
+                el.rounded(px(radius))
+            }
+        };
         if self.loading {
             let spinner = if width > LIST_THUMB_WIDTH {
                 GRID_SPINNER
             } else {
                 LIST_SPINNER
             };
-            return div()
-                .w(px(width))
-                .h(px(height))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(self.theme.muted_background)
-                .text_color(self.theme.muted_foreground)
-                .child(crate::ui::icon::spinner_element(
-                    ElementId::Name(SharedString::from(format!(
-                        "history-spinner-{}",
-                        self.item.id
-                    ))),
-                    px(spinner),
-                ))
-                .into_any_element();
+            return apply_radius(
+                div()
+                    .w(px(width))
+                    .h(px(height))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(self.theme.muted_background)
+                    .text_color(self.theme.muted_foreground)
+                    .child(crate::ui::icon::spinner_element(
+                        ElementId::Name(SharedString::from(format!(
+                            "history-spinner-{}",
+                            self.item.id
+                        ))),
+                        px(spinner),
+                    )),
+            )
+            .into_any_element();
         }
         match &self.thumbnail {
-            Some(path) => img(path.clone())
-                .w(px(width))
-                .h(px(height))
-                .object_fit(ObjectFit::Cover)
-                .into_any_element(),
-            None => div()
-                .w(px(width))
-                .h(px(height))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(self.theme.muted_background)
-                .text_size(px(chrome::HISTORY_ITEM_TEXT))
-                .text_color(self.theme.muted_foreground)
-                .child("No preview")
-                .into_any_element(),
+            Some(path) => {
+                let image = img(path.clone())
+                    .w(px(width))
+                    .h(px(height))
+                    .object_fit(ObjectFit::Cover);
+                let image = if !chrome::is_macos() {
+                    image
+                } else if top_only {
+                    image.rounded_tl(px(radius)).rounded_tr(px(radius))
+                } else {
+                    image.rounded(px(radius))
+                };
+                image.into_any_element()
+            }
+            None => apply_radius(
+                div()
+                    .w(px(width))
+                    .h(px(height))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(self.theme.muted_background)
+                    .text_size(px(chrome::HISTORY_ITEM_TEXT))
+                    .text_color(self.theme.muted_foreground)
+                    .child("No preview"),
+            )
+            .into_any_element(),
         }
     }
 }
@@ -193,7 +216,7 @@ pub fn grid_card(
         .w(px(width))
         .h(px(height))
         .overflow_hidden()
-        .child(view.thumbnail_element(width, height));
+        .child(view.thumbnail_element(width, height, chrome::RADIUS_LG, true));
 
     if view.is_video() {
         media = media.child(
@@ -348,7 +371,7 @@ pub fn list_row(view: &ItemView, width: f32, cx: &mut Context<HistoryWindow>) ->
         .flex_shrink_0()
         .overflow_hidden()
         .rounded(px(chrome::RADIUS_MD))
-        .child(view.thumbnail_element(thumb_width, thumb_height));
+        .child(view.thumbnail_element(thumb_width, thumb_height, chrome::RADIUS_MD, false));
 
     if is_video {
         thumb = thumb.child(

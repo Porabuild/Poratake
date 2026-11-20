@@ -121,6 +121,7 @@ impl PinWindow {
         options.window_min_size = Some(size(px(chrome::PIN_MIN_SIZE), px(chrome::PIN_MIN_SIZE)));
         cx.open_window(options, |window, cx| {
             window.set_window_title("Poratake pinned screenshot");
+            crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
             let view = cx.new(|_| Self {
                 image: render_image.clone(),
                 image_size: size(px(width), px(height)),

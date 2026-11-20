@@ -311,7 +311,8 @@ fn editor_preview(draft: &BackgroundDraft, theme: &ThemeVars) -> AnyElement {
             .child(
                 gpui::img(preview)
                     .size_full()
-                    .object_fit(gpui::ObjectFit::Cover),
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .when(chrome::is_macos(), |el| el.rounded(px(7.0))),
             )
             .into_any_element(),
         None => div().into_any_element(),
@@ -589,7 +590,8 @@ fn editor_image(
         box_el = box_el.child(
             gpui::img(preview)
                 .size_full()
-                .object_fit(gpui::ObjectFit::Cover),
+                .object_fit(gpui::ObjectFit::Cover)
+                .when(chrome::is_macos(), |el| el.rounded(px(6.0))),
         );
     } else {
         box_el = box_el.child(icon_element("upload", px(24.0))).child(
@@ -1201,6 +1203,9 @@ pub fn icon_tile(
 fn icon_face(theme: &ThemeVars) -> gpui::Div {
     div()
         .size_full()
+        .when(chrome::is_macos(), |el| {
+            el.rounded(px(chrome::WALLPAPER_TILE_RADIUS))
+        })
         .flex()
         .items_center()
         .justify_center()
@@ -1278,6 +1283,9 @@ pub fn image_tile_named(
         gpui::img(image)
             .size_full()
             .object_fit(gpui::ObjectFit::Cover)
+            .when(chrome::is_macos(), |el| {
+                el.rounded(px(chrome::WALLPAPER_TILE_RADIUS))
+            })
             .into_any_element(),
     )
 }
@@ -1303,6 +1311,9 @@ pub fn gradient_tile(
         TileInteraction::Click(Rc::new(on_click)),
         div()
             .size_full()
+            .when(chrome::is_macos(), |el| {
+                el.rounded(px(chrome::WALLPAPER_TILE_RADIUS))
+            })
             .bg(linear_gradient(
                 angle as f32,
                 linear_color_stop(from, 0.0),

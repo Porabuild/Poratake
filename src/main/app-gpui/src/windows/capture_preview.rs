@@ -108,7 +108,12 @@ impl Render for PreviewDragGhost {
             .rounded(px(PREVIEW_RADIUS))
             .opacity(0.9);
         if let Some(image) = self.image.clone() {
-            ghost = ghost.child(img(image).size_full().object_fit(gpui::ObjectFit::Cover));
+            ghost = ghost.child(
+                img(image)
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS))),
+            );
         }
         ghost
     }
@@ -2509,23 +2514,63 @@ impl CapturePreviewWindow {
                 });
         }
         root = root.child(match thumbnail {
-            Some(render_image) => div()
-                .absolute()
-                .inset_0()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    img(render_image.clone())
-                        .w(px(image_w))
-                        .h(px(image_h))
-                        .object_fit(gpui::ObjectFit::Cover),
-                )
-                .into_any_element(),
+            Some(render_image) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let render_image = render_image.clone();
+                    gpui::canvas(
+                        |_, _, _| {},
+                        move |bounds, _: (), window, _| {
+                            let natural = render_image.size(0);
+                            let nat_w = natural.width.0 as f32;
+                            let nat_h = natural.height.0 as f32;
+                            let (fitted_w, fitted_h) = if nat_w > 0.0 && nat_h > 0.0 {
+                                let cover = (image_w / nat_w).max(image_h / nat_h);
+                                (nat_w * cover, nat_h * cover)
+                            } else {
+                                (image_w, image_h)
+                            };
+                            let image_bounds = Bounds::new(
+                                gpui::point(
+                                    bounds.origin.x + px((f32::from(bounds.size.width) - fitted_w) * 0.5),
+                                    bounds.origin.y + px((f32::from(bounds.size.height) - fitted_h) * 0.5),
+                                ),
+                                size(px(fitted_w), px(fitted_h)),
+                            );
+                            let _ = window.paint_image(
+                                bounds,
+                                image_bounds,
+                                gpui::Corners::all(px(PREVIEW_RADIUS - 1.0)),
+                                render_image,
+                                0,
+                                false,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .inset_0()
+                    .into_any_element()
+                }
+                #[cfg(not(target_os = "macos"))]
+                div()
+                    .absolute()
+                    .inset_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        img(render_image.clone())
+                            .w(px(image_w))
+                            .h(px(image_h))
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                    .into_any_element()
+            }
             None => div()
                 .absolute()
                 .inset_0()
+                .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS - 1.0)))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2545,6 +2590,7 @@ impl CapturePreviewWindow {
                     div()
                         .absolute()
                         .inset_0()
+                        .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS - 1.0)))
                         // `bg-black/25` behind `animate-in fade-in duration-200`.
                         .bg(gpui::hsla(0.0, 0.0, 0.0, 0.25 * progress)),
                 )

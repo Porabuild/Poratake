@@ -1954,8 +1954,8 @@ class ScrollCaptureModule: NSObject, Module {
 
         let target = GetApplicationEventTarget()
         let signature = OSType(0x5053_544b)
-        var escapeId = EventHotKeyID(signature: signature, id: 1)
-        var enterId = EventHotKeyID(signature: signature, id: 2)
+        let escapeId = EventHotKeyID(signature: signature, id: 1)
+        let enterId = EventHotKeyID(signature: signature, id: 2)
         let escapeStatus = RegisterEventHotKey(
             UInt32(kVK_Escape),
             0,

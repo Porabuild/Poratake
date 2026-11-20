@@ -54,6 +54,31 @@ impl Render for MultiDisplayPreview {
 }
 
 #[cfg(target_os = "macos")]
+fn assert_rounded_card_corners(
+    image: &image::RgbaImage,
+    card: gpui::Bounds<gpui::Pixels>,
+    scale: f32,
+) {
+    let backdrop = *image.get_pixel(0, 0);
+    let left = (f32::from(card.left()) * scale).round() as u32;
+    let top = (f32::from(card.top()) * scale).round() as u32;
+    let right = ((f32::from(card.right()) * scale).round() as u32).saturating_sub(1);
+    let bottom = ((f32::from(card.bottom()) * scale).round() as u32).saturating_sub(1);
+    for (corner, x, y) in [
+        ("top-left", left, top),
+        ("top-right", right, top),
+        ("bottom-left", left, bottom),
+        ("bottom-right", right, bottom),
+    ] {
+        let pixel = *image.get_pixel(x, y);
+        assert_eq!(
+            pixel, backdrop,
+            "preview {corner} outer corner ({x}, {y}) must match backdrop {backdrop:?}: {pixel:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn video_thumbnail_edge_energy(image: &image::RgbaImage, scale: f32) -> f64 {
     let mut difference = 0u64;
     let mut count = 0u64;
@@ -208,6 +233,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         );
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-single"));
+            #[cfg(target_os = "macos")]
+            assert_rounded_card_corners(&cx.capture_screenshot(preview).unwrap(), single, scale);
         }
         {
             let view = cx
@@ -246,6 +273,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                         hovered,
                         output,
                         &format!("preview-{corner}-hover-{name}"),
+                    );
+                    #[cfg(target_os = "macos")]
+                    assert_rounded_card_corners(
+                        &cx.capture_screenshot(hovered).unwrap(),
+                        single,
+                        scale,
                     );
                 }
                 if native_tooltips {

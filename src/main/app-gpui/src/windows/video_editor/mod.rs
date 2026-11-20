@@ -351,6 +351,7 @@ impl VideoEditorWindow {
                 });
                 let focus = view.read(cx).focus_handle.clone();
                 window.focus(&focus, cx);
+                crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
                 view
             })
             .ok()
