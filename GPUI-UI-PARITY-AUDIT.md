@@ -4352,7 +4352,7 @@ appearance.
 
 | Priority | Remaining work                                           | Acceptance evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1       | Native compact-window tooltips                           | Windows verified placement, dismissal and WGC exclusion. On macOS, [desktop hover](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) switched and dismissed both tooltips. A [GPUI area recording](tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.txt) and later [window recording](#2026-11-20-macos-window-recording-under-the-toolbar-and-tooltip) excluded the visible toolbar and tooltip. The screenshot filter and AppKit dispatch passed isolated checks. Full-display tooltip exclusion and mixed-DPI behavior remain open.                                              |
+| P1       | Native compact-window tooltips                           | Windows verified placement, dismissal and WGC exclusion. On macOS, [desktop hover](tests/native/evidence/macos-ui/native-tooltip-physical-pointer-20261117.txt) switched and dismissed both tooltips. A [GPUI area recording](tests/native/evidence/macos-ui/native-gpui-tooltip-exclusion-area-20261117.txt) and later [window recording](#2026-11-20-macos-window-recording-under-the-toolbar-and-tooltip) excluded the visible toolbar and tooltip. The screenshot filter and AppKit dispatch passed isolated checks. Display exclusion passed with guarded pixels. Mixed DPI stays open.                                             |
 | P2       | Linux recording tooltips                                 | [Hosted Linux CI](https://github.com/Porabuild/Poratake/actions/runs/43362521397/job/131679275651) passed hover and keyboard-focus tooltip geometry tests, including unbroken and Unicode titles at simulated 100% and 200%. Very long titles remain shortened. Verify real Linux, macOS focus and native screen-reader behavior. A separate popup cannot yet be verified as excluded from Linux recordings.                                                                                                                                                                                                                             |
 | P1       | Linux recording control capture exclusion                | An outside-window tooltip needs click-through behavior and capture exclusion so it neither intercepts toolbar input nor appears in recordings. X11 screen/area capture reads the root drawable; Wayland recording is currently disabled and its recorder requests no window exclusions. A private Xvfb probe captured a synthetic override-redirect popup while mapped and the underlying pixel after unmapping; it did not exercise Poratake's actual GPUI toolbar. Verify that toolbar on supported X11 compositors and Wayland.                                                                                                       |
 | P1       | Linux window recording                                   | Hosted Xvfb raw-frame tests cover movement, resize, occlusion, remapping, cursor tracking and closure; fixtures also cover reparenting, missing Composite and XI2.1 grabs. A private Xvfb run decoded 93 H.264 frames. Blocked encoders report STOP_FAILED; permanently stuck capture workers keep retries reserved. Verify real window managers, outlines and GPUI handoffs. Wayland window recording is unsupported. XI2.0 can miss input during grabs, and rapid events can lag pointer motion. Electron's Linux capability helper disables recording.                                                                                |
@@ -11619,6 +11619,36 @@ paused editor preview. This verifies the control regions through
 the native writer and GPUI export. An unmasked desktop recording
 and export remains open.
 [Guarded recording measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-20 current macOS native verification limits
+
+At branch head `446db384`, Poracode showed the existing worktree
+clean and aligned with its remote. Poracode listed no open PR for
+this branch. Its 50 most recent workflow runs had no matching head.
+
+The display inventory showed one built-in Retina display at
+1728 × 1117 points and 120 Hz. The read-only Swift camera probe
+returned `notDetermined` for video authorization. Live camera
+startup and mixed-DPI transitions require a grant and an additional
+display, respectively.
+
+The recording gate has raw stream and guarded encode evidence
+for the toolbar and tooltip. An unmasked desktop export remains
+open. App-local Save and reopen verification covers the writer.
+Native Save confirmation and remaining physical pointer paths
+need interactive verification. Fixed-header scroll remains
+ambiguous when successive images give the same pixel evidence
+for different offsets.
+
+The current x86_64 GPUI test binary passed 1,227 tests under
+Rosetta with 24 ignored. Native Swift scroll, protected-tooltip,
+recording timeline and planar audio fixtures passed as arm64 and
+x86_64 processes on the Apple Silicon host.
+The x86_64 build also passed the 720 × 520-point offscreen Metal
+workflow at 2× in light and dark, with 173 GPUI images per
+profile. Visual review confirmed that the scrolled Scrub Audio
+switch, its label and the System Audio lane fit the dark layout.
+[Architecture verification record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 

@@ -5846,3 +5846,24 @@ The preview/export comparison samples the first decoded MP4
 frame inside the toolbar region. It verifies the guarded writer
 and editor handoff at display resolution. The surrounding desktop
 was masked before encoding. All 82 targeted Electron tests passed.
+
+2026-11-20 current macOS architecture verification
+==================================================
+
+The source revision tested was 446db384. The offline Cargo build
+targeted x86_64-apple-darwin and produced a Mach-O x86_64
+executable. The GPUI suite passed 1,227 tests with 24 ignored and
+no failures under Rosetta on the Apple Silicon host.
+
+The x86_64 development binary passed both narrow offscreen Metal
+profiles at a 720 × 520-point editor and 2× scale, with 173 GPUI
+PNG files in each profile. The dark capture showed the complete
+Scrub Audio label and control, System Audio clip and annotated
+preview after horizontal scrolling. The fixtures supply the
+recording and synthetic input.
+
+The native Swift scroll and protected-tooltip suites, recording
+timeline suite and synthetic planar-audio case passed for both
+arm64 and x86_64. The optional live screen-capture part of the
+Swift scroll fixture was left off. The recording timeline
+fixture uses generated sample buffers.
