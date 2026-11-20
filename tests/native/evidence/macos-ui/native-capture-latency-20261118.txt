@@ -5684,3 +5684,35 @@ improvement measured, the candidate was reverted. The
 existing fixed-header ambiguity and accepted-prefix behavior
 is retained. The arm64 and Rosetta Swift fixture suites passed
 with the candidate, and all 62 targeted Electron tests passed.
+
+2026-11-20 macOS opaque screenshot Save performance
+====================================================
+
+The normal native GPUI editor opened a generated opaque
+3840 × 2160 image through the preview handoff. The app-local
+fixture invoked the same background composition and atomic
+writer used after a Save selection. The interval starts at the
+app command and ends when the PNG write completes. No native
+Save confirmation or physical input was used in the timing run.
+
+Theme  Build     First save ms  Warm median ms  Peak GPUI MiB
+Light  Baseline          61.98           51.90         395.69
+Light  Updated           46.12           35.68         333.38
+Dark   Baseline          58.84           51.86         395.66
+Dark   Updated           37.59           34.96         333.17
+
+Peak physical footprint is the process lifetime maximum from
+proc_pid_rusage. Each process made five saves. Every file was
+3840 × 2160 and had the same SHA-256 across both themes and builds.
+The opaque case now avoids making premultiplied and straight-alpha
+copies of the source. The regression compares the fast result
+against the encoded composition and verifies fallback for a
+translucent source or active wallpaper.
+
+The native Save panel probe opened and canceled three sheets per
+appearance. Warm opens took 377–405 ms and Save state cleared in
+286–291 ms after cancel. The subsequent annotated PNG written
+through the background writer matched all 1,790 edited pixels
+after reopen in each theme. The sheet's native confirmation
+button was not exercised. All 1,224 runnable GPUI tests and 16
+Electron annotation reference tests passed.

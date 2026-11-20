@@ -4069,15 +4069,37 @@ impl ScreenshotComposition {
     }
 
     fn encode(self, jpeg: bool) -> anyhow::Result<Vec<u8>> {
-        let image = self.render();
         if !jpeg {
-            return crate::render::images::encode_srgb_png(&image);
+            return match self.opaque_png_source() {
+                Some(source) => crate::render::images::encode_srgb_png(source),
+                None => crate::render::images::encode_srgb_png(&self.render()),
+            };
         }
+        let image = self.render();
         let image = image::DynamicImage::ImageRgba8(image).into_rgb8();
         let mut bytes = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92)
             .encode_image(&image)?;
         Ok(bytes)
+    }
+
+    fn opaque_png_source(&self) -> Option<&image::RgbaImage> {
+        if !self.annotations.is_empty()
+            || !self.layers.is_empty()
+            || self.wallpaper.is_active(false)
+            || self.wallpaper.for_scale(self.scale).is_active(false)
+        {
+            return None;
+        }
+        let image = self.base_image.as_deref()?.as_rgba8()?;
+        if image.width() == 0 || image.height() == 0 {
+            return None;
+        }
+        image
+            .as_raw()
+            .chunks_exact(4)
+            .all(|pixel| pixel[3] == 255)
+            .then_some(image)
     }
 
     fn write(self, path: &Path, jpeg: bool) -> anyhow::Result<Option<String>> {
@@ -4480,6 +4502,31 @@ impl EditorWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[test]
+    fn opaque_png_save_can_use_the_source_and_matches_the_composition() {
+        for alpha in [255, 128] {
+            let source = image::RgbaImage::from_fn(33, 25, |x, y| {
+                image::Rgba([x as u8 * 7, y as u8 * 9, 140, alpha])
+            });
+            let snapshot = || ScreenshotComposition {
+                base_image: Some(Arc::new(image::DynamicImage::ImageRgba8(source.clone()))),
+                width: 33,
+                height: 25,
+                annotations: Vec::new(),
+                wallpaper: Default::default(),
+                layers: Vec::new(),
+                scale: 2.0,
+            };
+            assert_eq!(snapshot().opaque_png_source().is_some(), alpha == 255);
+            let composed = crate::render::images::encode_srgb_png(&snapshot().render()).unwrap();
+            assert_eq!(snapshot().encode(false).unwrap(), composed);
+
+            let mut framed = snapshot();
+            framed.wallpaper.padding = 5.0;
+            assert!(framed.opaque_png_source().is_none());
+        }
+    }
 
     #[test]
     fn jpeg_save_matches_the_png_based_encoding() {

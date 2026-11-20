@@ -11515,6 +11515,24 @@ including the fixed-header seam and accepted-prefix checks.
 All 62 Electron scroll and daemon contract tests passed.
 [Duplicate comparison measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS opaque screenshot Save performance
+
+An unedited opaque RGBA screenshot can now pass its source pixels
+directly to the sRGB PNG encoder. Transparency, annotations,
+attached images, wallpaper effects and JPEG continue through
+the composition path.
+
+In light and dark native editor runs, the warm median for saving
+a generated 3840 × 2160 PNG through the background writer fell
+from 51.9 ms to 35.0–35.7 ms. Peak physical footprint fell by about
+62 MiB in both appearances. All outputs matched byte for byte.
+
+The native Save sheet opened and canceled three times per theme.
+It kept the fixture directory and separate filename. The annotated
+writer and reopen check matched all 1,790 edited pixels in light
+and dark. The available probe did not confirm the native sheet.
+[Save and memory measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
