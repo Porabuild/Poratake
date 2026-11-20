@@ -882,8 +882,8 @@ mod tests {
         } else if cfg!(windows) {
             let failed = protect_cloud_secrets(&mut cloud, &mut retained, SecretPolicy::System);
             assert!(!failed);
-            assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
-            assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
+            assert!(cloud.s3.secret_access_key.starts_with(SAFE_STORAGE_PREFIX));
+            assert!(cloud.rest.headers[0].value.starts_with(SAFE_STORAGE_PREFIX));
             assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
 
             let _ = reveal_cloud_secrets(&mut cloud, SecretPolicy::System);

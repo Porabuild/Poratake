@@ -221,8 +221,9 @@ impl SingleInstanceGuard {
                     if handle == INVALID_HANDLE_VALUE {
                         break;
                     }
-                    let connected = unsafe { ConnectNamedPipe(handle, None) }.is_ok()
-                        || unsafe { GetLastError().0 } == 535;
+                    let connect_res = unsafe { ConnectNamedPipe(handle, None) };
+                    let err = unsafe { GetLastError().0 };
+                    let connected = connect_res.is_ok() || err == 535 || err == 232;
                     if connected {
                         let mut file = unsafe { std::fs::File::from_raw_handle(handle.0) };
                         let mut payload = String::new();
@@ -315,7 +316,15 @@ mod tests {
         let (_tx, rx) = guard.start_listener();
         let command = InstanceCommand::OpenPaths(vec!["/tmp/sample.png".into()]);
         assert!(notify_running_in(dir.path(), &command));
-        let received = rx.recv_blocking().expect("ipc command");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(rx.recv_blocking().ok());
+        });
+        let received = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("ipc command within 5s");
         assert_eq!(received, command);
     }
 
