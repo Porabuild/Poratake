@@ -126,7 +126,7 @@ pub fn create_project(store: &ConfigStore) -> std::io::Result<PathBuf> {
             ),
         )
     };
-    std::fs::create_dir_all(&directory).map_err(&with_directory)?;
+    std::fs::create_dir_all(&directory).map_err(with_directory)?;
 
     let generated = project_name(store, chrono::Local::now());
     let stem = generated

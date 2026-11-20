@@ -1,8 +1,10 @@
 use std::path::Path;
 
+#[cfg(feature = "parity")]
 use anyhow::{anyhow, Result};
 use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat};
 use herogpui::gpui;
+#[cfg(feature = "parity")]
 use image::RgbaImage;
 
 #[cfg(target_os = "macos")]
@@ -22,6 +24,7 @@ impl ClipboardService {
         cx.write_to_clipboard(ClipboardItem::new_image(&image));
     }
 
+    #[cfg(feature = "parity")]
     pub fn write_rgba(cx: &gpui::App, width: u32, height: u32, bytes: Vec<u8>) -> Result<()> {
         let rgba = RgbaImage::from_raw(width, height, bytes)
             .ok_or_else(|| anyhow!("clipboard image dimensions were invalid"))?;

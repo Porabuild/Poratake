@@ -542,7 +542,11 @@ mod tests {
         let intro_duration = source.engine.first_frame_duration();
         assert!(intro_duration > 0.);
         let rendered_intro = source.compose(0., None).expect("intro preview");
-        assert!(rendered_intro.data().chunks_exact(4).any(|pixel| pixel == [10, 20, 30, 255]));
+        assert!(rendered_intro
+            .data()
+            .as_chunks::<4>()
+            .0
+            .contains(&[10, 20, 30, 255]));
         assert!(Arc::ptr_eq(&before, &source.video_frame.as_ref().unwrap().pixmap));
 
         assert!(source.compose(intro_duration, None).is_none());
@@ -550,7 +554,11 @@ mod tests {
 
         cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
         let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
-        assert!(recovered.data().chunks_exact(4).any(|pixel| pixel == [50, 140, 220, 255]));
+        assert!(recovered
+            .data()
+            .as_chunks::<4>()
+            .0
+            .contains(&[50, 140, 220, 255]));
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             source.park_decoders();
@@ -561,8 +569,9 @@ mod tests {
             assert!(source.compose(intro_duration + video_time, None).is_none());
             assert!(recovered
                 .data()
-                .chunks_exact(4)
-                .any(|pixel| pixel == [50, 140, 220, 255]));
+                .as_chunks::<4>()
+                .0
+                .contains(&[50, 140, 220, 255]));
         }
     }
 
@@ -602,7 +611,11 @@ mod tests {
             bgra: [12, 34, 240, 255].repeat(32 * 32).into(),
         };
         let has_camera_pixels = |frame: &Pixmap| {
-            frame.data().chunks_exact(4).any(|pixel| pixel == [240, 34, 12, 255])
+            frame
+                .data()
+                .as_chunks::<4>()
+                .0
+                .contains(&[240, 34, 12, 255])
         };
 
         cached_frame(&mut source.video_frame, 0., || Some(screen.clone())).unwrap();

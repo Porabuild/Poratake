@@ -1,3 +1,4 @@
+pub mod cloud_secrets;
 pub mod schema;
 pub mod shortcuts;
 pub mod store;

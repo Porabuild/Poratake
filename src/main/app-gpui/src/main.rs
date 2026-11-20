@@ -176,6 +176,98 @@ pub(crate) fn open_editor_with_image(
     true
 }
 
+fn is_video_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "poratake" | "mp4" | "mov" | "webm"
+            )
+        })
+}
+
+fn open_path(cx: &mut App, path: String, activate: bool) {
+    let candidate = std::path::Path::new(&path);
+    if is_video_path(candidate) {
+        windows::video_editor::VideoEditorWindow::open(cx, Some(path));
+        if activate {
+            cx.activate(true);
+        }
+        return;
+    }
+    open_editor_async(cx, path, activate);
+}
+
+fn decode_file_url(raw: &str) -> Option<String> {
+    let stripped = raw.strip_prefix("file://")?;
+    let path = stripped.strip_prefix("localhost").unwrap_or(stripped);
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
+fn dispatch_cli_intent(id: Option<&str>, extra: Option<String>, cx: &mut App) {
+    match id.and_then(Intent::from_id) {
+        Some(Intent::OpenSettings) => {
+            let category = extra
+                .as_deref()
+                .and_then(windows::settings::registry::Category::from_id)
+                .unwrap_or(windows::settings::registry::Category::General);
+            intents::open_settings(category, cx);
+            cx.activate(true);
+        }
+        Some(Intent::OpenInVideoEditor) => {
+            windows::video_editor::VideoEditorWindow::open(cx, extra);
+            cx.activate(true);
+        }
+        Some(intent) => {
+            intents::dispatch(intent, None, cx);
+            cx.activate(true);
+        }
+        None => eprintln!("[cli] --intent needs a tray intent id"),
+    }
+}
+
+fn dispatch_instance_command(command: system::single_instance::InstanceCommand, cx: &mut App) {
+    use system::single_instance::InstanceCommand;
+
+    match command {
+        InstanceCommand::Activate => {
+            let store = state::state(cx).config;
+            if store.get().general.hide_menu_bar_icon {
+                store.update(|settings| settings.general.hide_menu_bar_icon = false);
+                intents::refresh_shell(cx);
+            } else {
+                windows::history::HistoryWindow::toggle(None, cx);
+            }
+            cx.activate(true);
+        }
+        InstanceCommand::OpenPaths(paths) => {
+            for path in paths {
+                open_path(cx, path, true);
+            }
+        }
+        InstanceCommand::Intent { id, extra } => {
+            dispatch_cli_intent(Some(id.as_str()), extra, cx);
+        }
+    }
+}
+
 fn main() {
     #[cfg(feature = "parity")]
     if std::env::var_os(ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
@@ -198,11 +290,15 @@ fn main() {
         return;
     }
 
-    let single_instance = system::single_instance::acquire();
-    if single_instance.is_none() {
+    let argv: Vec<String> = std::env::args().collect();
+    let Some(single_instance) = system::single_instance::acquire() else {
+        let command = system::single_instance::InstanceCommand::from_args(&argv);
+        let _ = system::single_instance::notify_running(&command);
         eprintln!("[single-instance] another Poratake GPUI instance is running — exiting");
         std::process::exit(0);
-    }
+    };
+    let (instance_tx, instance_rx) = single_instance.start_listener();
+    let url_tx = instance_tx.clone();
 
     // Resolved after the single-instance gate so a CLI hand-off launch that is
     // about to exit never pays for display detection.
@@ -215,6 +311,21 @@ fn main() {
     // The app's own images are decoded to `RenderImage` rather than loaded
     // through an asset source, so there is nothing to fall back to.
     let app = application().with_assets(herogpui::HeroGpuiAssets);
+    app.on_open_urls(move |urls| {
+        let paths: Vec<String> = urls
+            .into_iter()
+            .filter_map(|url| {
+                if url.starts_with("file://") {
+                    decode_file_url(&url)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !paths.is_empty() {
+            let _ = url_tx.send_blocking(system::single_instance::InstanceCommand::OpenPaths(paths));
+        }
+    });
     #[cfg(target_os = "macos")]
     app.on_reopen(|cx| {
         if state::try_native(cx).is_none() {
@@ -227,6 +338,14 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+            let _single_instance_guard = single_instance;
+            let _instance_tx = instance_tx;
+            cx.spawn(async move |cx| {
+                while let Ok(command) = instance_rx.recv().await {
+                    cx.update(|cx| dispatch_instance_command(command, cx));
+                }
+            })
+            .detach();
             #[cfg(target_os = "linux")]
             display_environment.restore();
 
@@ -340,33 +459,8 @@ fn main() {
                 Some("--native-smoke-recording") => ui::native_smoke::open(cx),
                 Some("--intent") => {
                     let id = args.next();
-                    // An optional second argument: a settings category, or a project
-                    // path for the video editor.
                     let extra = args.next();
-                    match id.as_deref().and_then(Intent::from_id) {
-                        // `--intent open-settings shortcuts` is the CLI form of
-                        // `settings-window.tsx` reading its tab from the URL hash.
-                        Some(Intent::OpenSettings) => {
-                            let category = extra
-                                .as_deref()
-                                .and_then(windows::settings::registry::Category::from_id)
-                                .unwrap_or(windows::settings::registry::Category::General);
-                            intents::open_settings(category, cx);
-                            cx.activate(true);
-                        }
-                        // The tray item opens a file picker, which a script cannot
-                        // answer, so the CLI takes the path directly -- or nothing,
-                        // for the editor's own empty state.
-                        Some(Intent::OpenInVideoEditor) => {
-                            windows::video_editor::VideoEditorWindow::open(cx, extra);
-                            cx.activate(true);
-                        }
-                        Some(intent) => {
-                            intents::dispatch(intent, None, cx);
-                            cx.activate(true);
-                        }
-                        None => eprintln!("[cli] --intent needs a tray intent id"),
-                    }
+                    dispatch_cli_intent(id.as_deref(), extra, cx);
                 }
                 // Opens one of the transient windows for inspection. Several of
                 // them only ever appear mid-capture or mid-recording, so there is
@@ -450,8 +544,24 @@ fn main() {
                         );
                     }
                 }
-                Some(path) => open_editor_async(cx, path.to_owned(), true),
+                Some(path) => open_path(cx, path.to_owned(), true),
                 None => {}
             }
         });
+}
+
+#[cfg(test)]
+mod single_instance_url_tests {
+    #[test]
+    fn decodes_percent_encoded_macos_file_urls() {
+        assert_eq!(
+            super::decode_file_url("file:///Users/test/My%20Captures/shot%201.png").as_deref(),
+            Some("/Users/test/My Captures/shot 1.png")
+        );
+        assert_eq!(
+            super::decode_file_url("file://localhost/tmp/test.poratake").as_deref(),
+            Some("/tmp/test.poratake")
+        );
+        assert!(super::decode_file_url("https://example.com/a.png").is_none());
+    }
 }

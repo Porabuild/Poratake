@@ -38,7 +38,7 @@ pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
             ),
         )
     };
-    std::fs::create_dir_all(directory).map_err(&with_directory)?;
+    std::fs::create_dir_all(directory).map_err(with_directory)?;
     loop {
         let temporary = directory.join(format!(".poratake-{}.tmp.png", uuid_simple()));
         match std::fs::OpenOptions::new()
@@ -745,7 +745,7 @@ fn with_frozen_screen(
                         freezer.release_screen_started()
                     })
                 };
-                let released = release_first.is_none_or(&release);
+                let released = release_first.is_none_or(release);
                 let result = if released {
                     freezer.freeze_screen_started()
                 } else {

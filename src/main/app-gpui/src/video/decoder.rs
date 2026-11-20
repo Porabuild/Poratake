@@ -1312,12 +1312,11 @@ mod backend {
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
-                loop {
+                #[cfg(all(feature = "parity", target_os = "macos"))]
+                let _ = trace_pid;
+                while let Ok(timestamp) = timestamp_rx.recv() {
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let timestamp_started = trace_pid.map(|_| std::time::Instant::now());
-                    let Ok(timestamp) = timestamp_rx.recv() else {
-                        break;
-                    };
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
                     let bytes = reusable.try_recv();

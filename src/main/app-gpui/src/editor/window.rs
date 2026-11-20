@@ -527,6 +527,7 @@ impl PreparedScreenshot {
 }
 
 impl EditorWindow {
+    #[cfg(any(test, feature = "parity"))]
     pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::from_prepared(path, None, load_editor_image(path), window, cx)
     }
@@ -4019,6 +4020,7 @@ impl EditorWindow {
         self.history.push(annotations);
     }
 }
+#[cfg(any(test, feature = "parity"))]
 fn load_editor_image(path: &str) -> Option<PreparedScreenshot> {
     match PreparedScreenshot::open(path) {
         Ok(image) => Some(image),
@@ -4097,7 +4099,9 @@ impl ScreenshotComposition {
         }
         image
             .as_raw()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[3] == 255)
             .then_some(image)
     }
@@ -4127,6 +4131,7 @@ impl EditorWindow {
 
     /// Renders the current composition (base + annotations) to PNG bytes at
     /// natural size.
+    #[cfg(any(test, feature = "parity"))]
     pub fn export_png(&self) -> anyhow::Result<Vec<u8>> {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
         let canvas = crate::editor::export::compose_with_layers(
@@ -4572,8 +4577,10 @@ mod tests {
                 .image
                 .as_bytes(0)
                 .unwrap()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255]));
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255]));
         }
         assert!(render_redact_patch(&source, (8.8, 3.8, 0., 4.), "blackout", 5., 1.).is_none());
         assert!(render_redact_patch(&source, (8.8, 3.8, 4., 0.), "blackout", 5., 1.).is_none());
