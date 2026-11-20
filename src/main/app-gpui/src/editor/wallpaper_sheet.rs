@@ -1207,7 +1207,7 @@ fn icon_face(theme: &ThemeVars) -> gpui::Div {
         .bg(theme.muted_background)
 }
 
-fn loading_tile(id: impl Into<ElementId>, size: f32, theme: &ThemeVars) -> AnyElement {
+pub(crate) fn loading_tile(id: impl Into<ElementId>, size: f32, theme: &ThemeVars) -> AnyElement {
     let id = id.into();
     let spinner = crate::ui::icon::spinner_element(
         ElementId::Name(SharedString::from(format!("{id:?}-spinner"))),

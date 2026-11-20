@@ -1753,7 +1753,8 @@ fn video_backgrounds(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     use crate::config::schema::CustomBackgroundData;
-    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile};
+    use crate::editor::background::PreviewState;
+    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile, loading_tile};
     use crate::ui::chrome;
 
     let tile = chrome::wallpaper_tile_size(chrome::VIDEO_SIDEBAR_WIDTH, chrome::VIDEO_PANEL_PAD);
@@ -1800,37 +1801,25 @@ fn video_backgrounds(
         let select_desktop = move |_: &mut gpui::Window, cx: &mut gpui::App| {
             if let Some(entity) = desktop.upgrade() {
                 entity.update(cx, |this, cx| {
-                    let source = this.desktop_wallpaper_source.clone().or_else(|| {
-                        crate::editor::background::desktop_wallpaper(
-                            &crate::state::state(cx).daemon,
-                        )
-                    });
-                    if this.desktop_wallpaper_source.is_none() {
-                        this.desktop_wallpaper_source = source.clone();
+                    if this.desktop_wallpaper_source.is_some() {
+                        this.select_desktop_wallpaper(cx);
+                    } else if matches!(this.desktop_wallpaper_preview, Some(PreviewState::Failed)) {
+                        this.load_desktop_wallpaper(true, cx);
+                        cx.notify();
                     }
-                    this.update_wallpaper(cx, |wallpaper| {
-                        if let Some(source) = source.clone() {
-                            wallpaper.enabled = true;
-                            wallpaper.background_image = Some(source);
-                            wallpaper.gradient = None;
-                            if wallpaper.padding == 0.0 {
-                                wallpaper.padding = 50.0;
-                            }
-                        }
-                    });
                 });
             }
         };
-        tiles.push(match view.desktop_wallpaper_preview.clone() {
-            Some(image) => image_tile(
+        tiles.push(match view.desktop_wallpaper_preview.as_ref() {
+            Some(PreviewState::Ready(image)) => image_tile(
                 "video-wallpaper-desktop",
-                image,
+                image.clone(),
                 tile,
                 is_desktop,
                 theme,
                 select_desktop,
             ),
-            None => icon_tile(
+            Some(PreviewState::Failed) => icon_tile(
                 "video-wallpaper-desktop",
                 "Use Desktop Wallpaper",
                 "monitor",
@@ -1839,6 +1828,7 @@ fn video_backgrounds(
                 theme,
                 select_desktop,
             ),
+            _ => loading_tile("video-wallpaper-desktop", tile, theme),
         });
     }
 

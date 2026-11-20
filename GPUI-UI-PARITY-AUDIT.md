@@ -11369,6 +11369,28 @@ RGB difference from the editor preview was two levels. The
 normal desktop-wide filter still needs a full-frame verification.
 [Full-display exclusion evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS idle and video editor wallpaper memory
+
+The video editor requests the desktop wallpaper when its Wallpaper
+panel first opens. The tile uses a scaled preview and selecting the
+wallpaper still uses the full-resolution source. A failed request can
+be retried without blocking the UI thread.
+
+In light and dark runs with a generated 4K wallpaper and 720p video,
+the paused editor used about 128 MiB of physical memory with the
+Wallpaper panel unopened, down from 216–232 MiB. With Wallpaper
+open, usage fell from about 255 MiB to 222 MiB. The deferred path
+issued zero wallpaper requests with the panel unopened and one
+when it opened. A simulated GPUI regression covers reopening a
+sidebar whose remembered tab is Wallpaper.
+
+In eight-second tray-only samples with the Swift daemon, GPUI
+used 18–19 MiB of physical memory and the daemon about 8 MiB.
+Combined CPU time stayed at or below 0.04 ms per sample across
+both builds. The paused editor samples showed no consistent
+change in steady-state CPU time.
+[Idle and wallpaper measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

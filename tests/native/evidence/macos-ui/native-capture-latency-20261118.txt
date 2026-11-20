@@ -5442,3 +5442,41 @@ editor preview. The unisolated display attempt failed its
 whole-frame content check and its recording was discarded.
 
 All 82 Electron recording-control and daemon contract tests passed.
+
+2026-11-20 macOS idle and video editor wallpaper memory
+=====================================================
+
+Apple M5 Pro, one internal Retina display, no packaged build.
+Measured physical footprint, CPU time and interrupt wakeups with
+proc_pid_rusage. Tray-only launches used the Swift daemon and an
+isolated profile with Freeze Screen disabled. Each column is one
+eight-second sample after three to four seconds of settling.
+
+Process        Baseline light  Baseline dark  Updated light  Updated dark
+GPUI MiB                18.94          18.67          18.72         18.28
+Swift MiB                8.33           8.19           8.19          7.91
+GPUI CPU ms              0.02           0.03           0.02          0.02
+Swift CPU ms             0.01           0.01           0.00          0.02
+GPUI wakeups                7              6              6             5
+Swift wakeups               1              1              1             2
+
+The editor measurements used the normal open-project entry point,
+a generated 720p video, and a mock wallpaper RPC returning a file
+path to a generated 3840 × 2160 PNG. Each row covers a four-second
+paused sample with a native editor window verified in WindowServer.
+CPU times across these rows were 0.13–0.24 ms per sample.
+
+Theme  Sidebar    Baseline gets  Updated gets  Baseline GPUI MiB  Updated GPUI MiB
+Light  Cursor                 1             0             216.53            128.50
+Light  Wallpaper              1             1             255.34            221.59
+Light  Closed                 1             0             216.34            128.38
+Dark   Cursor                 1             0             217.75            128.50
+Dark   Wallpaper              1             1             255.20            221.83
+Dark   Closed                 1             0             232.13            128.19
+
+The simulated GPUI regression renders Cursor, then a closed
+Wallpaper sidebar, then opens the sidebar. Only the last state
+starts a wallpaper lookup. The targeted GPUI video editor suite
+passed 175 tests with five ignored. The full GPUI suite passed
+1,218 tests with 24 ignored. The Electron wallpaper, capabilities
+and daemon contract suites passed 17 tests.

@@ -51,6 +51,7 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::editor::annotations::Annotation;
+use crate::editor::background::{self, PreviewState};
 use crate::editor::options::EditorOption;
 use crate::system::desktop;
 use crate::theme::vars::active_theme;
@@ -232,7 +233,7 @@ pub struct VideoEditorWindow {
     #[cfg(target_os = "macos")]
     refresh_preview_on_show: bool,
     desktop_wallpaper_source: Option<String>,
-    desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
+    desktop_wallpaper_preview: Option<PreviewState>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
     /// The state a drag started from, pushed onto the undo stack when it ends.
     gesture_snapshot: Option<VideoEditorState>,
@@ -287,7 +288,6 @@ impl VideoEditorWindow {
                 let view = cx.new(|cx| {
                     let mut editor = Self::new(path.map(PathBuf::from), music_session, cx);
                     editor.load_preview(cx);
-                    editor.load_desktop_wallpaper(cx);
                     editor.request_audio_sync(cx);
                     editor
                 });
@@ -864,33 +864,57 @@ impl VideoEditorWindow {
         .detach();
     }
 
-    fn load_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+    fn load_desktop_wallpaper(&mut self, select: bool, cx: &mut Context<Self>) {
         if !crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::DesktopWallpaper,
         ) {
             return;
         }
+        self.desktop_wallpaper_preview = Some(PreviewState::Loading);
+        let previous = select.then(|| self.state.wallpaper.clone());
+        let size = crate::ui::chrome::wallpaper_tile_size(
+            crate::ui::chrome::VIDEO_SIDEBAR_WIDTH,
+            crate::ui::chrome::VIDEO_PANEL_PAD,
+        );
         let daemon = crate::state::state(cx).daemon.clone();
         cx.spawn(async move |entity, cx| {
             let wallpaper = cx
                 .background_executor()
                 .spawn(async move {
-                    let source = crate::editor::background::desktop_wallpaper(&daemon)?;
-                    let image = crate::render::gradient::load_image(&source)
-                        .as_ref()
-                        .and_then(preview::to_render_image)?;
+                    let source = background::desktop_wallpaper(&daemon)?;
+                    let image = background::preview_image(&source, size);
                     Some((source, image))
                 })
                 .await;
             let _ = entity.update(cx, |this, cx| {
-                if let Some((source, image)) = wallpaper {
-                    this.desktop_wallpaper_source = Some(source);
-                    this.desktop_wallpaper_preview = Some(image);
-                    cx.notify();
+                let (source, image) = wallpaper.unzip();
+                this.desktop_wallpaper_source = source;
+                this.desktop_wallpaper_preview = Some(
+                    image
+                        .flatten()
+                        .map_or(PreviewState::Failed, PreviewState::Ready),
+                );
+                if previous.as_ref() == Some(&this.state.wallpaper) {
+                    this.select_desktop_wallpaper(cx);
                 }
+                cx.notify();
             });
         })
         .detach();
+    }
+
+    fn select_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.desktop_wallpaper_source.clone() else {
+            return;
+        };
+        self.update_wallpaper(cx, |wallpaper| {
+            wallpaper.enabled = true;
+            wallpaper.background_image = Some(source);
+            wallpaper.gradient = None;
+            if wallpaper.padding == 0.0 {
+                wallpaper.padding = 50.0;
+            }
+        });
     }
 
     fn invalidate_preview_frames(&mut self) {
@@ -4032,6 +4056,12 @@ impl Render for VideoEditorWindow {
 
         let sidebar_open = self.state.ui.sidebar_open;
         let active_tab = self.active_tab();
+        if sidebar_open
+            && active_tab == SidebarTab::Wallpaper
+            && self.desktop_wallpaper_preview.is_none()
+        {
+            self.load_desktop_wallpaper(false, cx);
+        }
         if self.sidebar_scroll_tab != active_tab {
             self.sidebar_scroll_tab = active_tab;
             self.panel_scroll.set_offset(gpui::point(px(0.), px(0.)));
@@ -4580,6 +4610,42 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn desktop_wallpaper_waits_for_the_open_wallpaper_panel(cx: &mut gpui::TestAppContext) {
+        use crate::system::capabilities::{is_supported, Feature};
+
+        if !is_supported(Feature::DesktopWallpaper) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.desktop_wallpaper_preview.is_none());
+                editor.activate_tab(SidebarTab::Wallpaper, cx);
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.desktop_wallpaper_preview.is_none());
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(editor.desktop_wallpaper_preview.is_some())
+            })
+            .unwrap();
     }
 
     #[herogpui::test]
