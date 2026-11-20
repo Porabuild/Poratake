@@ -719,8 +719,54 @@ impl EditorWindow {
         }
         editor.refresh_raster_patches();
         editor.sync_snapshot(cx);
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = weak.update(cx, |editor, _| {
+                editor.force_persist_editor_state();
+                editor.release_gpu_resources(window);
+            });
+            crate::system::memory::reclaim_idle_memory();
+            true
+        });
         window.focus(&editor.focus_handle, cx);
         editor
+    }
+
+    fn release_gpu_resources(&mut self, window: &mut Window) {
+        if let Some(image) = self.image.take() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(image) = self.backdrop.take() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(image) = self.rounded_matte.take() {
+            let _ = window.drop_image(image);
+        }
+        for edge in self.preview_edges.drain(..) {
+            let _ = window.drop_image(edge.image);
+        }
+        for image in self.retired_preview_edges.drain(..) {
+            let _ = window.drop_image(image);
+        }
+        for tile in self.backdrop_tiles.drain(..) {
+            let _ = window.drop_image(tile.image);
+        }
+        for tile in self.image_tiles.drain(..) {
+            let _ = window.drop_image(tile.image);
+        }
+        for (_, patch) in self.redact_patches.drain() {
+            let _ = window.drop_image(patch.image);
+        }
+        self.base_image = None;
+        self.pre_crop = None;
+        let mut snapshot = self.snapshot.borrow_mut();
+        snapshot.image = None;
+        snapshot.backdrop = None;
+        snapshot.rounded_matte = None;
+        snapshot.preview_edges.clear();
+        snapshot.backdrop_tiles.clear();
+        snapshot.image_tiles.clear();
+        snapshot.redact_patches.clear();
     }
 
     /// Rasterizes the redacted pixels for every committed redaction once, so
@@ -3161,6 +3207,7 @@ impl Render for EditorWindow {
 impl Drop for EditorWindow {
     fn drop(&mut self) {
         self.force_persist_editor_state();
+        crate::system::memory::reclaim_idle_memory();
     }
 }
 

@@ -13,7 +13,20 @@ pub fn rgba(pixmap: &Pixmap) -> Vec<u8> {
 }
 
 pub fn bgra(pixmap: &Pixmap) -> Vec<u8> {
-    pixels(pixmap, 2, 0)
+    let mut out = Vec::new();
+    bgra_into(pixmap, &mut out);
+    out
+}
+
+pub fn bgra_into(pixmap: &Pixmap, out: &mut Vec<u8>) {
+    let source = pixmap.data();
+    out.resize(source.len(), 0);
+    for (target, pixel) in out.as_chunks_mut::<4>().0.iter_mut().zip(source.as_chunks::<4>().0) {
+        target[0] = pixel[2];
+        target[1] = pixel[1];
+        target[2] = pixel[0];
+        target[3] = 255;
+    }
 }
 
 #[cfg(test)]
@@ -28,5 +41,8 @@ mod tests {
             .copy_from_slice(&[64, 32, 16, 128, 1, 1, 1, 1, 0, 0, 0, 0]);
         assert_eq!(rgba(&pixmap), [64, 32, 16, 255, 1, 1, 1, 255, 0, 0, 0, 255]);
         assert_eq!(bgra(&pixmap), [16, 32, 64, 255, 1, 1, 1, 255, 0, 0, 0, 255]);
+        let mut reused = Vec::new();
+        bgra_into(&pixmap, &mut reused);
+        assert_eq!(reused, [16, 32, 64, 255, 1, 1, 1, 255, 0, 0, 0, 255]);
     }
 }

@@ -249,9 +249,11 @@ impl HistoryWindow {
         }
         self.closing = true;
         self.media_cancel.take();
+        self.media.clear();
         registry::forget(RegistryKind::History, cx);
         #[cfg(all(target_os = "macos", not(test)))]
         crate::system::window_visibility::disable_macos_transitions(window);
+        crate::system::memory::reclaim_idle_memory();
         window.remove_window();
     }
 

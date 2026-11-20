@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use tiny_skia::Pixmap;
 
-use crate::video::composition::opaque::{bgra as to_bgra, rgba as to_rgba};
+#[cfg(test)]
+use crate::video::composition::opaque::bgra as to_bgra;
+use crate::video::composition::opaque::{bgra_into, rgba as to_rgba};
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
 use crate::video::decoder::VideoDecoder;
@@ -251,8 +253,10 @@ pub fn run_with_camera_segments_presence(
     };
     if result.is_ok() && should_cancel() {
         let _ = std::fs::remove_file(&request.output);
+        crate::system::memory::reclaim_idle_memory();
         return Err("the export was cancelled".to_string());
     }
+    crate::system::memory::reclaim_idle_memory();
     result
 }
 
@@ -325,7 +329,9 @@ fn encode(
 
         let timeline_time = index as f64 / session.fps as f64;
         let frame = compose_pixmap(session, first_frame_duration, timeline_time)?;
-        encoder.write_frame(to_bgra(&frame))?;
+        let mut buffer = encoder.take_reusable_buffer();
+        bgra_into(&frame, &mut buffer);
+        encoder.write_frame(buffer)?;
         progress((index + 1) as f32 / session.total_frames as f32);
     }
 

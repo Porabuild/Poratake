@@ -1265,7 +1265,7 @@ mod backend {
                 "-fps_mode",
                 "passthrough",
                 "-threads:v",
-                "1",
+                "4",
                 "-f",
                 "rawvideo",
                 "-pix_fmt",
@@ -1427,7 +1427,7 @@ mod backend {
                 &executable,
                 r#"#!/bin/sh
 case "$*" in
-  *'-i'*'showinfo=checksum=0'*'-threads:v 1'*'rawvideo'*)
+  *'-i'*'showinfo=checksum=0'*'-threads:v'*'rawvideo'*)
     if [ -f "$0.previous" ]; then
       read -r previous < "$0.previous"
       if kill -0 "$previous" 2>/dev/null; then exit 1; fi

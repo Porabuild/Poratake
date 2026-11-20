@@ -1429,16 +1429,25 @@ impl VideoEditorWindow {
         editor: gpui::WeakEntity<Self>,
         on_failure: impl Fn() + 'static,
     ) {
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
             let (saved, should_report_failure) = editor
                 .update(cx, |editor, _| {
                     if editor.is_file_dialog_open {
                         return (false, false);
                     }
                     let saved = editor.flush_pending_state();
+                    if saved {
+                        if let Some(image) = editor.preview_image.take() {
+                            let _ = window.drop_image(image);
+                        }
+                        editor.source = None;
+                    }
                     (saved, !saved)
                 })
                 .unwrap_or((true, false));
+            if saved {
+                crate::system::memory::reclaim_idle_memory();
+            }
             if should_report_failure {
                 on_failure();
             }
@@ -3928,6 +3937,8 @@ impl VideoEditorWindow {
 impl Drop for VideoEditorWindow {
     fn drop(&mut self) {
         let saved = self.flush_pending_state();
+        self.source = None;
+        self.preview_image = None;
         if let Some(session) = self.music_session.take() {
             if saved {
                 let _ = session.close();
@@ -3935,6 +3946,7 @@ impl Drop for VideoEditorWindow {
                 drop(session);
             }
         }
+        crate::system::memory::reclaim_idle_memory();
     }
 }
 

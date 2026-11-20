@@ -310,8 +310,6 @@ pub fn begin_download(cell: &mut UpdateCell) -> Option<(String, Artifact, String
     Some((version, artifact, sha512, notes))
 }
 
-/// `autoUpdater.downloadUpdate()` after `update-available`. No-op unless the
-/// cell is `Available`.
 pub fn start_download(cx: &mut gpui::App) {
     let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
         return;
@@ -326,23 +324,46 @@ pub fn start_download(cx: &mut gpui::App) {
     };
     sync_tray_status(cx);
     notify_about_status_changed(cx);
-    spawn_download_progress_poll(cx);
 
+    let (progress_tx, progress_rx) = smol::channel::bounded::<()>(1);
     let progress_cell = shared.clone();
     let result_cell = shared;
+    let ui_notify = cx.spawn(async move |cx| {
+        while progress_rx.recv().await.is_ok() {
+            let downloading = cx.update(|cx| {
+                let downloading = matches!(current_status(cx), Status::Downloading { .. });
+                if downloading {
+                    sync_tray_status(cx);
+                    notify_about_status_changed(cx);
+                }
+                downloading
+            });
+            if !downloading {
+                break;
+            }
+        }
+    });
+    ui_notify.detach();
+
     cx.spawn(async move |cx| {
         let version_for_progress = version.clone();
         let notes_for_progress = notes.clone();
+        let last_percent = std::sync::atomic::AtomicU32::new(u32::MAX);
         let result = cx
             .background_executor()
             .spawn(async move {
                 download(&artifact, &sha512, move |fraction| {
+                    let percent = (fraction * 100.0).round() as u32;
+                    let prev = last_percent.swap(percent, std::sync::atomic::Ordering::Relaxed);
                     if let Ok(mut cell) = progress_cell.lock() {
                         cell.publish(Status::Downloading {
                             version: version_for_progress.clone(),
                             progress: fraction,
                             notes: notes_for_progress.clone(),
                         });
+                    }
+                    if prev != percent {
+                        let _ = progress_tx.try_send(());
                     }
                 })
             })
@@ -361,28 +382,6 @@ pub fn start_download(cx: &mut gpui::App) {
             sync_tray_status(cx);
             notify_about_status_changed(cx);
         });
-    })
-    .detach();
-}
-
-/// The `update:download-progress` broadcast: while a download runs, About and
-/// the tray row repaint at 10Hz from the shared cell.
-fn spawn_download_progress_poll(cx: &mut gpui::App) {
-    cx.spawn(async move |cx| loop {
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(100))
-            .await;
-        let downloading = cx.update(|cx| {
-            let downloading = matches!(current_status(cx), Status::Downloading { .. });
-            if downloading {
-                sync_tray_status(cx);
-                notify_about_status_changed(cx);
-            }
-            downloading
-        });
-        if !downloading {
-            break;
-        }
     })
     .detach();
 }

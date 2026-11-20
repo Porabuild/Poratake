@@ -11,6 +11,7 @@ pub mod hotkeys;
 pub mod linux_session;
 #[cfg(target_os = "macos")]
 pub mod macos_tooltip;
+pub mod memory;
 pub mod native;
 #[cfg(windows)]
 pub mod native_tooltip;

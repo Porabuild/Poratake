@@ -129,8 +129,12 @@ impl PinWindow {
                 hovered: false,
             });
             let weak = view.downgrade();
-            window.on_window_should_close(cx, move |_, cx| {
-                weak.update(cx, |view, cx| view.restore_editor(cx)).ok();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = weak.update(cx, |view, cx| {
+                    let _ = window.drop_image(view.image.clone());
+                    view.restore_editor(cx);
+                });
+                crate::system::memory::reclaim_idle_memory();
                 true
             });
             view
@@ -154,7 +158,9 @@ impl PinWindow {
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut App) {
+        let _ = window.drop_image(self.image.clone());
         self.restore_editor(cx);
+        crate::system::memory::reclaim_idle_memory();
         window.remove_window();
     }
 }
