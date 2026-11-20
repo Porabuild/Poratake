@@ -5413,3 +5413,32 @@ arm64 and Rosetta x86_64. The Swift recording timeline and the
 AppKit timer lifecycle and accessibility fixtures passed on
 arm64. Tests used generated inputs, with live capture opt-ins
 left off.
+
+2026-11-20 macOS full-display recording exclusion with generated windows
+========================================================================
+
+The 0d268de8 GPUI dev build performed Start, Stop, preview, editor
+handoff, split at 0.45 s and MP4 export using app-local commands. The
+current Swift source was built as a temporary screen-only fixture.
+It checked the existing Screen Recording grant and disabled audio
+and cursor capture. Its display filter admitted only generated
+scene windows and recorder-control windows before subtracting the
+normal app and daemon exclusion IDs. No physical input was posted.
+
+Theme  Source   Baseline/protected/ordinary  Export  Toolbar max Δ  Tooltip max Δ
+Light      40                     14/8/17      203              0              0
+Dark       51                     15/9/22      396              0              0
+
+Source and export were 3456 × 2234, video-only with increasing
+presentation timestamps. Maximum deltas are decoded RGB channel
+differences from the generated backdrop. The toolbar was checked
+over 48,576 pixels. The tooltip was checked over 8,624 pixels.
+In both themes the ordinary window placed at the tooltip bounds
+produced RGB (233, 0, 244) at the center. The downsampled
+whole-frame check outside the marker and ordinary-window regions
+had a maximum delta of seven. In the tooltip region the first
+decoded MP4 frame was within two channel levels of the paused
+editor preview. The unisolated display attempt failed its
+whole-frame content check and its recording was discarded.
+
+All 82 Electron recording-control and daemon contract tests passed.

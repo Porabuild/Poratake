@@ -11353,6 +11353,22 @@ accessibility fixtures passed on Apple Silicon. Windows-native
 checks remain assigned to Windows CI.
 [Local regression evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS full-display recording exclusion with generated windows
+
+A two-times-scale recording in light and dark captured the full
+3456 × 2234 display. The temporary recorder admitted the generated
+scene and recorder controls by window ID, then applied the app's
+normal exclusion IDs. The GPUI toolbar and protected AppKit tooltip
+were visible on the display. Their regions matched the captured
+backdrop in both themes. A regular window moved to the exact tooltip
+bounds appeared in the next phase.
+
+Each take opened in the video editor, saved a split and exported.
+In the tooltip region of the first decoded export frame, the largest
+RGB difference from the editor preview was two levels. The
+normal desktop-wide filter still needs a full-frame verification.
+[Full-display exclusion evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
