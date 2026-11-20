@@ -5895,3 +5895,30 @@ window and verifies that the outline timer stops and the outline
 is transparent. The explicit cleanup removes its exclusion ID.
 The arm64 and Rosetta lifecycle suites, production daemon typechecks
 for both targets and 82 targeted Electron tests passed.
+
+2026-11-20 macOS Start after a window target disappears
+========================================================
+
+The existing GPUI native probe opened pre-recording controls
+for a generated AppKit window in a separate process. After the
+target became hidden or its process exited, the fixture waited
+until WindowServer no longer listed it onscreen. It then sent
+the normal Start command through the Swift daemon. The test
+checked the existing Screen Recording grant, disabled input
+devices and stopped before allowing any capture stream.
+
+Build     Theme   Target     Toolbar ready after failure  Empty project
+Baseline  Light   Destroyed  yes                          removed
+Updated   Light   Destroyed  no                           removed
+Updated   Dark    Destroyed  no                           removed
+Updated   Light   Hidden     yes                          removed
+Updated   Dark    Hidden     yes                          removed
+
+The baseline returned a configuration error after destruction.
+The updated recorder returned TARGET_CLOSED after destruction
+and a configuration error with a visibility message after
+order-out. The GPUI regression also asserts that only the
+destroyed-target error closes the toolbar and that both failures
+remove their empty project. All 1,227 runnable GPUI tests and
+82 Electron reference tests passed. The production Swift daemon
+typechecked as arm64 and x86_64.

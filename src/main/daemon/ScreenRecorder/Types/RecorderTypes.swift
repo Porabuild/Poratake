@@ -2,6 +2,39 @@ import AppKit
 import CoreMedia
 import Foundation
 
+struct RecordingWindowTarget {
+    enum Observation {
+        case visible(CGRect)
+        case hidden
+        case absent
+    }
+
+    private let id: CGWindowID
+    private let identifiers: CFArray
+
+    init?(id: CGWindowID) {
+        guard id != 0 else { return nil }
+        var identifier = UnsafeRawPointer(bitPattern: UInt(id))
+        guard let identifiers = CFArrayCreate(nil, &identifier, 1, nil) else { return nil }
+        self.id = id
+        self.identifiers = identifiers
+    }
+
+    func observe() -> Observation {
+        guard let descriptions = CGWindowListCreateDescriptionFromArray(identifiers) as? [[String: Any]] else {
+            return .hidden
+        }
+        guard let window = descriptions.first(where: { $0[kCGWindowNumber as String] as? CGWindowID == id }) else {
+            return .absent
+        }
+        guard window[kCGWindowIsOnscreen as String] as? Bool == true,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              rect.width > 0, rect.height > 0 else { return .hidden }
+        return .visible(rect)
+    }
+}
+
 @MainActor
 final class RecordingCaptureWindowRegistry {
     static let shared = RecordingCaptureWindowRegistry()

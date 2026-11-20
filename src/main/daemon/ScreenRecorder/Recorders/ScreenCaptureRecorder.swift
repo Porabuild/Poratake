@@ -142,7 +142,10 @@ class ScreenCaptureRecorder: NSObject, SCStreamDelegate, AVCaptureAudioDataOutpu
 
         let capturedWindow = try config.windowID.map { windowID -> SCWindow in
             guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
-                throw RecorderError.configuration("The window to record is no longer open")
+                if let target = RecordingWindowTarget(id: windowID), case .absent = target.observe() {
+                    throw RecorderError.targetClosed
+                }
+                throw RecorderError.configuration("The window to record is not visible")
             }
             return window
         }

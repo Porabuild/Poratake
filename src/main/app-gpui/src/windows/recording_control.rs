@@ -792,19 +792,6 @@ impl RecordingControl {
             self.start_stop_requested = None;
         }
         let removed = remove_empty_failed_start_project(project, &error);
-        #[cfg(target_os = "macos")]
-        self.rollback_start_handoff(cx);
-        self.project = None;
-        self.mode = Mode::PreRecording;
-        self.started_at = None;
-        self.paused_at = None;
-        self.paused_total = Duration::ZERO;
-        set_pre_recording_escape(true, cx);
-        self.sync_window_bounds(
-            window,
-            cx,
-            self.pending_device_menu.is_some() || self.menu.is_present(cx),
-        );
         let message = if removed {
             error.to_string()
         } else {
@@ -813,6 +800,31 @@ impl RecordingControl {
                 project.display()
             )
         };
+        self.project = None;
+        self.mode = Mode::PreRecording;
+        self.started_at = None;
+        self.paused_at = None;
+        self.paused_total = Duration::ZERO;
+        #[cfg(target_os = "macos")]
+        {
+            if self.target == RecordingTarget::Window
+                && error
+                    .downcast_ref::<crate::daemon::DaemonRpcError>()
+                    .is_some_and(|error| error.code == RECORDING_TARGET_CLOSED)
+            {
+                self.cancel(window, cx);
+                crate::windows::toast::Toast::show(cx, "Window closed", message);
+                crate::intents::refresh_shell(cx);
+                return;
+            }
+            self.rollback_start_handoff(cx);
+        }
+        set_pre_recording_escape(true, cx);
+        self.sync_window_bounds(
+            window,
+            cx,
+            self.pending_device_menu.is_some() || self.menu.is_present(cx),
+        );
         crate::windows::toast::Toast::show(cx, "Recording failed", message);
         crate::intents::refresh_shell(cx);
         cx.notify();
@@ -3479,6 +3491,58 @@ mod tests {
             &disconnected
         ));
         assert!(uncertain.is_dir());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn only_a_destroyed_window_closes_the_failed_start_toolbar(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        for (code, stays_open) in [
+            ("CONFIGURATION_ERROR", true),
+            (RECORDING_TARGET_CLOSED, false),
+        ] {
+            let project = directory.path().join(format!("{code}.poratake"));
+            std::fs::create_dir(&project).unwrap();
+            cx.update(|cx| {
+                RecordingControl::open(
+                    cx,
+                    RecordingTarget::Window,
+                    ScreenRect {
+                        x: 100,
+                        y: 100,
+                        width: 400,
+                        height: 250,
+                    },
+                    None,
+                    Some(7),
+                    Some("Generated window".into()),
+                    PreferenceScope::Global,
+                );
+                registry::handle(RegistryKind::RecordingControl, cx)
+                    .unwrap()
+                    .downcast::<RecordingControl>()
+                    .unwrap()
+                    .update(cx, |toolbar, window, cx| {
+                        let error = crate::daemon::DaemonRpcError {
+                            code: code.into(),
+                            message: "Target unavailable".into(),
+                        };
+                        toolbar.start_failed(&project, anyhow::Error::new(error), window, cx);
+                    })
+                    .unwrap();
+                assert_eq!(
+                    registry::handle(RegistryKind::RecordingControl, cx).is_some(),
+                    stays_open
+                );
+                assert_eq!(RecordingControl::cancel_pre_recording(cx), stays_open);
+            });
+            assert!(!project.exists());
+        }
     }
 
     #[cfg(target_os = "macos")]

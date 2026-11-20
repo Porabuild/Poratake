@@ -11669,6 +11669,27 @@ Apple Silicon and Intel, along with 82 Electron recording
 control and contract tests.
 [Outline tracking measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS Start after a window target disappears
+
+The recorder now uses the same WindowServer lookup as the
+outline to classify a target missing from ScreenCaptureKit.
+A destroyed window returns `TARGET_CLOSED`. When Start is
+rejected for that reason, GPUI removes the empty project and
+closes the pre-recording toolbar. A temporarily hidden window
+returns a retryable configuration error and keeps the toolbar
+available.
+
+A generated target reproduced the stale toolbar on the baseline.
+The updated app closed the toolbar after destruction and kept
+it available after hiding the target in both light and dark.
+All four failures removed their empty project. The fixture
+used app-local commands and a preflight-authorized daemon that
+stops before starting a capture stream.
+
+Both daemon typechecks, all 1,227 runnable GPUI tests and
+82 Electron recording-control and contract tests passed.
+[Window Start measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
