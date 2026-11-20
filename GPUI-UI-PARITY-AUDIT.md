@@ -11288,6 +11288,23 @@ The six light and dark 2× Metal scenes matched byte for byte.
 All 48 GPUI preview tests and 70 Electron reference tests passed.
 [Covered preview notification timings](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS auto-dismiss after uncovering a preview
+
+A fully covered preview now cancels its auto-dismiss countdown.
+It receives a fresh delay when AppKit reports it visible, matching
+the existing GPUI policy for cards scrolled out of view. A thumbnail
+that finishes while covered stays eligible for the delay on reveal.
+
+In native light and dark runs, an opaque AppKit window covered the
+preview for 4.6 s with a four-second configured delay. The baseline
+card had already closed when uncovered. The revised build showed
+the same preview window after uncover and removed it about 4.52–4.54 s
+later, including the exit animation and WindowServer sampling.
+
+All 49 GPUI preview tests and 70 Electron reference tests passed.
+The fixture used a generated screenshot and app-local commands.
+[Covered preview dismissal evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

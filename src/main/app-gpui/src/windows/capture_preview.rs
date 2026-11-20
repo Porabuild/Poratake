@@ -882,11 +882,23 @@ impl CapturePreviewWindow {
                 view.update(cx, |view, cx| {
                     view._visibility_observer = Some(cx.observe_window_visibility(
                         window,
-                        |view, _, _, _| {
+                        |view, visibility, window, cx| {
+                            let visible = visibility.is_visible();
                             for preview in &view.previews {
                                 if let Some(video) = &preview.video {
                                     let _ = video.visibility_changed.try_send(());
                                 }
+                                if !visible {
+                                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            if visible {
+                                let handle = window.window_handle();
+                                cx.defer(move |cx| {
+                                    if registry::handle(WindowKind::CapturePreview, cx) == Some(handle) {
+                                        schedule_revealed_previews(handle, cx);
+                                    }
+                                });
                             }
                         },
                     ));
@@ -1040,7 +1052,9 @@ fn schedule_revealed_previews(handle: AnyWindowHandle, cx: &mut App) {
                     view.revealed.then(|| {
                         view.previews
                             .iter()
-                            .filter(|preview| !preview.thumbnail_loading)
+                            .filter(|preview| {
+                                !preview.thumbnail_loading && preview.dismiss_animation.is_none()
+                            })
                             .map(|preview| (preview.id, preview.dismiss_token.clone()))
                             .collect::<Vec<_>>()
                     })
@@ -1143,6 +1157,10 @@ fn dismiss_verdict(
     };
     handle
         .update(cx, |view, window, cx| {
+            #[cfg(target_os = "macos")]
+            if !window.is_visible() {
+                return DismissVerdict::Gone;
+            }
             let Some(preview) = view.previews.iter().find(|preview| preview.id == id) else {
                 return DismissVerdict::Gone;
             };
@@ -5857,6 +5875,52 @@ mod tests {
         assert_eq!(step_hover(0.5, 0.0, 10.0), 0.0, "a long frame clamps at 0");
         assert_eq!(step_hover(0.5, 1.0, 10.0), 1.0, "and clamps at 1");
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covered_preview_gets_its_dismiss_delay_after_becoming_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.auto_dismiss = true;
+            config.preview.auto_dismiss_seconds = 2.0;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            CapturePreviewWindow::open(cx, path.clone());
+        });
+        cx.run_until_parked();
+        let window = stack_handle(cx).unwrap();
+        let stack = window.downcast::<CapturePreviewWindow>().unwrap();
+        let active = |cx: &mut gpui::TestAppContext| {
+            stack.update(cx, |view, _, _| view.active_preview_count()).unwrap_or(0)
+        };
+
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 1, "the covered card must stay available");
+
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(1_900));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 1, "the revealed card gets a full delay");
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 0);
+        assert!(path.is_file());
     }
 
     #[herogpui::test]

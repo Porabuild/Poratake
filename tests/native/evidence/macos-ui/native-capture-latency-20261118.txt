@@ -5328,3 +5328,23 @@ advancing the GPUI playback clock and that the last image stays
 available while covered. The six Retina Metal PNGs for idle,
 hover and exit matched byte for byte. The 48 GPUI preview tests
 and 70 Electron preview and thumbnail tests passed.
+
+2026-11-20 macOS auto-dismiss after uncovering a preview
+=======================================================
+
+The native UI probe enabled the four-second auto-dismiss delay
+for a generated screenshot. An opaque, click-through AppKit
+panel covered only the test preview for 4.6 seconds. The pointer
+was outside the panel. The probe tracked the same WindowServer
+window ID before and after uncovering.
+
+Theme  Baseline present at uncover  Updated present at uncover  Updated uncover→window gone
+Light                           no                         yes                       4540.8 ms
+Dark                            no                         yes                       4515.7 ms
+
+Window disappearance includes the exit transition and polling.
+The simulated-GPUI regression failed on the baseline when it
+advanced the clock while covered. It now verifies that a covered
+card survives and receives the full delay on becoming visible.
+The GPUI preview suite passed 49 tests and the four Electron
+reference files passed 70. No desktop input was posted.
