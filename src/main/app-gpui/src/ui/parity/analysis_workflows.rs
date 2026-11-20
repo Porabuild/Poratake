@@ -253,8 +253,12 @@ fn wait_for_pending_analyses(cx: &mut HeadlessAppContext, expected: usize) {
     let started = std::time::Instant::now();
     loop {
         cx.run_until_parked();
-        if cx.update(|cx| cx.global::<CoordinatorHandle>().0.read(cx).pending_analyses_for_parity())
-            == expected
+        if cx.update(|cx| {
+            cx.global::<CoordinatorHandle>()
+                .0
+                .read(cx)
+                .pending_analyses_for_parity()
+        }) == expected
         {
             break;
         }
@@ -316,7 +320,11 @@ fn latest_analysis_wins(cx: &mut HeadlessAppContext, output: &Path) {
     assert_eq!(take_notifications().len(), 1);
     older.unwrap().write_all(&[1]).unwrap();
     wait_for_pending_analyses(cx, 0);
-    assert_eq!(clipboard(cx), newest, "a late OCR result overwrote the newer QR result");
+    assert_eq!(
+        clipboard(cx),
+        newest,
+        "a late OCR result overwrote the newer QR result"
+    );
     assert!(take_notifications().is_empty());
     for call in &calls(output)[before..] {
         if let Some(path) = call["params"]["path"].as_str() {

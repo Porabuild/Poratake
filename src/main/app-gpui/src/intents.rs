@@ -209,11 +209,16 @@ pub(crate) fn hide_recording_outline(next: Option<Intent>, cx: &mut App) -> bool
             if hide_outline && outline.is_ok() {
                 overlay::mark_recording_overlay_hidden(cx);
             }
-            let result = outline.map_err(|error| format!("Could not close the recording outline: {error}"))
-                .and(camera.map_err(|error| format!("Could not close the camera preview: {error}")));
+            let result = outline
+                .map_err(|error| format!("Could not close the recording outline: {error}"))
+                .and(
+                    camera.map_err(|error| format!("Could not close the camera preview: {error}")),
+                );
             match (result, next) {
                 (Ok(()), Some(intent)) => dispatch(intent, None, cx),
-                (Err(error), Some(_)) => crate::windows::toast::Toast::show(cx, "Capture failed", error),
+                (Err(error), Some(_)) => {
+                    crate::windows::toast::Toast::show(cx, "Capture failed", error)
+                }
                 (Err(error), None) => eprintln!("[recorder] {error}"),
                 (Ok(()), None) => {}
             }

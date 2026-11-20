@@ -67,7 +67,13 @@ impl ItemView<'_> {
         icons
     }
 
-    fn thumbnail_element(&self, width: f32, height: f32, radius: f32, top_only: bool) -> AnyElement {
+    fn thumbnail_element(
+        &self,
+        width: f32,
+        height: f32,
+        radius: f32,
+        top_only: bool,
+    ) -> AnyElement {
         let apply_radius = |el: gpui::Div| {
             if !chrome::is_macos() {
                 return el;

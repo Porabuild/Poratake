@@ -328,7 +328,11 @@ mod dir_tests {
             .s3
             .secret_access_key
             .starts_with(super::super::cloud_secrets::GPUI_SECRET_PREFIX));
-        assert!(!saved.cloud.s3.secret_access_key.contains("plaintext-s3-key"));
+        assert!(!saved
+            .cloud
+            .s3
+            .secret_access_key
+            .contains("plaintext-s3-key"));
         let _ = std::fs::remove_dir_all(folder);
     }
 

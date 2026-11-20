@@ -962,14 +962,18 @@ fn capture_macos_shell_windows(cx: &mut HeadlessAppContext, output: &Path, scale
     for step in 0..4 {
         let _ = onboarding.update(cx, |view, _, cx| view.parity_set_step(step, cx));
         settle(cx, onboarding_window);
-        capture(cx, onboarding_window, output, &format!("onboarding-step-{step}"));
+        capture(
+            cx,
+            onboarding_window,
+            output,
+            &format!("onboarding-step-{step}"),
+        );
     }
     cx.update_window(onboarding_window, |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
 
-    let tray = cx
-        .update(|cx| TrayMenuWindow::open(None, false, cx).unwrap());
+    let tray = cx.update(|cx| TrayMenuWindow::open(None, false, cx).unwrap());
     let tray_window: AnyWindowHandle = tray.into();
     cx.update_window(tray_window, |_, window, _| window.set_scale_factor(scale))
         .unwrap();

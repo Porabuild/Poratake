@@ -67,9 +67,7 @@ impl EditorStateWriter {
 
     fn write(&self, path: &Path, state: Arc<serde_json::Value>, revision: u64) -> bool {
         let mut persisted = self.persisted.lock();
-        if self.revision.load(Ordering::Relaxed) != revision
-            || persisted.as_ref() == Some(&state)
-        {
+        if self.revision.load(Ordering::Relaxed) != revision || persisted.as_ref() == Some(&state) {
             return true;
         }
         if !crate::history_store::update_editor_state_by_path(path, (*state).clone()) {
@@ -4127,8 +4125,7 @@ impl ScreenshotComposition {
         let image = self.render();
         let image = image::DynamicImage::ImageRgba8(image).into_rgb8();
         let mut bytes = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92)
-            .encode_image(&image)?;
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92).encode_image(&image)?;
         Ok(bytes)
     }
 
@@ -4246,7 +4243,11 @@ impl EditorWindow {
         generation.0 = generation.0.wrapping_add(1);
         let generation = generation.0;
         let composition = self.composition();
-        let close_on_copy = crate::state::state(cx).config.get().screenshot.close_on_copy;
+        let close_on_copy = crate::state::state(cx)
+            .config
+            .get()
+            .screenshot
+            .close_on_copy;
         let handle = window.window_handle();
         self.copy_pending = true;
         self.is_copied = false;
@@ -4517,7 +4518,9 @@ impl EditorWindow {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    composition.write(&path, jpeg).map(|warning| (path, warning))
+                    composition
+                        .write(&path, jpeg)
+                        .map(|warning| (path, warning))
                 })
                 .await;
 
@@ -5032,7 +5035,11 @@ mod tests {
             let (handle, expected) = cx.update(|cx| {
                 use crate::system::clipboard::ClipboardService;
                 ClipboardService::write_text(cx, String::new());
-                assert!(crate::open_editor_with_state(cx, path, Some(Default::default())));
+                assert!(crate::open_editor_with_state(
+                    cx,
+                    path,
+                    Some(Default::default())
+                ));
                 let handle = cx
                     .windows()
                     .into_iter()
@@ -5082,7 +5089,9 @@ mod tests {
         let response_url = url.clone();
         let receiver = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
             let mut request = BufReader::new(stream);
             let mut line = String::new();
             request.read_line(&mut line).unwrap();
@@ -5128,26 +5137,39 @@ mod tests {
         });
         let (handle, expected) = cx.update(|cx| {
             crate::state::set_test_state(cx, config);
-            assert!(crate::open_editor_with_state(cx, path, Some(Default::default())));
-            let handle = cx.windows().into_iter()
+            assert!(crate::open_editor_with_state(
+                cx,
+                path,
+                Some(Default::default())
+            ));
+            let handle = cx
+                .windows()
+                .into_iter()
                 .find_map(|handle| handle.downcast::<EditorWindow>())
                 .unwrap();
-            let expected = handle.update(cx, |editor, _, cx| {
-                editor.wallpaper.padding = 20.;
-                let expected = editor.export_png().unwrap();
-                editor.upload_to_cloud(cx);
-                assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Uploading);
-                editor.wallpaper.padding = 40.;
-                expected
-            }).unwrap();
+            let expected = handle
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper.padding = 20.;
+                    let expected = editor.export_png().unwrap();
+                    editor.upload_to_cloud(cx);
+                    assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Uploading);
+                    editor.wallpaper.padding = 40.;
+                    expected
+                })
+                .unwrap();
             (handle, expected)
         });
         cx.run_until_parked();
-        handle.update(cx, |editor, _, _| {
-            assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Success);
-        }).unwrap();
+        handle
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Success);
+            })
+            .unwrap();
         cx.update(|cx| {
-            assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(url.as_str()));
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(url.as_str())
+            );
         });
         let payload = receiver.join().unwrap();
         assert!(payload.windows(expected.len()).any(|part| part == expected));

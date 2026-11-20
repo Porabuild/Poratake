@@ -429,7 +429,10 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
             let result = crate::editor::window::PreparedScreenshot::open(&source);
             #[cfg(all(feature = "parity", target_os = "macos"))]
             if std::env::var_os("PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR").is_some() {
-                println!("NATIVE_SMOKE direct editor image prepared {}", result.is_ok());
+                println!(
+                    "NATIVE_SMOKE direct editor image prepared {}",
+                    result.is_ok()
+                );
             }
             result
         });
@@ -1251,7 +1254,11 @@ impl Coordinator {
                     };
                     let _ = entity.update(cx, |coordinator, cx| {
                         if coordinator.complete_analysis(generation) {
-                            crate::windows::toast::Toast::show(cx, title, "Failed to capture the selected area");
+                            crate::windows::toast::Toast::show(
+                                cx,
+                                title,
+                                "Failed to capture the selected area",
+                            );
                         }
                     });
                     return;
@@ -1260,7 +1267,9 @@ impl Coordinator {
 
             let outcome = smol::unblock(move || {
                 let outcome = match intent {
-                    CaptureIntent::Ocr => crate::capture::analysis::recognize_text(&daemon, &captured),
+                    CaptureIntent::Ocr => {
+                        crate::capture::analysis::recognize_text(&daemon, &captured)
+                    }
                     _ => crate::capture::analysis::scan_qr_code(&daemon, &captured),
                 };
                 let _ = std::fs::remove_file(&captured);
@@ -1275,7 +1284,11 @@ impl Coordinator {
                 match outcome.clipboard {
                     Some(text) => {
                         crate::system::clipboard::ClipboardService::write_text(cx, text);
-                        crate::windows::toast::Toast::show_transient(cx, outcome.title, outcome.body);
+                        crate::windows::toast::Toast::show_transient(
+                            cx,
+                            outcome.title,
+                            outcome.body,
+                        );
                     }
                     None => crate::windows::toast::Toast::show(cx, outcome.title, outcome.body),
                 }

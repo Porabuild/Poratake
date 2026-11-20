@@ -1552,7 +1552,9 @@ struct ScrollCapturePreviewTest {
             let unexpectedFrame: Int = try await coordinateAreaCapture(
                 registry: directRegistry,
                 excludedWindowIDs: [],
-                unfiltered: { preconditionFailure("The registered window must stay excluded") },
+                unfiltered: { () async throws -> Int in
+                    preconditionFailure("The registered window must stay excluded")
+                },
                 filtered: { _ in
                     try await awaitScreenshotFrame(timeout: .zero) { lateFrame = $0 }
                 }

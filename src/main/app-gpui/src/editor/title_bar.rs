@@ -240,7 +240,11 @@ impl RenderOnce for TitleBar {
         tool_items.push(action_button_spinning(
             "action-copy",
             if self.is_copied { "check" } else { "copy" },
-            if self.is_copying { "Copying…" } else { "Copy" },
+            if self.is_copying {
+                "Copying…"
+            } else {
+                "Copy"
+            },
             accelerator::display("CommandOrControl+C"),
             EditorAction::Copy,
             &handlers,
@@ -278,7 +282,11 @@ impl RenderOnce for TitleBar {
         tool_items.push(action_button_spinning(
             "action-pin",
             "pin",
-            if self.is_pinning { "Pinning…" } else { "Pin Screenshot" },
+            if self.is_pinning {
+                "Pinning…"
+            } else {
+                "Pin Screenshot"
+            },
             String::new(),
             EditorAction::Pin,
             &handlers,

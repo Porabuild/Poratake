@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 use herogpui::gpui::{
     point, px, App, AppContext, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent,
-    MouseUpEvent, PlatformInput,
+    MouseMoveEvent, MouseUpEvent, PlatformInput,
 };
 
 use crate::capture::overlay::{AreaOverlay, ScreenRect};
@@ -1700,7 +1699,8 @@ pub fn open(cx: &mut App) {
                     let name = objc2_foundation::NSString::from_str(appearance);
                     unsafe {
                         let app: id = msg_send![class!(NSApplication), sharedApplication];
-                        let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: &*name];
+                        let appearance: id =
+                            msg_send![class!(NSAppearance), appearanceNamed: &*name];
                         let _: () = msg_send![app, setAppearance: appearance];
                     }
                     return true;
@@ -1754,10 +1754,15 @@ pub fn open(cx: &mut App) {
                     || command.starts_with("video editor hover seek ")
                     || matches!(
                         command.as_str(),
-                        "video editor export" | "video editor export done" | "video editor snapshot"
-                            | "video editor scrub begin" | "video editor hide"
-                            | "video editor show" | "video editor minimize"
-                            | "video editor visible" | "video editor active"
+                        "video editor export"
+                            | "video editor export done"
+                            | "video editor snapshot"
+                            | "video editor scrub begin"
+                            | "video editor hide"
+                            | "video editor show"
+                            | "video editor minimize"
+                            | "video editor visible"
+                            | "video editor active"
                             | "video editor focus"
                     )
                 {
@@ -1770,21 +1775,24 @@ pub fn open(cx: &mut App) {
                     };
                     return handle
                         .update(cx, |editor, window, cx| {
-                            if let Some(time) = command.strip_prefix("video editor cut ")
+                            if let Some(time) = command
+                                .strip_prefix("video editor cut ")
                                 .and_then(|value| value.parse::<f64>().ok())
                                 .filter(|time| time.is_finite())
                             {
                                 editor.cut_at(time, None, cx);
                                 return true;
                             }
-                            if let Some(time) = command.strip_prefix("video editor seek ")
+                            if let Some(time) = command
+                                .strip_prefix("video editor seek ")
                                 .and_then(|value| value.parse::<f64>().ok())
                                 .filter(|time| time.is_finite())
                             {
                                 editor.set_playhead(time, cx);
                                 return true;
                             }
-                            if let Some(time) = command.strip_prefix("video editor hover seek ")
+                            if let Some(time) = command
+                                .strip_prefix("video editor hover seek ")
                                 .and_then(|value| value.parse::<f64>().ok())
                                 .filter(|time| time.is_finite())
                             {
@@ -1825,7 +1833,11 @@ pub fn open(cx: &mut App) {
                                     };
                                     let size = frame.size(0);
                                     let Some(mut image) = frame.as_bytes(0).and_then(|bytes| {
-                                        image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, bytes.to_vec())
+                                        image::RgbaImage::from_raw(
+                                            size.width.0 as u32,
+                                            size.height.0 as u32,
+                                            bytes.to_vec(),
+                                        )
                                     }) else {
                                         return false;
                                     };
@@ -1886,23 +1898,31 @@ pub fn open(cx: &mut App) {
                         .is_ok();
                 }
                 if command == "pin fixture" {
-                    crate::windows::pin::PinWindow::open_file(cx, output.join("standalone-pin.png"));
+                    crate::windows::pin::PinWindow::open_file(
+                        cx,
+                        output.join("standalone-pin.png"),
+                    );
                     return true;
                 }
                 if command == "pin ready" {
                     return cx.windows().iter().any(|handle| {
-                        handle.downcast::<crate::windows::pin::PinWindow>().is_some()
+                        handle
+                            .downcast::<crate::windows::pin::PinWindow>()
+                            .is_some()
                     });
                 }
                 if command == "editor ready" {
-                    return cx.windows().iter().any(|handle| {
-                        handle.downcast::<crate::editor::EditorWindow>().is_some()
-                    });
+                    return cx
+                        .windows()
+                        .iter()
+                        .any(|handle| handle.downcast::<crate::editor::EditorWindow>().is_some());
                 }
                 if command == "editor annotate" {
-                    let Some(handle) = cx.windows().iter().find_map(|handle| {
-                        handle.downcast::<crate::editor::EditorWindow>()
-                    }) else {
+                    let Some(handle) = cx
+                        .windows()
+                        .iter()
+                        .find_map(|handle| handle.downcast::<crate::editor::EditorWindow>())
+                    else {
                         return false;
                     };
                     return handle
@@ -1910,22 +1930,29 @@ pub fn open(cx: &mut App) {
                         .is_ok();
                 }
                 if matches!(command.as_str(), "editor print" | "editor print reference") {
-                    let Some(handle) = cx.windows().iter().find_map(|handle| {
-                        handle.downcast::<crate::editor::EditorWindow>()
-                    }) else {
+                    let Some(handle) = cx
+                        .windows()
+                        .iter()
+                        .find_map(|handle| handle.downcast::<crate::editor::EditorWindow>())
+                    else {
                         return false;
                     };
                     if command == "editor print" {
                         return cx
                             .update_window(handle.into(), |_, window, cx| {
-                                window.dispatch_action(Box::new(crate::editor::actions::PrintScreenshot), cx);
+                                window.dispatch_action(
+                                    Box::new(crate::editor::actions::PrintScreenshot),
+                                    cx,
+                                );
                             })
                             .is_ok();
                     }
                     let reference = output.join("print-reference.png");
                     return handle
                         .update(cx, |editor, _, _| {
-                            editor.export_png().is_ok_and(|png| std::fs::write(reference, png).is_ok())
+                            editor
+                                .export_png()
+                                .is_ok_and(|png| std::fs::write(reference, png).is_ok())
                         })
                         .unwrap_or(false);
                 }
@@ -1995,22 +2022,25 @@ pub fn open(cx: &mut App) {
                     let Some(handle) = registry::handle(WindowKind::RecordingControl, cx) else {
                         return false;
                     };
-                    return cx.update_window(handle, |_, window, cx| {
-                        let event = if command == "record hover stop" {
-                            PlatformInput::MouseMove(MouseMoveEvent {
-                                position: crate::ui::parity::measured("recording-controls", 1).center(),
-                                pressed_button: None,
-                                modifiers: Modifiers::none(),
-                            })
-                        } else {
-                            PlatformInput::MouseExited(MouseExitEvent {
-                                position: point(window.bounds().size.width + px(3.), px(22.)),
-                                pressed_button: None,
-                                modifiers: Modifiers::none(),
-                            })
-                        };
-                        window.dispatch_event(event, cx);
-                    }).is_ok();
+                    return cx
+                        .update_window(handle, |_, window, cx| {
+                            let event = if command == "record hover stop" {
+                                PlatformInput::MouseMove(MouseMoveEvent {
+                                    position: crate::ui::parity::measured("recording-controls", 1)
+                                        .center(),
+                                    pressed_button: None,
+                                    modifiers: Modifiers::none(),
+                                })
+                            } else {
+                                PlatformInput::MouseExited(MouseExitEvent {
+                                    position: point(window.bounds().size.width + px(3.), px(22.)),
+                                    pressed_button: None,
+                                    modifiers: Modifiers::none(),
+                                })
+                            };
+                            window.dispatch_event(event, cx);
+                        })
+                        .is_ok();
                 }
                 if command == "status" {
                     return recorder::is_recording();
@@ -2051,7 +2081,12 @@ pub fn open(cx: &mut App) {
                         RecordingControl::open(
                             cx,
                             target,
-                            ScreenRect { x, y: rect[1], width: rect[2], height: rect[3] },
+                            ScreenRect {
+                                x,
+                                y: rect[1],
+                                width: rect[2],
+                                height: rect[3],
+                            },
                             None,
                             window_id,
                             window_id.map(|_| "Native smoke window".to_string()),

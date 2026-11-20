@@ -1,4 +1,7 @@
-use std::{cell::{Cell, RefCell}, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, SharedString, Window};
 use herogpui::components::{Tooltip, TooltipPresentationRequest, TooltipPresenter};

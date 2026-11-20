@@ -777,9 +777,9 @@ fn recorded_screen_handoff(
         crate::video::recorder::state(),
         crate::video::recorder::RecorderState::Idle
     );
-    assert!(super::daemon_fixture::calls(output)[before..].iter().all(|call| {
-        call["module"] != "screen-recorder" || call["method"] != "start"
-    }));
+    assert!(super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .all(|call| { call["module"] != "screen-recorder" || call["method"] != "start" }));
     enabling.write_all(&[1]).unwrap();
     let protection = accept_fixture_barrier(&listener);
     wait_for_recording_start(cx);
@@ -1065,9 +1065,14 @@ fn recording_start_timeout_handoff(
             match ready.try_recv() {
                 Ok(stream) => break stream,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => panic!("{phase} barrier closed"),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("{phase} barrier closed")
+                }
             }
-            assert!(waiting.elapsed() < std::time::Duration::from_secs(5), "{phase} barrier timed out");
+            assert!(
+                waiting.elapsed() < std::time::Duration::from_secs(5),
+                "{phase} barrier timed out"
+            );
             std::thread::yield_now();
         }
     };
@@ -1079,7 +1084,8 @@ fn recording_start_timeout_handoff(
     assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
     let cleanup_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cleanup_barrier = accept_fixture_barrier(&cleanup_listener);
-    fixture["recordingProtectionBarrier"] = cleanup_listener.local_addr().unwrap().to_string().into();
+    fixture["recordingProtectionBarrier"] =
+        cleanup_listener.local_addr().unwrap().to_string().into();
     std::fs::write(
         output.join("capture-fixture.json"),
         serde_json::to_vec(&fixture).unwrap(),
@@ -1180,7 +1186,8 @@ fn recording_start_timeout_handoff(
     loop {
         cx.run_until_parked();
         if !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx))
-            && !cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
+            && !cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx))
+        {
             break;
         }
         assert!(
@@ -7213,7 +7220,9 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                 let flattened = cx
                     .open_window(size(px(1280.), px(738.)), |window, cx| {
                         window.set_scale_factor(scale);
-                        cx.new(|cx| EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx))
+                        cx.new(|cx| {
+                            EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx)
+                        })
                     })
                     .unwrap();
                 for effective_zoom in [0.73, 1.37] {
@@ -7253,20 +7262,37 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                     let actual = &crops[0];
                     let expected = &crops[1];
                     actual
-                        .save(scratch.join(format!("gpui-{variant}-zoom-{effective_zoom}-preview.png")))
+                        .save(
+                            scratch
+                                .join(format!("gpui-{variant}-zoom-{effective_zoom}-preview.png")),
+                        )
                         .unwrap();
                     expected
-                        .save(scratch.join(format!("gpui-{variant}-zoom-{effective_zoom}-flattened.png")))
+                        .save(scratch.join(format!(
+                            "gpui-{variant}-zoom-{effective_zoom}-flattened.png"
+                        )))
                         .unwrap();
-                    assert_eq!(actual.dimensions(), expected.dimensions(), "{variant} at {effective_zoom}x");
+                    assert_eq!(
+                        actual.dimensions(),
+                        expected.dimensions(),
+                        "{variant} at {effective_zoom}x"
+                    );
                     let mut changed = 0;
                     let mut worst = 0;
                     for (a, e) in actual.pixels().zip(expected.pixels()) {
-                        let gap = a.0.iter().zip(e.0).map(|(a, e)| a.abs_diff(e)).max().unwrap();
+                        let gap =
+                            a.0.iter()
+                                .zip(e.0)
+                                .map(|(a, e)| a.abs_diff(e))
+                                .max()
+                                .unwrap();
                         changed += usize::from(gap > 2);
                         worst = worst.max(gap);
                     }
-                    assert_eq!(changed, 0, "{variant} at {effective_zoom}x, worst channel difference {worst}");
+                    assert_eq!(
+                        changed, 0,
+                        "{variant} at {effective_zoom}x, worst channel difference {worst}"
+                    );
                 }
                 cx.update_window(flattened.into(), |_, window, _| window.remove_window())
                     .unwrap();

@@ -670,11 +670,14 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         {
             super::workflows::wait_for_recording_start(cx);
             let started = std::time::Instant::now();
-            while !super::daemon_fixture::calls(output)[before..].iter().any(|call| {
-                call["module"] == "camera-preview"
-                    && call["method"] == "setContentProtection"
-                    && call["params"]["enabled"] == false
-            }) {
+            while !super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| {
+                    call["module"] == "camera-preview"
+                        && call["method"] == "setContentProtection"
+                        && call["params"]["enabled"] == false
+                })
+            {
                 cx.run_until_parked();
                 assert!(started.elapsed() < std::time::Duration::from_secs(5));
                 std::thread::yield_now();
@@ -804,7 +807,12 @@ fn check_disconnected_ios_device(cx: &mut HeadlessAppContext, output: &Path, sca
         RecordingControl::open(
             cx,
             RecordingTarget::Area,
-            crate::capture::overlay::ScreenRect { x: 40, y: 80, width: 640, height: 360 },
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
             None,
             None,
             None,
@@ -817,7 +825,14 @@ fn check_disconnected_ios_device(cx: &mut HeadlessAppContext, output: &Path, sca
     settle(cx, window);
     click_measured(cx, window, "recording-controls", 5);
     let started = Instant::now();
-    while cx.update(|cx| crate::state::state(cx).config.get().recording.ios_device.is_some()) {
+    while cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .get()
+            .recording
+            .ios_device
+            .is_some()
+    }) {
         cx.run_until_parked();
         assert!(
             started.elapsed() < Duration::from_secs(3),
@@ -828,7 +843,8 @@ fn check_disconnected_ios_device(cx: &mut HeadlessAppContext, output: &Path, sca
     settle(cx, window);
     capture(cx, window, output, "record-control-ios-device-disconnected");
     escape(cx, window);
-    let close_index = super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
+    let close_index =
+        super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
     click_measured(cx, window, "recording-controls", close_index);
     assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
 }
@@ -868,13 +884,21 @@ fn check_camera_hide_handoff(cx: &mut HeadlessAppContext, output: &Path) {
         RecordingControl::open(
             cx,
             RecordingTarget::Area,
-            ScreenRect { x: 40, y: 80, width: 640, height: 360 },
+            ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
             None,
             None,
             None,
             PreferenceScope::Global,
         );
-        (registry::handle(WindowKind::RecordingControl, cx).unwrap(), original)
+        (
+            registry::handle(WindowKind::RecordingControl, cx).unwrap(),
+            original,
+        )
     });
     wait_for_camera_change(cx, window);
     cx.update_window(window, |root, _, cx| {
@@ -899,7 +923,11 @@ fn check_camera_hide_handoff(cx: &mut HeadlessAppContext, output: &Path) {
     }
     let picker = super::workflows::area_picker(cx);
     escape(cx, picker);
-    cx.update(|cx| crate::state::state(cx).config.update(|config| *config = original));
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| *config = original)
+    });
     if let Some(contents) = previous {
         std::fs::write(&fixture, contents).unwrap();
     } else {
@@ -960,11 +988,22 @@ fn check_held_setting(
     let before = setting_is_on(cx);
     change(cx);
     let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(setting_is_on(cx), before, "control state must await the daemon reply");
+    assert_eq!(
+        setting_is_on(cx),
+        before,
+        "control state must await the daemon reply"
+    );
     if method == "show" {
-        assert!(!cx.update_window(window, |root, _, cx| {
-            root.downcast::<RecordingControl>().unwrap().read(cx).start_enabled(cx)
-        }).unwrap(), "Start must wait for the camera preview");
+        assert!(
+            !cx.update_window(window, |root, _, cx| {
+                root.downcast::<RecordingControl>()
+                    .unwrap()
+                    .read(cx)
+                    .start_enabled(cx)
+            })
+            .unwrap(),
+            "Start must wait for the camera preview"
+        );
     }
     click_measured(cx, window, "recording-controls", index);
     assert_eq!(setting_is_on(cx), before);
@@ -982,14 +1021,17 @@ fn check_held_setting(
     }
 }
 
-
 #[cfg(target_os = "macos")]
 fn wait_for_camera_change(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
     use crate::windows::recording_control::RecordingControl;
     let started = std::time::Instant::now();
     while cx
         .update_window(window, |root, _, cx| {
-            root.downcast::<RecordingControl>().unwrap().read(cx).parity_camera_status().1
+            root.downcast::<RecordingControl>()
+                .unwrap()
+                .read(cx)
+                .parity_camera_status()
+                .1
         })
         .unwrap()
     {

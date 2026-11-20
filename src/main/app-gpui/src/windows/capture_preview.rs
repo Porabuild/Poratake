@@ -866,7 +866,9 @@ impl CapturePreviewWindow {
                             if visible {
                                 let handle = window.window_handle();
                                 cx.defer(move |cx| {
-                                    if registry::handle(WindowKind::CapturePreview, cx) == Some(handle) {
+                                    if registry::handle(WindowKind::CapturePreview, cx)
+                                        == Some(handle)
+                                    {
                                         schedule_revealed_previews(handle, cx);
                                     }
                                 });
@@ -2497,8 +2499,10 @@ impl CapturePreviewWindow {
                             };
                             let image_bounds = Bounds::new(
                                 gpui::point(
-                                    bounds.origin.x + px((f32::from(bounds.size.width) - fitted_w) * 0.5),
-                                    bounds.origin.y + px((f32::from(bounds.size.height) - fitted_h) * 0.5),
+                                    bounds.origin.x
+                                        + px((f32::from(bounds.size.width) - fitted_w) * 0.5),
+                                    bounds.origin.y
+                                        + px((f32::from(bounds.size.height) - fitted_h) * 0.5),
                                 ),
                                 size(px(fitted_w), px(fitted_h)),
                             );
@@ -2535,7 +2539,9 @@ impl CapturePreviewWindow {
             None => div()
                 .absolute()
                 .inset_0()
-                .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS - 1.0)))
+                .when(chrome::is_macos(), |el| {
+                    el.rounded(px(PREVIEW_RADIUS - 1.0))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -5879,8 +5885,11 @@ mod tests {
             .update(cx, |view, window, _| {
                 view.pointer_inside = true;
                 view.previews[0].hovered = true;
-                view.tooltip_presenter
-                    .show_for_test("close".into(), "Close preview".into(), window);
+                view.tooltip_presenter.show_for_test(
+                    "close".into(),
+                    "Close preview".into(),
+                    window,
+                );
                 assert!(view.tooltip_presenter.active_content().is_some());
             })
             .unwrap();
@@ -5926,7 +5935,9 @@ mod tests {
         let window = stack_handle(cx).unwrap();
         let stack = window.downcast::<CapturePreviewWindow>().unwrap();
         let active = |cx: &mut gpui::TestAppContext| {
-            stack.update(cx, |view, _, _| view.active_preview_count()).unwrap_or(0)
+            stack
+                .update(cx, |view, _, _| view.active_preview_count())
+                .unwrap_or(0)
         };
 
         cx.executor().advance_clock(Duration::from_secs(1));

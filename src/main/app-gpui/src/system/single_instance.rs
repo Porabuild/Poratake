@@ -133,7 +133,10 @@ fn process_is_running(pid: u32) -> bool {
     if pid <= 0 {
         return false;
     }
-    unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    unsafe {
+        libc::kill(pid, 0) == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
 }
 
 impl SingleInstanceGuard {

@@ -338,7 +338,10 @@ impl RecordingControl {
                         #[cfg(target_os = "macos")]
                         if this.camera && !this.request_pre_recording_camera(None, cx) {
                             this.camera = false;
-                            this.persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                            this.persist_pre_recording_preference(
+                                RecordingPreference::Camera(false),
+                                cx,
+                            );
                         }
                         #[cfg(not(target_os = "macos"))]
                         if this.camera {
@@ -1113,7 +1116,10 @@ impl RecordingControl {
                         Ok(()) => {
                             let requested_stop = this.start_stop_requested.take();
                             if this.stop_previous_state.is_none() {
-                                let terminal_error = this.recorder_terminal_error.as_ref().and_then(|pending| pending.lock().take());
+                                let terminal_error = this
+                                    .recorder_terminal_error
+                                    .as_ref()
+                                    .and_then(|pending| pending.lock().take());
                                 if let Some(error) = terminal_error {
                                     this.fail_recording(error, window, cx);
                                     return;
@@ -1125,7 +1131,10 @@ impl RecordingControl {
                                 recorder::confirm_started();
                             }
                             this.started_at = Some(cx.background_executor().now());
-                            if this.camera && !this.camera_preview_visible && this.stop_previous_state.is_none() {
+                            if this.camera
+                                && !this.camera_preview_visible
+                                && this.stop_previous_state.is_none()
+                            {
                                 if let Err(error) = this.show_camera_preview(cx) {
                                     eprintln!("[recorder] camera-preview show failed: {error}");
                                 }
@@ -1142,12 +1151,22 @@ impl RecordingControl {
                         }
                         Err(error) => {
                             if error.code != "DAEMON_UNAVAILABLE" {
-                                recorder::release_camera_protection(&crate::state::state(cx).daemon);
+                                recorder::release_camera_protection(
+                                    &crate::state::state(cx).daemon,
+                                );
                             }
-                            if error.code != "DAEMON_UNAVAILABLE" && this.stop_previous_state.is_none() && this.start_stop_requested.is_none() {
+                            if error.code != "DAEMON_UNAVAILABLE"
+                                && this.stop_previous_state.is_none()
+                                && this.start_stop_requested.is_none()
+                            {
                                 if let Some(project) = this.project.take() {
                                     recorder::force_idle();
-                                    this.start_failed(&project, anyhow::Error::new(error), window, cx);
+                                    this.start_failed(
+                                        &project,
+                                        anyhow::Error::new(error),
+                                        window,
+                                        cx,
+                                    );
                                     return;
                                 }
                             }
@@ -1418,7 +1437,8 @@ impl RecordingControl {
                 return;
             };
             let _ = entity.update(cx, |this, cx| {
-                if this.recording_error_generation != generation || this.mode != Mode::PreRecording {
+                if this.recording_error_generation != generation || this.mode != Mode::PreRecording
+                {
                     return;
                 }
                 crate::intents::forget_recording_camera_hide(cx);
@@ -1461,7 +1481,10 @@ impl RecordingControl {
                     if !had_preview {
                         this.hide_camera_preview(cx);
                         this.camera = false;
-                        this.persist_pre_recording_preference(RecordingPreference::Camera(false), cx);
+                        this.persist_pre_recording_preference(
+                            RecordingPreference::Camera(false),
+                            cx,
+                        );
                     }
                     return;
                 }
@@ -1664,11 +1687,9 @@ impl RecordingControl {
         if self.mode == Mode::Recording {
             let daemon = crate::state::state(cx).daemon;
             match daemon.camera_preview().begin_hide() {
-                Ok(wait) => self.await_recording_setting(
-                    wait,
-                    |this, _, _| this.camera_pending = false,
-                    cx,
-                ),
+                Ok(wait) => {
+                    self.await_recording_setting(wait, |this, _, _| this.camera_pending = false, cx)
+                }
                 Err(error) => {
                     self.camera_pending = false;
                     eprintln!("[recorder] camera-preview hide failed: {error}");
@@ -1938,7 +1959,11 @@ impl RecordingControl {
                         if let Some(entity) = toggle_entity.upgrade() {
                             entity.update(cx, |this, cx| match kind {
                                 DeviceKind::Microphone => {
-                                    this.set_microphone(!this.microphone, this.selected_mic_id.clone(), cx);
+                                    this.set_microphone(
+                                        !this.microphone,
+                                        this.selected_mic_id.clone(),
+                                        cx,
+                                    );
                                 }
                                 DeviceKind::Camera => {
                                     this.set_camera(!this.camera, cx);
@@ -2142,7 +2167,9 @@ impl RecordingControl {
                     return;
                 }
                 #[cfg(target_os = "macos")]
-                if crate::system::permissions::ensure_access(crate::system::permissions::Device::Camera) {
+                if crate::system::permissions::ensure_access(
+                    crate::system::permissions::Device::Camera,
+                ) {
                     self.request_pre_recording_camera(Some((id, name)), cx);
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -4862,7 +4889,10 @@ mod tests {
             }),
             "a second press must cancel the pending menu before the resize arrives"
         );
-        assert_eq!(control.read_with(cx, |control, _| control.device_request), 0);
+        assert_eq!(
+            control.read_with(cx, |control, _| control.device_request),
+            0
+        );
 
         cx.simulate_resize(size(px(332.0), px(52.0)));
 

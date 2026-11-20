@@ -296,7 +296,7 @@ jobs:
 
   linux-gpui:
     name: Linux GPUI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository

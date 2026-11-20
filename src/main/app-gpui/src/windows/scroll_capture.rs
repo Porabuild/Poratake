@@ -90,8 +90,15 @@ impl ScrollCaptureUi {
                 let result = smol::unblock(wait).await;
                 let _ = entity.update(cx, |ui, cx| {
                     ui.auto_scroll_pending = false;
-                    if let Some(error) = result.err().filter(|_| ui.finish_state == FinishState::Capturing) {
-                        crate::windows::toast::Toast::show(cx, "Auto-scroll failed", error.to_string());
+                    if let Some(error) = result
+                        .err()
+                        .filter(|_| ui.finish_state == FinishState::Capturing)
+                    {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Auto-scroll failed",
+                            error.to_string(),
+                        );
                     }
                     cx.notify();
                 });
@@ -586,7 +593,10 @@ pub(crate) fn native_scroll_exclusion_probe(cx: &mut App) {
                         }
                         "cancel" => {
                             ui.request_cancel();
-                            assert!(matches!(signals.try_recv(), Ok(ScrollSessionSignal::Cancel)));
+                            assert!(matches!(
+                                signals.try_recv(),
+                                Ok(ScrollSessionSignal::Cancel)
+                            ));
                             println!("scroll fixture cancel dispatched");
                             true
                         }

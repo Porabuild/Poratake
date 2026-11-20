@@ -334,11 +334,7 @@ impl DaemonHandle {
         Err(anyhow!(failure))
     }
 
-    fn spawn_reader(
-        &self,
-        stdout: std::process::ChildStdout,
-        startup: SyncSender<DaemonStartup>,
-    ) {
+    fn spawn_reader(&self, stdout: std::process::ChildStdout, startup: SyncSender<DaemonStartup>) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-reader".into())
@@ -1012,7 +1008,9 @@ impl ScreenRecorderClient<'_> {
     ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
         self.begin_setting(
             ScreenRecorderMethod::SetSystemAudio,
-            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
+            Some(serde_json::to_value(ScreenRecorderToggleRequest {
+                enabled,
+            })?),
         )
     }
 
@@ -1040,10 +1038,15 @@ impl ScreenRecorderClient<'_> {
     }
 
     #[cfg(target_os = "macos")]
-    pub fn begin_camera(&self, enabled: bool) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+    pub fn begin_camera(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
         self.begin_setting(
             ScreenRecorderMethod::SetCamera,
-            Some(serde_json::to_value(ScreenRecorderToggleRequest { enabled })?),
+            Some(serde_json::to_value(ScreenRecorderToggleRequest {
+                enabled,
+            })?),
         )
     }
 
@@ -1155,7 +1158,8 @@ impl ScrollCaptureClient<'_> {
             ),
             None => (ScrollCaptureMethod::StopAutoScroll, None),
         };
-        self.daemon.begin_timed_call(SCROLL_CAPTURE_MODULE, method.id(), params)
+        self.daemon
+            .begin_timed_call(SCROLL_CAPTURE_MODULE, method.id(), params)
     }
 
     #[cfg(any(test, all(windows, feature = "parity")))]
@@ -1654,10 +1658,7 @@ done
         }));
 
         let started = Instant::now();
-        assert!(daemon
-            .start()
-            .unwrap_err()
-            .is::<DaemonExitedBeforeReady>());
+        assert!(daemon.start().unwrap_err().is::<DaemonExitedBeforeReady>());
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(!daemon.is_running());
 
@@ -1670,7 +1671,10 @@ done
         }
         assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
         assert!(daemon.is_running());
-        assert_eq!(std::fs::read(directory.path().join("daemon.starts")).unwrap(), b"xxx");
+        assert_eq!(
+            std::fs::read(directory.path().join("daemon.starts")).unwrap(),
+            b"xxx"
+        );
         daemon.stop();
     }
 

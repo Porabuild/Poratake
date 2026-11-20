@@ -178,7 +178,10 @@ impl Source {
             return self.render(
                 timeline_time,
                 max_dimensions,
-                Frames { video: None, camera: None },
+                Frames {
+                    video: None,
+                    camera: None,
+                },
             );
         }
         let adjusted = (timeline_time - first_frame_duration).max(0.0);
@@ -194,7 +197,13 @@ impl Source {
         }
 
         let video = cached_frame(&mut self.video_frame, video_time, || {
-            decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled, None)
+            decode_frame(
+                self.video.as_ref(),
+                video_time,
+                decode_wait,
+                cancelled,
+                None,
+            )
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
             let camera_wait_superseded = camera_wait.map(|(superseded, _)| superseded);
@@ -252,9 +261,11 @@ impl Source {
     }
 
     fn warm_camera(&mut self, time: f64) {
-        if self.camera_warmup.as_ref().is_some_and(|pending| {
-            matches!(pending.completed.try_recv(), Err(TryRecvError::Empty))
-        }) {
+        if self
+            .camera_warmup
+            .as_ref()
+            .is_some_and(|pending| matches!(pending.completed.try_recv(), Err(TryRecvError::Empty)))
+        {
             return;
         }
         let (cancel, cancelled) = smol::channel::bounded(1);
@@ -332,9 +343,9 @@ fn decode_frame(
     let decoder = decoder?;
     let started = Instant::now();
     let frame = match superseded {
-        Some((superseded, executor)) => smol::block_on(
-            decoder.frame_at_supersedable(time, cancelled, superseded, executor),
-        ),
+        Some((superseded, executor)) => {
+            smol::block_on(decoder.frame_at_supersedable(time, cancelled, superseded, executor))
+        }
         None => decoder.frame_at_interruptible(time, cancelled),
     };
     *decode_wait += started.elapsed();
@@ -353,8 +364,8 @@ fn cached_frame(
         return Some(frame.pixmap.clone());
     }
     #[cfg(all(feature = "parity", target_os = "macos"))]
-    let decode_started = std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK")
-        .map(|_| std::time::Instant::now());
+    let decode_started =
+        std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").map(|_| std::time::Instant::now());
     let decoded = decode();
     #[cfg(all(feature = "parity", target_os = "macos"))]
     if let Some(started) = decode_started {
@@ -538,7 +549,10 @@ mod tests {
             height: 2,
             bgra: [220, 140, 50, 255].repeat(4).into(),
         };
-        let before = cached_frame(&mut source.video_frame, video_time, || Some(decoded.clone())).unwrap();
+        let before = cached_frame(&mut source.video_frame, video_time, || {
+            Some(decoded.clone())
+        })
+        .unwrap();
         let intro_duration = source.engine.first_frame_duration();
         assert!(intro_duration > 0.);
         let rendered_intro = source.compose(0., None).expect("intro preview");
@@ -547,13 +561,20 @@ mod tests {
             .as_chunks::<4>()
             .0
             .contains(&[10, 20, 30, 255]));
-        assert!(Arc::ptr_eq(&before, &source.video_frame.as_ref().unwrap().pixmap));
+        assert!(Arc::ptr_eq(
+            &before,
+            &source.video_frame.as_ref().unwrap().pixmap
+        ));
 
         assert!(source.compose(intro_duration, None).is_none());
-        assert!(source.compose(intro_duration + 0.25, Some((1, 1))).is_none());
+        assert!(source
+            .compose(intro_duration + 0.25, Some((1, 1)))
+            .is_none());
 
         cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
-        let recovered = source.compose(intro_duration + video_time, None).expect("screen preview");
+        let recovered = source
+            .compose(intro_duration + video_time, None)
+            .expect("screen preview");
         assert!(recovered
             .data()
             .as_chunks::<4>()

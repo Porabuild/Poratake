@@ -1056,8 +1056,9 @@ impl VideoEditorWindow {
                 && source
                     .try_lock()
                     .is_none_or(|source| source.has_camera_decoder()));
-        let (camera_wait, camera_wait_superseded) =
-            interruptible_camera_wait.then(|| smol::channel::bounded(1)).unzip();
+        let (camera_wait, camera_wait_superseded) = interruptible_camera_wait
+            .then(|| smol::channel::bounded(1))
+            .unzip();
         self.preview_camera_wait = camera_wait;
         self.compose_in_flight = true;
         self.queued_frame = None;
@@ -1084,7 +1085,9 @@ impl VideoEditorWindow {
                             max_dimensions,
                             &mut decode_wait,
                             Some(&cancelled),
-                            camera_wait_superseded.as_ref().map(|wait| (wait, &executor)),
+                            camera_wait_superseded
+                                .as_ref()
+                                .map(|wait| (wait, &executor)),
                         )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
@@ -1122,10 +1125,15 @@ impl VideoEditorWindow {
                     }
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     if std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").is_some() {
-                        let size = composed.as_ref().map(|image| image.size(0)).unwrap_or_default();
+                        let size = composed
+                            .as_ref()
+                            .map(|image| image.size(0))
+                            .unwrap_or_default();
                         println!(
                             "VIDEO_SMOKE update {time:.6} {:.3} {} {}",
-                            elapsed.as_secs_f64() * 1000., size.width.0, size.height.0,
+                            elapsed.as_secs_f64() * 1000.,
+                            size.width.0,
+                            size.height.0,
                         );
                     }
                     if let Some(image) = composed {
@@ -3166,7 +3174,11 @@ impl VideoEditorWindow {
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
-    pub(crate) fn export_to_path_for_parity(&mut self, output: PathBuf, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn export_to_path_for_parity(
+        &mut self,
+        output: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(project) = self.path.as_ref().map(PathBuf::from) else {
             return false;
         };
@@ -8084,7 +8096,13 @@ mod keyboard_demo_tests {
     fn active_preview_quality_tracks_the_frame_budget() {
         let budget = active_preview_budget(60.0);
         assert_eq!(
-            adjust_preview_quality(3, 0, budget + Duration::from_millis(1), Duration::ZERO, budget),
+            adjust_preview_quality(
+                3,
+                0,
+                budget + Duration::from_millis(1),
+                Duration::ZERO,
+                budget
+            ),
             (2, 0)
         );
         assert_eq!(
@@ -8098,7 +8116,13 @@ mod keyboard_demo_tests {
             (3, 0)
         );
         assert_eq!(
-            adjust_preview_quality(0, 0, budget + Duration::from_millis(1), Duration::ZERO, budget),
+            adjust_preview_quality(
+                0,
+                0,
+                budget + Duration::from_millis(1),
+                Duration::ZERO,
+                budget
+            ),
             (0, 0)
         );
         assert!(
@@ -8113,7 +8137,13 @@ mod keyboard_demo_tests {
         let decode = Duration::from_millis(1500);
         let render = Duration::from_millis(4);
         assert_eq!(
-            adjust_preview_quality(3, PREVIEW_QUALITY_RAISE_FRAMES - 1, decode + render, decode, budget),
+            adjust_preview_quality(
+                3,
+                PREVIEW_QUALITY_RAISE_FRAMES - 1,
+                decode + render,
+                decode,
+                budget
+            ),
             (3, 0)
         );
         assert_eq!(

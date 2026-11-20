@@ -492,7 +492,11 @@ mod tests {
             None,
         );
         let pixels = canvas.pixmap().data();
-        for (column, color) in [(8, [255, 95, 87]), (20, [255, 189, 46]), (32, [40, 200, 64])] {
+        for (column, color) in [
+            (8, [255, 95, 87]),
+            (20, [255, 189, 46]),
+            (32, [40, 200, 64]),
+        ] {
             let offset = (14 * 40 + column) * 4;
             assert_eq!(&pixels[offset..offset + 3], &color);
         }

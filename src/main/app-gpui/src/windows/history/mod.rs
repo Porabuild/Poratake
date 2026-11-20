@@ -810,7 +810,10 @@ impl Render for HistoryWindow {
                     .px(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
                     .text_size(px(crate::ui::chrome::TEXT_SM))
                     .text_color(theme.muted_foreground)
-                    .child(crate::ui::icon::spinner_element("history-mutation", px(14.)))
+                    .child(crate::ui::icon::spinner_element(
+                        "history-mutation",
+                        px(14.),
+                    ))
                     .child(status)
             }))
             .when(has_items, |el| {

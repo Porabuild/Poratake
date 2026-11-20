@@ -54,10 +54,7 @@ fn is_protected(value: &str) -> bool {
     value.starts_with(SAFE_STORAGE_PREFIX) || value.starts_with(GPUI_SECRET_PREFIX)
 }
 
-pub fn reveal_cloud_secrets(
-    cloud: &mut CloudConfig,
-    policy: SecretPolicy,
-) -> RetainedCloudSecrets {
+pub fn reveal_cloud_secrets(cloud: &mut CloudConfig, policy: SecretPolicy) -> RetainedCloudSecrets {
     let mut retained = RetainedCloudSecrets::default();
     let (revealed_s3, s3_retained) = reveal_value(&cloud.s3.secret_access_key, policy);
     cloud.s3.secret_access_key = revealed_s3;
@@ -195,7 +192,11 @@ fn protect_value(
 
     if let Some(retained) = retained {
         let failed = retained.revealed_value.as_deref() != Some(value);
-        return (retained.stored_value.clone(), Some(retained.clone()), failed);
+        return (
+            retained.stored_value.clone(),
+            Some(retained.clone()),
+            failed,
+        );
     }
 
     (String::new(), None, true)
@@ -311,7 +312,8 @@ mod platform {
             c_str: *const c_char,
             encoding: u32,
         ) -> *const c_void;
-        fn CFDataCreate(allocator: *const c_void, bytes: *const u8, length: isize) -> *const c_void;
+        fn CFDataCreate(allocator: *const c_void, bytes: *const u8, length: isize)
+            -> *const c_void;
         fn CFDataGetLength(the_data: *const c_void) -> isize;
         fn CFDataGetBytePtr(the_data: *const c_void) -> *const u8;
         fn CFDictionaryCreate(
@@ -537,7 +539,11 @@ mod platform {
         Some(out)
     }
 
-    pub fn aes_256_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    pub fn aes_256_cbc_decrypt(
+        key: &[u8; 32],
+        iv: &[u8; 16],
+        ciphertext: &[u8],
+    ) -> Option<Vec<u8>> {
         let mut out = vec![0u8; ciphertext.len() + 16];
         let mut moved = 0usize;
         let status = unsafe {
@@ -756,8 +762,8 @@ mod platform {
         if ok == 0 || output.pb_data.is_null() {
             return None;
         }
-        let plain = unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }
-            .to_vec();
+        let plain =
+            unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
         unsafe { LocalFree(output.pb_data.cast()) };
         String::from_utf8(plain).ok()
     }
@@ -865,9 +871,7 @@ mod tests {
         assert!(!failed);
         if cfg!(target_os = "macos") {
             assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
-            assert!(cloud.rest.headers[0]
-                .value
-                .starts_with(GPUI_SECRET_PREFIX));
+            assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
             assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
 
             let _ = reveal_cloud_secrets(&mut cloud, policy);

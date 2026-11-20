@@ -278,7 +278,14 @@ mod backend {
             match open_writer(&path, settings) {
                 Ok((writer, video_stream, audio_stream)) => {
                     let _ = ready.send(Ok(()));
-                    pump(writer, video_stream, audio_stream, commands, spare_tx, &cancelled);
+                    pump(
+                        writer,
+                        video_stream,
+                        audio_stream,
+                        commands,
+                        spare_tx,
+                        &cancelled,
+                    );
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -1371,11 +1378,7 @@ mod tests {
         settings: Settings,
         cancelled: Arc<AtomicBool>,
         worker: Option<std::thread::JoinHandle<()>>,
-    ) -> (
-        Encoder,
-        Receiver<Command>,
-        mpsc::SyncSender<Vec<u8>>,
-    ) {
+    ) -> (Encoder, Receiver<Command>, mpsc::SyncSender<Vec<u8>>) {
         let (commands, receiver) = mpsc::sync_channel(8);
         let (spare_tx, spare_rx) = mpsc::sync_channel(4);
         let encoder = Encoder {
