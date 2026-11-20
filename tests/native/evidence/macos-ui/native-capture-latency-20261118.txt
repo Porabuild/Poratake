@@ -5653,3 +5653,34 @@ This verifies the raw full-display stream. The previously
 recorded GPUI Start, Stop, edit and export check uses a separate
 generated-window allowlist fixture. All 82 Electron recording
 control and daemon contract tests passed.
+
+2026-11-20 macOS scroll duplicate comparison experiments
+=========================================================
+
+The baseline and packed-pixel candidate compared separate
+generated 3456 × 2060 Display P3 bitmaps. Three paired
+processes ran 24 comparisons per case and discarded the
+first four timing samples. Identical-frame medians were
+18.3–18.7 ms before and 0.78–0.82 ms with the candidate.
+The lifetime physical-footprint peak increased by about
+110 MiB and 27.5 MiB respectively from the pre-comparison
+sample. The first-row and last-row differences still used
+the existing normalized comparison. Earlier cropped and
+reusable drawing-band variants also reduced peak memory
+and took longer for identical frames.
+
+The native comparison used one generated AppKit window with
+no pointer input and two independent ScreenCaptureKit images.
+Both builds recognized identical 3200 × 2000 images and
+rejected the image captured after a marker changed. No capture
+was saved. Two paired warm medians were 16.17 and 15.96 ms for
+the baseline, and 16.14 and 15.91 ms for the candidate.
+
+The native provider returned 25,608,192 bytes for an image
+with 2,000 rows of 12,800 bytes. The packed-byte shortcut
+required exactly the declared image size so it could not
+equate two cropped views of different pixels. With no native
+improvement measured, the candidate was reverted. The
+existing fixed-header ambiguity and accepted-prefix behavior
+is retained. The arm64 and Rosetta Swift fixture suites passed
+with the candidate, and all 62 targeted Electron tests passed.

@@ -11495,6 +11495,26 @@ evidence above uses generated-window isolation.
 All 82 Electron recording-control and daemon contract tests
 passed. [Full-display stream measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS scroll duplicate comparison experiments
+
+Two independently captured 3200 × 2000 images of a generated
+AppKit window compared equal. After a colored marker changed,
+the next image compared different in both builds. The capture
+used ScreenCaptureKit with the existing Screen Recording grant
+and retained only comparison results and timings.
+
+Comparing normalized bands reduced peak memory and took longer
+on identical generated frames. Comparing packed bytes made
+synthetic duplicates faster. The direct ScreenCaptureKit frames
+had 8 KiB of additional backing storage, so the guarded packed
+path deferred to the existing comparison. The native medians
+were about 16 ms in both builds. The experiments were reverted.
+
+The arm64 and Rosetta Swift fixtures passed with the candidate,
+including the fixed-header seam and accepted-prefix checks.
+All 62 Electron scroll and daemon contract tests passed.
+[Duplicate comparison measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
