@@ -229,7 +229,7 @@ pub fn run_with_camera_segments_presence(
         video_segments: &video_segments,
         dimensions,
         fps,
-        total_frames: ((total_duration * fps as f64).ceil() as u64).max(1),
+        total_frames: export_frame_count(total_duration, fps),
         total_duration,
         source_duration: request.state.source_duration.unwrap_or(info.duration),
     };
@@ -254,6 +254,17 @@ pub fn run_with_camera_segments_presence(
         return Err("the export was cancelled".to_string());
     }
     result
+}
+
+fn export_frame_count(duration: f64, fps: u32) -> u64 {
+    const MICROS_PER_SECOND: f64 = 1_000_000.0;
+    let fps = f64::from(fps);
+    let whole_frames = (duration * fps).floor();
+    let boundary_micros = (whole_frames / fps * MICROS_PER_SECOND).round();
+    let end_micros = (duration * MICROS_PER_SECOND).round();
+    (whole_frames as u64)
+        .saturating_add(u64::from(end_micros > boundary_micros))
+        .max(1)
 }
 
 struct Session<'a> {
@@ -846,6 +857,78 @@ mod tests {
                 assert!(red < 30, "camera was visible at {time}s: red={red}");
             }
         }
+    }
+
+    #[test]
+    fn export_frame_count_uses_the_timeline_boundary_at_microsecond_precision() {
+        let trimmed_duration = 14.0 / 60.0 + (298.0 / 60.0 - 284.0 / 60.0);
+        assert_eq!(export_frame_count(trimmed_duration, 60), 28);
+        assert_eq!(export_frame_count(trimmed_duration + 1.0 / 60.0, 60), 29);
+        assert_eq!(export_frame_count(trimmed_duration + 0.000_001, 60), 29);
+        assert_eq!(export_frame_count(0.000_000_1, 60), 1);
+        assert_eq!(export_frame_count(1.0 / 12.0, 12), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires development FFmpeg"]
+    fn frame_aligned_trims_export_exactly_the_requested_frames() {
+        use crate::windows::video_editor::model::Segment;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("trim.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/sparse-screen-pause.mov"),
+        )
+        .unwrap();
+
+        let mut state = VideoEditorState {
+            segments: vec![
+                Segment {
+                    original_end: 14.0 / 60.0,
+                    ..Segment::spanning(31.0)
+                },
+                Segment {
+                    id: "second".into(),
+                    original_start: 284.0 / 60.0,
+                    original_end: 298.0 / 60.0,
+                    ..Segment::spanning(31.0)
+                },
+            ],
+            ..VideoEditorState::default()
+        };
+        state.wallpaper.enabled = false;
+        state.export_settings.resolution = "original".into();
+        state.export_settings.frame_rate = "60".into();
+        let output = directory.path().join("trim.mp4");
+        run(
+            Request {
+                project,
+                output: output.clone(),
+                state,
+            },
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+
+        let decoded = std::process::Command::new(crate::video::ffmpeg_path())
+            .args(["-v", "error", "-i"])
+            .arg(output)
+            .args(["-an", "-f", "framehash", "-"])
+            .output()
+            .unwrap();
+        assert!(decoded.status.success(), "{:?}", decoded.stderr);
+        let manifest = String::from_utf8(decoded.stdout).unwrap();
+        assert!(manifest.lines().any(|line| line == "#tb 0: 1/60"));
+        let timestamps: Vec<u64> = manifest
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| line.split(',').nth(2).unwrap().trim().parse().unwrap())
+            .collect();
+        assert_eq!(timestamps, (0..28).collect::<Vec<_>>());
     }
 
     #[cfg(target_os = "macos")]

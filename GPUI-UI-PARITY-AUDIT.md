@@ -11824,9 +11824,34 @@ more images in three of the four loaded pairs.
 The baseline export also produced 29 frames for two nominal
 14-frame trims at 60 fps. The stored endpoints make the frame
 count expression evaluate to 28.000000000000004 before the
-ceiling. This remains open. The decoder comparison used two
-exact quarter-second trims.
+ceiling. The decoder comparison used two exact quarter-second
+trims. The frame-count fix below covers the 14-frame case.
 [Playback, seek and export measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-20 frame-aligned trims in GPUI and Electron export
+
+GPUI and Electron now compare the end of the timeline with the
+previous whole-frame boundary in microseconds, matching the
+timestamp unit used by WebCodecs. Two 14-frame trims at 60 fps
+total 28 frames. An additional microsecond still requires a
+final frame. A positive export shorter than one frame still
+gets one frame. The comparison applies to the output count,
+while composition samples keep their existing timestamps.
+
+The baseline macOS regression decoded 29 frames with timestamps
+0 through 28 at a time base of 1/60 s. The baseline Electron
+regression also submitted 29 frames to the encoder. The updated
+Electron regression submitted 28 for the aligned trims and 29
+for the genuine partial tail.
+
+The macOS development app exported the aligned trims in light
+and dark. Both MP4s decoded to 28 frames with timestamps 0
+through 27 at a time base of 1/60 s. A dark-mode repeat with
+the genuine partial tail decoded to 29 frames through 28/60 s.
+The focused FFmpeg integration and all 1,231 runnable GPUI
+tests passed. The repository gate passed 2,422 tests with
+three skips after rerunning with three Vitest workers.
+[Frame-count verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 

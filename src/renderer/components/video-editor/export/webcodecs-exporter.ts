@@ -475,7 +475,16 @@ export class WebCodecsExporter {
     const videoTimelineDuration = getTotalTimelineDuration(config.segments);
     const firstFrameDuration = engine.getFirstFrameDuration();
     const timelineDuration = firstFrameDuration + videoTimelineDuration;
-    const totalFrames = Math.ceil(timelineDuration * frameRate);
+    const microsPerSecond = 1_000_000;
+    const wholeFrames = Math.floor(timelineDuration * frameRate);
+    const boundaryMicros = Math.round(
+      (wholeFrames / frameRate) * microsPerSecond
+    );
+    const endMicros = Math.round(timelineDuration * microsPerSecond);
+    const totalFrames =
+      timelineDuration > 0
+        ? Math.max(1, wholeFrames + Number(endMicros > boundaryMicros))
+        : 0;
     const frameDuration = 1 / frameRate;
     const firstFrameCanvas =
       firstFrameDuration > 0 ? new OffscreenCanvas(1, 1) : null;

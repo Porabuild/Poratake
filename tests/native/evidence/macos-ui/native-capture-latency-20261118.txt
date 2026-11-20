@@ -6100,3 +6100,27 @@ A separate baseline run used spans 0–14/60 s and 284/60–298/60 s.
 It exported 29 frames at 60 fps. The floating-point expression
 `(14/60 + (298/60 - 284/60)) * 60` evaluates one binary
 representable step above 28. The export count takes its ceiling.
+
+2026-11-20 frame-count correctness at a trim boundary
+====================================================
+
+The baseline native integration exported source spans 0–14/60 s
+and 284/60–298/60 s at 60 fps. Bundled FFmpeg decoded frame
+timestamps 0 through 28 in units of 1/60 s. The new integration
+verified exactly timestamps 0 through 27 for the same spans.
+
+The Apple Silicon development app ran the normal Preview →
+Video Editor → MP4 export path using an isolated profile and
+the generated sparse recording fixture. The fixture daemon
+provided the video file. The editor loaded saved segment
+ranges, and bundled FFmpeg decoded each export to framehash.
+
+Theme  Source end of final span  Decoded frames  PTS at 1/60 s
+Light  298/60                                28           0–27
+Dark   298/60                                28           0–27
+Dark   298/60 + 0.000001 s                   29           0–28
+
+The Electron WebCodecs frame-processing test counts submitted
+frames and checks the last timestamp. It reproduced 29 frames
+for the aligned case before the fix. The updated path submits
+28 frames for the aligned case and 29 for the partial tail.

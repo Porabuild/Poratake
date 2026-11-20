@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockMuxAudioWithVideo = vi.fn();
 const mockInvoke = vi.fn();
 const mockSend = vi.fn();
+const mockGetTotalTimelineDuration = vi.fn(() => 10);
 
 vi.mock('mediabunny', () => ({
   Input: class {},
@@ -26,7 +27,7 @@ vi.mock(
 );
 
 vi.mock('@/renderer/components/video-editor/utils', () => ({
-  getTotalTimelineDuration: () => 10,
+  getTotalTimelineDuration: mockGetTotalTimelineDuration,
   timelineToVideo: (_segments: unknown, timelineTime: number) => ({
     videoTime: timelineTime,
   }),
@@ -119,6 +120,7 @@ describe('WebCodecs audio export', () => {
       channel === 'video-editor:export:begin' ? 'session-1' : undefined
     );
     mockSend.mockReset();
+    mockGetTotalTimelineDuration.mockReset();
   });
 
   it('keeps one main-process cancellation session around an export', async () => {
@@ -252,6 +254,52 @@ describe('WebCodecs audio export', () => {
     expect(requestedTimestamps).toHaveLength(10);
     expect(videoSource.add).toHaveBeenCalledTimes(10);
   });
+
+  it.each([
+    [0, 28],
+    [0.000_001, 29],
+  ])(
+    'exports the expected frame count for a trim tail of %s s',
+    async (tail, frames) => {
+      const { WebCodecsExporter } =
+        await import('@/renderer/components/video-editor/export/webcodecs-exporter');
+      const exporter =
+        new WebCodecsExporter() as unknown as FrameProcessingHarness;
+      mockGetTotalTimelineDuration.mockReturnValue(
+        14 / 60 + (298 / 60 - 284 / 60) + tail
+      );
+      const videoSink = {
+        async *samplesAtTimestamps(timestamps: number[]) {
+          for (const timestamp of timestamps) {
+            yield { timestamp, close: vi.fn() };
+          }
+        },
+      };
+      const videoSource = { add: vi.fn() };
+      exporter.renderFrameToCanvas = vi.fn(() => ({
+        videoFrame: null,
+        cameraFrame: null,
+      }));
+
+      await exporter.processFrames({
+        config: { segments: [{}] },
+        frameRate: 60,
+        videoSink,
+        cameraSink: null,
+        sourceFirstTimestamp: 0,
+        cameraFirstTimestamp: 0,
+        engine: { getFirstFrameDuration: () => 0 },
+        outputCtx: {},
+        videoSource,
+        onProgress: vi.fn(),
+      });
+      expect(videoSource.add).toHaveBeenCalledTimes(frames);
+      expect(videoSource.add).toHaveBeenLastCalledWith(
+        (frames - 1) * (1 / 60),
+        1 / 60
+      );
+    }
+  );
 
   it('reuses one placeholder canvas across first-frame output frames', async () => {
     const createdCanvases: object[] = [];
