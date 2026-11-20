@@ -11754,6 +11754,27 @@ images matched byte for byte across idle, hover and exit.
 The full GPUI suite passed 1,228 tests with 24 ignored.
 [Sample data and fixture details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS auto-dismiss for scrolled capture previews
+
+Fully clipped screenshot and video cards stop polling for
+auto-dismiss. When layout brings a card into view, its full
+configured delay starts again. The GPUI regression kept a
+clipped video past the original deadline, scrolled it into
+view and verified dismissal at the new two-second deadline.
+The baseline was still waiting on that deadline.
+
+With auto-dismiss enabled and a native preview stack scrolled
+to a 128 × 100-point viewport, median GPUI CPU time fell from
+0.063 to 0.040 ms over 2.5 seconds. The probe held the visible
+card with app-local hover, so its retry timer remained active
+in both builds. Process wakeups and physical footprint showed
+no consistent reduction in this setup.
+
+The full GPUI suite passed 1,228 tests with 24 ignored.
+All six light and dark 2× Metal preview images matched across
+idle, hover and exit.
+[Auto-dismiss measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

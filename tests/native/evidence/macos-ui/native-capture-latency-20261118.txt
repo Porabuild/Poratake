@@ -5992,3 +5992,36 @@ switch for the earlier polling behavior. Footprint varied
 across runs. No capture or desktop input was used. The GPUI
 regression reproduces the old behavior by requiring a decoded
 frame after scroll without advancing the playback clock.
+
+2026-11-20 macOS auto-dismiss in a clipped capture-preview stack
+===============================================================
+
+The native GPUI probe opened four generated screenshot cards,
+shortened the preview window to 128 × 100 points, and enabled
+auto-dismiss with a four-second delay. App-local hover kept
+the visible card available during the sample. The stack
+settled for 4.6 seconds after that hover before the 2.5-second
+proc_pid_rusage sample. The viewport remained scrollable at
+the same height before and after sampling.
+
+Round  Theme  Build     CPU ms  Wakeups  Physical MiB
+1      Light  90554f10   0.065        9         44.86
+1      Dark   90554f10   0.049        9         44.49
+2      Light  90554f10   0.061        9         46.36
+2      Dark   90554f10   0.055        9         44.09
+3      Light  90554f10   0.077       13         44.06
+3      Dark   90554f10   0.083       10         44.89
+1      Light  updated    0.027       10         43.63
+1      Dark   updated    0.026       10         44.00
+2      Light  updated    0.056       10         40.99
+2      Dark   updated    0.030       11         44.16
+3      Light  updated    0.054       10         44.58
+3      Dark   updated    0.050       10         43.67
+
+The visible card retained the existing 250 ms hover retry.
+Wakeup counts and footprint showed no consistent reduction.
+The clipped-video regression reproduces the old dismissal
+delay and verifies the configured deadline after scrolling
+into view. Idle, hover and exit renders matched byte for byte
+at 2× in both themes with generated video. All samples ran
+in isolated profiles without desktop input or device access.

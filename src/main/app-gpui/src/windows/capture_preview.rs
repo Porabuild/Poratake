@@ -218,6 +218,8 @@ struct CapturePreview {
     completed: Option<Instant>,
     export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
+    dismiss_viewport_clipped: Cell<bool>,
     entered_at: Instant,
     layout_y: Option<f32>,
     layout_animation: Option<LayoutAnimation>,
@@ -483,6 +485,8 @@ impl CapturePreviewWindow {
                 completed: None,
                 export_progress: None,
                 dismiss_token,
+                #[cfg(target_os = "macos")]
+                dismiss_viewport_clipped: Cell::new(false),
                 entered_at,
                 layout_y: None,
                 layout_animation: None,
@@ -569,6 +573,8 @@ impl CapturePreviewWindow {
                 completed: None,
                 export_progress: None,
                 dismiss_token,
+                #[cfg(target_os = "macos")]
+                dismiss_viewport_clipped: Cell::new(false),
                 entered_at,
                 layout_y: None,
                 layout_animation: None,
@@ -1080,8 +1086,6 @@ const DISMISS_RETRY: Duration = Duration::from_millis(250);
 enum DismissVerdict {
     Ready,
     Blocked,
-    #[cfg(target_os = "macos")]
-    Clipped,
     Gone,
 }
 
@@ -1100,22 +1104,13 @@ fn schedule_auto_dismiss(
     let start = cx.background_executor().now();
     cx.spawn(async move |cx| {
         let mut elapsed = false;
-        let mut started = Some(start);
         loop {
             let verdict = cx.update(|cx| dismiss_verdict(handle, id, generation, cx));
             match verdict {
                 DismissVerdict::Gone => return,
-                #[cfg(target_os = "macos")]
-                DismissVerdict::Clipped => {
-                    elapsed = false;
-                    started = None;
-                    cx.background_executor().timer(DISMISS_RETRY).await;
-                }
                 _ if !elapsed => {
                     let executor = cx.background_executor();
-                    let remaining = started
-                        .map(|started| timeout.saturating_sub(executor.now() - started))
-                        .unwrap_or(timeout);
+                    let remaining = timeout.saturating_sub(executor.now() - start);
                     if !remaining.is_zero() {
                         executor.timer(remaining).await;
                     }
@@ -1186,7 +1181,8 @@ fn dismiss_verdict(
             );
             #[cfg(target_os = "macos")]
             if verdict != DismissVerdict::Gone && view.preview_is_clipped(preview, window) {
-                return DismissVerdict::Clipped;
+                preview.dismiss_viewport_clipped.set(true);
+                return DismissVerdict::Gone;
             }
             verdict
         })
@@ -3038,6 +3034,31 @@ impl CapturePreviewWindow {
     }
 
     #[cfg(target_os = "macos")]
+    fn update_viewport_visibility(&self, window: &Window) -> Vec<(u64, Arc<AtomicU64>)> {
+        let visible = self.revealed && window.is_visible();
+        self.previews
+            .iter()
+            .filter_map(|preview| {
+                let clipped = self.preview_is_clipped(preview, window);
+                if let Some(video) = &preview.video {
+                    if video.viewport_clipped.replace(clipped) != clipped {
+                        let _ = video.visibility_changed.try_send(());
+                    }
+                }
+                if preview.dismiss_viewport_clipped.replace(clipped) == clipped {
+                    return None;
+                }
+                if clipped {
+                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                (visible && !preview.thumbnail_loading && preview.dismiss_animation.is_none())
+                    .then(|| (preview.id, preview.dismiss_token.clone()))
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
     fn preview_scroll_bounds(&self, preview: &CapturePreview) -> Option<Bounds<Pixels>> {
         let (corner, scroll) = self.viewport_scroll.as_ref()?;
         let y = preview.layout_y?;
@@ -3261,18 +3282,25 @@ impl CapturePreviewWindow {
             }
         }));
         #[cfg(target_os = "macos")]
-        let root = if self.previews.iter().any(|preview| preview.video.is_some()) {
+        let root = if self.viewport_scroll.is_some()
+            || self.previews.iter().any(|preview| {
+                preview.dismiss_viewport_clipped.get()
+                    || preview
+                        .video
+                        .as_ref()
+                        .is_some_and(|video| video.viewport_clipped.get())
+            }) {
             let owner = cx.entity().downgrade();
             root.on_children_prepainted(move |_, window, cx| {
-                let Some(owner) = owner.upgrade() else { return };
-                let view = owner.read(cx);
-                for preview in &view.previews {
-                    let Some(video) = &preview.video else {
-                        continue;
-                    };
-                    let clipped = view.preview_is_clipped(preview, window);
-                    if video.viewport_clipped.replace(clipped) != clipped {
-                        let _ = video.visibility_changed.try_send(());
+                if let Some(owner) = owner.upgrade() {
+                    let timers = owner.read(cx).update_viewport_visibility(window);
+                    if !timers.is_empty() {
+                        let handle = window.window_handle();
+                        cx.defer(move |cx| {
+                            for (id, token) in timers {
+                                schedule_auto_dismiss(handle, id, cx, token);
+                            }
+                        });
                     }
                 }
             })
@@ -3486,6 +3514,8 @@ mod tests {
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
@@ -5104,7 +5134,7 @@ mod tests {
         );
         visual
             .executor()
-            .advance_clock(Duration::from_millis(1_500));
+            .advance_clock(Duration::from_millis(1_999));
         visual.settle();
         assert!(pending(&mut visual), "the revealed card gets a full delay");
         handle
@@ -5117,9 +5147,7 @@ mod tests {
                 assert!(!preview.video.as_ref().unwrap().frames_released);
             })
             .unwrap();
-        visual
-            .executor()
-            .advance_clock(Duration::from_millis(1_500));
+        visual.executor().advance_clock(Duration::from_millis(1));
         visual.settle();
         assert!(!pending(&mut visual));
         assert!(path.is_file());
@@ -5731,6 +5759,8 @@ mod tests {
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
@@ -5776,6 +5806,8 @@ mod tests {
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
