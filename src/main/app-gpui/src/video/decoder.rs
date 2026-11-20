@@ -7,6 +7,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use herogpui::gpui::BackgroundExecutor;
+
+const FRAME_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VideoInfo {
     pub width: u32,
@@ -179,7 +183,7 @@ struct PendingFrame {
 impl PendingFrame {
     fn wait(self) -> Option<DecodedFrame> {
         self.reply
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(FRAME_RESPONSE_TIMEOUT)
             .ok()?
     }
 }
@@ -297,15 +301,14 @@ impl VideoDecoder {
         .wait()
     }
 
-    pub(crate) fn frame_at_supersedable(
+    pub(crate) async fn frame_at_supersedable(
         &self,
         time: f64,
         cancelled: Option<&FrameCancellation>,
-        superseded: Option<&FrameCancellation>,
+        superseded: &FrameCancellation,
+        executor: &BackgroundExecutor,
     ) -> Option<DecodedFrame> {
-        let Some(superseded) = superseded else {
-            return self.frame_at_interruptible(time, cancelled);
-        };
+        let timeout = executor.timer(FRAME_RESPONSE_TIMEOUT);
         let (reply, received) = smol::channel::bounded(1);
         let _waiting = queue_frame(
             &self.commands,
@@ -314,7 +317,7 @@ impl VideoDecoder {
             cancelled.cloned(),
             Some(superseded.clone()),
         )?;
-        smol::block_on(smol::future::or(
+        smol::future::or(
             async { received.recv().await.ok().flatten() },
             async {
                 smol::future::or(
@@ -322,14 +325,13 @@ impl VideoDecoder {
                         wait_for_cancellation(cancelled),
                         wait_for_cancellation(Some(superseded)),
                     ),
-                    async {
-                        smol::Timer::after(Duration::from_secs(10)).await;
-                    },
+                    timeout,
                 )
                 .await;
                 None
             },
-        ))
+        )
+        .await
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -2085,7 +2087,11 @@ mod tests {
         let (supersede, superseded) = smol::channel::bounded(1);
         let (done, finished) = mpsc::channel();
         let waiting = std::thread::spawn(move || {
-            let _ = done.send(decoder.frame_at_supersedable(1.0, None, Some(&superseded)));
+            let executor =
+                BackgroundExecutor::new(Arc::new(herogpui::gpui::TestDispatcher::new(0)));
+            let _ = done.send(smol::block_on(
+                decoder.frame_at_supersedable(1.0, None, &superseded, &executor),
+            ));
         });
         let command = match receiver.recv_timeout(Duration::from_secs(2)).unwrap() {
             Command::Frame(command) => command,
@@ -2098,6 +2104,38 @@ mod tests {
         assert!(command.superseded.as_ref().unwrap().is_closed());
         drop(command);
         waiting.join().unwrap();
+    }
+
+    #[test]
+    fn supersedable_frame_timeout_follows_the_gpui_clock() {
+        let executor = BackgroundExecutor::new(Arc::new(herogpui::gpui::TestDispatcher::new(0)));
+        let (commands, receiver) = mpsc::channel();
+        let decoder = VideoDecoder {
+            commands,
+            info: VideoInfo::default(),
+        };
+        let (_supersede, superseded) = smol::channel::bounded(1);
+        let mut waiting = std::pin::pin!(
+            decoder.frame_at_supersedable(1.0, None, &superseded, &executor)
+        );
+        assert!(smol::block_on(smol::future::poll_once(waiting.as_mut())).is_none());
+
+        let command = match receiver.try_recv().unwrap() {
+            Command::Frame(command) => command,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Command::ReleaseFrames => panic!("expected a frame request"),
+        };
+        let margin = Duration::from_millis(1);
+        executor.advance_clock(FRAME_RESPONSE_TIMEOUT - margin);
+        while executor.tick() {}
+        assert!(smol::block_on(smol::future::poll_once(waiting.as_mut())).is_none());
+        executor.advance_clock(margin);
+        while executor.tick() {}
+        assert!(matches!(
+            smol::block_on(smol::future::poll_once(waiting.as_mut())),
+            Some(None)
+        ));
+        assert!(command.abandoned.is_closed());
     }
 
     #[test]

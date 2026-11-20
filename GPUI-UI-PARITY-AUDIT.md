@@ -11336,6 +11336,23 @@ All 11 GPUI daemon tests and 130 Electron reference and contract
 tests passed.
 [Tooltip startup and dispatch evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS full local regression and preview timeout clock
+
+The full repository check found a camera-preview timeout using
+a timer outside GPUI's clock. The supersedable frame request now
+uses the GPUI background executor's ten-second deadline. A test
+holds the decoder response, advances the simulated clock to the
+deadline, and verifies that the request is abandoned. The existing
+supersession test still verifies immediate cancellation.
+
+The local check passed 2,418 Electron tests with three skipped.
+The full GPUI suite passed 1,217 tests with 24 ignored. Swift scroll
+and protected-tooltip fixtures passed on Apple Silicon and Rosetta.
+The synthetic recording timeline, timer lifecycle and timer
+accessibility fixtures passed on Apple Silicon. Windows-native
+checks remain assigned to Windows CI.
+[Local regression evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

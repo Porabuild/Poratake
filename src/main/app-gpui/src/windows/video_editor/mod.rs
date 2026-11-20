@@ -996,6 +996,7 @@ impl VideoEditorWindow {
             && time > 0.0
             && time >= self.total_duration();
 
+        let executor = cx.background_executor().clone();
         cx.spawn(async move |entity, cx| {
             let (composed, elapsed, decode_wait) = cx
                 .background_executor()
@@ -1009,7 +1010,7 @@ impl VideoEditorWindow {
                             max_dimensions,
                             &mut decode_wait,
                             Some(&cancelled),
-                            camera_wait_superseded.as_ref(),
+                            camera_wait_superseded.as_ref().map(|wait| (wait, &executor)),
                         )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);

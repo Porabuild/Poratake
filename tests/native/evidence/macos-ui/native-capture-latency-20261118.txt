@@ -5387,3 +5387,29 @@ and replied only after receiving Hide. The Hide RPC carried sequence
 polling, and no physical input or media permission was involved.
 The 11 GPUI daemon tests and 130 Electron reference and daemon
 contract tests passed.
+
+2026-11-20 macOS full local regression and preview timeout clock
+==============================================================
+
+The clean branch at a435e768 passed all 1,216 runnable GPUI tests.
+The repository check failed the source gate on the supersedable
+camera-frame timeout. That request was using smol's timer instead
+of the GPUI background executor clock.
+
+The fix preserves the ten-second frame-response budget and the
+supersession channels. The regression polls the pending request
+and drives the simulated clock, holding the decoder response
+until the deadline. It verifies that the request stays pending
+until the deadline, then returns no frame and closes abandonment.
+
+The repository gate passed 2,418 Vitest tests with three skipped,
+as well as daemon contract, TypeScript, lint, formatting and React
+Compiler checks. The source gate passed again after the final Rust
+test revision. The full GPUI suite at that revision passed 1,217
+with 24 ignored. The Windows-native check skipped on this host.
+
+The full Swift scroll and protected-tooltip fixtures passed on
+arm64 and Rosetta x86_64. The Swift recording timeline and the
+AppKit timer lifecycle and accessibility fixtures passed on
+arm64. Tests used generated inputs, with live capture opt-ins
+left off.

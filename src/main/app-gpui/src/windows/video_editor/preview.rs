@@ -7,6 +7,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use herogpui::gpui::BackgroundExecutor;
 use parking_lot::Mutex;
 use tiny_skia::Pixmap;
 
@@ -167,7 +168,7 @@ impl Source {
         max_dimensions: Option<(u32, u32)>,
         decode_wait: &mut Duration,
         cancelled: Option<&FrameCancellation>,
-        camera_wait_superseded: Option<&FrameCancellation>,
+        camera_wait: Option<(&FrameCancellation, &BackgroundExecutor)>,
     ) -> Option<Pixmap> {
         if cancelled.is_some_and(FrameCancellation::is_closed) {
             return None;
@@ -196,6 +197,7 @@ impl Source {
             decode_frame(self.video.as_ref(), video_time, decode_wait, cancelled, None)
         })?;
         let camera = if self.engine.camera_visible_at(timeline_time) {
+            let camera_wait_superseded = camera_wait.map(|(superseded, _)| superseded);
             if let Some(opening) = self.camera_opening.take() {
                 match opening.finish_interruptible(cancelled, camera_wait_superseded) {
                     Ok(camera) => self.camera = camera,
@@ -212,7 +214,7 @@ impl Source {
                     video_time,
                     decode_wait,
                     cancelled,
-                    camera_wait_superseded,
+                    camera_wait,
                 )
             });
             if camera.is_none()
@@ -325,11 +327,16 @@ fn decode_frame(
     time: f64,
     decode_wait: &mut Duration,
     cancelled: Option<&FrameCancellation>,
-    superseded: Option<&FrameCancellation>,
+    superseded: Option<(&FrameCancellation, &BackgroundExecutor)>,
 ) -> Option<DecodedFrame> {
     let decoder = decoder?;
     let started = Instant::now();
-    let frame = decoder.frame_at_supersedable(time, cancelled, superseded);
+    let frame = match superseded {
+        Some((superseded, executor)) => smol::block_on(
+            decoder.frame_at_supersedable(time, cancelled, superseded, executor),
+        ),
+        None => decoder.frame_at_interruptible(time, cancelled),
+    };
     *decode_wait += started.elapsed();
     frame
 }
