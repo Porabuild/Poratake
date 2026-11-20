@@ -857,7 +857,6 @@ mod tests {
 
     #[test]
     fn round_trips_secrets_without_leaving_plaintext_on_disk() {
-        let policy = SecretPolicy::InMemory(*b"0123456789abcdef0123456789abcdef");
         let mut cloud = CloudConfig {
             active_provider: "s3".into(),
             ..CloudConfig::default()
@@ -869,9 +868,10 @@ mod tests {
         }];
 
         let mut retained = RetainedCloudSecrets::default();
-        let failed = protect_cloud_secrets(&mut cloud, &mut retained, policy);
-        assert!(!failed);
         if cfg!(target_os = "macos") {
+            let policy = SecretPolicy::InMemory(*b"0123456789abcdef0123456789abcdef");
+            let failed = protect_cloud_secrets(&mut cloud, &mut retained, policy);
+            assert!(!failed);
             assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
             assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
             assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
@@ -879,6 +879,21 @@ mod tests {
             let _ = reveal_cloud_secrets(&mut cloud, policy);
             assert_eq!(cloud.s3.secret_access_key, "top-secret-s3");
             assert_eq!(cloud.rest.headers[0].value, "Bearer top-secret-token");
+        } else if cfg!(windows) {
+            let failed = protect_cloud_secrets(&mut cloud, &mut retained, SecretPolicy::System);
+            assert!(!failed);
+            assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
+            assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
+            assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
+
+            let _ = reveal_cloud_secrets(&mut cloud, SecretPolicy::System);
+            assert_eq!(cloud.s3.secret_access_key, "top-secret-s3");
+            assert_eq!(cloud.rest.headers[0].value, "Bearer top-secret-token");
+        } else {
+            let failed = protect_cloud_secrets(&mut cloud, &mut retained, SecretPolicy::System);
+            assert!(failed);
+            assert_eq!(cloud.s3.secret_access_key, "");
+            assert_eq!(cloud.rest.headers[0].value, "");
         }
     }
 
