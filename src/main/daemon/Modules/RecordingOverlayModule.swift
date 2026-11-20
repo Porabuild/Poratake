@@ -2,13 +2,46 @@ import Cocoa
 import Foundation
 import QuartzCore
 
+private struct RecordingHighlightTarget {
+    enum Observation {
+        case visible(CGRect)
+        case hidden
+        case absent
+    }
+
+    private let id: CGWindowID
+    private let identifiers: CFArray
+
+    init?(id: CGWindowID) {
+        guard id != 0 else { return nil }
+        var identifier = UnsafeRawPointer(bitPattern: UInt(id))
+        guard let identifiers = CFArrayCreate(nil, &identifier, 1, nil) else { return nil }
+        self.id = id
+        self.identifiers = identifiers
+    }
+
+    func observe() -> Observation {
+        guard let descriptions = CGWindowListCreateDescriptionFromArray(identifiers) as? [[String: Any]] else {
+            return .hidden
+        }
+        guard let window = descriptions.first(where: { $0[kCGWindowNumber as String] as? CGWindowID == id }) else {
+            return .absent
+        }
+        guard window[kCGWindowIsOnscreen as String] as? Bool == true,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              rect.width > 0, rect.height > 0 else { return .hidden }
+        return .visible(rect)
+    }
+}
+
 class RecordingOverlayModule: Module {
     let name = DaemonContract.RecordingOverlay.module
     private var windows: [RecordingOverlayWindow] = []
     private var overlayViews: [NSScreen: RecordingOverlayView] = [:]
     private var highlightWindow: RecordingOverlayWindow?
     private var highlightTimer: Timer?
-    private var highlightWindowID: CGWindowID?
+    private var highlightTarget: RecordingHighlightTarget?
     private var presentationGeneration = WindowPresentationGeneration()
 
     private static let highlightThickness: CGFloat = 1
@@ -111,7 +144,8 @@ class RecordingOverlayModule: Module {
         await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
         guard presentationGeneration.isCurrent(generation) else { return false }
 
-        guard windowBounds(of: windowID) != nil else { return false }
+        guard let target = RecordingHighlightTarget(id: windowID),
+              case .visible = target.observe() else { return false }
 
         let window = RecordingOverlayWindow(
             contentRect: .zero,
@@ -135,11 +169,11 @@ class RecordingOverlayModule: Module {
         window.alphaValue = 0
 
         highlightWindow = window
-        highlightWindowID = windowID
+        highlightTarget = target
         window.orderFrontRegardless()
         guard RecordingCaptureWindowRegistry.shared.register(window) != nil else {
             highlightWindow = nil
-            highlightWindowID = nil
+            highlightTarget = nil
             window.orderOut(nil)
             throw RecordingCaptureFilterError.unavailableWindowNumber
         }
@@ -149,7 +183,7 @@ class RecordingOverlayModule: Module {
             guard presentationGeneration.isCurrent(generation), highlightWindow === window else { return false }
             RecordingCaptureWindowRegistry.shared.unregister(window)
             highlightWindow = nil
-            highlightWindowID = nil
+            highlightTarget = nil
             window.orderOut(nil)
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
@@ -163,6 +197,11 @@ class RecordingOverlayModule: Module {
             return false
         }
         followHighlight()
+        guard highlightTarget != nil else {
+            removeOverlayWindows()
+            try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            return false
+        }
 
         // AppKit has no cross-application window-move notification without the
         // accessibility permission, so the frame is sampled instead.
@@ -170,7 +209,7 @@ class RecordingOverlayModule: Module {
             withTimeInterval: Self.highlightInterval,
             repeats: true
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.followHighlight()
             }
         }
@@ -180,9 +219,17 @@ class RecordingOverlayModule: Module {
 
     @MainActor
     private func followHighlight() {
-        guard let window = highlightWindow, let windowID = highlightWindowID else { return }
-
-        guard let bounds = windowBounds(of: windowID) else {
+        guard let window = highlightWindow, let target = highlightTarget else { return }
+        let bounds: CGRect
+        switch target.observe() {
+        case let .visible(rect):
+            bounds = rect
+        case .absent:
+            highlightTimer?.invalidate()
+            highlightTimer = nil
+            highlightTarget = nil
+            fallthrough
+        case .hidden:
             if window.alphaValue != 0 {
                 window.alphaValue = 0
             }
@@ -207,21 +254,6 @@ class RecordingOverlayModule: Module {
             window.alphaValue = 1
             window.orderFrontRegardless()
         }
-    }
-
-    @MainActor
-    private func windowBounds(of windowID: CGWindowID) -> CGRect? {
-        guard let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
-                as? [[String: Any]],
-              windows.first?[kCGWindowIsOnscreen as String] as? Bool == true,
-              let boundsDict = windows.first?[kCGWindowBounds as String] as? [String: Any],
-              let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
-              rect.width > 0, rect.height > 0
-        else {
-            return nil
-        }
-
-        return rect
     }
 
     @MainActor
@@ -339,7 +371,7 @@ class RecordingOverlayModule: Module {
             RecordingCaptureWindowRegistry.shared.unregister(highlightWindow)
         }
         highlightWindow = nil
-        highlightWindowID = nil
+        highlightTarget = nil
     }
 
     #if RECORDING_OUTLINE_TEST
@@ -347,6 +379,9 @@ class RecordingOverlayModule: Module {
 
     @MainActor
     var testHighlightWindow: NSWindow? { highlightWindow }
+
+    @MainActor
+    var testIsTrackingHighlight: Bool { highlightTimer?.isValid == true }
 
     @MainActor
     var testHighlightUpdates: (frames: Int, orders: Int)? {

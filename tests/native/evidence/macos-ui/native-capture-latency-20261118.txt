@@ -5867,3 +5867,31 @@ timeline suite and synthetic planar-audio case passed for both
 arm64 and x86_64. The optional live screen-capture part of the
 Swift scroll fixture was left off. The recording timeline
 fixture uses generated sample buffers.
+
+2026-11-20 macOS recording outline after target destruction
+============================================================
+
+A generated AppKit window in a separate process supplied the
+target. The onscreen-only behavior of the original targeted query
+returned no row after either hiding the target or quitting its
+process. The single-ID WindowServer description returned a hidden
+row after order-out and an empty result after process exit.
+
+Three paired arm64 runs each sampled proc_pid_rusage for two
+seconds with the window stationary and two seconds after the
+target process exited. Every run restored the same outline and
+exclusion ID after order-out, then moved the target before exit.
+
+Build     Stationary wakeups  After-exit wakeups  After-exit CPU ms  Move median ms
+Baseline               64–73                  61         0.193–0.197           30.40
+Updated                72–73                 1–2         0.020–0.021           30.52
+
+Move timing starts at the app-local move command and includes
+status polling. The visible outline still samples at 30 Hz.
+The runs used one physical display and app-local commands.
+
+The native lifecycle fixture additionally releases a generated
+window and verifies that the outline timer stops and the outline
+is transparent. The explicit cleanup removes its exclusion ID.
+The arm64 and Rosetta lifecycle suites, production daemon typechecks
+for both targets and 82 targeted Electron tests passed.

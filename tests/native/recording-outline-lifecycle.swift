@@ -572,6 +572,7 @@ struct RecordingOutlineLifecycleTest {
         }
         precondition(module.testHighlightWindow === movedHighlight && movedHighlight.alphaValue == 0,
                      "temporarily hidden target lost its outline tracker")
+        precondition(module.testIsTrackingHighlight)
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [movedOutlineID])
         print("hidden target: outline hidden, tracker retained")
 
@@ -605,6 +606,30 @@ struct RecordingOutlineLifecycleTest {
         precondition(module.testHighlightWindow == nil)
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
         print("closed target and explicit cleanup: outline hidden and unregistered")
+
+        var disposable: NSWindow? = autoreleasepool {
+            let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 240, height: 140),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.orderFrontRegardless()
+            return window
+        }
+        let discardedID = CGWindowID(disposable!.windowNumber)
+        try await waitFor("disposable target did not appear") { bounds(discardedID) != nil }
+        let disposableShown = try await module.testShowWindow(discardedID)
+        precondition(disposableShown && module.testIsTrackingHighlight)
+        let disposableOutline = module.testHighlightWindow!
+        disposable?.close()
+        disposable = nil
+        try await waitFor("destroyed target did not stop tracking") {
+            !module.testIsTrackingHighlight && disposableOutline.alphaValue == 0
+        }
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [
+            CGWindowID(disposableOutline.windowNumber),
+        ])
+        await module.testHideOverlay()
+        precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs().isEmpty)
+        print("destroyed target: tracking stopped and explicit cleanup unregistered outline")
     }
 
     static func verifyFreezePrewarm() {

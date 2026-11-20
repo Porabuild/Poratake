@@ -11650,6 +11650,25 @@ profile. Visual review confirmed that the scrolled Scrub Audio
 switch, its label and the System Audio lane fit the dark layout.
 [Architecture verification record](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS recording outline after target destruction
+
+The outline now uses a targeted WindowServer description to
+distinguish an offscreen window from a destroyed window. It
+retains its tracker and exclusion ID while the target is hidden.
+When the WindowServer ID disappears, the outline hides and
+stops sampling. The existing cleanup path releases its exclusion ID.
+
+In paired cross-process runs, the old tracker woke 61 times per
+two seconds after the target process exited. The updated tracker
+woke once or twice. Median movement detection was about 30 ms
+in both builds. The probe also checked movement, hiding and
+restoring the generated window on the built-in display.
+
+The native lifecycle fixture and daemon typecheck passed for
+Apple Silicon and Intel, along with 82 Electron recording
+control and contract tests.
+[Outline tracking measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
