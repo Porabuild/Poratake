@@ -37,7 +37,7 @@ release verification; routine PR checks do not run the matrix.
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Area, window, and timer screenshots passed on Retina. Screen, area, and window recordings were edited and compared with decoded exports. System audio and microphone passed. Unpressed toolbar and preview hover passed on the built-in display with WindowServer logs. Full desktop filter, other pointer paths, live camera, additional displays, and ambiguous scroll seams remain open. |
+| macOS critical capture and recording | Open   | Area, window, and timer screenshots passed on Retina. Screen, area, and window recordings were edited and compared with decoded exports. System audio and microphone passed. Unpressed toolbar and preview hover passed on the built-in display with WindowServer logs. Full desktop encode, other pointer paths, live camera, additional displays, and ambiguous scroll seams remain open. |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
@@ -11474,6 +11474,26 @@ preserved stdout, stderr and the exit status.
 The full GPUI suite passed 1,223 tests. Four generated-media
 tests and 28 Electron player, audio and export tests also passed.
 [FFmpeg wait measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+### 2026-11-20 macOS full-display ScreenCaptureKit exclusion
+
+A native 3456 × 2234 ScreenCaptureKit stream used the normal
+display exclusion filter, with only the visible GPUI recording
+toolbar excluded at startup. The native AppKit tooltip appeared
+during the stream and the production updater added its window ID.
+In light and dark, the toolbar and visible tooltip regions matched
+the generated backdrop. A regular window placed at the tooltip's
+exact bounds appeared at the same point in the stream.
+
+A second pass also excluded the other existing desktop windows.
+That pass verified the whole generated backdrop outside a small
+upper-right region and the ordinary window's edge. The probe
+retained aggregate pixel counts. The normal filter now has direct
+stream evidence. The end-to-end full-display record and export
+evidence above uses generated-window isolation.
+
+All 82 Electron recording-control and daemon contract tests
+passed. [Full-display stream measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
 ## Review gate
 

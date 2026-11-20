@@ -5608,3 +5608,48 @@ All 1,223 runnable GPUI tests passed. Four normally ignored
 tests passed with development FFmpeg, including decoded audio
 export and replacement music. The 28 targeted Electron tests
 passed.
+
+2026-11-20 macOS full-display ScreenCaptureKit exclusion
+========================================================
+
+At c7fe3a50, a temporary Swift harness ran a 3456 × 2234,
+32BGRA sRGB ScreenCaptureKit stream on the single built-in
+Retina display. The probe used the existing Screen Recording
+grant and turned off audio and the cursor. It inspected buffers
+in memory and retained only numerical checks, with no frame,
+screenshot or recording written. The controls and backdrop
+were temporary and received no physical input.
+
+The stream began with the real GPUI recording toolbar ID as
+the only requested exclusion. The actual ProtectedTooltip
+window was registered during capture. The harness invoked
+ScreenCaptureRecorder.updateCaptureFilter from an otherwise
+identical temporary copy with the method made accessible.
+The normal SCContentFilter(display:excludingWindows:) ran
+at startup and at refresh. The tooltip was visible when
+checked. The regions use the WindowServer toolbar bounds and
+the AppKit tooltip bounds, with a four-pixel margin.
+
+Theme  Toolbar mismatches  Visible tooltip mismatches  Ordinary-window core pixels
+Light                   0                           0                         6912
+Dark                    0                           0                         6912
+
+The positive control used a magenta AppKit window at the exact
+tooltip bounds after the tooltip was hidden. The normal
+desktop filter also admitted pixels outside the generated
+scene. Those pixels were counted without retaining their
+values and are outside the control regions reported above.
+
+A separate privacy-isolated pass supplied 17 existing window
+IDs in light and 19 in dark, including the toolbar. The same
+filter constructor and live update produced zero unexpected
+background pixels outside a 48 × 48 upper-right pixel region
+and the positive-control edge. The corner differed from the
+backdrop by up to 216 pixels in light and zero in dark during
+that pass. The ordinary window again contributed 6,912 magenta
+core pixels in each theme.
+
+This verifies the raw full-display stream. The previously
+recorded GPUI Start, Stop, edit and export check uses a separate
+generated-window allowlist fixture. All 82 Electron recording
+control and daemon contract tests passed.
