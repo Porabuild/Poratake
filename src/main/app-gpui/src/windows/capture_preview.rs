@@ -899,6 +899,10 @@ impl CapturePreviewWindow {
                                         schedule_revealed_previews(handle, cx);
                                     }
                                 });
+                            } else {
+                                view.pointer_inside = false;
+                                view.clear_native_tooltip(window);
+                                cx.notify();
                             }
                         },
                     ));
@@ -3294,7 +3298,9 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
         cx: &mut Context<Self>,
     ) {
         #[cfg(target_os = "macos")]
-        if hovered && (!self.pointer_inside || self.keyboard_controls_visible(window)) {
+        if hovered
+            && (!window.is_visible() || !self.pointer_inside || self.keyboard_controls_visible(window))
+        {
             return;
         }
         if !hovered {
@@ -5875,6 +5881,52 @@ mod tests {
         assert_eq!(step_hover(0.5, 0.0, 10.0), 0.0, "a long frame clamps at 0");
         assert_eq!(step_hover(0.5, 1.0, 10.0), 1.0, "and clamps at 1");
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covering_a_preview_cancels_pending_hover_tooltips(cx: &mut gpui::TestAppContext) {
+        use crate::ui::preview::NativeTooltipHost;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|config| config.preview.auto_dismiss = false);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        cx.run_until_parked();
+        let window = stack_handle(cx).unwrap();
+        let stack = window.downcast::<CapturePreviewWindow>().unwrap();
+        stack
+            .update(cx, |view, window, cx| {
+                view.pointer_inside = true;
+                view.previews[0].hovered = true;
+                view.preview_tooltip_hover(&"close".into(), "Close preview", true, window, cx);
+                assert!(view.native_tooltip_status.key.is_some());
+            })
+            .unwrap();
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        stack
+            .update(cx, |view, window, _| {
+                assert!(!view.preview_window_hovered(window));
+                assert!(view.native_tooltip_status.key.is_none());
+            })
+            .unwrap();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
     }
 
     #[cfg(target_os = "macos")]

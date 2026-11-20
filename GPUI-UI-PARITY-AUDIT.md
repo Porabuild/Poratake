@@ -11305,6 +11305,21 @@ All 49 GPUI preview tests and 70 Electron reference tests passed.
 The fixture used a generated screenshot and app-local commands.
 [Covered preview dismissal evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS preview hover tooltips after occlusion
+
+A covered preview now clears pointer state and cancels the native
+tooltip request when AppKit reports the window hidden. A fresh
+hover can request the tooltip after the preview is visible.
+
+In light and dark native-probe runs, app-local hover requested
+Close preview before an opaque AppKit window covered the card.
+The baseline kept the request through cover and uncover. The
+updated app cleared it during coverage and restored it only after
+a new hover. The simulated GPUI regression also covers a tooltip
+still waiting for its hover delay when the window becomes hidden.
+All 50 GPUI preview tests and 70 Electron reference tests passed.
+[Covered tooltip evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

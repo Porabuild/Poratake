@@ -5348,3 +5348,24 @@ advanced the clock while covered. It now verifies that a covered
 card survives and receives the full delay on becoming visible.
 The GPUI preview suite passed 49 tests and the four Electron
 reference files passed 70. No desktop input was posted.
+
+2026-11-20 macOS preview hover tooltips after occlusion
+======================================================
+
+The native UI probe sent app-local hover events to the generated
+screenshot preview and waited for its Close preview tooltip state.
+A separate opaque AppKit panel then covered the preview. The system
+mouse position stayed in place. This probe queried the GPUI tooltip
+dispatcher and used a fixture daemon for the tooltip RPC.
+
+Build     Theme  State while covered        State on uncover
+Baseline  light  pointer inside, tooltip    tooltip still requested
+Baseline  dark   pointer inside, tooltip    tooltip still requested
+Updated   light  pointer outside, cleared   tooltip cleared
+Updated   dark   pointer outside, cleared   tooltip cleared
+
+App-local hover after uncovering requested Close preview again
+in both updated runs. The GPUI regression additionally covers
+cancellation before the 150 ms hover delay has elapsed.
+The GPUI preview suite passed 50 tests. The four Electron preview
+and thumbnail reference files passed 70 tests.
