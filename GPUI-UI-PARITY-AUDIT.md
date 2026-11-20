@@ -11558,6 +11558,25 @@ editor and used no desktop input.
 [Dark Export panel](tests/native/evidence/macos-ui/video-native-narrow-dark-export-20261120.png)
 [Native measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS audio decoder startup for silent recordings
+
+The editor waits for existing FFmpeg metadata before opening an
+embedded-audio fallback. A silent movie skips that decoder.
+Separate system and mic files remain available, and a genuine
+embedded stream starts decoding as soon as metadata is ready.
+
+In native light and dark runs, silent movies went from two PCM
+decode launches to zero. Mic-only projects went from two failed
+movie reads and two mic reads to one successful mic read. Separate
+system audio used one read in both builds. Embedded AAC decoded
+successfully with one launch in the updated build. Paired follow-up
+samples put the first composed preview at about one second in both
+builds, with no consistent change in readiness time.
+
+All 1,226 runnable GPUI tests, four generated-media tests and
+28 Electron reference tests passed.
+[Audio decoder startup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -173,8 +173,13 @@ impl RebuildInputs {
         project: &Path,
         state: &VideoEditorState,
         cache: &HashMap<PathBuf, Arc<Vec<i16>>>,
+        include_embedded_audio: bool,
     ) -> Self {
-        let sources = audio_tracks::Sources::resolve(project);
+        let mut sources = audio_tracks::Sources::resolve(project);
+        if sources.system_is_embedded && !include_embedded_audio {
+            sources.system = None;
+            sources.system_is_embedded = false;
+        }
         let duration = timeline_duration(state);
         let keyboard = state
             .audio_style
@@ -843,7 +848,7 @@ mod tests {
         let (_directory, project, mut state) = project_with_every_source();
         state.audio_style.keyboard_sound_enabled = true;
 
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         let sources = audio_tracks::Sources::resolve(&project);
         let expected = audio_tracks::stems(&sources, &state, 4.0);
 
@@ -868,7 +873,7 @@ mod tests {
     fn a_muted_music_track_leaves_the_preview_as_it_leaves_the_export() {
         let (_directory, project, mut state) = project_with_every_source();
         state.music_tracks[0].enabled = false;
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         assert!(inputs
             .stems
             .iter()
@@ -881,26 +886,53 @@ mod tests {
         std::fs::remove_file(project.join("system.m4a")).expect("remove system stem");
         std::fs::remove_file(project.join("mic.m4a")).expect("remove mic stem");
 
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         let program: Vec<_> = inputs.stems.iter().filter(|stem| stem.program).collect();
         assert_eq!(program.len(), 1);
         assert!(program[0].path.ends_with("recording.mov"));
     }
 
     #[test]
+    fn absent_embedded_audio_skips_only_the_recording_fallback() {
+        let (_directory, project, state) = project_with_every_source();
+        let sidecar = project.join("system.m4a");
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), false);
+        assert!(inputs.stems.iter().any(|stem| stem.path == sidecar));
+
+        std::fs::remove_file(sidecar).unwrap();
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), false);
+        assert_eq!(inputs.stems.len(), 2);
+        assert!(inputs
+            .stems
+            .iter()
+            .any(|stem| stem.path.ends_with("mic.m4a")));
+        assert!(inputs.stems.iter().any(|stem| !stem.program));
+        assert!(inputs
+            .stems
+            .iter()
+            .all(|stem| !stem.path.ends_with("recording.mov")));
+    }
+
+    #[test]
     fn the_keyboard_click_track_follows_its_setting() {
         let (_directory, project, mut state) = project_with_every_source();
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_none());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_none()
+        );
         state.audio_style.keyboard_sound_enabled = true;
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_some());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_some()
+        );
         state.audio_style.keyboard_sound_volume = 0.0;
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_some());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_some()
+        );
     }
 
     #[test]

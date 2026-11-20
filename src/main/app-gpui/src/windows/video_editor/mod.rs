@@ -846,7 +846,6 @@ impl VideoEditorWindow {
             return;
         };
         let state = self.state.clone();
-        self.has_system_audio = None;
         self.invalidate_preview_frames();
         self.preview_status = PreviewStatus::Loading;
         self.refresh_subtitle_count();
@@ -868,6 +867,7 @@ impl VideoEditorWindow {
                 if this.path.as_ref() != Some(&path) {
                     return;
                 }
+                let mut refresh_audio = this.waits_for_embedded_audio_metadata(&path);
                 match opened {
                     Some((source, has_system_audio)) => {
                         // `handleBootstrapMetadata` takes the duration off the
@@ -878,6 +878,13 @@ impl VideoEditorWindow {
                         let info = source.info();
                         let duration = info.duration;
                         this.source_frame_rate = info.frame_rate();
+                        if this.has_system_audio.is_some()
+                            && this.has_system_audio != has_system_audio
+                        {
+                            this.preview_audio
+                                .invalidate(&project::recording_video_path(&path));
+                            refresh_audio = true;
+                        }
                         this.has_system_audio = has_system_audio;
                         this.composition_size = Some(source.composition_size());
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
@@ -885,7 +892,13 @@ impl VideoEditorWindow {
                         this.preview_status = PreviewStatus::Ready;
                         this.request_frame(cx);
                     }
-                    None => this.preview_status = PreviewStatus::Unavailable,
+                    None => {
+                        this.has_system_audio = None;
+                        this.preview_status = PreviewStatus::Unavailable;
+                    }
+                }
+                if refresh_audio {
+                    this.request_audio_sync(cx);
                 }
                 cx.notify();
             });
@@ -1702,6 +1715,12 @@ impl VideoEditorWindow {
         .detach();
     }
 
+    fn waits_for_embedded_audio_metadata(&self, project: &std::path::Path) -> bool {
+        cfg!(any(target_os = "macos", target_os = "linux"))
+            && self.preview_status == PreviewStatus::Loading
+            && project::embedded_audio_path(project).is_some()
+    }
+
     /// Applies volumes live and rebuilds the stems on the background executor
     /// when the structure changed. Called from every state mutation; the
     /// signature check keeps volume-only commits free.
@@ -1711,6 +1730,9 @@ impl VideoEditorWindow {
             return;
         };
         self.audio_generation += 1;
+        if self.waits_for_embedded_audio_metadata(&project) {
+            return;
+        }
         if !self.preview_audio.needs_rebuild(&self.state) {
             return;
         }
@@ -1719,6 +1741,7 @@ impl VideoEditorWindow {
             &project,
             &self.state,
             self.preview_audio.cache(),
+            self.has_system_audio != Some(false),
         );
         let task = cx
             .background_executor()
@@ -6338,6 +6361,7 @@ mod keyboard_demo_tests {
                     &project,
                     &editor.state,
                     editor.preview_audio.cache(),
+                    true,
                 );
                 let built = crate::video::preview_audio::build_stems(inputs);
                 editor.preview_audio.install(built, &editor.state, 0.0);
@@ -6394,6 +6418,7 @@ mod keyboard_demo_tests {
                     &project,
                     &editor.state,
                     editor.preview_audio.cache(),
+                    true,
                 ));
                 let original = built.stems[0].samples.iter().nth(1000).unwrap();
                 built.stems.clear();
@@ -6408,6 +6433,7 @@ mod keyboard_demo_tests {
                     &project,
                     &editor.state,
                     editor.preview_audio.cache(),
+                    true,
                 ));
                 let decoded =
                     audio::decode(&project.join("music").join(&replacement.file_name)).unwrap();

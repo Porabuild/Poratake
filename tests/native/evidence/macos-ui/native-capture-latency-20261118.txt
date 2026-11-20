@@ -5746,3 +5746,39 @@ single Retina screen. No physical resize or mixed-DPI transition
 was exercised. All 1,225 runnable GPUI tests, four generated-media
 tests with development FFmpeg and 18 Electron reference tests
 passed.
+
+2026-11-20 macOS audio decoder startup for silent recordings
+=============================================================
+
+The native Open in Video Editor entry point opened generated
+1280 × 720 recordings and generated AAC tracks. An FFmpeg
+wrapper counted the metadata and PCM commands and recorded their
+exit status. The probes used temporary profiles and an RPC-only
+daemon fixture. No desktop or microphone input was captured.
+
+Source                     Baseline PCM launches  Updated PCM launches
+Silent movie                          2                         0
+Embedded AAC                          1–2                       1
+Separate system AAC                   1                         1
+Separate mic AAC                      4                         1
+
+Light and dark matched on all rows except an embedded AAC
+baseline repeat that launched twice. The baseline mic project
+attempted two unsuccessful reads from the movie and two
+successful reads from its mic file. The updated run read only
+the mic file and succeeded. The single updated embedded read
+began after metadata completion.
+
+Paired follow-up runs rotated the order. The silent movie's
+first composed image took 923–999 ms in the baseline and
+989–1,007 ms in the updated build. Embedded AAC took 990–1,002 ms
+in the baseline and 986–1,022 ms in the updated build. Startup
+samples include the app launch, the instrumented FFmpeg binary
+and polling for the first image. Initial unpaired runs varied
+more widely under host load.
+
+The regression also verifies that skipping embedded audio
+keeps mic, separately recorded system audio and imported music
+available. All 1,226 runnable GPUI tests, four generated-media
+tests with development FFmpeg and 28 Electron reference tests
+passed.

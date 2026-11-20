@@ -975,6 +975,7 @@ mod tests {
                 &project,
                 &state,
                 &HashMap::new(),
+                true,
             ));
             assert!(built
                 .stems
@@ -1111,8 +1112,12 @@ mod tests {
         state.audio_style.system_audio_volume = 0.35;
         state.audio_style.keyboard_sound_enabled = true;
         state.audio_style.keyboard_sound_volume = 0.;
-        let built =
-            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        let built = preview_audio::build_stems(RebuildInputs::capture(
+            &project,
+            &state,
+            &HashMap::new(),
+            true,
+        ));
         let keyboard = built
             .stems
             .iter()
@@ -1309,6 +1314,7 @@ mod tests {
                 &project,
                 &state,
                 &HashMap::new(),
+                true,
             ));
             assert_eq!(
                 built
@@ -1438,8 +1444,12 @@ mod tests {
 
         let frame_duration = 1.0 / f64::from(crate::video::export::frame_rate(&state));
         let mut preview = preview::Source::open(&project, model::load_state(&project)).unwrap();
-        let preview_stems =
-            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        let preview_stems = preview_audio::build_stems(RebuildInputs::capture(
+            &project,
+            &state,
+            &HashMap::new(),
+            true,
+        ));
         let system_stem = preview_stems
             .stems
             .iter()
@@ -1592,8 +1602,12 @@ mod tests {
             segments: vec![model::Segment::spanning(source_info.duration)],
             ..VideoEditorState::default()
         };
-        let built =
-            preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
+        let built = preview_audio::build_stems(RebuildInputs::capture(
+            &project,
+            &state,
+            &HashMap::new(),
+            true,
+        ));
         assert_eq!(built.stems.len(), 1);
         assert_eq!(built.stems[0].volume, VolumeSource::SystemAudio);
         let preview = built.stems[0].samples.iter().collect::<Vec<_>>();
