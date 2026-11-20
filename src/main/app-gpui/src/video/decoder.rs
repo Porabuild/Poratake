@@ -2142,6 +2142,15 @@ mod backend {
 mod tests {
     use super::*;
 
+    #[allow(clippy::infallible_destructuring_match)]
+    fn expect_frame(command: Command) -> FrameCommand {
+        match command {
+            Command::Frame(command) => command,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Command::ReleaseFrames => panic!("expected a frame request"),
+        }
+    }
+
     #[test]
     fn a_superseded_frame_returns_while_the_decoder_is_still_busy() {
         let (commands, receiver) = mpsc::channel();
@@ -2161,11 +2170,7 @@ mod tests {
                 &executor,
             )));
         });
-        let command = match receiver.recv_timeout(Duration::from_secs(2)).unwrap() {
-            Command::Frame(command) => command,
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            Command::ReleaseFrames => panic!("expected a frame request"),
-        };
+        let command = expect_frame(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
         supersede.close();
         assert!(finished
             .recv_timeout(Duration::from_secs(2))
@@ -2190,11 +2195,7 @@ mod tests {
             std::pin::pin!(decoder.frame_at_supersedable(1.0, None, &superseded, &executor));
         assert!(smol::block_on(smol::future::poll_once(waiting.as_mut())).is_none());
 
-        let command = match receiver.try_recv().unwrap() {
-            Command::Frame(command) => command,
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            Command::ReleaseFrames => panic!("expected a frame request"),
-        };
+        let command = expect_frame(receiver.try_recv().unwrap());
         let margin = Duration::from_millis(1);
         executor.advance_clock(FRAME_RESPONSE_TIMEOUT - margin);
         while executor.tick() {}
@@ -2219,11 +2220,7 @@ mod tests {
         };
         let (cancel, cancelled) = smol::channel::bounded(1);
         let warmup = opening.request_warmup(0.5, cancelled.clone()).unwrap();
-        let command = match receiver.try_recv().unwrap() {
-            Command::Frame(command) => command,
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            Command::ReleaseFrames => panic!("expected a frame request"),
-        };
+        let command = expect_frame(receiver.try_recv().unwrap());
         assert!(matches!(command.position, FramePosition::Time(0.5)));
         drop(command);
         warmup.recv_timeout(Duration::from_secs(1)).unwrap();

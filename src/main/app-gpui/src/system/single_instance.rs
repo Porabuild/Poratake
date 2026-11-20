@@ -1,7 +1,9 @@
 #[cfg(windows)]
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(windows))]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
@@ -191,49 +193,57 @@ impl SingleInstanceGuard {
 
         let (tx, rx) = smol::channel::unbounded();
         let ipc_tx = tx.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
         let wide: Vec<u16> = OsStr::new(&self.pipe_name)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
         let _ = std::thread::Builder::new()
             .name("single-instance-ipc".into())
-            .spawn(move || loop {
-                let handle = unsafe {
-                    CreateNamedPipeW(
-                        windows::core::PCWSTR(wide.as_ptr()),
-                        PIPE_ACCESS_INBOUND,
-                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                        4,
-                        0,
-                        4096,
-                        0,
-                        None,
-                    )
-                };
-                if handle == INVALID_HANDLE_VALUE {
-                    break;
-                }
-                let connected = unsafe { ConnectNamedPipe(handle, None) }.is_ok()
-                    || unsafe { windows::Win32::Foundation::GetLastError().0 } == 535;
-                if connected {
-                    let mut file = unsafe { std::fs::File::from_raw_handle(handle.0) };
-                    let mut payload = String::new();
-                    let _ = file.read_to_string(&mut payload);
-                    unsafe {
-                        let _ = DisconnectNamedPipe(handle);
+            .spawn(move || {
+                let mut ready = Some(ready_tx);
+                loop {
+                    let handle = unsafe {
+                        CreateNamedPipeW(
+                            windows::core::PCWSTR(wide.as_ptr()),
+                            PIPE_ACCESS_INBOUND,
+                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                            4,
+                            0,
+                            4096,
+                            0,
+                            None,
+                        )
+                    };
+                    if let Some(signal) = ready.take() {
+                        let _ = signal.send(());
                     }
-                    drop(file);
-                    if let Ok(command) = serde_json::from_str::<InstanceCommand>(&payload) {
-                        if ipc_tx.send_blocking(command).is_err() {
-                            break;
+                    if handle == INVALID_HANDLE_VALUE {
+                        break;
+                    }
+                    let connected = unsafe { ConnectNamedPipe(handle, None) }.is_ok()
+                        || unsafe { GetLastError().0 } == 535;
+                    if connected {
+                        let mut file = unsafe { std::fs::File::from_raw_handle(handle.0) };
+                        let mut payload = String::new();
+                        let _ = file.read_to_string(&mut payload);
+                        unsafe {
+                            let _ = DisconnectNamedPipe(handle);
                         }
-                    }
-                } else {
-                    unsafe {
-                        let _ = CloseHandle(handle);
+                        drop(file);
+                        if let Ok(command) = serde_json::from_str::<InstanceCommand>(&payload) {
+                            if ipc_tx.send_blocking(command).is_err() {
+                                break;
+                            }
+                        }
+                    } else {
+                        unsafe {
+                            let _ = CloseHandle(handle);
+                        }
                     }
                 }
             });
+        let _ = ready_rx.recv();
         (tx, rx)
     }
 }

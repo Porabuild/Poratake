@@ -291,14 +291,13 @@ impl Source {
         if let Some(warmup) = self.camera_warmup.take() {
             warmup.cancel.close();
         }
-        if !std::mem::take(&mut self.camera_decode_active) {
-            return;
-        }
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        match (&self.camera, &self.camera_opening) {
-            (Some(decoder), _) => decoder.release_frames(),
-            (None, Some(opening)) => opening.release_frames(),
-            (None, None) => {}
+        if std::mem::take(&mut self.camera_decode_active) {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            match (&self.camera, &self.camera_opening) {
+                (Some(decoder), _) => decoder.release_frames(),
+                (None, Some(opening)) => opening.release_frames(),
+                (None, None) => {}
+            }
         }
     }
 

@@ -676,6 +676,7 @@ mod platform {
         fn LocalFree(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     }
 
+    #[allow(dead_code)]
     pub fn random_iv() -> Option<[u8; 16]> {
         None
     }
@@ -771,6 +772,7 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod platform {
+    #[allow(dead_code)]
     pub fn random_iv() -> Option<[u8; 16]> {
         None
     }
