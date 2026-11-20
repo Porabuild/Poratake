@@ -1,6 +1,8 @@
 import { globalShortcut, screen } from 'electron';
 import { daemon } from '@/main/daemon';
 import { getConfig, updateConfig } from '@/main/settings';
+import { isMac } from '@/main/utils/platform';
+import type { DaemonEventHandler } from '@/types/daemon';
 import {
   showCameraPreview,
   hideCameraPreview,
@@ -600,8 +602,14 @@ let countdownInterval: ReturnType<typeof setInterval> | null = null;
 let countdownResolve: ((result: 'completed' | 'cancelled') => void) | null =
   null;
 let countdownEscapeRegistered = false;
+let countdownTargetClosed: DaemonEventHandler | null = null;
 
 function stopActiveCountdown(result: 'completed' | 'cancelled'): void {
+  const listener = countdownTargetClosed;
+  countdownTargetClosed = null;
+  if (listener !== null) {
+    daemon.offEvent(listener);
+  }
   if (countdownInterval !== null) {
     clearInterval(countdownInterval);
     countdownInterval = null;
@@ -619,13 +627,27 @@ function stopActiveCountdown(result: 'completed' | 'cancelled'): void {
 }
 
 export function startRecordingCountdown(
-  seconds: number
+  seconds: number,
+  windowId?: number
 ): Promise<'completed' | 'cancelled'> {
   stopActiveCountdown('cancelled');
 
   return new Promise<'completed' | 'cancelled'>(resolve => {
     let remaining = seconds;
     countdownResolve = resolve;
+    if (isMac && windowId !== undefined) {
+      const onTargetClosed: DaemonEventHandler = (event, data) => {
+        if (
+          countdownTargetClosed === onTargetClosed &&
+          event === 'recording-overlay:target-closed' &&
+          (data as { windowId?: unknown } | null)?.windowId === windowId
+        ) {
+          stopActiveCountdown('cancelled');
+        }
+      };
+      countdownTargetClosed = onTargetClosed;
+      daemon.onEvent(onTargetClosed);
+    }
     countdownEscapeRegistered = globalShortcut.register('Escape', () => {
       stopActiveCountdown('cancelled');
     });

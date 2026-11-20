@@ -493,7 +493,10 @@ async function startPendingRecordingInternal(
   }
 
   if (clampedDelay > 0) {
-    const countdownResult = await startRecordingCountdown(clampedDelay);
+    const countdownResult = await startRecordingCountdown(
+      clampedDelay,
+      windowId
+    );
     if (countdownResult === 'cancelled') {
       concealAreaSelectorOverlay();
       await Promise.all([

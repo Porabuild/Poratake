@@ -11714,6 +11714,18 @@ All 1,228 runnable GPUI tests passed. The outline fixture and
 production daemon typecheck passed on Apple Silicon and Intel.
 The repository gate passed 2,418 tests with three skips on rerun.
 
+### 2026-11-20 Electron countdown cancellation after target closure
+
+Electron on macOS now uses the native outline's target-closure event
+during a window recording countdown. The existing cancellation path
+closes the toolbar and releases the selection without creating a video
+project. The subscription ends with the countdown, including when a
+replacement countdown starts for the same window.
+
+The focused Electron tests cover unrelated closure events, stale
+listeners, normal countdown completion and cleanup before recording.
+The native event delivery was measured in the GPUI run above.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

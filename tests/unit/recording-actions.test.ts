@@ -913,7 +913,7 @@ describe('recording-actions', () => {
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
 
-      expect(mockStartRecordingCountdown).toHaveBeenCalledWith(3);
+      expect(mockStartRecordingCountdown).toHaveBeenCalledWith(3, undefined);
       expect(mockStartRecordingWithConfig).toHaveBeenCalled();
     });
 
@@ -956,10 +956,13 @@ describe('recording-actions', () => {
         y: 0,
         width: 100,
         height: 100,
+        windowId: 42,
       });
       const m = await import('@/main/capture/video/recording-actions');
       await m.startPendingRecording();
 
+      expect(mockStartRecordingCountdown).toHaveBeenCalledWith(3, 42);
+      expect(mockCreateRecordingProject).not.toHaveBeenCalled();
       expect(mockStartRecordingWithConfig).not.toHaveBeenCalled();
       expect(mockConcealAreaSelectorOverlay).toHaveBeenCalled();
       expect(mockHidePreRecordingControl).toHaveBeenCalled();
