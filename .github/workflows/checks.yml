@@ -291,6 +291,13 @@ jobs:
       - name: Clippy GPUI shell
         run: cargo clippy --no-deps --locked --manifest-path src/main/app-gpui/Cargo.toml --all-targets -- -D warnings
 
+      - name: Install FFmpeg for GPUI tests
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          echo "PORATAKE_FFMPEG_PATH=$(command -v ffmpeg)" >> "$GITHUB_ENV"
+
       - name: Test GPUI shell
         run: cargo test --locked --manifest-path src/main/app-gpui/Cargo.toml
 
