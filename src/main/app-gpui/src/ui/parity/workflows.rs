@@ -11292,6 +11292,11 @@ pub(super) fn video(
     std::fs::create_dir_all(&project).unwrap();
     let recording = crate::video::project::recording_video_path(&project);
     std::fs::write(&recording, include_bytes!("fixtures/capture.mov")).unwrap();
+    std::fs::write(
+        crate::video::project::system_audio_path(&project),
+        include_bytes!("fixtures/mic-static-clock.m4a"),
+    )
+    .unwrap();
     let mut state = model::VideoEditorState {
         source_duration: Some(2.),
         segments: vec![model::Segment::spanning(2.)],

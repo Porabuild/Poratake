@@ -11577,6 +11577,27 @@ All 1,226 runnable GPUI tests, four generated-media tests and
 28 Electron reference tests passed.
 [Audio decoder startup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 current macOS offscreen workflow regression
+
+The loaded-editor fixture now supplies generated AAC for its
+audio-lane contrast and Scrub Audio checks. The video used by
+the fixture is silent, so the previous setup depended on the
+phantom Audio lane. Missing bounds now identify the measurement
+name and index.
+
+All four macOS offscreen Metal profiles passed. Both 1280-point
+profiles covered area, window and display recording handoffs and
+decoded export comparisons, plus screenshot selectors, timer,
+scroll, annotation and reopen. Both 720 × 520 Retina profiles
+checked the loaded editor, keyboard access and horizontal
+scrolling for Scrub Audio. The runs used generated media and
+fixture daemons.
+
+The repository gate passed 2,418 Vitest tests with three skips,
+as well as the daemon contract, TypeScript, lint, format and
+React Compiler checks. The Windows-native check skipped on macOS.
+[Offscreen workflow measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

@@ -5782,3 +5782,33 @@ keeps mic, separately recorded system audio and imported music
 available. All 1,226 runnable GPUI tests, four generated-media
 tests with development FFmpeg and 28 Electron reference tests
 passed.
+
+2026-11-20 current macOS offscreen workflow regression
+=======================================================
+
+Against ce07f43a the four parity profiles stopped in the loaded
+video workflow. The fixture's silent video no longer showed the
+phantom Audio lane, so the contrast check had no audio label to
+measure. The updated harness adds the repository's generated AAC
+sidecar before opening the editor. It now reports the group and
+index for missing bounds. The production editor and daemon paths
+are unchanged by the fixture update.
+
+Theme  Editor points  Video editor points  Scale  GPUI PNGs  Exit
+Light   1280 × 738      1280 × 750           1×       215      0
+Dark    1280 × 738      1280 × 750           1×       215      0
+Light    720 × 520       720 × 520           2×       173      0
+Dark     720 × 520       720 × 520           2×       173      0
+
+Wide runs compared edited preview and decoded export frames for
+the generated area, window and display recordings, exercised
+selector, timer, scroll and error cleanup, and checked annotation
+save and reopen. Narrow runs verified the audio label contrast
+and used synthetic scroll and keyboard input to reveal Scrub Audio.
+Visual inspection of the dark narrow image showed the complete
+Scrub Audio label and switch, the annotated preview and the System
+Audio clip. No live desktop or device capture ran in these profiles.
+
+The repository check passed its daemon contract, TypeScript, lint,
+format and React Compiler gates, plus 2,418 Vitest cases with three
+skipped. The Windows-native gate skipped on this host.

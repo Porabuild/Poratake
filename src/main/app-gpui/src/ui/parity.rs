@@ -71,7 +71,13 @@ pub(crate) fn record(name: &'static str, bounds: Vec<Bounds<Pixels>>) {
 }
 
 pub(super) fn measured(group: &str, index: usize) -> Bounds<Pixels> {
-    GEOMETRY.with_borrow(|geometry| geometry[group][index])
+    GEOMETRY.with_borrow(|geometry| {
+        geometry
+            .get(group)
+            .and_then(|bounds| bounds.get(index))
+            .copied()
+            .unwrap_or_else(|| panic!("missing measured element {group}[{index}]"))
+    })
 }
 
 fn pixel_contrast(first: &image::Rgba<u8>, second: &image::Rgba<u8>) -> f32 {
