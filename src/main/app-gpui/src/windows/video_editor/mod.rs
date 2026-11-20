@@ -6289,7 +6289,7 @@ mod keyboard_demo_tests {
                     &editor.state,
                     editor.preview_audio.cache(),
                 ));
-                let original = built.stems[0].samples[1000];
+                let original = built.stems[0].samples.iter().nth(1000).unwrap();
                 built.stems.clear();
                 editor.preview_audio.install(built, &editor.state, 0.0);
                 editor.remove_music_track(first.id.clone().into(), cx);
@@ -6307,8 +6307,7 @@ mod keyboard_demo_tests {
                     audio::decode(&project.join("music").join(&replacement.file_name)).unwrap();
                 let expected = audio::place(&decoded, &audio::Placement::of(&replacement));
                 assert_ne!(original, expected[1000]);
-                assert_eq!(refreshed.stems[0].samples[1000], expected[1000]);
-                assert!(refreshed.stems[0].samples.as_ref() == &expected);
+                assert!(refreshed.stems[0].samples.iter().eq(expected));
             })
             .unwrap();
     }

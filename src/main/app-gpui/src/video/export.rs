@@ -984,7 +984,7 @@ mod tests {
                 .stems
                 .iter()
                 .map(|stem| audio::Track {
-                    samples: stem.samples.as_ref().clone(),
+                    samples: stem.samples.iter().collect(),
                     volume: stem.volume.resolve(&state),
                 })
                 .collect();
@@ -1118,10 +1118,11 @@ mod tests {
             .iter()
             .find(|stem| stem.volume == VolumeSource::Keyboard)
             .expect("keyboard clicks must be ready while muted");
+        let keyboard_samples = keyboard.samples.iter().collect::<Vec<_>>();
         for start in [0.2, 0.8] {
             let start = (start * f64::from(AUDIO_SAMPLE_RATE)) as usize * 2;
             let end = start + AUDIO_SAMPLE_RATE as usize / 10 * 2;
-            assert!(keyboard.samples[start..end]
+            assert!(keyboard_samples[start..end]
                 .iter()
                 .any(|sample| *sample != 0));
         }
@@ -1138,7 +1139,7 @@ mod tests {
             .stems
             .iter()
             .map(|stem| audio::Track {
-                samples: stem.samples.as_ref().clone(),
+                samples: stem.samples.iter().collect(),
                 volume: stem.volume.resolve(&state),
             })
             .collect();
@@ -1148,7 +1149,7 @@ mod tests {
             .iter()
             .filter(|stem| stem.volume != VolumeSource::Keyboard)
             .map(|stem| audio::Track {
-                samples: stem.samples.as_ref().clone(),
+                samples: stem.samples.iter().collect(),
                 volume: stem.volume.resolve(&state),
             })
             .collect();
@@ -1327,7 +1328,7 @@ mod tests {
                 .stems
                 .iter()
                 .map(|stem| audio::Track {
-                    samples: stem.samples.as_ref().clone(),
+                    samples: stem.samples.iter().collect(),
                     volume: stem.volume.resolve(&state),
                 })
                 .collect();
@@ -1445,7 +1446,13 @@ mod tests {
             .find(|stem| stem.volume == VolumeSource::SystemAudio)
             .expect("embedded source audio is available in preview");
         let tone_window = AUDIO_SAMPLE_RATE as usize / 5 * 2;
-        assert!(audio::tone_strength(&system_stem.samples[..tone_window], 440.) > 0.5);
+        let preview_samples = system_stem
+            .samples
+            .iter()
+            .take(tone_window)
+            .collect::<Vec<_>>();
+        assert_eq!(preview_samples.len(), tone_window);
+        assert!(audio::tone_strength(&preview_samples, 440.) > 0.5);
 
         let output = directory.path().join("first-frame-edited.mp4");
         run(
@@ -1589,7 +1596,7 @@ mod tests {
             preview_audio::build_stems(RebuildInputs::capture(&project, &state, &HashMap::new()));
         assert_eq!(built.stems.len(), 1);
         assert_eq!(built.stems[0].volume, VolumeSource::SystemAudio);
-        let preview = built.stems[0].samples.as_ref().clone();
+        let preview = built.stems[0].samples.iter().collect::<Vec<_>>();
         assert_eq!(
             build_audio(&project, &state, source_info.duration, source_info.duration),
             Some(preview.clone())

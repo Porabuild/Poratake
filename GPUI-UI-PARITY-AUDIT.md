@@ -11393,6 +11393,24 @@ both builds. The paused editor samples showed no consistent
 change in steady-state CPU time.
 [Idle and wallpaper measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS paused video editor audio memory
+
+Audio clips at normal speed now share their source's decoded PCM
+with the other clips from that source. The audio player supplies
+leading silence as it reads, and speed changes still use the same
+stretch algorithm as export. Preview and export use the same trim
+and placement rules.
+
+With two generated three-minute audio tracks on the M5 Pro, the
+paused editor used 275–277 MiB before and 175–177 MiB after, with
+one clip and with nine clips in light and dark. The no-audio
+control was about 108 MiB in both builds. Paused CPU showed no
+consistent change. Sample comparisons verified leading silence,
+trims, speed changes and seeks. Four generated-media tests also
+passed for sidecar audio, volume at a cut, first-frame audio timing
+and replacing a music file.
+[Paused audio measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

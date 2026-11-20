@@ -5480,3 +5480,34 @@ starts a wallpaper lookup. The targeted GPUI video editor suite
 passed 175 tests with five ignored. The full GPUI suite passed
 1,218 tests with 24 ignored. The Electron wallpaper, capabilities
 and daemon contract suites passed 17 tests.
+
+2026-11-20 macOS paused video editor audio memory
+================================================
+
+The development app opened generated 320 × 180 video through the
+normal Open in Video Editor entry point. Each audio case supplied
+two silent 180-second AAC sidecars. Every split used speed 1.
+The daemon fixture answered only protocol requests and no capture
+or physical input was involved.
+
+Each row compares one paused six-second sample per build after
+four seconds of settling. Physical footprint and interrupt wakeups
+come from proc_pid_rusage on the M5 Pro.
+
+Theme  Clips  Sidecars  Baseline MiB  Updated MiB  CPU ms before → after  Wakeups before → after
+Light      9         0        107.83       107.70           0.16 → 0.34                    4 → 4
+Light      1         2        274.99       176.67           0.95 → 1.25                    6 → 6
+Light      9         2        276.03       175.28           1.01 → 1.18                    6 → 6
+Dark       9         2        276.63       176.49           1.02 → 1.00                    6 → 5
+
+The regression checks that unit-speed clips share the decoded
+allocation and that samples after seeks, including at the
+leading-silence boundary, match export. It covers empty output
+after a seek past the end, a clip truncated within leading
+silence, an unbounded end and a 1.5× speed change.
+
+All 1,219 runnable GPUI tests and 41 targeted Electron reference
+tests passed. Four normally ignored GPUI tests passed with the
+development FFmpeg binary. They include decoded export checks
+for system and mic sidecars, volume across a cut, timing after
+an intro, and the music cache test after replacing a file.

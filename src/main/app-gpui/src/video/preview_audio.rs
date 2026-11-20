@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZero;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,15 +35,69 @@ fn sample_rate() -> SampleRate {
     NonZero::new(AUDIO_SAMPLE_RATE).expect("audio sample rate")
 }
 
+#[derive(Clone)]
+pub struct SharedPcm {
+    samples: Arc<audio::Pcm>,
+    range: Range<usize>,
+    silence: usize,
+}
+
+impl SharedPcm {
+    fn placed(samples: Arc<audio::Pcm>, placement: &audio::Placement) -> Self {
+        let range = placement.source_range(&samples);
+        let (samples, range) = if placement.changes_speed() {
+            let stretched = audio::time_stretch(&samples[range], placement.speed);
+            let range = 0..stretched.len();
+            (Arc::new(stretched), range)
+        } else {
+            (samples, range)
+        };
+        let (silence, length) = placement.output_lengths(range.len());
+        Self {
+            samples,
+            range: range.start..range.start + length,
+            silence,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.silence + self.range.len()
+    }
+
+    fn get(&self, position: usize) -> Option<i16> {
+        if position < self.silence {
+            return Some(0);
+        }
+        self.samples[self.range.clone()]
+            .get(position - self.silence)
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = i16> + '_ {
+        std::iter::repeat_n(0, self.silence).chain(self.samples[self.range.clone()].iter().copied())
+    }
+}
+
+impl From<Arc<audio::Pcm>> for SharedPcm {
+    fn from(samples: Arc<audio::Pcm>) -> Self {
+        Self {
+            range: 0..samples.len(),
+            samples,
+            silence: 0,
+        }
+    }
+}
+
 /// Interleaved stereo 16-bit samples as a seekable rodio source, converting
 /// to float on the fly so long timelines do not pay the `f32` copy.
 struct PcmSource {
-    samples: Arc<Vec<i16>>,
+    samples: SharedPcm,
     position: usize,
 }
 
 impl PcmSource {
-    fn at(samples: Arc<Vec<i16>>, offset: Duration) -> Self {
+    fn at(samples: SharedPcm, offset: Duration) -> Self {
         let mut source = Self {
             samples,
             position: 0,
@@ -56,7 +111,7 @@ impl Iterator for PcmSource {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Sample> {
-        let sample = *self.samples.get(self.position)?;
+        let sample = self.samples.get(self.position)?;
         self.position += 1;
         Some(sample as f32 / 32768.0)
     }
@@ -149,7 +204,7 @@ fn timeline_duration(state: &VideoEditorState) -> f64 {
 pub struct BuiltStem {
     pub volume: VolumeSource,
     pub program: bool,
-    pub samples: Arc<Vec<i16>>,
+    pub samples: SharedPcm,
 }
 
 /// Decoded stems ready to install, plus the source cache the next rebuild reuses.
@@ -209,7 +264,7 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
         stems.push(BuiltStem {
             volume: stem.volume,
             program: stem.program,
-            samples: Arc::new(audio::place(&samples, &stem.placement)),
+            samples: SharedPcm::placed(samples, &stem.placement),
         });
     }
 
@@ -226,7 +281,7 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
             stems.push(BuiltStem {
                 volume: VolumeSource::Keyboard,
                 program: false,
-                samples: Arc::new(samples),
+                samples: Arc::new(samples).into(),
             });
         }
     }
@@ -240,7 +295,7 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
 
 struct Stem {
     player: Player,
-    samples: Arc<Vec<i16>>,
+    samples: SharedPcm,
 }
 
 impl Stem {
@@ -507,7 +562,7 @@ impl PreviewAudio {
     }
 }
 
-fn connect(device: &OutputDevice, samples: Arc<Vec<i16>>) -> Stem {
+fn connect(device: &OutputDevice, samples: SharedPcm) -> Stem {
     let player = Player::connect_new(device.mixer());
     player.append(PcmSource::at(samples.clone(), Duration::ZERO));
     player.pause();
@@ -553,13 +608,16 @@ mod tests {
             stems: vec![BuiltStem {
                 volume: VolumeSource::SystemAudio,
                 program: true,
-                samples: Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]),
+                samples: Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]).into(),
             }],
             cache: HashMap::new(),
             signature: StemSignature::capture(&state),
         };
         let device = OutputDevice::Software(mixer);
-        let original = connect(&device, Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]));
+        let original = connect(
+            &device,
+            Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]).into(),
+        );
         original.player.play();
         let mut preview = PreviewAudio {
             output: Some(Output {
@@ -601,7 +659,7 @@ mod tests {
     #[test]
     fn pcm_source_converts_and_seeks_on_frame_boundaries() {
         let samples = Arc::new(vec![0i16, 32767, -32768, 16384]);
-        let mut source = PcmSource::at(samples, Duration::ZERO);
+        let mut source = PcmSource::at(samples.into(), Duration::ZERO);
         assert_eq!(source.channels(), channels());
         assert_eq!(source.sample_rate(), sample_rate());
         assert_eq!(source.next(), Some(0.0));
@@ -615,10 +673,47 @@ mod tests {
     }
 
     #[test]
+    fn preview_pcm_matches_export_through_silence_trims_and_speed_changes() {
+        let source = Arc::new(
+            (0..9600)
+                .map(|n| (n * 11 - 30_000) as i16)
+                .collect::<Vec<_>>(),
+        );
+        let placement = audio::Placement {
+            start_time: 0.01,
+            end_time: 0.05,
+            original_duration: 0.1,
+            trim_start: 0.02,
+            trim_end: 0.01,
+            speed: 1.0,
+        };
+        for (speed, end_time) in [(1.0, 0.05), (1.0, 0.005), (1.0, 0.0), (1.5, 0.05)] {
+            let placement = audio::Placement {
+                speed,
+                end_time,
+                ..placement
+            };
+            let expected = audio::place(&source, &placement);
+            let shared = SharedPcm::placed(source.clone(), &placement);
+            assert_eq!(Arc::ptr_eq(&shared.samples, &source), speed == 1.0);
+            assert!(shared.iter().eq(expected.iter().copied()));
+            let length = expected.len() / 2;
+            for frame in [0, 479, 480, length, length + 1] {
+                let offset = Duration::from_secs_f64(frame as f64 / f64::from(AUDIO_SAMPLE_RATE));
+                let preview = PcmSource::at(shared.clone(), offset);
+                let first = frame.min(length) * 2;
+                assert!(preview.eq(expected[first..]
+                    .iter()
+                    .map(|&sample| sample as f32 / 32768.0)));
+            }
+        }
+    }
+
+    #[test]
     fn an_ended_stem_can_play_again_from_a_seek() {
         let (mixer, mut output) = rodio::mixer::mixer(channels(), sample_rate());
         let device = OutputDevice::Software(mixer);
-        let stem = connect(&device, Arc::new(vec![16384; 4800]));
+        let stem = connect(&device, Arc::new(vec![16384; 4800]).into());
         stem.player.play();
         let mut heard_initial = false;
         for _ in 0..100_000 {
@@ -640,8 +735,8 @@ mod tests {
         let mut samples = vec![8192; 2400];
         samples.extend(vec![24576; 2400]);
         let samples = Arc::new(samples);
-        let program = connect(&device, samples.clone());
-        let music = connect(&device, samples);
+        let program = connect(&device, samples.clone().into());
+        let music = connect(&device, samples.into());
         program.player.play();
         music.player.play();
         let mut preview = PreviewAudio {
