@@ -42,7 +42,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, App, Bounds, Context, DispatchPhase, Entity,
@@ -132,6 +132,18 @@ enum TranscriptionEvent {
     Finished(Result<usize, String>),
 }
 
+#[derive(Clone, Copy)]
+struct PlaybackClock {
+    started: Instant,
+    playhead: f64,
+}
+
+impl PlaybackClock {
+    fn position(self, now: Instant) -> f64 {
+        self.playhead + now.saturating_duration_since(self.started).as_secs_f64()
+    }
+}
+
 pub struct VideoEditorWindow {
     path: Option<PathBuf>,
     state: VideoEditorState,
@@ -175,7 +187,8 @@ pub struct VideoEditorWindow {
     preview_state_in_flight: bool,
     preview_state_queued: bool,
     preview_commit_pending: bool,
-    playback_generation: u64,
+    playback_clock: Option<PlaybackClock>,
+    playback_task: Option<gpui::Task<()>>,
     preview_audio: crate::video::preview_audio::PreviewAudio,
     audio_generation: u64,
     scrub_audio_generation: u64,
@@ -436,7 +449,8 @@ impl VideoEditorWindow {
             preview_state_in_flight: false,
             preview_state_queued: false,
             preview_commit_pending: false,
-            playback_generation: 0,
+            playback_clock: None,
+            playback_task: None,
             preview_audio: crate::video::preview_audio::PreviewAudio::new(),
             audio_generation: 0,
             scrub_audio_generation: 0,
@@ -940,9 +954,16 @@ impl VideoEditorWindow {
                 self.refresh_preview_on_show = true;
             }
             self.release_inactive_preview_buffers();
+            if self.defer_covered_playback() {
+                self.schedule_playback(cx);
+            }
             return;
         }
-        if std::mem::take(&mut self.refresh_preview_on_show) || self.is_playing {
+        let refresh = std::mem::take(&mut self.refresh_preview_on_show);
+        if self.is_playing {
+            self.advance_playback(cx);
+            self.schedule_playback(cx);
+        } else if refresh {
             self.autoscroll_timeline();
             self.request_frame(cx);
             cx.notify();
@@ -1098,6 +1119,9 @@ impl VideoEditorWindow {
 
     /// Pushes edited state into the composition engine and recomposes.
     fn sync_preview_state(&mut self, cx: &mut Context<Self>) {
+        if self.defer_covered_playback() {
+            self.schedule_playback(cx);
+        }
         let Some(source) = self.source.clone() else {
             return;
         };
@@ -1134,55 +1158,70 @@ impl VideoEditorWindow {
         .detach();
     }
 
-    /// Advances the playhead in wall-clock time while playing. Each run is
-    /// tagged so a pause or a second play stops the previous loop.
     fn drive_playback(&mut self, cx: &mut Context<Self>) {
-        self.playback_generation += 1;
-        let generation = self.playback_generation;
-        let tick = playback_tick(self.source_frame_rate);
-        let started = cx.background_executor().now();
-        let initial_playhead = self.playhead;
+        self.playback_clock = Some(PlaybackClock {
+            started: cx.background_executor().now(),
+            playhead: self.playhead,
+        });
+        self.schedule_playback(cx);
+    }
 
-        cx.spawn(async move |entity, cx| loop {
+    fn defer_covered_playback(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.is_playing && self.preview_window_hidden && !self.preview_audio.has_samples();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    fn schedule_playback(&mut self, cx: &mut Context<Self>) {
+        self.playback_task = None;
+        let Some(clock) = self.playback_clock else {
+            return;
+        };
+        let tick = playback_tick(self.source_frame_rate);
+        let covered_end = self.defer_covered_playback().then(|| self.total_duration());
+
+        self.playback_task = Some(cx.spawn(async move |entity, cx| loop {
             let executor = cx.background_executor();
-            let elapsed = executor.now().saturating_duration_since(started);
+            let now = executor.now();
+            let elapsed = now.saturating_duration_since(clock.started);
             let elapsed_in_tick = Duration::from_nanos_u128(elapsed.as_nanos() % tick.as_nanos());
-            executor.timer(tick - elapsed_in_tick).await;
-            let advanced = entity.update(cx, |this, cx| {
-                if !this.is_playing || this.playback_generation != generation {
-                    return false;
-                }
-                let total = this.total_duration();
-                let next = initial_playhead
-                    + cx.background_executor()
-                        .now()
-                        .saturating_duration_since(started)
-                        .as_secs_f64();
-                if next >= total {
-                    this.playhead = total;
-                    this.is_playing = false;
-                    this.preview_audio.pause_all();
-                    this.invalidate_preview_frames();
-                    this.request_frame(cx);
-                    cx.notify();
-                    return false;
-                }
-                this.playhead = next;
-                this.sync_audio_transport();
-                #[cfg(target_os = "macos")]
-                if this.preview_window_hidden {
-                    return true;
-                }
-                this.autoscroll_timeline();
-                this.request_frame(cx);
-                cx.notify();
-                true
-            });
+            let delay = covered_end
+                .and_then(|end| {
+                    Duration::try_from_secs_f64((end - clock.position(now)).max(0.)).ok()
+                })
+                .unwrap_or(tick - elapsed_in_tick);
+            executor.timer(delay).await;
+            let advanced = entity.update(cx, |this, cx| this.advance_playback(cx));
             if !matches!(advanced, Ok(true)) {
                 break;
             }
-        })
-        .detach();
+        }));
+    }
+
+    fn advance_playback(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(clock) = self.playback_clock else {
+            return false;
+        };
+        let total = self.total_duration();
+        let next = clock.position(cx.background_executor().now());
+        self.playhead = next.min(total);
+        if next >= total {
+            self.is_playing = false;
+            self.playback_clock = None;
+            self.preview_audio.pause_all();
+            self.invalidate_preview_frames();
+        } else {
+            self.sync_audio_transport();
+            #[cfg(target_os = "macos")]
+            if self.preview_window_hidden {
+                return true;
+            }
+            self.autoscroll_timeline();
+        }
+        self.request_frame(cx);
+        cx.notify();
+        self.is_playing
     }
 
     /// Records the decoded duration, unless the project already carries one --
@@ -1514,6 +1553,14 @@ impl VideoEditorWindow {
 
     pub fn toggle_playback(&mut self, cx: &mut Context<Self>) {
         self.invalidate_preview_frames();
+        if let Some(clock) = self
+            .playback_clock
+            .filter(|_| self.defer_covered_playback())
+        {
+            self.playhead = clock
+                .position(cx.background_executor().now())
+                .min(self.total_duration());
+        }
         self.is_playing = !self.is_playing;
         if self.is_playing {
             self.playhead = self.preview_playhead.take().unwrap_or(self.playhead);
@@ -1524,6 +1571,8 @@ impl VideoEditorWindow {
             self.sync_audio_transport();
             self.drive_playback(cx);
         } else {
+            self.playback_clock = None;
+            self.playback_task = None;
             self.preview_audio.pause_all();
             self.request_frame(cx);
         }
@@ -1657,12 +1706,17 @@ impl VideoEditorWindow {
             .spawn(async move { crate::video::preview_audio::build_stems(inputs) });
         cx.spawn(async move |entity, cx| {
             let built = task.await;
-            let _ = entity.update(cx, |this, _| {
+            let _ = entity.update(cx, |this, cx| {
                 if this.audio_generation != generation {
                     return;
                 }
+                let deferred = this.defer_covered_playback();
                 let offset = this.playhead - first_frame_duration(&this.state);
                 this.preview_audio.install(built, &this.state, offset);
+                if deferred != this.defer_covered_playback() {
+                    this.advance_playback(cx);
+                    this.schedule_playback(cx);
+                }
             });
         })
         .detach();
@@ -7779,6 +7833,7 @@ mod keyboard_demo_tests {
             .unwrap();
         cx.run_until_parked();
         let initial_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        let initial_playhead = cx.update(|cx| editor.read(cx).playhead);
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.toggle_playback(cx);
@@ -7793,11 +7848,7 @@ mod keyboard_demo_tests {
         cx.update(|cx| {
             let editor = editor.read(cx);
             assert!(editor.is_playing);
-            assert!(
-                (editor.playhead - 0.5).abs() < 1e-9,
-                "playhead was {}",
-                editor.playhead
-            );
+            assert_eq!(editor.playhead, initial_playhead);
             assert!(!editor.compose_in_flight);
             assert!(Arc::ptr_eq(
                 &editor.preview_image().unwrap(),
@@ -7806,7 +7857,11 @@ mod keyboard_demo_tests {
         });
         cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
         cx.run_until_parked();
-        let revealed_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        let revealed_image = cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert!((editor.playhead - initial_playhead - 0.5).abs() < 1e-9);
+            editor.preview_image().unwrap()
+        });
         assert!(!Arc::ptr_eq(&revealed_image, &initial_image));
 
         cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
@@ -7826,6 +7881,43 @@ mod keyboard_demo_tests {
         let final_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
         assert!(!Arc::ptr_eq(&final_image, &revealed_image));
         scheduler.drain_tasks();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covered_playback_replans_after_a_seek_or_duration_edit(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(10.);
+                editor.state.segments = vec![model::Segment::spanning(10.)];
+                editor.set_preview_window_hidden(true, cx);
+                editor.toggle_playback(cx);
+                editor
+            })
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.toggle_playback(cx);
+                assert_eq!(editor.playhead, 1.);
+                editor.toggle_playback(cx);
+                editor.set_playhead(4., cx);
+                editor.commit(cx, |state| state.segments[0].original_end = 5.);
+            });
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.playhead, 5.);
+            assert!(!editor.is_playing);
+        });
     }
 
     #[test]

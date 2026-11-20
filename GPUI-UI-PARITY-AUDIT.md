@@ -11434,6 +11434,29 @@ continuity and final-frame recovery. All 1,219 runnable GPUI
 tests and 17 Electron reference tests passed.
 [Occluded playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS wakeups during covered video playback
+
+When a covered editor has no audio output, it keeps its wall-clock
+playback position and sleeps until the timeline ends. Revealing the
+editor refreshes the preview at the current position. Seeking,
+pausing or editing the duration updates the pending playback
+deadline. If audio becomes ready while the editor is covered, its
+transport resumes at the current position and keeps its normal
+synchronization cadence.
+
+With a fully covered 720p editor and no audio track, GPUI woke
+six times in each 1.5-second sample, down from 50–52 in light
+and dark. The first frame after reveal arrived in 55–56 ms
+in this fixture, compared with 41–52 ms in the baseline.
+An embedded audio track retained the normal cadence. A separate
+probe held audio decoding and released it while the editor was
+covered. The transport cadence resumed before reveal.
+
+The GPUI regression also covers pause, seek and a shortened
+duration while covered. The full GPUI suite passed 1,220 tests.
+The Electron player, music and export reference tests passed 17.
+[Covered playback wakeup measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

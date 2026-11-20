@@ -533,7 +533,7 @@ impl PreviewAudio {
         }
     }
 
-    fn has_samples(&self) -> bool {
+    pub(crate) fn has_samples(&self) -> bool {
         self.output
             .as_ref()
             .is_some_and(|output| !output.stems.is_empty())

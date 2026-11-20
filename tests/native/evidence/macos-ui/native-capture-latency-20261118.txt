@@ -5544,3 +5544,37 @@ opened normally. It verifies that covered playback retains its
 last image while advancing, refreshes on reveal and displays the
 final image if playback ends under cover. All 1,219 runnable
 GPUI tests and 17 Electron reference tests passed.
+
+2026-11-20 macOS wakeups during covered video playback
+======================================================
+
+The native probe opened generated 1280 × 720, 30 fps media
+through the GPUI recording-preview handoff and a fixture daemon.
+A nonactivating AppKit panel fully covered the video editor.
+GPUI reported the editor hidden and emitted no preview images
+during the sample. The probe measured process interrupt wakeups
+and CPU time with proc_pid_rusage over 1.5 seconds after cover
+settled. Reveal times end at the first fresh image reported by
+GPUI. They exclude display paint.
+
+Theme  Build     Track   Wakeups  GPUI CPU ms  Reveal ms  Advance since cover (s)
+Light  Baseline  None         50         0.12      51.62                   2.033
+Light  Updated   None          6         0.01      55.04                   1.884
+Dark   Baseline  None         52         0.13      40.74                   1.833
+Dark   Updated   None          6         0.01      55.78                   1.900
+Light  Updated   AAC          50         0.27      49.43                   1.867
+
+The AAC track supplied silence. A separate dark run deliberately
+held the audio decoder until the editor was covered. After release,
+the running editor registered 21 wakeups over 0.65 s while still
+covered. On reveal, it applied a new frame 3.241 s beyond the last
+one applied before cover. The FFmpeg wait loop adds independent
+wakeups while the audio decoder is held, so that interval is
+excluded from the no-audio comparison. No desktop pixels, input
+devices or physical pointer events were recorded.
+
+The simulated clock regressions verify the untouched image and
+playhead while the editor sleeps, the wall-clock playhead on
+reveal, and pause, seek, duration edits and end-of-playback under
+cover. All 1,220 runnable GPUI tests and 17 Electron reference
+tests passed.
