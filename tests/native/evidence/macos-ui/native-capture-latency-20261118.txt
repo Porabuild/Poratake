@@ -5951,3 +5951,44 @@ outline fixture and daemon typecheck on arm64 and x86_64.
 A repository-wide test timed out during the first concurrent
 run. The rerun passed 2,418 tests with three skips, plus the
 daemon contract, TypeScript, lint, format and React Compiler gates.
+
+2026-11-20 macOS tray idle and scrolled recording previews
+=========================================================
+
+Apple M5 Pro with one built-in Retina display. The tray-only
+samples used an isolated profile, the Swift daemon, disabled
+shortcuts and Freeze Screen off. The processes settled for
+four seconds before the eight-second proc_pid_rusage sample.
+
+Theme  Process  CPU ms  Interrupt wakeups  Physical MiB
+Light  GPUI      0.033                  7         18.44
+Light  Swift     0.010                  1          7.88
+Dark   GPUI      0.021                  5         18.08
+Dark   Swift     0.010                  1          7.78
+
+A temporary native UI probe opened an existing screenshot
+card and three generated 1280 × 720 recording cards. After
+each video had a thumbnail, an app-local resize clipped the
+three videos completely in a visible 208 × 100-point stack.
+All three released their decoder frames before the sample.
+The profile disabled auto-dismiss. One second later the
+three-second process sample started. An app-local scroll
+then brought a video card back into view. Resume measures
+the command to the first reply reporting an active decoder,
+with approximately 20 ms polling resolution.
+
+Round  Theme  Mode      CPU ms  Wakeups  Physical MiB  Resume ms
+1      Light  baseline   0.161       26         95.95      120.9
+1      Light  updated    0.014        3         95.72       21.9
+1      Dark   baseline   0.127       30        101.47      100.9
+1      Dark   updated    0.013        3         97.75       26.3
+2      Light  updated    0.012        3         99.27       21.1
+2      Light  baseline   0.129       28         99.61      108.4
+2      Dark   updated    0.018        3         99.30       28.2
+2      Dark   baseline   0.125       26         95.89       83.9
+
+Both modes used the same development binary with a fixture
+switch for the earlier polling behavior. Footprint varied
+across runs. No capture or desktop input was used. The GPUI
+regression reproduces the old behavior by requiring a decoded
+frame after scroll without advancing the playback clock.

@@ -2,7 +2,7 @@
 //! and `main/capture/capture-preview/index.ts`. A 200×140 thumbnail docks in
 //! the configured corner, stacks up to four deep, and reveals hover chrome.
 
-#[cfg(all(feature = "parity", any(windows, test)))]
+#[cfg(any(target_os = "macos", all(feature = "parity", any(windows, test))))]
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -121,6 +121,8 @@ struct VideoPlayback {
     in_flight: bool,
     #[cfg(target_os = "macos")]
     frames_released: bool,
+    #[cfg(target_os = "macos")]
+    viewport_clipped: Cell<bool>,
     #[cfg(target_os = "macos")]
     visibility_changed: smol::channel::Sender<()>,
 }
@@ -1256,6 +1258,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 #[cfg(target_os = "macos")]
                                 frames_released: false,
                                 #[cfg(target_os = "macos")]
+                                viewport_clipped: Cell::new(false),
+                                #[cfg(target_os = "macos")]
                                 visibility_changed,
                             });
                             cx.notify();
@@ -1301,8 +1305,8 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 let index =
                                     view.previews.iter().position(|preview| preview.id == id)?;
                                 #[cfg(target_os = "macos")]
-                                let can_play = !view.preview_is_clipped(&view.previews[index], _window)
-                                    && (_window.is_visible() || view.previews[index].thumbnail_loading);
+                                let clipped =
+                                    view.preview_is_clipped(&view.previews[index], _window);
                                 let now = cx.background_executor().now();
                                 let menu_open = view
                                     .display_menu
@@ -1320,8 +1324,11 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                                 }
                                 #[cfg(target_os = "macos")]
                                 {
-                                    if !can_play {
-                                        wait_for_visibility = !_window.is_visible();
+                                    playback.viewport_clipped.set(clipped);
+                                    if clipped
+                                        || (!_window.is_visible() && !preview.thumbnail_loading)
+                                    {
+                                        wait_for_visibility = true;
                                         if !playback.frames_released {
                                             playback.decoder.release_frames();
                                             playback.frames_released = true;
@@ -3253,6 +3260,25 @@ impl CapturePreviewWindow {
                 cx.notify();
             }
         }));
+        #[cfg(target_os = "macos")]
+        let root = if self.previews.iter().any(|preview| preview.video.is_some()) {
+            let owner = cx.entity().downgrade();
+            root.on_children_prepainted(move |_, window, cx| {
+                let Some(owner) = owner.upgrade() else { return };
+                let view = owner.read(cx);
+                for preview in &view.previews {
+                    let Some(video) = &preview.video else {
+                        continue;
+                    };
+                    let clipped = view.preview_is_clipped(preview, window);
+                    if video.viewport_clipped.replace(clipped) != clipped {
+                        let _ = video.visibility_changed.try_send(());
+                    }
+                }
+            })
+        } else {
+            root
+        };
         root
     }
 }
@@ -5072,18 +5098,22 @@ mod tests {
             ..Default::default()
         });
         visual.settle();
+        assert!(
+            !Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
+            "a revealed card must decode frames again without a playback tick"
+        );
         visual
             .executor()
             .advance_clock(Duration::from_millis(1_500));
         visual.settle();
         assert!(pending(&mut visual), "the revealed card gets a full delay");
-        assert!(
-            !Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
-            "a revealed card must decode frames again"
-        );
         handle
             .update(&mut visual, |view, _, _| {
-                let preview = view.previews.iter().find(|preview| preview.id == id).unwrap();
+                let preview = view
+                    .previews
+                    .iter()
+                    .find(|preview| preview.id == id)
+                    .unwrap();
                 assert!(!preview.video.as_ref().unwrap().frames_released);
             })
             .unwrap();

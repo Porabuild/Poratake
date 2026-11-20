@@ -11726,6 +11726,34 @@ The focused Electron tests cover unrelated closure events, stale
 listeners, normal countdown completion and cleanup before recording.
 The native event delivery was measured in the GPUI run above.
 
+### 2026-11-20 macOS tray idle and scrolled recording previews
+
+On the built-in display, the GPUI tray process and Swift daemon
+used 25.9–26.3 MiB combined. Over eight seconds the two processes
+used 0.031–0.043 ms of CPU time and had six to eight interrupt
+wakeups. These samples used separate light and dark profiles with
+Freeze Screen disabled and no capture in progress.
+
+Recording previews fully outside the scrollable viewport now
+wait for a layout or window-visibility change. They keep their
+last thumbnail and continue to release decoded frame buffers
+while clipped. Returning to the viewport resumes playback
+without waiting for the 125 ms playback tick.
+
+In a native 208 × 100-point preview stack with three clipped
+recordings, interrupt wakeups fell from 26–30 to three per
+three-second sample. GPUI CPU time fell from 0.125–0.161 ms to
+0.012–0.018 ms. Returning one card to the viewport resumed
+decoding in 21–28 ms, compared with 84–121 ms. The release of
+decoded frame buffers was already present in both runs. The
+benchmark used a profile with preview auto-dismiss disabled.
+
+The regression verifies playback resumption without advancing
+the playback clock. All six light and dark 2× Metal preview
+images matched byte for byte across idle, hover and exit.
+The full GPUI suite passed 1,228 tests with 24 ignored.
+[Sample data and fixture details](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
