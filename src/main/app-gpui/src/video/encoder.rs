@@ -1225,9 +1225,11 @@ mod backend {
                     session.abort();
                 })
                 .unwrap();
-            let (commands, _receiver) = mpsc::channel();
+            let (commands, _receiver) = mpsc::sync_channel(4);
+            let (_spare_tx, spare_rx) = mpsc::sync_channel(1);
             let encoder = Encoder {
                 commands: Some(commands),
+                spare_rx,
                 settings,
                 frames_written: 0,
                 cancelled,
@@ -1312,7 +1314,8 @@ mod backend {
                 Session::start(fake, &output, settings, child.clone(), &cancelled).unwrap();
             session.write_video(&[0; 16]).unwrap();
             session.write_audio(&[0; 8]).unwrap();
-            let (commands, receiver) = mpsc::channel();
+            let (commands, receiver) = mpsc::sync_channel(4);
+            let (_spare_tx, spare_rx) = mpsc::sync_channel(1);
             let worker_cancelled = cancelled.clone();
             let worker = std::thread::spawn(move || {
                 if let Ok(Command::Finish { reply }) = receiver.recv() {
@@ -1323,6 +1326,7 @@ mod backend {
             });
             let encoder = Encoder {
                 commands: Some(commands),
+                spare_rx,
                 settings,
                 frames_written: 0,
                 cancelled,
