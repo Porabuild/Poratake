@@ -11690,6 +11690,30 @@ Both daemon typechecks, all 1,227 runnable GPUI tests and
 82 Electron recording-control and contract tests passed.
 [Window Start measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS countdown cancellation after target closure
+
+When the selected window disappears, the native outline sends
+its window ID to GPUI. The matching pre-recording toolbar
+cancels its countdown, releases the capture handoff and closes.
+A hidden but still existing window keeps the countdown available.
+
+With a five-second countdown, a generated target closed in a
+separate process. The toolbar was gone about 177 ms after that
+exit in light and dark. The original deadline passed without a
+Start request or a project file. The baseline needed an explicit
+cancel in the same pre-deadline interval. The fixture blocked
+capture and used app-local commands.
+
+The Swift regression verifies one serialized closure event and
+the selected window ID, including the numeric payload. The GPUI
+regression covers an unrelated target ID and a toolbar already
+in recording mode.
+[Countdown verification](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
+All 1,228 runnable GPUI tests passed. The outline fixture and
+production daemon typecheck passed on Apple Silicon and Intel.
+The repository gate passed 2,418 tests with three skips on rerun.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

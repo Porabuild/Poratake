@@ -385,6 +385,58 @@ impl RecordingControl {
         true
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn watch_window_target_closure(
+        daemon: &crate::daemon::DaemonHandle,
+        cx: &mut App,
+    ) -> crate::daemon::EventSubscription {
+        use poratake_daemon_common::contract::RECORDING_OVERLAY_TARGET_CLOSED_EVENT;
+
+        let (sender, receiver) = smol::channel::unbounded();
+        let subscription = daemon.subscribe(Arc::new(move |event, data| {
+            if event != RECORDING_OVERLAY_TARGET_CLOSED_EVENT {
+                return;
+            }
+            if let Some(window_id) = data.get("windowId").and_then(serde_json::Value::as_i64) {
+                let _ = sender.try_send(window_id);
+            }
+        }));
+        cx.spawn(async move |cx| {
+            while let Ok(window_id) = receiver.recv().await {
+                cx.update(|cx| Self::window_target_closed(window_id, cx));
+            }
+        })
+        .detach();
+        subscription
+    }
+
+    #[cfg(target_os = "macos")]
+    fn window_target_closed(window_id: i64, cx: &mut App) -> bool {
+        let Some(toolbar) = registry::handle(RegistryKind::RecordingControl, cx)
+            .and_then(|handle| handle.downcast::<Self>())
+        else {
+            return false;
+        };
+        toolbar
+            .update(cx, |toolbar, window, cx| {
+                if toolbar.mode != Mode::PreRecording
+                    || toolbar.target != RecordingTarget::Window
+                    || toolbar.window_id != Some(window_id)
+                {
+                    return false;
+                }
+                toolbar.cancel(window, cx);
+                crate::windows::toast::Toast::show(
+                    cx,
+                    "Window closed",
+                    "The selected window closed before recording started.",
+                );
+                crate::intents::refresh_shell(cx);
+                true
+            })
+            .unwrap_or(false)
+    }
+
     fn finish_closed_handoff(cx: &mut App) {
         #[cfg(target_os = "macos")]
         {
@@ -3543,6 +3595,57 @@ mod tests {
             });
             assert!(!project.exists());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn target_closure_cancels_only_the_matching_pre_recording_countdown(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        config.update(|config| config.recording.start_delay = 5.);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                ScreenRect {
+                    x: 100,
+                    y: 100,
+                    width: 400,
+                    height: 250,
+                },
+                None,
+                Some(7),
+                Some("Generated window".into()),
+                PreferenceScope::Global,
+            );
+            let toolbar = registry::handle(RegistryKind::RecordingControl, cx)
+                .unwrap()
+                .downcast::<RecordingControl>()
+                .unwrap();
+            toolbar
+                .update(cx, |toolbar, window, cx| {
+                    toolbar.start(window, cx);
+                    assert!(toolbar.countdown_active);
+                    toolbar.mode = Mode::Recording;
+                })
+                .unwrap();
+            assert!(!RecordingControl::window_target_closed(7, cx));
+            toolbar
+                .update(cx, |toolbar, _, _| toolbar.mode = Mode::PreRecording)
+                .unwrap();
+            assert!(!RecordingControl::window_target_closed(8, cx));
+            assert!(RecordingControl::window_target_closed(7, cx));
+            assert!(registry::handle(RegistryKind::RecordingControl, cx).is_none());
+        });
+        cx.executor().advance_clock(Duration::from_secs(6));
+        cx.run_until_parked();
+        assert_eq!(recorder::state(), recorder::RecorderState::Idle);
     }
 
     #[cfg(target_os = "macos")]

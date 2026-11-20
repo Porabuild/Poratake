@@ -566,6 +566,7 @@ struct RecordingOutlineLifecycleTest {
         print("resized target: outline follows with the same exclusion ID")
 
         let frameBeforeRestore = movedHighlight.frame
+        let closedEventsBeforeHide = module.testClosedTargetEvents.count
         target.orderOut(nil)
         try await waitFor("outline did not hide with target") {
             bounds(windowID) == nil && movedHighlight.alphaValue == 0
@@ -573,6 +574,7 @@ struct RecordingOutlineLifecycleTest {
         precondition(module.testHighlightWindow === movedHighlight && movedHighlight.alphaValue == 0,
                      "temporarily hidden target lost its outline tracker")
         precondition(module.testIsTrackingHighlight)
+        precondition(module.testClosedTargetEvents.count == closedEventsBeforeHide)
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [movedOutlineID])
         print("hidden target: outline hidden, tracker retained")
 
@@ -624,6 +626,13 @@ struct RecordingOutlineLifecycleTest {
         try await waitFor("destroyed target did not stop tracking") {
             !module.testIsTrackingHighlight && disposableOutline.alphaValue == 0
         }
+        let event = try JSONDecoder().decode(
+            Event.self, from: JSONEncoder().encode(module.testClosedTargetEvents.last!))
+        precondition(event.event == "recording-overlay:target-closed")
+        precondition(event.data?.dict()?["windowId"] as? Int == Int(discardedID))
+        let closedEventsAfterDestruction = module.testClosedTargetEvents.count
+        module.testFollowHighlight()
+        precondition(module.testClosedTargetEvents.count == closedEventsAfterDestruction)
         precondition(RecordingCaptureWindowRegistry.shared.currentWindowIDs() == [
             CGWindowID(disposableOutline.windowNumber),
         ])

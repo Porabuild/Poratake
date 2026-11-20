@@ -9,7 +9,7 @@ struct RecordingWindowTarget {
         case absent
     }
 
-    private let id: CGWindowID
+    let id: CGWindowID
     private let identifiers: CFArray
 
     init?(id: CGWindowID) {

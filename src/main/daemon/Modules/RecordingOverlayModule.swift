@@ -111,8 +111,16 @@ class RecordingOverlayModule: Module {
         await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
         guard presentationGeneration.isCurrent(generation) else { return false }
 
-        guard let target = RecordingWindowTarget(id: windowID),
-              case .visible = target.observe() else { return false }
+        guard let target = RecordingWindowTarget(id: windowID) else { return false }
+        switch target.observe() {
+        case .visible:
+            break
+        case .hidden:
+            return false
+        case .absent:
+            emitTargetClosed(windowID)
+            return false
+        }
 
         let window = RecordingOverlayWindow(
             contentRect: .zero,
@@ -195,6 +203,7 @@ class RecordingOverlayModule: Module {
             highlightTimer?.invalidate()
             highlightTimer = nil
             highlightTarget = nil
+            emitTargetClosed(target.id)
             fallthrough
         case .hidden:
             if window.alphaValue != 0 {
@@ -221,6 +230,15 @@ class RecordingOverlayModule: Module {
             window.alphaValue = 1
             window.orderFrontRegardless()
         }
+    }
+
+    @MainActor
+    private func emitTargetClosed(_ id: CGWindowID) {
+        let event = Event(event: "\(name):target-closed", data: ["windowId": Int(id)])
+        #if RECORDING_OUTLINE_TEST
+        testClosedTargetEvents.append(event)
+        #endif
+        sendEvent(event)
     }
 
     @MainActor
@@ -343,6 +361,7 @@ class RecordingOverlayModule: Module {
 
     #if RECORDING_OUTLINE_TEST
     private(set) var testHideReplies: [String] = []
+    private(set) var testClosedTargetEvents: [Event] = []
 
     @MainActor
     var testHighlightWindow: NSWindow? { highlightWindow }

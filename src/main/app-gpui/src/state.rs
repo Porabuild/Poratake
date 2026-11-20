@@ -14,6 +14,8 @@ use crate::system::native::NativeBridge;
 
 pub struct AppState {
     pub service: CaptureService,
+    #[cfg(target_os = "macos")]
+    _recording_target_close: crate::daemon::EventSubscription,
     #[cfg(all(target_os = "macos", not(test)))]
     _tooltip_window_close: gpui::Subscription,
 }
@@ -82,8 +84,16 @@ pub fn init(cx: &mut gpui::App, defer_daemon: bool) -> Arc<ConfigStore> {
     #[cfg(all(target_os = "macos", not(test)))]
     let tooltip_window_close =
         crate::system::macos_tooltip::init(cx, service.daemon.clone(), config.clone());
+    #[cfg(target_os = "macos")]
+    let recording_target_close =
+        crate::windows::recording_control::RecordingControl::watch_window_target_closure(
+            &service.daemon,
+            cx,
+        );
     cx.set_global(AppState {
         service,
+        #[cfg(target_os = "macos")]
+        _recording_target_close: recording_target_close,
         #[cfg(all(target_os = "macos", not(test)))]
         _tooltip_window_close: tooltip_window_close,
     });
@@ -114,8 +124,16 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
     #[cfg(all(target_os = "macos", not(test)))]
     let tooltip_window_close =
         crate::system::macos_tooltip::init(cx, service.daemon.clone(), config);
+    #[cfg(target_os = "macos")]
+    let recording_target_close =
+        crate::windows::recording_control::RecordingControl::watch_window_target_closure(
+            &service.daemon,
+            cx,
+        );
     cx.set_global(AppState {
         service,
+        #[cfg(target_os = "macos")]
+        _recording_target_close: recording_target_close,
         #[cfg(all(target_os = "macos", not(test)))]
         _tooltip_window_close: tooltip_window_close,
     });

@@ -5922,3 +5922,32 @@ destroyed-target error closes the toolbar and that both failures
 remove their empty project. All 1,227 runnable GPUI tests and
 82 Electron reference tests passed. The production Swift daemon
 typechecked as arm64 and x86_64.
+
+2026-11-20 macOS countdown cancellation after target closure
+=============================================================
+
+The native probe opened the GPUI toolbar for a generated AppKit
+window and started a five-second countdown. A temporary daemon
+blocked capture and recorded any attempt to send Start. The
+original app kept its toolbar open when the target process exited.
+The probe canceled it before the countdown deadline.
+
+Theme  Target      Toolbar observation      Start requests  Project files
+Light  Destroyed   closed in 176.98 ms                   0              0
+Dark   Destroyed   closed in 177.35 ms                   0              0
+Light  Hidden      open until explicit cancel            0              0
+Dark   Hidden      open until explicit cancel            0              0
+
+Close timing starts when the generated target process exits
+and includes polling WindowServer for the toolbar. Both updated
+destroyed-target runs waited beyond the original deadline. The
+Swift event round-trip checks the integer ID and verifies that a
+second follow call does not publish another event. The GPUI test
+checks cancellation and keeps unrelated selections and active
+recordings with their own handlers.
+
+All 1,228 runnable GPUI tests passed, together with the Swift
+outline fixture and daemon typecheck on arm64 and x86_64.
+A repository-wide test timed out during the first concurrent
+run. The rerun passed 2,418 tests with three skips, plus the
+daemon contract, TypeScript, lint, format and React Compiler gates.

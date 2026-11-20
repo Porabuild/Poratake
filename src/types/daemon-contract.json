@@ -196,6 +196,9 @@
       "platforms": ["macos", "windows"],
       "shared": ["show", "showWindow", "hide"],
       "linux": [],
+      "events": {
+        "macos": ["recording-overlay:target-closed"]
+      },
       "methodRequests": {
         "show": "show",
         "showWindow": "showWindow"
