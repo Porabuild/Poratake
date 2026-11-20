@@ -583,7 +583,8 @@ mod backend {
         info: VideoInfo,
         cursor: &mut DecodeCursor,
     ) -> Option<DecodedFrame> {
-        let position = (bounded_time(time, info) * UNITS_PER_SECOND) as i64;
+        const TIMESTAMP_TOLERANCE: i64 = 100;
+        let position = (bounded_time(time, info) * UNITS_PER_SECOND).round() as i64;
         if cursor.needs_seek(position) {
             let mut variant = PROPVARIANT::default();
             {
@@ -598,18 +599,18 @@ mod backend {
         if cursor
             .next
             .as_ref()
-            .is_some_and(|next| next.timestamp <= position)
+            .is_some_and(|next| next.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE))
         {
             cursor.current = cursor.next.take();
         }
         if cursor
             .next
             .as_ref()
-            .is_some_and(|next| next.timestamp > position)
-            || cursor
-                .current
-                .as_ref()
-                .is_some_and(|current| current.timestamp == position)
+            .is_some_and(|next| next.timestamp > position.saturating_add(TIMESTAMP_TOLERANCE))
+            || cursor.current.as_ref().is_some_and(|current| {
+                current.timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE)
+                    && current.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE)
+            })
         {
             return cursor.frame();
         }
@@ -643,7 +644,7 @@ mod backend {
             let Some(sample) = sample else {
                 continue;
             };
-            if timestamp > position {
+            if timestamp > position.saturating_add(TIMESTAMP_TOLERANCE) {
                 if let Some((timestamp, sample)) = candidate {
                     cursor.current = Some(TimedFrame {
                         timestamp,
@@ -656,7 +657,7 @@ mod backend {
                 });
                 return cursor.frame();
             }
-            if timestamp == position {
+            if timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE) {
                 cursor.current = Some(TimedFrame {
                     timestamp,
                     frame: copy_sample(&sample, info)?,

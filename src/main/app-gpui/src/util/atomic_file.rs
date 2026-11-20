@@ -45,14 +45,34 @@ pub fn replace(temp: &Path, path: &Path) -> io::Result<()> {
     use windows::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
-    unsafe {
-        MoveFileExW(
-            &HSTRING::from(temp.as_os_str()),
-            &HSTRING::from(path.as_os_str()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
+    const ERROR_ACCESS_DENIED_HRESULT: i32 = 0x80070005u32 as i32;
+    const ERROR_SHARING_VIOLATION_HRESULT: i32 = 0x80070020u32 as i32;
+
+    let temp_h = HSTRING::from(temp.as_os_str());
+    let path_h = HSTRING::from(path.as_os_str());
+    for attempt in 0..16 {
+        let result = unsafe {
+            MoveFileExW(
+                &temp_h,
+                &path_h,
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < 15
+                    && matches!(
+                        error.code().0,
+                        ERROR_ACCESS_DENIED_HRESULT | ERROR_SHARING_VIOLATION_HRESULT
+                    ) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => return Err(io::Error::other(error)),
+        }
     }
-    .map_err(io::Error::other)
+    unreachable!()
 }
 
 #[cfg(not(windows))]
@@ -97,6 +117,28 @@ mod tests {
 
     #[test]
     fn concurrent_readers_only_see_complete_versions() {
+        struct FinishOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for FinishOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        #[cfg(windows)]
+        fn read_shared(path: &Path) -> io::Result<Vec<u8>> {
+            use std::io::Read;
+            use std::os::windows::fs::OpenOptionsExt;
+            let mut file = OpenOptions::new().read(true).share_mode(0b111).open(path)?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)?;
+            Ok(buf)
+        }
+
+        #[cfg(not(windows))]
+        fn read_shared(path: &Path) -> io::Result<Vec<u8>> {
+            fs::read(path)
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         let first = vec![b'a'; 131_072];
@@ -106,14 +148,15 @@ mod tests {
         std::thread::scope(|scope| {
             let finished = &finished;
             let writer = scope.spawn(|| {
+                let _done = FinishOnDrop(finished);
                 for index in 0..12 {
                     write(&path, if index % 2 == 0 { &second } else { &first }).unwrap();
                 }
-                finished.store(true, Ordering::Release);
             });
             while !finished.load(Ordering::Acquire) {
-                let read = fs::read(&path).unwrap();
+                let read = read_shared(&path).unwrap();
                 assert!(read == first || read == second);
+                std::thread::yield_now();
             }
             writer.join().unwrap();
         });

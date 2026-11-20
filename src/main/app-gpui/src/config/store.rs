@@ -139,8 +139,8 @@ impl ConfigStore {
                     loop {
                         thread::sleep(Duration::from_millis(CONFIG_WRITE_DEBOUNCE_MS));
                         match rx.try_recv() {
-                            Ok(()) | Err(TryRecvError::Disconnected) => continue,
-                            Err(TryRecvError::Empty) => break,
+                            Ok(()) => continue,
+                            Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
                         }
                     }
                     loop {

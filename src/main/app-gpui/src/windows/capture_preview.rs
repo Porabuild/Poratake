@@ -3514,6 +3514,7 @@ mod tests {
                 delete_bounds
             );
             visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+            visual.run_until_parked();
             visual.settle();
 
             assert!(
@@ -3580,6 +3581,7 @@ mod tests {
             .debug_bounds("preview-delete-1-tooltip-trigger")
             .expect("Delete control must render while the preview is hovered");
         visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
         visual.settle();
         assert!(!persisted_capture.exists());
         assert!(preview.update(visual, |view, _| {
@@ -3608,6 +3610,7 @@ mod tests {
             .debug_bounds("preview-delete-1-tooltip-trigger")
             .expect("Delete control must render while the preview is hovered");
         visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
         visual.settle();
         assert!(!successful_capture.exists());
         assert!(preview.update(visual, |view, _| {
