@@ -43,7 +43,7 @@ struct TooltipDispatch {
     daemon: DaemonHandle,
     config: Arc<ConfigStore>,
     state: Mutex<TooltipState>,
-    sequence: AtomicU64,
+    sequence: Arc<AtomicU64>,
 }
 
 #[cfg(not(test))]
@@ -54,6 +54,7 @@ impl TooltipDispatch {
     fn send(&self, owner: u32, text: Option<String>, owner_frame: Option<TooltipOwnerFrame>) {
         let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
         let daemon = self.daemon.clone();
+        let latest = self.sequence.clone();
         let dark = self.config.read(|settings| {
             resolve_theme_mode(ThemeMode::parse(&settings.appearance.mode)) == ThemeMode::Dark
         });
@@ -64,6 +65,7 @@ impl TooltipDispatch {
                 text.as_deref(),
                 dark,
                 owner_frame,
+                || latest.load(Ordering::Relaxed) == sequence,
             ) {
                 eprintln!("[tooltip] {error}");
             }
@@ -83,7 +85,7 @@ pub fn init(cx: &mut App, daemon: DaemonHandle, config: Arc<ConfigStore>) -> Sub
         daemon,
         config,
         state: Mutex::new(TooltipState::default()),
-        sequence: AtomicU64::new(0),
+        sequence: Arc::new(AtomicU64::new(0)),
     });
     cx.on_window_closed(|_, window| {
         if let Some(dispatch) = DISPATCH.get() {

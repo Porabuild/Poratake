@@ -11320,6 +11320,22 @@ still waiting for its hover delay when the window becomes hidden.
 All 50 GPUI preview tests and 70 Electron reference tests passed.
 [Covered tooltip evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS tooltip cancellation during daemon startup
+
+GPUI now checks that a tooltip Show is current before starting the
+daemon and again after startup. This covers a Hide that arrives
+before there is a daemon to receive it. The existing request
+sequence still orders requests at the daemon.
+
+The regression held a Show before startup, issued Hide while the
+daemon was absent, then let startup complete. The old path sent
+the stale Show. The updated path sent no tooltip request. Separate
+light and dark app-local runs held a Show reply in the fixture
+daemon. Hide still reached it in 14–17 ms with the newer sequence.
+All 11 GPUI daemon tests and 130 Electron reference and contract
+tests passed.
+[Tooltip startup and dispatch evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

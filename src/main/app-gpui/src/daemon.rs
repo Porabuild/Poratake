@@ -1194,7 +1194,7 @@ impl ScrollCaptureClient<'_> {
 }
 
 impl RecordingControlClient<'_> {
-    #[cfg(all(target_os = "macos", not(test)))]
+    #[cfg(target_os = "macos")]
     pub fn set_tooltip(
         &self,
         owner: u32,
@@ -1202,11 +1202,16 @@ impl RecordingControlClient<'_> {
         text: Option<&str>,
         dark: bool,
         owner_frame: Option<TooltipOwnerFrame>,
+        is_current: impl Fn() -> bool,
     ) -> Result<()> {
-        if text.is_none() && !self.daemon.is_running() {
+        let superseded = || text.is_some() && !is_current();
+        if superseded() || (text.is_none() && !self.daemon.is_running()) {
             return Ok(());
         }
         self.daemon.ensure_running()?;
+        if superseded() {
+            return Ok(());
+        }
         self.daemon
             .call(
                 RECORDING_CONTROL_MODULE,
@@ -1725,6 +1730,69 @@ done
         daemon.stop();
         assert!(!daemon.is_running());
         assert!(!wait_for_child_exit(restarted).unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn superseded_tooltip_show_is_dropped_after_daemon_startup() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"quit"'*) exit 0 ;;
+        *'"method":"setTooltip"'*) printf '%s\n' "$request" >> "$0.tooltips"; exit 42 ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = DaemonHandle::with_binary(fixture);
+        let latest = Arc::new(AtomicU64::new(1));
+        let (checked, checked_rx) = std::sync::mpsc::sync_channel(1);
+        let (start, start_rx) = std::sync::mpsc::sync_channel(1);
+        let show_daemon = daemon.clone();
+        let show_latest = latest.clone();
+        let show = thread::spawn(move || {
+            let first = std::cell::Cell::new(true);
+            show_daemon.recording_control().set_tooltip(
+                19,
+                1,
+                Some("Close preview"),
+                false,
+                None,
+                || {
+                    let is_current = show_latest.load(Ordering::Relaxed) == 1;
+                    if first.replace(false) {
+                        checked.send(()).unwrap();
+                        start_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                    }
+                    is_current
+                },
+            )
+        });
+        checked_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!daemon.is_running());
+        latest.store(2, Ordering::Relaxed);
+        daemon
+            .recording_control()
+            .set_tooltip(19, 2, None, false, None, || true)
+            .unwrap();
+        start.send(()).unwrap();
+        let result = show.join().unwrap();
+        let sent_show = dir.path().join("daemon.tooltips").is_file();
+        daemon.stop();
+        assert!(
+            !sent_show,
+            "a tooltip cancelled before startup was sent to the new daemon"
+        );
+        result.unwrap();
     }
 
     #[cfg(unix)]

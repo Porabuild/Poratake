@@ -5369,3 +5369,21 @@ in both updated runs. The GPUI regression additionally covers
 cancellation before the 150 ms hover delay has elapsed.
 The GPUI preview suite passed 50 tests. The four Electron preview
 and thumbnail reference files passed 70 tests.
+
+2026-11-20 macOS tooltip cancellation during daemon startup
+===========================================================
+
+The deterministic daemon fixture blocked a Show before startup
+after it had read the current sequence. Hide advanced the sequence
+while the daemon was absent. Once startup was released, the
+baseline sent the obsolete Show. The updated path rechecked the
+sequence after Ready and issued no tooltip request.
+
+A separate native app probe used a warm mock Swift-daemon protocol.
+It held the Show response from a generated preview's app-local hover
+and replied only after receiving Hide. The Hide RPC carried sequence
+2 in both runs, after Show sequence 1. The probe observed Hide in
+16.8 ms in light mode and 14.3 ms in dark mode. The time includes
+polling, and no physical input or media permission was involved.
+The 11 GPUI daemon tests and 130 Electron reference and daemon
+contract tests passed.
