@@ -11775,6 +11775,30 @@ All six light and dark 2× Metal preview images matched across
 idle, hover and exit.
 [Auto-dismiss measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS bundled wallpaper cache memory
+
+The shared screenshot and video renderer now keeps up to
+128 MiB of bundled wallpaper rasters. It evicts the least
+recently used raster first. A single raster above the budget
+can stay cached until the next miss, so consecutive frames of
+an oversized export still reuse it. The picker retains its
+thumbnail images without also putting those rasters in the
+full-size cache.
+
+In three paired Apple Silicon runs, the shared renderer
+composed eight different 3840 × 2160 wallpaper backgrounds.
+Median physical footprint one second after rendering fell
+from 416.2 to 246.5 MiB. All rendered bytes produced the same
+checksum in both builds. Repeated requests for the final
+preset continued to reuse its raster.
+
+The regression checks eviction order, byte-identical
+rerasterization and retention of a single oversized raster.
+At 2×, all 167 macOS Metal captures per theme matched
+byte for byte, including both wallpaper pickers. All 1,230
+runnable GPUI tests and 10 Electron wallpaper tests passed.
+[Wallpaper cache samples](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

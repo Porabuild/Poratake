@@ -6025,3 +6025,31 @@ delay and verifies the configured deadline after scrolling
 into view. Idle, hover and exit renders matched byte for byte
 at 2× in both themes with generated video. All samples ran
 in isolated profiles without desktop input or device access.
+
+2026-11-20 macOS bundled wallpaper cache memory
+==============================================
+
+A temporary arm64 development probe called the shared
+gradient renderer for eight different bundled presets.
+Each output canvas was 3840 × 2160. Each preset's cover raster
+was 3840 × 2880. The probe hashed every composited byte and
+dropped the canvas before the next preset. A second pass
+requested the last preset's raster 150 times at the same size.
+The process was idle for one second before proc_pid_rusage
+reported the final physical footprint. Samples ran without
+opening a window, accessing capture devices or taking input
+from the desktop.
+
+Round  Build     Start MiB  Idle MiB  Compose/hash ms  150 hit ms
+1      be10f53d       4.05    415.38          2399.6       0.013
+1      updated        4.06    246.47          1920.9       0.177
+2      updated        4.06    246.53          1456.1       0.004
+2      be10f53d       4.03    416.17          1839.8       0.011
+3      be10f53d       4.05    416.25          1926.8       0.009
+3      updated        3.94    246.30          1501.7       0.005
+
+Every run produced the same 64-bit checksum, 8f1375df1a77c9a7.
+Composer timing includes hashing the full canvases and varied
+across trials. The measured memory includes native allocator
+retention. It isolates the wallpaper path from an open editor,
+its decoded source image and Metal textures.
