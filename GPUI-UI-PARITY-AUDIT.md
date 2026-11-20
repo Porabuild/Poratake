@@ -11799,6 +11799,35 @@ byte for byte, including both wallpaper pickers. All 1,230
 runnable GPUI tests and 10 Electron wallpaper tests passed.
 [Wallpaper cache samples](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS 4K preview after a large playhead jump
+
+When a video seek restarts an existing FFmpeg stream, it now
+drops decoded frames older than the seek window before they are
+converted and transferred. If the trim skips a held frame, the
+decoder retries with the existing untrimmed preroll.
+
+In the native 4K60 editor, a jump during playback from the
+opening half-second to 4.733 s transferred 45–46 raw frames
+before the first updated image in the baseline. The updated
+build transferred two. The background job took 364–371 ms
+before and 190–192 ms after in four reruns across light and
+dark. Exact paused preview PNGs matched. The 30 decoded frames
+and timestamps of a 4K60 export across the cut also matched.
+
+All 1,230 runnable GPUI tests, three real FFmpeg decoder tests
+and 46 Electron reference tests passed. Sustained playback
+under simultaneous software encoding remains open. A separate
+four-input-thread comparison reduced the decoder footprint from
+about 912 MiB to 632 MiB. The four-thread variant delivered
+more images in three of the four loaded pairs.
+
+The baseline export also produced 29 frames for two nominal
+14-frame trims at 60 fps. The stored endpoints make the frame
+count expression evaluate to 28.000000000000004 before the
+ceiling. This remains open. The decoder comparison used two
+exact quarter-second trims.
+[Playback, seek and export measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

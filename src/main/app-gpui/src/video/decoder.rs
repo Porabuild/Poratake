@@ -1055,7 +1055,6 @@ mod backend {
                 decoder.advance(next);
             }
         }
-        let cold_start = decoder.is_none();
         let restart = decoder.as_ref().is_none_or(|decoder| {
             let bracketed = decoder.current.as_ref().is_some_and(|current| {
                 current.timestamp <= time
@@ -1076,7 +1075,7 @@ mod backend {
             let preroll_start = (time - STREAM_SEEK_PREROLL).max(0.0);
             let seek_start = if preroll_start > 0.0 { time } else { 0.0 };
             let lookbehind = time - 1.0 / media.video.frame_rate();
-            let trim_start = (cold_start && lookbehind > 0.0)
+            let trim_start = (lookbehind > 0.0)
                 .then_some(lookbehind + media.start_time)
                 .filter(|start| start.is_finite() && *start > 0.0);
             let mut process = start(ffmpeg, path, media, seek_start, trim_start)?;
@@ -1924,18 +1923,31 @@ printf '\042\000\000\377'
         }
 
         #[test]
-        fn direct_seek_retries_if_the_first_frame_is_ahead_of_the_target() {
+        fn a_stream_restart_trims_preroll_and_retries_if_it_skips_the_target() {
             let directory = fake_ffmpeg();
             let ffmpeg = directory.path().join("ffmpeg");
             std::fs::write(
                 &ffmpeg,
                 r#"#!/bin/sh
 case "$5 $6" in
-  *'-ss 8.000000') printf d >> "$0.calls" ;;
+  *'-ss 8.000000')
+    case "$*" in
+      *'trim=start=7.000000000,showinfo=checksum=0'*) printf d >> "$0.calls" ;;
+      *) exit 1 ;;
+    esac
+    ;;
   *'-ss 6.000000')
     printf p >> "$0.calls"
     printf '[Parsed_showinfo] n:0 pts:7 pts_time:7\n' >&2
     printf '\021\000\000\377'
+    ;;
+  '-i '*)
+    printf i >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:0 pts_time:0\n' >&2
+    printf '\010\000\000\377'
+    printf '[Parsed_showinfo] n:1 pts:1 pts_time:1\n' >&2
+    printf '\011\000\000\377'
+    exit 0
     ;;
   *) exit 1 ;;
 esac
@@ -1952,14 +1964,27 @@ printf '\042\000\000\377'
                 frame_rate: 1.0,
                 ..Default::default()
             };
+            let media = MediaInfo {
+                video: info,
+                ..Default::default()
+            };
+            let source = directory.path().join("source.mov");
+            let first = read_frame(
+                &ffmpeg,
+                &source,
+                0.0,
+                media,
+                &mut decoder,
+                FrameWait::default(),
+            )
+            .unwrap();
+            assert_eq!(first.bgra.as_slice(), [8, 0, 0, 255]);
+
             let frame = read_frame(
                 &ffmpeg,
-                &directory.path().join("source.mov"),
+                &source,
                 8.0,
-                MediaInfo {
-                    video: info,
-                    ..Default::default()
-                },
+                media,
                 &mut decoder,
                 FrameWait::default(),
             )
@@ -1967,7 +1992,7 @@ printf '\042\000\000\377'
             assert_eq!(frame.bgra.as_slice(), [17, 0, 0, 255]);
             assert_eq!(
                 std::fs::read(directory.path().join("ffmpeg.calls")).unwrap(),
-                b"dp"
+                b"idp"
             );
         }
 

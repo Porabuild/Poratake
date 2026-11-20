@@ -6053,3 +6053,50 @@ Composer timing includes hashing the full canvases and varied
 across trials. The measured memory includes native allocator
 retention. It isolates the wallpaper path from an open editor,
 its decoded source image and Metal textures.
+
+2026-11-20 macOS 4K decode timing and restart preroll
+==================================================
+
+Apple Silicon development app, bundled FFmpeg and a generated
+3840 × 2160 H.264 fixture with B frames, a 60-frame GOP and
+nine seconds at 60 fps. The fixture daemon supplies the video.
+Commands stay within the temporary app. The session never
+records the desktop or opens an audio or camera input.
+
+The current 100c124c app applied the following preview images
+over four seconds. Loaded trials ran with two independent
+software encoders. The variant uses an app-local FFmpeg
+wrapper that caps input decoder threads at four. The app and
+its opening preview are the same in both arms.
+
+Load  Round  Theme  Images auto/4  Largest gap ms auto/4  FFmpeg MiB auto/4
+Idle      1  Light        201/226          325.91/97.91         913.0/633.8
+Idle      1  Dark         238/232           52.35/61.75         910.4/633.7
+Two       1  Light        127/167          476.46/257.39        911.6/632.5
+Two       1  Dark         192/166          268.14/310.06        911.9/631.4
+Two       2  Dark          82/181          479.59/287.57        912.7/631.5
+Two       2  Light        138/200          445.51/190.87        910.5/632.8
+
+In the restart probe, the playing app jumped to 4.733333 s
+after at least one applied image past 0.45 s. Payload counts
+cover the new decoder before the first updated image. Preroll
+counts payloads timestamped before 4.70 s. Timings are the
+completed background composition job, including decoding.
+
+Round  Theme  Payloads before/after  Preroll before/after  Job ms before/after
+1      Light                  46/2                   42/0        364.41/192.48
+1      Dark                   46/2                   42/0        370.58/191.29
+2      Light                  45/2                   42/0        364.57/190.06
+2      Dark                   45/2                   42/0        367.91/192.40
+
+The PNG after pausing and seeking to 4.731 s matched in every
+run. SHA-256 d77db1bf641f5875d3ce637a1a7b9666a9bcfb266b6c1b4970c0396967bb983d.
+An original-size 60 fps export joined source spans 0–0.25 s
+and 4.734375–4.984375 s. All 30 decoded frame digests and
+timestamps matched. The framehash manifest SHA-256 was
+fb4ec82f9744417795e81024c52574d2fde79027cb4331109e2f49c9ed8d9eea.
+
+A separate baseline run used spans 0–14/60 s and 284/60–298/60 s.
+It exported 29 frames at 60 fps. The floating-point expression
+`(14/60 + (298/60 - 284/60)) * 60` evaluates one binary
+representable step above 28. The export count takes its ceiling.
