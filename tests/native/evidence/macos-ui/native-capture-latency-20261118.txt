@@ -5716,3 +5716,33 @@ through the background writer matched all 1,790 edited pixels
 after reopen in each theme. The sheet's native confirmation
 button was not exercised. All 1,224 runnable GPUI tests and 16
 Electron annotation reference tests passed.
+
+2026-11-20 native macOS narrow video editor and audio tracks
+============================================================
+
+The isolated GPUI development app used the normal Open in Video
+Editor entry point. The profile restored a 720 × 520-point window
+at (504, 315) on the built-in Retina display. The project used
+a generated 1280 × 720 clip, a red rectangle, a long filename,
+and a saved 300-point timeline. The preflight-authorized capture
+selected only the GPUI fixture window by owner PID and window ID.
+It produced 1440 × 1040 images in both themes.
+
+Theme  Before silent  After silent  Legacy entry  Embedded AAC  AAC sidecar
+Light         17,208             0             0        17,208       15,908
+Dark          15,133             0             0        15,133       14,303
+
+Counts are purple pixels in the timeline audio lane region.
+The before samples use the silent source and a fresh project.
+The legacy samples use a saved system audio entry with the same
+silent movie. Both legacy Audio panels show No audio tracks.
+The positive controls each retain an Audio or System Audio
+lane. All video preview samples contained 27,432 blue and
+2,399 red annotation pixels in the tested region.
+
+Visual review covered the title, the Drawing controls and the
+Export panel footer. The saved layout was restored on the
+single Retina screen. No physical resize or mixed-DPI transition
+was exercised. All 1,225 runnable GPUI tests, four generated-media
+tests with development FFmpeg and 18 Electron reference tests
+passed.

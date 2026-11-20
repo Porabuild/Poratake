@@ -11533,6 +11533,31 @@ writer and reopen check matched all 1,790 edited pixels in light
 and dark. The available probe did not confirm the native sheet.
 [Save and memory measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 native macOS narrow video editor and audio tracks
+
+The normal editor entry point restored a saved 720 × 520-point
+window on the built-in Retina display. In light and dark, the
+long generated title truncated before the toolbar actions, the
+annotation stayed visible in the preview, and Export Video fit
+in the sidebar with a tall saved timeline.
+
+The native run exposed an Audio lane on a recording with no
+audio stream. The editor now uses FFmpeg's existing metadata to
+distinguish embedded audio from a silent movie. Saved track
+settings remain in the project. When the program audio is known
+to be absent, the editor omits its lane and Audio panel row and
+disables scrubbing audio. A valid sidecar supplies its own
+System Audio lane.
+
+Both themes verified silent movies, a saved legacy audio entry,
+embedded AAC and a separate AAC sidecar. All 1,225 runnable
+GPUI tests, four generated-media tests and 18 Electron reference
+tests passed. The window capture targeted only the generated
+editor and used no desktop input.
+[Light Audio panel](tests/native/evidence/macos-ui/video-native-narrow-light-audio-20261120.png)
+[Dark Export panel](tests/native/evidence/macos-ui/video-native-narrow-dark-export-20261120.png)
+[Native measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

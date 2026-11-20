@@ -1354,7 +1354,7 @@ fn audio_panel(
         })
         .into_any_element()];
 
-    let groups = model::music_groups(&state.music_tracks);
+    let groups = model::music_groups(view.available_music_tracks());
     if groups.is_empty() {
         children.push(kit::hint("No audio tracks.", theme));
     }

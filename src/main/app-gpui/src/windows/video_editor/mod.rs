@@ -173,6 +173,7 @@ pub struct VideoEditorWindow {
     focus_handle: FocusHandle,
     source: Option<preview::Handle>,
     source_frame_rate: f64,
+    has_system_audio: Option<bool>,
     preview_status: PreviewStatus,
     preview_image: Option<Arc<gpui::RenderImage>>,
     /// One compose runs at a time; a request that arrives while one is in
@@ -399,7 +400,11 @@ impl VideoEditorWindow {
             .map(|value| timeline::clamp_pane_height(value as f32))
             .unwrap_or_else(timeline::default_pane_height);
         if let Some(project) = path.as_deref() {
-            materialize_builtin_audio_tracks(&mut state, project);
+            materialize_builtin_audio_tracks(
+                &mut state,
+                project,
+                !cfg!(any(target_os = "macos", target_os = "linux")),
+            );
         }
         let initial_name = path
             .as_deref()
@@ -437,6 +442,7 @@ impl VideoEditorWindow {
             focus_handle: cx.focus_handle(),
             source: None,
             source_frame_rate: 60.0,
+            has_system_audio: None,
             preview_status: PreviewStatus::Idle,
             preview_image: None,
             compose_in_flight: false,
@@ -840,19 +846,30 @@ impl VideoEditorWindow {
             return;
         };
         let state = self.state.clone();
+        self.has_system_audio = None;
         self.invalidate_preview_frames();
         self.preview_status = PreviewStatus::Loading;
         self.refresh_subtitle_count();
         cx.notify();
 
         cx.spawn(async move |entity, cx| {
+            let opening_path = path.clone();
             let opened = cx
                 .background_executor()
-                .spawn(async move { preview::Source::open(&path, state) })
+                .spawn(async move {
+                    let source = preview::Source::open(&opening_path, state)?;
+                    let has_system_audio = source.info().has_embedded_audio.map(|embedded| {
+                        embedded || project::system_audio_path(&opening_path).is_file()
+                    });
+                    Some((source, has_system_audio))
+                })
                 .await;
             let _ = entity.update(cx, |this, cx| {
+                if this.path.as_ref() != Some(&path) {
+                    return;
+                }
                 match opened {
-                    Some(source) => {
+                    Some((source, has_system_audio)) => {
                         // `handleBootstrapMetadata` takes the duration off the
                         // `<video>` element's `loadedmetadata`. Nothing did that
                         // here, so a recording with no saved project sat at a
@@ -861,6 +878,7 @@ impl VideoEditorWindow {
                         let info = source.info();
                         let duration = info.duration;
                         this.source_frame_rate = info.frame_rate();
+                        this.has_system_audio = has_system_audio;
                         this.composition_size = Some(source.composition_size());
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
                         this.adopt_source_duration(duration, cx);
@@ -1242,13 +1260,14 @@ impl VideoEditorWindow {
             return;
         };
         self.camera_segments_initialized = true;
-        let tracks_changed = if changes.source_duration_changed {
-            self.path
-                .as_deref()
-                .is_some_and(|project| materialize_builtin_audio_tracks(&mut self.state, project))
-        } else {
-            false
-        };
+        let include_embedded = self
+            .has_system_audio
+            .unwrap_or(!cfg!(any(target_os = "macos", target_os = "linux")));
+        let tracks_changed = (changes.source_duration_changed
+            || self.has_system_audio == Some(true))
+            && self.path.as_deref().is_some_and(|project| {
+                materialize_builtin_audio_tracks(&mut self.state, project, include_embedded)
+            });
         if !changes.source_duration_changed
             && !changes.segments_changed
             && !changes.camera_segments_changed
@@ -3769,6 +3788,13 @@ impl VideoEditorWindow {
         }
     }
 
+    fn available_music_tracks(&self) -> impl Iterator<Item = &model::MusicTrack> {
+        self.state.music_tracks.iter().filter(|track| {
+            track.source != crate::video::audio_tracks::SYSTEM_SOURCE
+                || self.has_system_audio != Some(false)
+        })
+    }
+
     fn tracks(&self, has_camera: bool) -> Vec<Track> {
         use timeline::tracks::{range_clips, source_icon, Clip, MusicLane};
 
@@ -3837,7 +3863,7 @@ impl VideoEditorWindow {
         }
 
         for group in
-            model::music_groups(self.state.music_tracks.iter().filter(|track| track.enabled))
+            model::music_groups(self.available_music_tracks().filter(|track| track.enabled))
         {
             let Some(first) = group.first() else {
                 continue;
@@ -4021,7 +4047,7 @@ impl Render for VideoEditorWindow {
                     .unwrap_or(1.0),
                 pixels_per_second: self.pixels_per_second,
                 scrub_audio_enabled: self.state.ui.scrub_audio_enabled,
-                is_scrub_audio_available: has_project,
+                is_scrub_audio_available: self.has_system_audio.unwrap_or(has_project) || has_mic,
             },
             &theme,
             window,
@@ -4443,6 +4469,7 @@ fn playback_tick(frame_rate: f64) -> Duration {
 fn materialize_builtin_audio_tracks(
     state: &mut VideoEditorState,
     project: &std::path::Path,
+    include_embedded: bool,
 ) -> bool {
     let duration = state.source_duration.unwrap_or_else(|| {
         state
@@ -4456,7 +4483,7 @@ fn materialize_builtin_audio_tracks(
     }
     let sources = crate::video::audio_tracks::Sources::resolve(project);
     let mut built_in = Vec::new();
-    if sources.system.is_some() {
+    if sources.system.is_some() && (!sources.system_is_embedded || include_embedded) {
         let name = match sources.system_is_embedded {
             true => "Audio",
             false => "System Audio",
@@ -4592,6 +4619,34 @@ mod window_geometry_tests {
             origin: gpui::point(px(x), px(y)),
             size: size(px(width), px(height)),
         }
+    }
+
+    #[test]
+    fn embedded_audio_requires_metadata_and_a_sidecar_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("clip.mov");
+        std::fs::write(&recording, []).unwrap();
+        let empty = || VideoEditorState {
+            source_duration: Some(4.),
+            ..Default::default()
+        };
+        let mut state = empty();
+        assert!(!materialize_builtin_audio_tracks(
+            &mut state, &recording, false
+        ));
+        assert!(state.music_tracks.is_empty());
+
+        assert!(materialize_builtin_audio_tracks(
+            &mut state, &recording, true
+        ));
+        assert_eq!(state.music_tracks[0].name, "Audio");
+
+        std::fs::write(project::system_audio_path(&recording), []).unwrap();
+        let mut state = empty();
+        assert!(materialize_builtin_audio_tracks(
+            &mut state, &recording, false
+        ));
+        assert_eq!(state.music_tracks[0].name, "System Audio");
     }
 
     #[test]

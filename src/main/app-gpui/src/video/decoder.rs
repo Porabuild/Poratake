@@ -17,6 +17,7 @@ pub struct VideoInfo {
     pub height: u32,
     pub duration: f64,
     pub frame_rate: f64,
+    pub has_embedded_audio: Option<bool>,
 }
 
 impl VideoInfo {
@@ -901,6 +902,12 @@ mod backend {
                 height,
                 duration,
                 frame_rate,
+                has_embedded_audio: Some(metadata.lines().any(|line| {
+                    line.trim_start().starts_with("Stream #0:")
+                        && line
+                            .split_once(": ")
+                            .is_some_and(|(_, stream)| stream.starts_with("Audio:"))
+                })),
             },
             start_time,
             normalize_pixel_aspect,
@@ -1439,6 +1446,10 @@ case "$*" in
     ;;
   *)
     printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\n' >&2
+    printf '    title: Audio: example\n' >&2
+    if [ -f "$0.with-audio" ]; then
+      printf 'Stream #0:1(und): Audio: aac, 48000 Hz, stereo\n' >&2
+    fi
     exit 1
     ;;
 esac
@@ -1721,6 +1732,7 @@ esac
                 height: 1,
                 duration: 2.0,
                 frame_rate: 12.0,
+                ..Default::default()
             };
             let media = MediaInfo {
                 video: info,
@@ -1893,6 +1905,7 @@ printf '\042\000\000\377'
                     height: 1,
                     duration: 2.0,
                     frame_rate: 10.0,
+                    ..Default::default()
                 },
                 start_time: 5.0,
                 ..Default::default()
@@ -1937,6 +1950,7 @@ printf '\042\000\000\377'
                 height: 1,
                 duration: 10.0,
                 frame_rate: 1.0,
+                ..Default::default()
             };
             let frame = read_frame(
                 &ffmpeg,
@@ -2004,9 +2018,15 @@ printf '\042\000\000\377'
                     height: 1,
                     duration: 20.0,
                     frame_rate: 1.0,
+                    has_embedded_audio: Some(false),
                 }
             );
             assert_eq!(media.start_time, 5.0);
+            std::fs::write(directory.path().join("ffmpeg.with-audio"), []).unwrap();
+            assert_eq!(
+                describe(&ffmpeg, &source).unwrap().video.has_embedded_audio,
+                Some(true)
+            );
 
             let mut decoder = None;
             let first = read_frame(
@@ -2168,6 +2188,7 @@ mod tests {
             height: 1,
             duration: 2.0,
             frame_rate: 30.0,
+            ..Default::default()
         };
         let opening = match opening.finish_interruptible(None, Some(&cancelled)) {
             Err(opening) => opening,
@@ -3515,6 +3536,7 @@ mod tests {
             height: 1080,
             duration: 3.0,
             frame_rate: 60.0,
+            ..Default::default()
         }
         .is_valid());
         assert!(!VideoInfo {
@@ -3522,6 +3544,7 @@ mod tests {
             height: 0,
             duration: 3.0,
             frame_rate: 60.0,
+            ..Default::default()
         }
         .is_valid());
     }
