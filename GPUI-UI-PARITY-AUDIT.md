@@ -11877,6 +11877,20 @@ PORATAKE_NATIVE_SAVE_CONFIRM=1 python3 tests/native/macos-save-panel-probe.py
 
 [Native Save confirmation evidence](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS shell visual parity, efficiency & GPUI release readiness
+
+1. **macOS visual & desktop integration**:
+   - Fixed Retina/mixed-DPI `TrayRect` physical-to-logical scaling in `system/native/macos.rs` and `system/native.rs` for `TrayMenuWindow` and `HistoryWindow`.
+   - Restored macOS `hide_menu_bar_icon` startup persistence and `on_reopen` restoration, and implemented `DockRegistry` activation-policy transitions (`Accessory` <-> `Regular`) matching Electron.
+   - Fixed Metal rounded-corner image, scrim, and badge clipping in `CapturePreviewWindow`, `HistoryWindow`, `WallpaperSheet`, and `VideoEditorWindow` panels, plus `OnboardingWindow` `permission_card` text wrapping (`min_w_0`) and `SettingsWindow` Light-mode sidebar contrast (`sidebar_background` at `90%` over stripped `NSVisualEffectView` blur and opaque fallback under Reduced Transparency).
+   - Verified with macOS Metal `--parity` (`dark 1280 2x`, `light 950 2x`, and `PORATAKE_PARITY_SHELL_ONLY=1` for Settings/Onboarding/TrayMenu) and cleaned up Swift compiler warnings in `ScrollCaptureModule.swift` and `ProtectedTooltip.swift`.
+2. **Release blockers & migration readiness**:
+   - Implemented OS-native cloud credential protection (`config/cloud_secrets.rs`) with Keychain + AES-256-CBC/HMAC-SHA256 on macOS, Windows DPAPI `poratake-safe-storage:v1:` interoperability, non-destructive retention of locked Electron secrets across unrelated config saves, and automatic upgrade of plaintext credentials.
+   - Added macOS `SMAppService.mainAppService` login-item registration for packaged bundles with legacy LaunchAgent cleanup, single-instance local IPC + `on_open_urls` file handoff, verified in-place macOS `.app` bundle replacement in `update.rs`, GPUI macOS/Windows packaging scripts (`scripts/package-gpui-mac.sh`, `scripts/package-gpui-win.mjs`), and `.github/workflows/release-gpui.yml`.
+3. **CPU, RAM & latency optimizations**:
+   - Bounded `Encoder` command queue (`sync_channel(3)`) with recycled BGRA frame buffers (`opaque::bgra_into` + `take_reusable_buffer`) and persistent audio staging file handles.
+   - Switched FFmpeg decode subprocesses to 4 video threads (`-threads:v 4`), macOS thumbnail generation to native `ImageIO` (`CGImageSourceCreateThumbnailAtIndex`), update download notifications from a 10 Hz timer loop to event-driven channel wakes, and added explicit GPU texture (`window.drop_image`) + `malloc_zone_pressure_relief` reclamation on window close and export completion.
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

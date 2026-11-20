@@ -331,6 +331,93 @@ mod dir_tests {
         assert!(!saved.cloud.s3.secret_access_key.contains("plaintext-s3-key"));
         let _ = std::fs::remove_dir_all(folder);
     }
+
+    #[test]
+    fn electron_profile_config_migrates_cleanly_to_gpui() {
+        let folder = std::env::temp_dir().join(format!(
+            "poratake-electron-migrate-{}-{}",
+            std::process::id(),
+            super::timestamp_ms()
+        ));
+        std::fs::create_dir_all(&folder).expect("dir");
+        let path = folder.join("config.json");
+        let locked_electron_secret = format!(
+            "{}djEwLWVsZWN0cm9uLXNlY3JldA==",
+            super::super::cloud_secrets::SAFE_STORAGE_PREFIX
+        );
+        let electron_json = serde_json::json!({
+            "onboarding": {
+                "completed": true
+            },
+            "general": {
+                "startOnLogin": true,
+                "playSoundOnScreenshot": false,
+                "hideMenuBarIcon": true
+            },
+            "history": {
+                "enabled": true,
+                "maxItems": 75
+            },
+            "appearance": {
+                "mode": "light",
+                "theme": "sunset"
+            },
+            "shortcuts": {
+                "screenshot": {
+                    "area": "CommandOrControl+Shift+4"
+                },
+                "allInOne": "CommandOrControl+Shift+S"
+            },
+            "cloud": {
+                "enabled": true,
+                "activeProvider": "s3",
+                "s3": {
+                    "endpoint": "https://s3.example.com",
+                    "region": "us-east-1",
+                    "bucket": "shots",
+                    "accessKeyId": "AKIAEXAMPLE",
+                    "secretAccessKey": locked_electron_secret,
+                    "customDomain": ""
+                },
+                "rest": {
+                    "url": "",
+                    "method": "POST",
+                    "headers": [
+                        { "key": "X-Plain", "value": "legacy-plaintext-token" }
+                    ]
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&electron_json).unwrap()).unwrap();
+
+        let store = super::ConfigStore::load_at(path.clone()).expect("load electron profile");
+        let loaded = store.get();
+        assert!(loaded.onboarding.completed);
+        assert!(loaded.general.start_on_login);
+        assert!(!loaded.general.play_sound_on_screenshot);
+        assert!(loaded.general.hide_menu_bar_icon);
+        assert_eq!(loaded.history.max_items, 75.0);
+        assert_eq!(loaded.appearance.mode, "light");
+        assert_eq!(loaded.appearance.theme, "sunset");
+        assert_eq!(loaded.shortcuts.screenshot.area, "CommandOrControl+Shift+4");
+        assert_eq!(loaded.cloud.rest.headers[0].value, "legacy-plaintext-token");
+
+        store.update(|settings| settings.general.play_sound_on_screenshot = true);
+        store.flush();
+
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            disk["cloud"]["s3"]["secretAccessKey"].as_str(),
+            Some(locked_electron_secret.as_str())
+        );
+        #[cfg(target_os = "macos")]
+        assert!(disk["cloud"]["rest"]["headers"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with(super::super::cloud_secrets::GPUI_SECRET_PREFIX));
+        let _ = std::fs::remove_dir_all(folder);
+    }
 }
 
 #[cfg(all(test, windows))]

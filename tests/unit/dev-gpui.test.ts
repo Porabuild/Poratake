@@ -44,7 +44,9 @@ it.skipIf(!baconAvailable)(
       [...spawn.mock.calls[0][1], '--list-jobs'],
       { cwd: process.cwd(), encoding: 'utf8', env: process.env }
     );
-    const output = stripVTControlCharacters(result.stdout);
+    const output = stripVTControlCharacters(result.stdout)
+      .replace(/[│┌┐└┘├┤┬┴┼─]+/g, ' ')
+      .replace(/\s+/g, ' ');
     expect(result.status).toBe(0);
     expect(output).toContain(
       'cargo run --package poratake-gpui --bin poratake-gpui'
