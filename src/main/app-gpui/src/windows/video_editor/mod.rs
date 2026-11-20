@@ -301,8 +301,7 @@ impl VideoEditorWindow {
                 view.update(cx, |editor, cx| {
                     #[cfg(target_os = "macos")]
                     {
-                        editor.preview_window_hidden =
-                            crate::system::window_visibility::is_minimized_or_hidden(window);
+                        editor.preview_window_hidden = !window.is_visible();
                         editor.preview_window_active = window.is_window_active();
                         editor.preview_activation_sub = Some(cx.observe_window_activation(
                             window,
@@ -313,10 +312,8 @@ impl VideoEditorWindow {
                         ));
                         editor.preview_visibility_sub = Some(cx.observe_window_visibility(
                             window,
-                            |editor, visibility, window, cx| {
-                                let hidden = !visibility.is_visible()
-                                    && crate::system::window_visibility::is_minimized_or_hidden(window);
-                                editor.set_preview_window_hidden(hidden, cx);
+                            |editor, visibility, _, cx| {
+                                editor.set_preview_window_hidden(!visibility.is_visible(), cx);
                             },
                         ));
                     }
@@ -7764,57 +7761,67 @@ mod keyboard_demo_tests {
         let clock = scheduler.clock();
         let mut cx = gpui::TestAppContext::build(dispatcher, None);
         let directory = tempfile::tempdir().unwrap();
-        let editor = editor_with_preview_source(&mut cx, directory.path());
-        cx.update(|cx| editor.update(cx, |editor, cx| editor.request_frame(cx)));
+        test_state(&mut cx, directory.path());
+        let recording = directory.path().join("Preview.mov");
+        std::fs::write(
+            &recording,
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let window = cx.update(|cx| {
+            VideoEditorWindow::open(cx, Some(recording.to_string_lossy().into_owned()));
+            registry::handle(RegistryKind::VideoEditor, cx).unwrap()
+        });
+        let editor = window
+            .downcast::<VideoEditorWindow>()
+            .unwrap()
+            .update(&mut cx, |_, _, cx| cx.entity())
+            .unwrap();
         cx.run_until_parked();
         let initial_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
         cx.update(|cx| {
             editor.update(cx, |editor, cx| {
                 editor.toggle_playback(cx);
                 editor.request_frame(cx);
-                editor.set_preview_window_hidden(true, cx);
             });
         });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
         cx.run_until_parked();
 
         clock.advance(Duration::from_millis(500));
         cx.run_until_parked();
         cx.update(|cx| {
-            editor.update(cx, |editor, cx| {
-                assert!(editor.is_playing);
-                assert!(
-                    (editor.playhead - 0.5).abs() < 1e-9,
-                    "playhead was {}",
-                    editor.playhead
-                );
-                assert!(!editor.compose_in_flight);
-                assert!(Arc::ptr_eq(
-                    &editor.preview_image().unwrap(),
-                    &initial_image
-                ));
-                editor.set_preview_window_hidden(false, cx);
-            });
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert!(
+                (editor.playhead - 0.5).abs() < 1e-9,
+                "playhead was {}",
+                editor.playhead
+            );
+            assert!(!editor.compose_in_flight);
+            assert!(Arc::ptr_eq(
+                &editor.preview_image().unwrap(),
+                &initial_image
+            ));
         });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
         cx.run_until_parked();
         let revealed_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
         assert!(!Arc::ptr_eq(&revealed_image, &initial_image));
 
-        cx.update(|cx| {
-            editor.update(cx, |editor, cx| editor.set_preview_window_hidden(true, cx));
-        });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
         clock.advance(Duration::from_secs(2));
         cx.run_until_parked();
         cx.update(|cx| {
-            editor.update(cx, |editor, cx| {
-                assert!(!editor.is_playing);
-                assert_eq!(editor.playhead, editor.total_duration());
-                assert!(Arc::ptr_eq(
-                    &editor.preview_image().unwrap(),
-                    &revealed_image
-                ));
-                editor.set_preview_window_hidden(false, cx);
-            });
+            let editor = editor.read(cx);
+            assert!(!editor.is_playing);
+            assert_eq!(editor.playhead, editor.total_duration());
+            assert!(Arc::ptr_eq(
+                &editor.preview_image().unwrap(),
+                &revealed_image
+            ));
         });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
         cx.run_until_parked();
         let final_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
         assert!(!Arc::ptr_eq(&final_image, &revealed_image));

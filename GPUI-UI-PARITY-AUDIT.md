@@ -11411,6 +11411,29 @@ passed for sidecar audio, volume at a cut, first-frame audio timing
 and replacing a music file.
 [Paused audio measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS playback under an occluding window
+
+The video editor now follows AppKit's occlusion notifications.
+A fully covered editor keeps its last composed image, stops preview
+composition and releases the decoder. The playback clock and audio
+transport continue. Once the window is visible again, the editor
+composes at the current playhead. Partial coverage leaves preview
+playback running.
+
+In native light and dark runs with a generated 4K clip, full
+coverage released an FFmpeg decoder holding about 876 MiB. The
+baseline applied 37 offscreen updates per 1.2-second sample and
+used 34–38 ms of combined GPUI and decoder CPU time. The updated
+build applied zero and used about 0.1 ms of GPUI CPU time. The
+retained preview was available on reveal. A fresh frame arrived
+134–335 ms after reveal, up from 15–19 ms with the warm decoder.
+
+The regression drives GPUI's visibility callback through a
+normal editor window and verifies preview retention, playback
+continuity and final-frame recovery. All 1,219 runnable GPUI
+tests and 17 Electron reference tests passed.
+[Occluded playback measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |

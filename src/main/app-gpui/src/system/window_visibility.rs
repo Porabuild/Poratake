@@ -29,7 +29,7 @@ fn platform_set_visible(window: &Window, visible: bool) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn appkit_window(window: &Window) -> Option<cocoa::base::id> {
     use cocoa::base::{id, nil};
     use objc::{msg_send, sel, sel_impl};
@@ -41,18 +41,6 @@ fn appkit_window(window: &Window) -> Option<cocoa::base::id> {
     };
     let ns_window: id = unsafe { msg_send![appkit.ns_view.as_ptr() as id, window] };
     (ns_window != nil).then_some(ns_window)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn is_minimized_or_hidden(window: &Window) -> bool {
-    use cocoa::base::{BOOL, YES};
-    use objc::{msg_send, sel, sel_impl};
-
-    appkit_window(window).is_some_and(|window| unsafe {
-        let minimized: BOOL = msg_send![window, isMiniaturized];
-        let visible: BOOL = msg_send![window, isVisible];
-        minimized == YES || visible != YES
-    })
 }
 
 #[cfg(all(target_os = "macos", not(test)))]

@@ -5511,3 +5511,36 @@ tests passed. Four normally ignored GPUI tests passed with the
 development FFmpeg binary. They include decoded export checks
 for system and mic sidecars, volume across a cut, timing after
 an intro, and the music cache test after replacing a file.
+
+2026-11-20 macOS playback under an occluding window
+==================================================
+
+The parity development app opened a generated 3840 × 2160,
+30 fps H.264 clip through the recording-preview handoff. The
+daemon was simulated. A separate nonactivating, click-through
+AppKit panel covered half the editor, then the entire editor.
+GPUI reported the window visible under partial cover and applied
+at least four images before the full cover in every run. The
+platform visibility callback reported hidden under full cover.
+Playback was still active on reveal. No desktop pixels or
+physical input were recorded.
+
+Theme  Build     Covered updates  Decoder MiB  GPUI CPU ms  Decoder CPU ms  GPUI wakeups  Reveal ms
+Light  Baseline               37       875.59        12.61           24.97            43      14.53
+Light  Updated                 0         0.00         0.13            0.00            40     334.88
+Dark   Baseline               37       876.00         9.83           24.13            40      18.74
+Dark   Updated                 0         0.00         0.09            0.00            41     133.97
+
+CPU time and wakeups use proc_pid_rusage over a 1.2-second covered
+sample. The updated sample starts after the decoder exits. Reveal
+time starts at the AppKit cover removal command and ends at the
+first fresh image reported by the app, excluding display paint.
+The last composed image was retained while covered. The updated
+playhead advanced to the current position after reveal. The sample
+used a silent clip and did not measure audio output.
+
+The simulated test sends real GPUI visibility events to an editor
+opened normally. It verifies that covered playback retains its
+last image while advancing, refreshes on reveal and displays the
+final image if playback ends under cover. All 1,219 runnable
+GPUI tests and 17 Electron reference tests passed.
