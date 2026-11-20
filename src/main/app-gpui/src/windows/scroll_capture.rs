@@ -1171,7 +1171,7 @@ impl Render for ScrollControlBar {
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
-    crate::system::macos_tooltip::set(window, tooltip);
+    crate::system::tooltip_macos::set_native_tooltip(window, tooltip);
 }
 
 #[cfg(test)]

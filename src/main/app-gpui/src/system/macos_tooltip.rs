@@ -95,6 +95,18 @@ pub fn init(cx: &mut App, daemon: DaemonHandle, config: Arc<ConfigStore>) -> Sub
 }
 
 #[cfg(not(test))]
+pub fn is_initialized() -> bool {
+    DISPATCH.get().is_some()
+}
+
+#[cfg(not(test))]
+pub fn hide_window(window_id: WindowId) {
+    if let Some(dispatch) = DISPATCH.get() {
+        dispatch.hide(window_id);
+    }
+}
+
+#[cfg(not(test))]
 pub fn set(window: &Window, text: Option<&str>) {
     let Some(dispatch) = DISPATCH.get() else {
         return;

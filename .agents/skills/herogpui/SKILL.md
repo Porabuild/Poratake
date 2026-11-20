@@ -3,9 +3,9 @@ name: herogpui
 description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.7. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
 metadata:
   author: herogpui
-  source: https://github.com/Porabuild/HeroGPUI/blob/09ec52be169bf25a6351a14088e34e22fe89fe9f/skills/herogpui/SKILL.md
-  version: '0.15.1'
-  source_commit: 09ec52be169bf25a6351a14088e34e22fe89fe9f
+  source: https://github.com/Porabuild/HeroGPUI/blob/b7b28efc12839c5d805c5a628fdea98ae79ac9a2/skills/herogpui/SKILL.md
+  version: '0.15.2'
+  source_commit: b7b28efc12839c5d805c5a628fdea98ae79ac9a2
 ---
 
 # HeroGPUI Development Guide
@@ -18,13 +18,14 @@ This skill is for HeroGPUI only. Do not apply HeroUI v2 APIs, do not invent a CS
 
 ## Poratake's pinned references
 
-Use the existing exact registry version in `src/main/Cargo.toml`. The bundled references match that release; [upstream.json](upstream.json) records its tag, source revision and file checksums.
+Use the exact published registry version in `src/main/Cargo.toml`: HeroGPUI 0.15.2 includes the consumer fixes from upstream pull request #44. The bundled references match that release; [upstream.json](upstream.json) records the tag, source revision and file checksums. Keep `gpui-pre` aligned with the release workspace.
 
 - Start with [the local LLM component reference](references/llms.txt). Search for the relevant component or API instead of reading the whole reference.
 - When modifying HeroGPUI itself, use its [workflow](references/agents/workflow.md), [component implementation](references/agents/components.md), [parity audits](references/agents/parity.md), and [gallery verification](references/agents/gallery.md) guides. Their paths and commands refer to the HeroGPUI checkout; Poratake's own repository instructions govern work here.
 - Resolve implementation paths from the pinned dependency's `manifest_path` in `cargo metadata --locked --manifest-path src/main/Cargo.toml --format-version 1` when source inspection is needed.
 - Poratake patches the existing GPUI 0.3.11 Windows backend from `vendor/gpui-pre-windows` to clamp image sampling inside atlas tiles. Keep this source patch when updating dependency pins until its regression passes against an upstream replacement; the other GPUI crates remain registry dependencies.
-- HeroGPUI components 0.15.1 also resolve to `vendor/herogpui-components`, where the virtual Select viewport preserves focus-ring gutters. The other HeroGPUI crates retain their exact registry version. Preserve this patch until the submenu focus regression passes against its upstream replacement.
+- All four HeroGPUI crates resolve to the published 0.15.2 registry release with locked checksums. Focus-ring gutters, Select/Slider accessibility actions and keyboard press ownership are provided upstream; do not restore the former vendored component patch.
+- Use `Select::fit_panel_width(true)` for intrinsic panel sizing. Compact owner windows use Poratake’s `Tooltip::presenter` integration so HeroGPUI owns the lifecycle. Windows uses a capture-excluded native surface. macOS preserves AppKit hover help and in-window keyboard tooltips; its native capture behavior still needs verification. The built-in separate-window presenter does not enforce capture exclusion.
 
 ## CRITICAL: Theme-first appearance
 
@@ -52,7 +53,7 @@ Do not invent Poratake-specific or app-specific field names in the library. App 
 ## Installation
 
 ```toml
-herogpui = "0.15.1"
+herogpui = "=0.15.2"
 ```
 
 ```rust
@@ -187,6 +188,10 @@ These APIs are included in HeroGPUI 0.15.1. Existing 0.15.0 code remains compati
 - Button, standalone ToggleButton and CloseButton apply painted styles to the skin and placement/opacity to the resting slot. Explicit builders beat theme metrics; instance `sx` wins last.
 - Pressable roots expose the `Button` keyboard context; open Popovers expose `Popover`. Scope application shortcuts so native controls own Enter and their list navigation.
 - For short option lists, use natural ListBox rows. `row_height` enables virtualization with its own viewport; set an explicit viewport bound when virtualization is needed.
+
+### APIs added in 0.15.2
+
+HeroGPUI 0.15.2 adds `Select::fit_panel_width` / `intrinsic_panel_width`, external tooltip presenters (`TooltipPresenter`, `TooltipPresentationRequest`, `TooltipPresenterMode`), and typed `TooltipStyle`, `PopoverStyle`, `TextAreaStyle`, and `TabsStyle` recipes. Read the bundled LLM reference for their contracts. These additions are included in the published 0.15.2 release.
 
 ### Public types and methods
 

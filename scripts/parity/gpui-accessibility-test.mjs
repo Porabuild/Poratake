@@ -43,6 +43,14 @@ const gpui = metadata.packages.find(
   pkg => pkg.name === 'gpui-pre' && pkg.version === '0.3.11'
 );
 if (!gpui) throw new Error('the GPUI test adapter requires gpui-pre 0.3.11');
+const components = metadata.packages.find(
+  pkg => pkg.name === 'herogpui-components'
+);
+const theme = metadata.packages.find(pkg => pkg.name === 'herogpui-theme');
+const core = metadata.packages.find(pkg => pkg.name === 'herogpui-core');
+if (!components || !theme || !core) {
+  throw new Error('HeroGPUI dependencies are missing');
+}
 
 const tempRoot = realpathSync(tmpdir());
 const tempDir = realpathSync(
@@ -79,12 +87,13 @@ edition = "2024"
 
 [dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
-herogpui-components = "=0.15.1"
-herogpui-theme = "=0.15.1"
+herogpui-components = { path = ${tomlPath(path.dirname(components.manifest_path))} }
+herogpui-theme = { path = ${tomlPath(path.dirname(theme.manifest_path))} }
 
 [patch.crates-io]
 gpui-pre = { path = ${tomlPath(gpuiDir)} }
-herogpui-components = { path = ${tomlPath(path.join(root, 'vendor/herogpui-components'))} }
+herogpui-core = { path = ${tomlPath(path.dirname(core.manifest_path))} }
+herogpui-theme = { path = ${tomlPath(path.dirname(theme.manifest_path))} }
 
 [[test]]
 name = "gpui-accessibility"

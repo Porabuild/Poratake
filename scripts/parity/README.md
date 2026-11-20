@@ -75,9 +75,11 @@ Without that shader fix, the local probe sampled neighboring white pixels.
 The font-size submenu checks all four sides of the keyboard focus ring on the
 current, first and last options. Samples must resemble the active focus color
 more than the panel background. `submenu-text-focus-*.png` preserves those
-checks separately from the baselines. The vendored HeroGPUI 0.15.1 Select keeps
-its existing row/panel dimensions while moving padding inside the virtual
-viewport so the ring remains visible.
+checks separately from the baselines. The published HeroGPUI 0.15.2 release supplies
+the focus gutters for virtual Select and scrollable Menu/Dropdown panels,
+including zero padding, without changing row geometry. The former vendored
+component patch has been removed. The accessibility probe resolves HeroGPUI
+from the application’s Cargo metadata, so it checks the same source revision.
 
 Exact baselines live in `baselines/win32/<theme>-<width>-<scale>/<renderer>/`.
 The renderer name comes from GPUI's software/hardware flag and device name;

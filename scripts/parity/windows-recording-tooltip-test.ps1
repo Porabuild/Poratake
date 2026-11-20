@@ -3401,21 +3401,29 @@ try {
     }
     if (-not $reopenApplication) { throw 'Could not launch the saved-image reopen app.' }
     Capture-OwnedDaemonChildren $reopenApplication
+    $expectedEditorWidth = $editorBounds.Right - $editorBounds.Left
+    $expectedEditorHeight = $editorBounds.Bottom - $editorBounds.Top
+    $script:reopenGeometryFailure = 'No visible editor-sized window was found.'
     $reopenedEditor = Wait-Until {
         foreach ($handle in [PoratakeTooltipProbe]::Windows([uint32]$reopenApplication.Id)) {
             if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
             $rect = New-Object PoratakeTooltipProbe+Rect
             if (-not [PoratakeTooltipProbe]::GetWindowRect($handle, [ref]$rect)) { continue }
             if ($rect.Right - $rect.Left -lt 900 -or $rect.Bottom - $rect.Top -lt 600) { continue }
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            if ($width -ne $expectedEditorWidth -or $height -ne $expectedEditorHeight) {
+                $identity = Get-WindowIdentity $handle
+                $script:reopenGeometryFailure = "HWND=$handle, PID=$($reopenApplication.Id), title=$($identity.title), size=${width}x${height}, expected=${expectedEditorWidth}x${expectedEditorHeight}."
+                continue
+            }
             return @{ Handle = $handle; Bounds = $rect }
         }
         return $null
-    } 30000 'The saved screenshot did not reopen in the GPUI editor.'
+    } 30000 ''
+    if (-not $reopenedEditor) { throw "The saved screenshot did not reopen at its expected editor dimensions: $script:reopenGeometryFailure" }
     Capture-OwnedDaemonChildren $reopenApplication
     $reopenedBounds = $reopenedEditor.Bounds
-    if (($reopenedBounds.Right - $reopenedBounds.Left) -ne ($editorBounds.Right - $editorBounds.Left) -or ($reopenedBounds.Bottom - $reopenedBounds.Top) -ne ($editorBounds.Bottom - $editorBounds.Top)) {
-        throw "Editor dimensions changed on save/reopen: first=$($editorBounds.Right - $editorBounds.Left)x$($editorBounds.Bottom - $editorBounds.Top), reopened=$($reopenedBounds.Right - $reopenedBounds.Left)x$($reopenedBounds.Bottom - $reopenedBounds.Top)."
-    }
     $reopenedClient = New-Object PoratakeTooltipProbe+Rect
     $reopenedClientOrigin = New-Object PoratakeTooltipProbe+Point
     if (-not [PoratakeTooltipProbe]::GetClientRect($reopenedEditor.Handle, [ref]$reopenedClient) -or -not [PoratakeTooltipProbe]::ClientToScreen($reopenedEditor.Handle, [ref]$reopenedClientOrigin)) { throw 'Could not measure the reopened editor client area.' }
@@ -3657,11 +3665,12 @@ try {
     Assert-WorkflowAttachmentTempFilesClean $attachmentTempBaseline 'Repeated attachment'
 
     $captureCountBeforeCancel = @(Get-ChildItem -LiteralPath $workflowCaptureDirectory -Filter '*.png' -File -ErrorAction Stop | Where-Object { $_.Name -notmatch '\.tmp\.png$' }).Count
-    $null = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-cancel' $null $null
+    $cancelSelectorRoot = Open-WorkflowEditorAttachSelector $reopenApplication $reopenedEditor.Handle $reopenedBounds 'editor-attach-cancel' $null $null
     [PoratakeTooltipProbe]::PressKey(0x1B)
     Wait-Until {
+        if ([PoratakeTooltipProbe]::IsWindowVisible($cancelSelectorRoot)) { return $false }
         return [PoratakeTooltipProbe]::IsWindowVisible($reopenedEditor.Handle)
-    } 10000 'Cancelling the editor attachment did not restore the original editor window.' | Out-Null
+    } 10000 "Attachment cancellation did not hide selector HWND=$cancelSelectorRoot and restore editor HWND=$($reopenedEditor.Handle), PID=$($reopenApplication.Id)." | Out-Null
     [PoratakeTooltipFixture]::PositionScreenshotWindowBehind($script:workflowFixtureWindow, $reopenedEditor.Handle, [uint32]$PID, [uint32]$reopenApplication.Id)
     $cancelRestoreHit = [PoratakeTooltipProbe]::WindowFromPoint($fixtureCenter)
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($script:workflowFixtureWindow) -or [PoratakeTooltipProbe]::GetAncestor($cancelRestoreHit, 2) -ne $reopenedEditor.Handle) {

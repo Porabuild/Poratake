@@ -406,7 +406,7 @@ jobs:
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
 
       - name: Visual regressions
-        if: github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions }}
         run: bun run test:visual
 
       - name: Preserve visual evidence

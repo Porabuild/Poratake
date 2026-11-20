@@ -24,7 +24,6 @@
     "vendor/gpui-pre-apple",
     "vendor/gpui-pre-macos",
     "vendor/gpui-pre-windows",
-    "vendor/herogpui-components",
     "vendor/rfd",
     "bun.lock",
     "package-lock.json",

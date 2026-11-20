@@ -33,18 +33,7 @@ fn select(
     choices: Vec<(SharedString, SharedString, EditorOption)>,
     value: SharedString,
     handlers: &EditorHandlers,
-    window: &Window,
 ) -> Select {
-    let minimum_width = choices
-        .iter()
-        .map(|(_, label, _)| {
-            super::toolbar_select::text_width(label, px(12.), window)
-                + crate::ui::chrome::TOOL_POPOVER_PANEL_PAD * 2.0
-                + crate::ui::chrome::TOOL_POPOVER_ROW_PAD
-                + crate::ui::chrome::SELECT_INDICATOR_GUTTER
-        })
-        .fold(width, f32::max)
-        .ceil();
     let current_label = choices
         .iter()
         .find(|(key, _, _)| *key == value)
@@ -58,7 +47,7 @@ fn select(
     Select::new(id, items)
         .recipe("tool-popover")
         .aria_label(label)
-        .panel_min_width(px(minimum_width))
+        .fit_panel_width(true)
         .indicator(|selected| {
             if selected {
                 icon_element("check", px(10.))
@@ -240,7 +229,6 @@ pub(super) fn render(
                     choices,
                     state.number_start_value.to_string().into(),
                     handlers,
-                    window,
                 )
                 .into_any_element(),
                 &theme,
@@ -264,7 +252,6 @@ pub(super) fn render(
                     choices,
                     state.number_size.clone(),
                     handlers,
-                    window,
                 )
                 .into_any_element(),
                 &theme,
@@ -290,7 +277,6 @@ pub(super) fn render(
                     choices,
                     state.text_font_size.to_string().into(),
                     handlers,
-                    window,
                 )
                 .value_content({
                     let family = super::text_render::ui_family(&state.text_font_family);
@@ -356,7 +342,6 @@ pub(super) fn render(
                     choices,
                     state.redact_intensity.to_string().into(),
                     handlers,
-                    window,
                 )
                 .into_any_element(),
                 &theme,

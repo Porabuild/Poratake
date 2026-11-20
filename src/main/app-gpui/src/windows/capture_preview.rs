@@ -147,46 +147,6 @@ struct DismissAnimation {
     controls_progress: Option<f32>,
 }
 
-#[derive(Default)]
-struct NativeTooltipStatus {
-    #[cfg(any(windows, target_os = "macos", test))]
-    key: Option<gpui::ElementId>,
-    #[cfg(any(windows, target_os = "macos", test))]
-    generation: u64,
-}
-
-impl NativeTooltipStatus {
-    #[cfg(any(windows, target_os = "macos", test))]
-    fn enter(&mut self, key: &gpui::ElementId) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.key = Some(key.clone());
-        self.generation
-    }
-
-    #[cfg(any(windows, target_os = "macos", test))]
-    fn leave(&mut self, key: &gpui::ElementId) -> bool {
-        if self.key.as_ref() != Some(key) {
-            return false;
-        }
-        self.key = None;
-        self.generation = self.generation.wrapping_add(1);
-        true
-    }
-
-    #[cfg(any(windows, target_os = "macos", test))]
-    fn is_current(&self, key: &gpui::ElementId, generation: u64) -> bool {
-        self.generation == generation && self.key.as_ref() == Some(key)
-    }
-
-    fn clear(&mut self) {
-        #[cfg(any(windows, target_os = "macos", test))]
-        {
-            self.key = None;
-            self.generation = self.generation.wrapping_add(1);
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum DismissBehavior {
     Automatic,
@@ -340,9 +300,7 @@ pub struct CapturePreviewWindow {
     #[cfg(target_os = "macos")]
     viewport_scroll: Option<(PreviewCorner, gpui::ScrollHandle)>,
     display_menu: crate::ui::menu::MenuHandle,
-    native_tooltip_status: NativeTooltipStatus,
-    #[cfg(windows)]
-    native_tooltip: Option<crate::system::native_tooltip::WindowsTooltip>,
+    tooltip_presenter: Arc<crate::ui::tooltip::NativeTooltipPresenter>,
     _display_observer: Option<gpui::Subscription>,
     #[cfg(target_os = "macos")]
     _visibility_observer: Option<gpui::Subscription>,
@@ -884,9 +842,9 @@ impl CapturePreviewWindow {
                     #[cfg(target_os = "macos")]
                     viewport_scroll: None,
                     display_menu: crate::ui::menu::MenuHandle::new(),
-                    native_tooltip_status: NativeTooltipStatus::default(),
-                    #[cfg(windows)]
-                    native_tooltip: None,
+                    tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
+                        "capture-preview",
+                    ),
                     _display_observer: Some(display_observer),
                     #[cfg(target_os = "macos")]
                     _visibility_observer: None,
@@ -2181,7 +2139,6 @@ fn begin_remove_preview(
         return;
     }
     cancel_thumbnail_load(&mut view.previews[index]);
-    view.clear_native_tooltip(window);
     if view
         .display_menu
         .is_open_for(&format!("preview-display-menu-{id}"), cx)
@@ -2413,7 +2370,15 @@ impl CapturePreviewWindow {
             self.clear_native_tooltip(window);
         }
         let keyboard_controls = self.keyboard_controls_visible(window);
+        self.tooltip_presenter
+            .set_hover_suppressed(keyboard_controls);
         let stack_copying = self.previews.iter().any(|preview| preview.copying);
+        #[cfg(target_os = "macos")]
+        let wrap_reveal = |chip_id: gpui::ElementId, element: gpui::AnyElement| {
+            preview::focus_reveal(chip_id, preview_entity.clone(), element)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let wrap_reveal = |_chip_id: gpui::ElementId, element: gpui::AnyElement| element;
         let preview = &mut self.previews[index];
         let is_video = preview.kind == PreviewKind::Video;
         let polish = if is_video { None } else { polish };
@@ -2601,32 +2566,35 @@ impl CapturePreviewWindow {
                         .top(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
                         .when(menu_open, |el| el.hidden())
-                        .child(preview::circle(
-                            cx,
-                            ("preview-close", id),
-                            "x",
-                            false,
-                            "Close preview",
-                            TooltipPlacement::BottomStart,
-                            theme,
-                            theme.destructive,
-                            {
-                                let preview_entity = preview_entity.clone();
-                                move |window, cx| {
-                                    if gated && !finalizing {
-                                        return;
+                        .child(wrap_reveal(
+                            ("preview-close", id).into(),
+                            preview::circle(
+                                &self.tooltip_presenter,
+                                ("preview-close", id),
+                                "x",
+                                false,
+                                "Close preview",
+                                TooltipPlacement::BottomStart,
+                                theme,
+                                theme.destructive,
+                                {
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        if gated && !finalizing {
+                                            return;
+                                        }
+                                        let _ = preview_entity.update(cx, |view, cx| {
+                                            begin_remove_preview(
+                                                view,
+                                                id,
+                                                DismissBehavior::PreserveControls,
+                                                window,
+                                                cx,
+                                            )
+                                        });
                                     }
-                                    let _ = preview_entity.update(cx, |view, cx| {
-                                        begin_remove_preview(
-                                            view,
-                                            id,
-                                            DismissBehavior::PreserveControls,
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                }
-                            },
+                                },
+                            ),
                         )),
                 )
                 .child(
@@ -2636,30 +2604,33 @@ impl CapturePreviewWindow {
                         .top(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .when(menu_open, |el| el.hidden())
-                        .child(preview::circle(
-                            cx,
-                            ("preview-delete", id),
-                            "trash-2",
-                            deleting,
-                            if deleting {
-                                "Deleting…"
-                            } else if is_video {
-                                "Delete recording"
-                            } else {
-                                "Delete screenshot"
-                            },
-                            TooltipPlacement::BottomEnd,
-                            theme,
-                            theme.destructive,
-                            {
-                                let preview_entity = preview_entity.clone();
-                                move |window, cx| {
-                                    if gated {
-                                        return;
+                        .child(wrap_reveal(
+                            ("preview-delete", id).into(),
+                            preview::circle(
+                                &self.tooltip_presenter,
+                                ("preview-delete", id),
+                                "trash-2",
+                                deleting,
+                                if deleting {
+                                    "Deleting…"
+                                } else if is_video {
+                                    "Delete recording"
+                                } else {
+                                    "Delete screenshot"
+                                },
+                                TooltipPlacement::BottomEnd,
+                                theme,
+                                theme.destructive,
+                                {
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        if gated {
+                                            return;
+                                        }
+                                        delete_preview(&preview_entity, id, window, cx);
                                     }
-                                    delete_preview(&preview_entity, id, window, cx);
-                                }
-                            },
+                                },
+                            ),
                         )),
                 )
                 .child(
@@ -2678,7 +2649,7 @@ impl CapturePreviewWindow {
                         .when(menu_open, |el| el.hidden())
                         .when(is_video && !gated, |el| {
                             el.child(preview::pill(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-copy-video", id),
                                 "Copy",
                                 Some("Copy".into()),
@@ -2696,7 +2667,7 @@ impl CapturePreviewWindow {
                         })
                         .when(is_video && busy, |el| {
                             el.child(preview::pill(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-exporting", id),
                                 "Exporting...",
                                 Some("Exporting...".into()),
@@ -2722,7 +2693,7 @@ impl CapturePreviewWindow {
                         .when_some(polish.filter(|_| !gated && !stack_copying), |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
                             el.child(preview::pill(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-polish", id),
                                 "Polish",
                                 Some(tooltip.into()),
@@ -2735,24 +2706,27 @@ impl CapturePreviewWindow {
                             ))
                         })
                         .when(!gated, |el| {
-                            el.child(preview::pill(
-                                cx,
-                                ("preview-edit", id),
-                                "Edit",
-                                None,
-                                TooltipPlacement::Top,
-                                theme,
-                                {
-                                    let preview_entity = preview_entity.clone();
-                                    move |window, cx| {
-                                        edit_preview(&preview_entity, id, window, cx);
-                                    }
-                                },
+                            el.child(wrap_reveal(
+                                ("preview-edit", id).into(),
+                                preview::pill(
+                                    &self.tooltip_presenter,
+                                    ("preview-edit", id),
+                                    "Edit",
+                                    None,
+                                    TooltipPlacement::Top,
+                                    theme,
+                                    {
+                                        let preview_entity = preview_entity.clone();
+                                        move |window, cx| {
+                                            edit_preview(&preview_entity, id, window, cx);
+                                        }
+                                    },
+                                ),
                             ))
                         })
                         .when(is_video && busy, |el| {
                             el.child(preview::pill(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-cancel-export", id),
                                 "Cancel",
                                 Some("Cancel".into()),
@@ -2774,7 +2748,7 @@ impl CapturePreviewWindow {
                             .left(px(PREVIEW_CONTROL_INSET))
                             .when(menu_open, |el| el.hidden())
                             .child(preview::circle(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-copy", id),
                                 "copy",
                                 copying,
@@ -2803,7 +2777,7 @@ impl CapturePreviewWindow {
                             .left(px(PREVIEW_CONTROL_INSET))
                             .when(menu_open, |el| el.hidden())
                             .child(preview::circle(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-show-in-folder", id),
                                 "folder-open",
                                 false,
@@ -2832,7 +2806,7 @@ impl CapturePreviewWindow {
                             .right(px(PREVIEW_CONTROL_INSET))
                             .when(menu_open, |el| el.hidden())
                             .child(preview::circle(
-                                cx,
+                                &self.tooltip_presenter,
                                 ("preview-upload", id),
                                 "cloud-upload",
                                 busy,
@@ -2960,7 +2934,7 @@ impl CapturePreviewWindow {
                         .bottom(px(PREVIEW_CONTROL_INSET + PREVIEW_CONTROL + 4.0))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .child(preview::circle(
-                            cx,
+                            &self.tooltip_presenter,
                             owner.clone(),
                             "monitor",
                             false,
@@ -3363,8 +3337,8 @@ impl Render for CapturePreviewWindow {
     }
 }
 
-impl preview::NativeTooltipHost for CapturePreviewWindow {
-    #[cfg(target_os = "macos")]
+#[cfg(target_os = "macos")]
+impl preview::PreviewFocusRevealHost for CapturePreviewWindow {
     fn keyboard_reveal_target(
         &self,
         window: &Window,
@@ -3387,110 +3361,16 @@ impl preview::NativeTooltipHost for CapturePreviewWindow {
             });
         Some((scroll.clone(), card.unwrap_or(button)))
     }
-
-    #[cfg(any(windows, target_os = "macos"))]
-    fn preview_tooltip_hover(
-        &mut self,
-        key: &gpui::ElementId,
-        tooltip: &str,
-        hovered: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        #[cfg(target_os = "macos")]
-        if hovered
-            && (!window.is_visible() || !self.pointer_inside || self.keyboard_controls_visible(window))
-        {
-            return;
-        }
-        if !hovered {
-            self.preview_tooltip_cancel(key, window);
-            return;
-        }
-        #[cfg(all(test, windows))]
-        if self.native_tooltip_status.key.is_some() {
-            crate::system::native_tooltip::record_test_hide("capture-preview");
-        }
-        let generation = self.native_tooltip_status.enter(key);
-        #[cfg(windows)]
-        if let Some(native) = &mut self.native_tooltip {
-            native.hide();
-        }
-        #[cfg(target_os = "macos")]
-        crate::windows::scroll_capture::set_native_tooltip(window, None);
-        let key = key.clone();
-        let tooltip = tooltip.to_owned();
-        cx.spawn_in(window, async move |entity, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(150))
-                .await;
-            let _ = entity.update_in(cx, |this, _window, _| {
-                if !this.native_tooltip_status.is_current(&key, generation) {
-                    return;
-                }
-                #[cfg(windows)]
-                {
-                    #[cfg(test)]
-                    crate::system::native_tooltip::record_test_show("capture-preview", &tooltip);
-                    if this.native_tooltip.is_none() {
-                        this.native_tooltip =
-                            crate::system::native_tooltip::WindowsTooltip::new(_window);
-                    }
-                    if let Some(native) = &mut this.native_tooltip {
-                        native.show(_window, &tooltip);
-                    }
-                }
-                #[cfg(target_os = "macos")]
-                crate::windows::scroll_capture::set_native_tooltip(_window, Some(&tooltip));
-                #[cfg(not(any(windows, target_os = "macos")))]
-                let _ = (&tooltip, _window);
-            });
-        })
-        .detach();
-    }
-
-    #[cfg(any(windows, target_os = "macos"))]
-    fn preview_tooltip_cancel(&mut self, key: &gpui::ElementId, _window: &mut Window) {
-        if !self.native_tooltip_status.leave(key) {
-            return;
-        }
-        #[cfg(windows)]
-        {
-            #[cfg(test)]
-            crate::system::native_tooltip::record_test_hide("capture-preview");
-        }
-        #[cfg(windows)]
-        if let Some(native) = &mut self.native_tooltip {
-            native.hide();
-        }
-        #[cfg(target_os = "macos")]
-        crate::windows::scroll_capture::set_native_tooltip(_window, None);
-    }
 }
 
 impl CapturePreviewWindow {
-    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
-    pub(crate) fn native_tooltip_active(&self) -> bool {
-        self.native_tooltip_status.key.is_some()
+    fn clear_native_tooltip(&self, window: &mut Window) {
+        self.tooltip_presenter.dismiss_active(Some(window));
     }
 
-    #[cfg(all(feature = "parity", not(any(windows, target_os = "macos"))))]
+    #[cfg(feature = "parity")]
     pub(crate) fn native_tooltip_active(&self) -> bool {
-        false
-    }
-
-    fn clear_native_tooltip(&mut self, _window: &mut Window) {
-        #[cfg(all(test, windows))]
-        if self.native_tooltip_status.key.is_some() {
-            crate::system::native_tooltip::record_test_hide("capture-preview");
-        }
-        self.native_tooltip_status.clear();
-        #[cfg(windows)]
-        if let Some(native) = &mut self.native_tooltip {
-            native.hide();
-        }
-        #[cfg(target_os = "macos")]
-        crate::windows::scroll_capture::set_native_tooltip(_window, None);
+        self.tooltip_presenter.active_content().is_some()
     }
 }
 
@@ -3586,9 +3466,9 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 viewport_scroll: None,
                 display_menu: crate::ui::menu::MenuHandle::new(),
-                native_tooltip_status: NativeTooltipStatus::default(),
-                #[cfg(windows)]
-                native_tooltip: None,
+                tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
+                    "capture-preview",
+                ),
                 _display_observer: None,
                 #[cfg(target_os = "macos")]
                 _visibility_observer: None,
@@ -3890,33 +3770,6 @@ mod tests {
         assert!(capture_path.exists());
     }
 
-    #[test]
-    fn preview_tooltip_switch_ignores_late_leave_from_previous_trigger() {
-        let mut status = NativeTooltipStatus::default();
-        let first_key = gpui::ElementId::from("first");
-        let second_key = gpui::ElementId::from("second");
-        let first = status.enter(&first_key);
-        let second = status.enter(&second_key);
-
-        assert!(!status.is_current(&first_key, first));
-        assert!(!status.leave(&first_key));
-        assert!(status.is_current(&second_key, second));
-    }
-
-    #[test]
-    fn preview_tooltip_leave_and_clear_cancel_pending_shows() {
-        let mut status = NativeTooltipStatus::default();
-        let left_key = gpui::ElementId::from("left");
-        let left = status.enter(&left_key);
-        assert!(status.leave(&left_key));
-        assert!(!status.is_current(&left_key, left));
-
-        let menu_key = gpui::ElementId::from("menu");
-        let menu = status.enter(&menu_key);
-        status.clear();
-        assert!(!status.is_current(&menu_key, menu));
-    }
-
     #[cfg(windows)]
     #[herogpui::test]
     fn preview_tooltip_timer_requests_show_only_while_hovered(cx: &mut gpui::TestAppContext) {
@@ -3946,17 +3799,27 @@ mod tests {
             .downcast::<CapturePreviewWindow>()
             .unwrap();
         let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
-        let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        let preview_id = preview.update(cx, |view, _| view.previews[0].id);
+        let (_wrapper, visual) = cx.add_window_view(|_, _| HoveredPreview { preview });
         visual.simulate_resize(size(px(208.), px(604.)));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
-
-        crate::system::native_tooltip::take_test_requests();
         visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
+            gpui::point(px(100.), px(500.)),
             None,
             gpui::Modifiers::none(),
         );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+        let trigger = visual
+            .expect(&format!(
+                "preview-display-menu-{preview_id}-tooltip-trigger"
+            ))
+            .center();
+
+        crate::system::native_tooltip::take_test_requests();
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         visual.executor().advance_clock(Duration::from_millis(149));
         visual.settle();
@@ -3982,11 +3845,7 @@ mod tests {
 
         visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
         visual.settle();
-        visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         visual.executor().advance_clock(Duration::from_millis(150));
         visual.settle();
@@ -4000,11 +3859,7 @@ mod tests {
             )]
         );
 
-        visual.simulate_mouse_move(
-            gpui::point(px(184.), px(552.)),
-            None,
-            gpui::Modifiers::none(),
-        );
+        visual.simulate_mouse_move(trigger, None, gpui::Modifiers::none());
         visual.settle();
         crate::system::native_tooltip::take_test_requests();
         visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, gpui::Modifiers::none());
@@ -4123,6 +3978,11 @@ mod tests {
         });
         cx.update(|cx| {
             herogpui::init(cx);
+            crate::theme::vars::init_theme(
+                cx,
+                crate::theme::presets::ThemeMode::Light,
+                crate::theme::presets::DEFAULT_THEME_ID,
+            );
             crate::state::set_test_state(cx, config);
             CapturePreviewWindow::open(cx, path);
         });
@@ -4133,6 +3993,13 @@ mod tests {
         let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
         let check = preview.clone();
         let (_, visual) = herogpui::test::open_window(cx, |_, _| NativeHoverPreview { preview });
+        visual.update(|_, cx| {
+            crate::theme::vars::init_theme(
+                cx,
+                crate::theme::presets::ThemeMode::Light,
+                crate::theme::presets::DEFAULT_THEME_ID,
+            );
+        });
         visual.simulate_resize(size(px(208.), px(148.)));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
@@ -5401,9 +5268,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             viewport_scroll: None,
             display_menu: crate::ui::menu::MenuHandle::new(),
-            native_tooltip_status: NativeTooltipStatus::default(),
-            #[cfg(windows)]
-            native_tooltip: None,
+            tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new("capture-preview"),
             _display_observer: None,
             #[cfg(target_os = "macos")]
             _visibility_observer: None,
@@ -5994,8 +5859,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[herogpui::test]
     fn covering_a_preview_cancels_pending_hover_tooltips(cx: &mut gpui::TestAppContext) {
-        use crate::ui::preview::NativeTooltipHost;
-
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("capture.png");
         image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
@@ -6013,11 +5876,12 @@ mod tests {
         let window = stack_handle(cx).unwrap();
         let stack = window.downcast::<CapturePreviewWindow>().unwrap();
         stack
-            .update(cx, |view, window, cx| {
+            .update(cx, |view, window, _| {
                 view.pointer_inside = true;
                 view.previews[0].hovered = true;
-                view.preview_tooltip_hover(&"close".into(), "Close preview", true, window, cx);
-                assert!(view.native_tooltip_status.key.is_some());
+                view.tooltip_presenter
+                    .show_for_test("close".into(), "Close preview".into(), window);
+                assert!(view.tooltip_presenter.active_content().is_some());
             })
             .unwrap();
         cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
@@ -6027,7 +5891,7 @@ mod tests {
         stack
             .update(cx, |view, window, _| {
                 assert!(!view.preview_window_hovered(window));
-                assert!(view.native_tooltip_status.key.is_none());
+                assert!(view.tooltip_presenter.active_content().is_none());
             })
             .unwrap();
         assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);

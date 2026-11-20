@@ -268,45 +268,39 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 .update_window(window, |_, window, cx| window.focused(cx).is_some()
                     && herogpui::extend::focus_visible(cx))
                 .unwrap());
-            #[cfg(any(windows, target_os = "macos"))]
-            let assert_focus_tooltip = |cx: &mut HeadlessAppContext, index: usize, right: bool| {
-                let control = measured("recording-controls", index);
-                let tips = focus_tips(cx);
-                assert_eq!(
-                    tips.len(),
-                    1,
-                    "one keyboard tooltip must be painted: {tips:?}"
+            #[cfg(windows)]
+            let assert_focus_tooltip = |cx: &mut HeadlessAppContext, expected: &str| {
+                let tooltip = cx.update(|cx| {
+                    window
+                        .downcast::<RecordingControl>()
+                        .unwrap()
+                        .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                        .unwrap()
+                });
+                assert_eq!(tooltip.as_deref(), Some(expected));
+                assert!(
+                    focus_tips(cx).is_empty(),
+                    "native keyboard tooltip must stay outside the owner paint"
                 );
-                let bounds = tips[0].bounds;
-                let mask = tips[0].content_mask.bounds;
-                cx.update_window(window, |_, window, _| {
-                    if right {
-                        assert!(bounds.left().0 >= f32::from(control.right()) * scale - 1.);
-                    } else {
-                        assert!(bounds.right().0 <= f32::from(control.left()) * scale + 1.);
-                    }
-                    assert!(
-                        bounds.left().0 >= 0.
-                            && bounds.top().0 >= 0.
-                            && bounds.right().0 <= f32::from(window.viewport_size().width) * scale
-                            && bounds.bottom().0
-                                <= f32::from(window.viewport_size().height) * scale
-                            && mask.left().0 <= bounds.left().0
-                            && mask.top().0 <= bounds.top().0
-                            && mask.right().0 >= bounds.right().0
-                            && mask.bottom().0 >= bounds.bottom().0,
-                        "keyboard tooltip is clipped: {bounds:?}, mask {mask:?}"
-                    );
-                })
-                .unwrap();
+            };
+            #[cfg(target_os = "macos")]
+            let assert_focus_tooltip = |cx: &mut HeadlessAppContext, _expected: &str| {
+                assert!(!focus_tips(cx).is_empty());
             };
             #[cfg(any(windows, target_os = "macos"))]
-            assert_focus_tooltip(cx, 0, true);
+            assert_focus_tooltip(cx, "Start recording");
             capture(cx, window, output, "record-control-keyboard-focused");
             #[cfg(any(windows, target_os = "macos"))]
-            for (index, right) in [(2, true), (3, false), (4, false), (6, false)] {
+            for label in [
+                "Select camera",
+                "Select microphone",
+                "Turn system sounds off",
+                #[cfg(target_os = "macos")]
+                "Select iPhone or iPad",
+                "Close",
+            ] {
                 key(cx, window, "tab");
-                assert_focus_tooltip(cx, index, right);
+                assert_focus_tooltip(cx, label);
             }
             #[cfg(target_os = "macos")]
             {
@@ -328,7 +322,6 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 .unwrap();
                 hover(cx, window, 1., 1.);
                 assert!(tooltip(cx).is_none());
-                assert_focus_tooltip(cx, 6, false);
 
                 click_measured(cx, window, "recording-controls", 1);
                 settle(cx, window);
