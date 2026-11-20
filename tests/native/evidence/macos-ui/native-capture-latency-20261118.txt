@@ -5812,3 +5812,37 @@ Audio clip. No live desktop or device capture ran in these profiles.
 The repository check passed its daemon contract, TypeScript, lint,
 format and React Compiler gates, plus 2,418 Vitest cases with three
 skipped. The Windows-native gate skipped on this host.
+
+2026-11-20 macOS full-display recording with guarded pixels
+===========================================================
+
+The b8148c4c GPUI development app used app-local Start, Stop,
+preview-to-editor, split and export commands. The current Swift
+recorder ran in a temporary fixture with an existing Screen
+Recording grant. It disabled system audio, device input and
+cursor tracking. It used the normal display exclusion
+constructor and refresh code. The app's sole initial exclusion
+was its actual toolbar window ID. The native tooltip anchored
+at the toolbar center using a fixture-provided point.
+
+The screen writer received newly allocated 3456 × 2234 buffers.
+The guard validated every pixel in each selected region against
+the uniform generated palette, synthesized the corresponding
+color into that rectangle, and filled elsewhere with black.
+An eight-pixel interior inset is used for encoded comparisons
+because H.264 chroma sampling crosses the hard mask edge.
+The positive-control window was placed at the tooltip's exact
+bounds after the tooltip was hidden.
+
+Theme  Source frames  Baseline/protected/ordinary  Export frames  Toolbar max Δ  Tooltip max Δ  Preview/export max Δ
+Light              29                      12/8/9            110              4              4                     1
+Dark               29                      13/7/9            109              4              4                     1
+
+The ordinary-window center decoded to RGB (253, 0, 252) in both
+takes. The final guard rejected zero frames. Both sources and
+exports were video-only with strictly increasing presentation
+timestamps. The split at 0.45 s persisted as two video segments.
+The preview/export comparison samples the first decoded MP4
+frame inside the toolbar region. It verifies the guarded writer
+and editor handoff at display resolution. The surrounding desktop
+was masked before encoding. All 82 targeted Electron tests passed.

@@ -11598,6 +11598,28 @@ as well as the daemon contract, TypeScript, lint, format and
 React Compiler checks. The Windows-native check skipped on macOS.
 [Offscreen workflow measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
 
+### 2026-11-20 macOS full-display recording with guarded pixels
+
+The native GPUI app ran Start and Stop through the normal
+full-display ScreenCaptureKit filter. The fixture supplied only
+the app's toolbar ID at startup. The Swift daemon's live filter
+update excluded the protected tooltip when it became visible.
+
+The temporary recorder validated the toolbar and tooltip regions
+as uniform generated colors before encoding. It built each writer
+frame from those colors and a black background, keeping unrelated
+desktop pixels out of the files. A regular window placed at the
+tooltip's exact bounds was admitted in both themes.
+
+Both 3456 × 2234 recordings opened from the GPUI preview, saved
+a split and exported at their original resolution. The toolbar
+and tooltip samples stayed within four RGB levels of the backdrop.
+The first decoded export sample was within one level of the
+paused editor preview. This verifies the control regions through
+the native writer and GPUI export. An unmasked desktop recording
+and export remains open.
+[Guarded recording measurements](tests/native/evidence/macos-ui/native-capture-latency-20261118.txt)
+
 ## Review gate
 
 | Review category                       | Result                                                                                                                                                                                                                                                                                                                                                                       |
