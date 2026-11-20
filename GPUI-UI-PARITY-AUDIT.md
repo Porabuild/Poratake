@@ -37,7 +37,7 @@ release verification; routine PR checks do not run the matrix.
 | Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
 | Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
 | Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Live area, window, and timer screenshots passed with one test daemon at a time on the Retina display. The screen, area, and window recordings were edited, saved, reopened, and compared with decoded exports. System audio and microphone passed capture and export. Ambiguous scroll seams, physical pointer movement between controls, live camera, and additional displays remain open. |
+| macOS critical capture and recording | Open   | Area, window, and timer screenshots passed on Retina. Screen, area, and window recordings were edited and compared with decoded exports. System audio and microphone passed. Unpressed toolbar and preview hover passed on the built-in display with WindowServer logs. Full desktop filter, other pointer paths, live camera, additional displays, and ambiguous scroll seams remain open. |
 | Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
 
 ### Local macOS verification attempt at `c34624e1`
@@ -5088,8 +5088,10 @@ helper. Dragging onto Start recording, Close, Close preview and Delete screensho
 produced the corresponding tooltip statuses. macOS listed a protected tooltip
 window with a four-point gap below the recording bar or above the preview.
 After the pointer left the preview, the GPUI tooltip status cleared. The drags
-held a mouse button while moving, so ordinary unpressed hover transitions remain
-unverified.
+held a mouse button while moving. The November 19 follow-up in the same evidence
+file used unpressed desktop-level mouse events in light and dark. WindowServer
+observed the expected tooltip on each control and its removal on exit. This
+covers the recording bar and screenshot preview on the built-in Retina display.
 
 A [screen-only daemon recording](tests/native/evidence/macos-ui/native-tooltip-exclusion-area-20261117.txt)
 then tested the protected panel after an area stream started. Seven decoded
