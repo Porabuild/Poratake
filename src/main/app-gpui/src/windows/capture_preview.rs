@@ -1959,40 +1959,40 @@ fn copy_screenshot(
     };
     let scale = window.scale_factor();
     let handle = window.window_handle();
+    let preview_entity = preview_entity.clone();
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
             .spawn(async move { prepare_screenshot_copy(&path, preset.as_ref(), scale) })
             .await;
         cx.update(|cx| {
-            let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
-                return;
-            };
-            let _ = handle.update(cx, |view, window, cx| {
-                let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
-                else {
-                    return;
-                };
-                preview.copying = false;
-                if preview.dismiss_animation.is_some() {
-                    return;
-                }
-                match result {
-                    Ok(bytes) => {
-                        crate::system::clipboard::ClipboardService::write_png(cx, bytes);
-                        begin_remove_preview(
-                            view,
-                            id,
-                            DismissBehavior::PreserveControls,
-                            window,
-                            cx,
-                        );
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = preview_entity.update(cx, |view, cx| {
+                    let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    else {
+                        return;
+                    };
+                    preview.copying = false;
+                    if preview.dismiss_animation.is_some() {
+                        return;
                     }
-                    Err(error) => {
-                        report_copy_failure(cx, &error);
-                        cx.notify();
+                    match result {
+                        Ok(bytes) => {
+                            crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                            begin_remove_preview(
+                                view,
+                                id,
+                                DismissBehavior::PreserveControls,
+                                window,
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            report_copy_failure(cx, &error);
+                            cx.notify();
+                        }
                     }
-                }
+                });
             });
         });
     })
@@ -2029,6 +2029,7 @@ fn delete_preview(
         return;
     };
     let handle = window.window_handle();
+    let preview_entity = preview_entity.clone();
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
@@ -2040,20 +2041,25 @@ fn delete_preview(
                 kind == crate::history_store::HistoryItemType::Video,
                 cx,
             );
-            let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
-                return;
-            };
-            let _ = handle.update(cx, |view, window, cx| {
-                let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
-                else {
-                    return;
-                };
-                preview.deleting = false;
-                if deleted {
-                    begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
-                } else {
-                    cx.notify();
-                }
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = preview_entity.update(cx, |view, cx| {
+                    let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    else {
+                        return;
+                    };
+                    preview.deleting = false;
+                    if deleted {
+                        begin_remove_preview(
+                            view,
+                            id,
+                            DismissBehavior::PreserveControls,
+                            window,
+                            cx,
+                        );
+                    } else {
+                        cx.notify();
+                    }
+                });
             });
         });
     })

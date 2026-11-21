@@ -573,8 +573,17 @@ mod backend {
         if info.duration <= 0.0 {
             return time.max(0.0);
         }
-        let last_frame_time = (info.duration - 1.0 / info.frame_rate()).max(0.0);
-        time.clamp(0.0, last_frame_time)
+        time.clamp(0.0, info.duration)
+    }
+
+    unsafe fn set_reader_position(reader: &IMFSourceReader, position: i64) -> Option<()> {
+        let mut variant = PROPVARIANT::default();
+        {
+            let inner = &mut *variant.Anonymous.Anonymous;
+            inner.vt = VT_I8;
+            inner.Anonymous.hVal = position;
+        }
+        reader.SetCurrentPosition(&GUID::zeroed(), &variant).ok()
     }
 
     unsafe fn read_frame(
@@ -586,13 +595,7 @@ mod backend {
         const TIMESTAMP_TOLERANCE: i64 = 100;
         let position = (bounded_time(time, info) * UNITS_PER_SECOND).round() as i64;
         if cursor.needs_seek(position) {
-            let mut variant = PROPVARIANT::default();
-            {
-                let inner = &mut *variant.Anonymous.Anonymous;
-                inner.vt = VT_I8;
-                inner.Anonymous.hVal = position;
-            }
-            reader.SetCurrentPosition(&GUID::zeroed(), &variant).ok()?;
+            set_reader_position(reader, position)?;
             *cursor = DecodeCursor::default();
         }
 
@@ -616,6 +619,7 @@ mod backend {
         }
 
         let mut candidate = None;
+        let mut retried_tail = false;
         loop {
             let mut stream_flags = 0u32;
             let mut timestamp = 0i64;
@@ -638,6 +642,14 @@ mod backend {
                         frame: copy_sample(&sample, info)?,
                     });
                     cursor.next = None;
+                } else if !retried_tail && cursor.frame().is_none() && info.duration > 0.0 {
+                    retried_tail = true;
+                    let tail = ((info.duration - 1.0 / info.frame_rate()).max(0.0)
+                        * UNITS_PER_SECOND)
+                        .round() as i64;
+                    set_reader_position(reader, tail)?;
+                    *cursor = DecodeCursor::default();
+                    continue;
                 }
                 return cursor.frame();
             }
