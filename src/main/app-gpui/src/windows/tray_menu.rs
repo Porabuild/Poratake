@@ -314,7 +314,7 @@ impl TrayMenuWindow {
         } else {
             window_bounds
         };
-        cx.open_window(
+        let make_options = || {
             super::popup_window_options(
                 initial_bounds,
                 super::PopupWindowConfig {
@@ -323,43 +323,59 @@ impl TrayMenuWindow {
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
-            ),
-            |window, cx| {
-                window.set_window_title("Poratake tray menu");
-                super::remove_popup_frame(window);
-                configure_tray_menu_window(window);
-                crate::system::window_surface::stage(window, initial_bounds, None, false);
-                let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
-                    Rc::new(RefCell::new(None));
-                let dismiss: DismissHandler = {
-                    let owner = owner.clone();
-                    Rc::new(move |window, cx| {
-                        let _ = owner
-                            .borrow()
-                            .clone()
-                            .map(|owner| owner.update(cx, |this, cx| this.begin_close(window, cx)));
-                    })
-                };
-                let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
-                if visible {
-                    window.focus(&menu.read(cx).focus_handle(), cx);
-                }
-                let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
-                *owner.borrow_mut() = Some(view.downgrade());
-                #[cfg(target_os = "macos")]
-                if visible {
-                    window.activate_window();
-                }
-                #[cfg(windows)]
-                if visible {
-                    let generation = view.read(cx).reveal_generation;
-                    Self::schedule_reveal(view.clone(), window, generation);
-                    window.activate_window();
-                }
-                view
+            )
+        };
+        let build_tray = |window: &mut Window, cx: &mut App| {
+            window.set_window_title("Poratake tray menu");
+            super::remove_popup_frame(window);
+            configure_tray_menu_window(window);
+            crate::system::window_surface::stage(window, initial_bounds, None, false);
+            let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
+                Rc::new(RefCell::new(None));
+            let dismiss: DismissHandler = {
+                let owner = owner.clone();
+                Rc::new(move |window, cx| {
+                    let _ = owner
+                        .borrow()
+                        .clone()
+                        .map(|owner| owner.update(cx, |this, cx| this.begin_close(window, cx)));
+                })
+            };
+            let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
+            if visible {
+                window.focus(&menu.read(cx).focus_handle(), cx);
+            }
+            let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
+            *owner.borrow_mut() = Some(view.downgrade());
+            #[cfg(target_os = "macos")]
+            if visible {
+                window.activate_window();
+            }
+            #[cfg(windows)]
+            if visible {
+                let generation = view.read(cx).reveal_generation;
+                Self::schedule_reveal(view.clone(), window, generation);
+                window.activate_window();
+            }
+            view
+        };
+        #[cfg(target_os = "linux")]
+        let opened = super::open_wayland_layer_or_fallback(
+            cx,
+            gpui::layer_shell::LayerShellOptions {
+                namespace: "poratake-tray-menu".to_string(),
+                layer: gpui::layer_shell::Layer::Overlay,
+                anchor: gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::RIGHT,
+                margin: Some((px(SCREEN_GAP), px(SCREEN_GAP), px(0.0), px(0.0))),
+                keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::Exclusive,
+                ..Default::default()
             },
-        )
-        .ok()
+            make_options,
+            build_tray,
+        );
+        #[cfg(not(target_os = "linux"))]
+        let opened = cx.open_window(make_options(), build_tray);
+        opened.ok()
     }
 
     #[cfg(windows)]

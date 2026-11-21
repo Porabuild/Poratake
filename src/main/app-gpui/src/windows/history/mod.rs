@@ -165,7 +165,7 @@ impl HistoryWindow {
                     crate::system::work_area::local_window_bounds(bounds, display.as_ref())
                 })
                 .unwrap_or(bounds);
-            cx.open_window(
+            let make_options = || {
                 super::popup_window_options(
                     window_bounds,
                     super::PopupWindowConfig {
@@ -182,39 +182,54 @@ impl HistoryWindow {
                         },
                         ..Default::default()
                     },
-                ),
-                |window, cx| {
-                    crate::system::window_surface::disable_transitions(window);
-                    crate::system::window_surface::stage(window, bounds, None, true);
-                    let view = cx.new(|cx| Self::new(store, window, cx));
-                    let focus = view.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    #[cfg(windows)]
-                    {
-                        let settled = view.clone();
-                        window.on_next_frame(move |window, _cx| {
-                            crate::system::window_surface::set_rounded_clip(
-                                window,
-                                crate::ui::chrome::HISTORY_RADIUS,
-                            );
-                            window.on_next_frame(move |window, _| {
-                                crate::system::window_surface::reveal(window, true, 0);
-                                window.activate_window();
-                                window.on_next_frame(move |window, cx| {
-                                    settled.update(cx, |this, _cx| this.revealing = false);
-                                    if !window.is_window_active() {
-                                        settled.update(cx, |this, cx| this.close(window, cx));
-                                    }
-                                });
+                )
+            };
+            let build_history = |window: &mut Window, cx: &mut App| {
+                crate::system::window_surface::disable_transitions(window);
+                crate::system::window_surface::stage(window, bounds, None, true);
+                let view = cx.new(|cx| Self::new(store, window, cx));
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                #[cfg(windows)]
+                {
+                    let settled = view.clone();
+                    window.on_next_frame(move |window, _cx| {
+                        crate::system::window_surface::set_rounded_clip(
+                            window,
+                            crate::ui::chrome::HISTORY_RADIUS,
+                        );
+                        window.on_next_frame(move |window, _| {
+                            crate::system::window_surface::reveal(window, true, 0);
+                            window.activate_window();
+                            window.on_next_frame(move |window, cx| {
+                                settled.update(cx, |this, _cx| this.revealing = false);
+                                if !window.is_window_active() {
+                                    settled.update(cx, |this, cx| this.close(window, cx));
+                                }
                             });
                         });
-                        window.activate_window();
-                    }
-                    view
+                    });
+                    window.activate_window();
+                }
+                view
+            };
+            #[cfg(target_os = "linux")]
+            let opened = super::open_wayland_layer_or_fallback(
+                cx,
+                gpui::layer_shell::LayerShellOptions {
+                    namespace: "poratake-history".to_string(),
+                    layer: gpui::layer_shell::Layer::Overlay,
+                    anchor: gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::RIGHT,
+                    margin: Some((px(8.0), px(8.0), px(0.0), px(0.0))),
+                    keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::OnDemand,
+                    ..Default::default()
                 },
-            )
-            .ok()
-            .map(Into::into)
+                make_options,
+                build_history,
+            );
+            #[cfg(not(target_os = "linux"))]
+            let opened = cx.open_window(make_options(), build_history);
+            opened.ok().map(Into::into)
         });
     }
 
