@@ -2681,7 +2681,32 @@ impl AreaOverlay {
             .id("area-overlay")
             .size_full()
             .key_context("AreaOverlay")
-            .track_focus(&self.focus_handle);
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
+                if this.handed_off {
+                    return;
+                }
+                if this.menu.is_open(cx) {
+                    this.menu.close(window, cx);
+                    this.focus_all_in_one_menu_trigger(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.picking_color {
+                    this.stop_color_picker(cx);
+                    return;
+                }
+                if this.intent == crate::capture::intent::CaptureIntent::Recording {
+                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
+                }
+                if this.intent == crate::capture::intent::CaptureIntent::EditorAttach {
+                    let coordinator = crate::state::coordinator(cx);
+                    coordinator.update(cx, |coordinator, cx| {
+                        coordinator.cancel_editor_attach(cx);
+                    });
+                }
+                dismiss(window, cx);
+            }));
 
         if self.handed_off {
             let viewport = window.viewport_size();
@@ -2746,28 +2771,6 @@ impl AreaOverlay {
                 {
                     this.focus_all_in_one_menu_trigger(window, cx);
                 }
-            }))
-            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
-                if this.menu.is_open(cx) {
-                    this.menu.close(window, cx);
-                    this.focus_all_in_one_menu_trigger(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if this.picking_color {
-                    this.stop_color_picker(cx);
-                    return;
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::Recording {
-                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::EditorAttach {
-                    let coordinator = crate::state::coordinator(cx);
-                    coordinator.update(cx, |coordinator, cx| {
-                        coordinator.cancel_editor_attach(cx);
-                    });
-                }
-                dismiss(window, cx);
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
