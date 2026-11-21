@@ -641,7 +641,7 @@ fn spawn_whisper(
     args: &[String],
     on_progress: &dyn Fn(u8),
 ) -> Result<(bool, String), String> {
-    let mut child = std::process::Command::new(cli)
+    let mut child = crate::util::process::command(cli)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

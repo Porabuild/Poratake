@@ -92,7 +92,7 @@ ARCHIVE="$OUTPUT_DIR/$ARCHIVE_NAME"
 tar -C "$STAGING" -czf "$ARCHIVE" .
 test -s "$ARCHIVE"
 
-bun "$ROOT_DIR/scripts/write-updater-yml.mjs" "$VERSION" "$OUTPUT_DIR/latest-linux.yml" "$ARCHIVE"
+bun "$ROOT_DIR/scripts/write-updater-yml.mjs" "$VERSION" "$OUTPUT_DIR/latest-linux.yml" "$ARCHIVE" >/dev/null
 
 if command -v dpkg-deb >/dev/null 2>&1; then
   DEB_ROOT="$STAGING/deb-root"
@@ -115,6 +115,9 @@ Section: utils
 Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: Porabuild <https://github.com/Porabuild/Poratake>
+Homepage: https://github.com/Porabuild/Poratake
+Depends: libgtk-3-0 | libgtk-3-0t64, libayatana-appindicator3-1, libdbus-1-3, libpipewire-0.3-0 | libpipewire-0.3-0t64, libx11-6, libx11-xcb1, libxcb1, libxcb-shm0, libxcb-randr0, libxcb-xfixes0, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libfontconfig1, libasound2 | libasound2t64, ffmpeg
+Recommends: xdg-desktop-portal, wl-clipboard
 Description: Poratake screenshot, annotation, and screen recording tool
  Licensed under GNU AGPL-3.0-only.
 CONTROL

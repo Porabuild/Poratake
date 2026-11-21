@@ -4619,7 +4619,7 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
         if let Some(path) = crate::video::keyboard_audio::sample_path(kind, index) {
             let path = path.display().to_string();
             let _ = if cfg!(windows) {
-                std::process::Command::new("powershell")
+                crate::util::process::command("powershell")
                     .args([
                         "-NoProfile",
                         "-Command",
@@ -4627,6 +4627,9 @@ fn play_keyboard_demo_loop(kind: &str, stop: Arc<AtomicBool>) {
                             "Add-Type -AssemblyName PresentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open([uri]((Resolve-Path '{path}').Path)); $m.Volume = 1; $m.Play(); Start-Sleep -Milliseconds 180"
                         ),
                     ])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
                     .status()
             } else {
                 std::process::Command::new("afplay").arg(&path).status()

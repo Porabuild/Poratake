@@ -115,7 +115,7 @@ export default function AboutTab() {
       case 'error':
         return 'Update check failed';
       case 'unsupported':
-        return 'Automatic updates are not available on this platform';
+        return 'Automatic updates are not available for this installation';
       case 'up_to_date':
         return 'You are up to date';
       default:

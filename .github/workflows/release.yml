@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      dry_run:
+        description: 'Build and validate every asset without creating a release'
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
 
@@ -52,7 +57,7 @@ jobs:
   build-macos:
     needs: prepare
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -67,21 +72,18 @@ jobs:
         with:
           bun-version: 1.4.0
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
       - name: Cache Bun installs
         if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-
-      - name: Cache Electron binary
-        if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
-        with:
-          path: ~/Library/Caches/electron
-          key: electron-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            electron-${{ runner.os }}-
+          key: ${{ runner.os }}-gpui-bun-${{ hashFiles('bun.lock') }}
 
       - name: Install macOS native build tools
         run: |
@@ -96,9 +98,10 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Update package.json version
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+        run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
+
+      - name: Check daemon contract
+        run: bun run check:daemon-contract
 
       - name: Cache native binaries
         if: ${{ !inputs.skip_cache }}
@@ -109,6 +112,13 @@ jobs:
             src/main/binaries/whisper
             src/main/daemon/poratake-daemon
           key: macos-native-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh', 'scripts/build-daemon.sh', 'src/main/daemon/**/*.swift') }}
+
+      - name: Cache Rust target
+        if: ${{ !inputs.skip_cache }}
+        uses: actions/cache@v5
+        with:
+          path: src/main/target
+          key: ${{ runner.os }}-gpui-rust-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Setup macOS certificates
         env:
@@ -125,28 +135,29 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" build.keychain
           rm certificate.p12
 
-      - name: Build native macOS binaries
-        run: bun run build-native-mac
-
-      - name: Package and notarize macOS app
+      - name: Build and package macOS GPUI app
         env:
+          PORATAKE_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          set -o pipefail
-          BUILD_LOG=$(mktemp)
-          bun run package-mac 2>&1 | tee "$BUILD_LOG"
-          if grep -qiE "notarize skipped|skipped macOS notarization|notarize.*options were unable to be generated" "$BUILD_LOG"; then
-            rm -f "$BUILD_LOG"
-            exit 1
-          fi
-          APP_PATH=$(find "release/${{ inputs.version }}" -type d -path "*/Poratake.app" -print -quit)
-          test -n "$APP_PATH"
+          test -n "$PORATAKE_CODESIGN_IDENTITY"
+          bun run build:gpui:mac
+          bash scripts/package-gpui-mac.sh "${{ inputs.version }}" "release/${{ inputs.version }}"
+          APP_PATH="release/${{ inputs.version }}/Poratake.app"
+          test -d "$APP_PATH"
+          for BINARY in \
+            "$APP_PATH/Contents/MacOS/poratake-gpui" \
+            "$APP_PATH/Contents/Resources/daemon/poratake-daemon" \
+            "$APP_PATH/Contents/Resources/binaries/ffmpeg/ffmpeg" \
+            "$APP_PATH/Contents/Resources/binaries/whisper/whisper"; do
+            ARCHS="$(lipo -archs "$BINARY")"
+            [[ " $ARCHS " == *" arm64 "* ]]
+            [[ " $ARCHS " == *" x86_64 "* ]]
+          done
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
-          rm -f "$BUILD_LOG"
 
       - name: Validate release assets
         run: |
@@ -155,10 +166,9 @@ jobs:
           DMG="$RELEASE_DIR/Poratake-$VERSION-universal.dmg"
           ZIP="$RELEASE_DIR/Poratake-$VERSION-universal-mac.zip"
           METADATA="$RELEASE_DIR/latest-mac.yml"
-          BLOCKMAP="$ZIP.blockmap"
-          APP_RESOURCES=$(find "$RELEASE_DIR" -type d -path "*/Poratake.app/Contents/Resources" -print -quit)
-          test -n "$APP_RESOURCES"
-          node scripts/validate-release-assets.mjs "$VERSION" "$DMG" "$ZIP" "$METADATA" "$BLOCKMAP" "$APP_RESOURCES"
+          APP_RESOURCES="$RELEASE_DIR/Poratake.app/Contents/Resources"
+          test -d "$APP_RESOURCES"
+          node scripts/validate-release-assets.mjs "$VERSION" "$DMG" "$ZIP" "$METADATA" "$APP_RESOURCES"
 
       - name: Upload macOS release assets
         uses: actions/upload-artifact@v7
@@ -168,23 +178,24 @@ jobs:
             release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal.dmg
             release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip
             release/${{ inputs.version }}/latest-mac.yml
-            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-universal-mac.zip.blockmap
           if-no-files-found: error
           retention-days: 7
 
   build-windows:
     needs: prepare
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
             runner: windows-latest
+            triple: x86_64-pc-windows-msvc
             msystem: UCRT64
             packages: mingw-w64-ucrt-x86_64-gcc make nasm pkgconf curl tar
           - arch: arm64
             runner: windows-11-arm
+            triple: aarch64-pc-windows-msvc
             msystem: CLANGARM64
             packages: mingw-w64-clang-aarch64-clang make nasm pkgconf curl tar
     runs-on: ${{ matrix.runner }}
@@ -215,24 +226,13 @@ jobs:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ matrix.arch }}-bun-${{ hashFiles('bun.lock') }}
 
-      - name: Cache Electron binary
-        if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
-        with:
-          path: ~/AppData/Local/electron/Cache
-          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            electron-${{ runner.os }}-${{ matrix.arch }}-
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Update package.json version
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+        run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
 
       - name: Cache Rust target
         if: ${{ !inputs.skip_cache }}
@@ -248,6 +248,14 @@ jobs:
           msystem: ${{ matrix.msystem }}
           install: ${{ matrix.packages }}
 
+      - name: Ensure NSIS is installed
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+            "$env:ProgramFiles (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
       - name: Cache native binaries
         if: ${{ !inputs.skip_cache }}
         id: native-cache
@@ -259,37 +267,43 @@ jobs:
             src/main/daemon/poratake-daemon.exe
           key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
 
-      - name: Build Windows package
-        run: bun run build-win
+      - name: Build Windows GPUI binaries
+        shell: bash
         env:
           PORATAKE_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           PORATAKE_WIN_ARCH: ${{ matrix.arch }}
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          bun run build-native-win
+          cargo build --release --locked --manifest-path src/main/Cargo.toml --target ${{ matrix.triple }} --package poratake-daemon --package poratake-gpui
+
+      - name: Stage Windows GPUI installer
+        shell: bash
+        env:
+          PORATAKE_WIN_ARCH: ${{ matrix.arch }}
+        run: node scripts/package-gpui-win.mjs "${{ inputs.version }}" "release/${{ inputs.version }}/win-${{ matrix.arch }}"
 
       - name: Validate Windows release assets
         shell: bash
         run: |
           VERSION="${{ inputs.version }}"
           ARCH="${{ matrix.arch }}"
-          RELEASE_DIR="release/$VERSION"
-          NSIS="$RELEASE_DIR/Poratake-$VERSION-win-$ARCH.exe"
-          METADATA="$RELEASE_DIR/latest.yml"
-          BLOCKMAP="$NSIS.blockmap"
-          node scripts/validate-release-assets-win.mjs "$VERSION" "$NSIS" "$METADATA" "$BLOCKMAP"
+          STAGE="release/$VERSION/win-$ARCH"
+          NSIS="$STAGE/Poratake-$VERSION-win-$ARCH.exe"
+          METADATA="$STAGE/latest.yml"
+          node scripts/validate-release-assets-win.mjs "$VERSION" "$NSIS" "$METADATA"
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v7
         with:
           name: release-windows-${{ matrix.arch }}
           path: |
-            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe
-            release/${{ inputs.version }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe.blockmap
+            release/${{ inputs.version }}/win-${{ matrix.arch }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe
           if-no-files-found: error
           retention-days: 7
 
   build-linux-gpui:
     needs: prepare
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -308,10 +322,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.source_ref }}
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Update package.json version
+        run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
+
       - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclang-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libpipewire-0.3-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev libxcb-xfixes0-dev libasound2-dev
+        uses: ./.github/actions/linux-capture-deps
 
       - name: Cache Rust target
         if: ${{ !inputs.skip_cache }}
@@ -321,27 +341,101 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.arch }}-gpui-release-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Build GPUI Linux package
-        run: cargo build --release --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui
+        run: bun run build:gpui:linux
 
-      - name: Package GPUI Linux tarball
+      - name: Package GPUI Linux archive and package
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           RELEASE_DIR="release/$VERSION"
           mkdir -p "$RELEASE_DIR"
           ARCHIVE=$(bash scripts/package-gpui-linux.sh "$VERSION" "$RELEASE_DIR")
           test -f "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          test -f "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.deb"
+          dpkg-deb --info "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.deb" >/dev/null
+          dpkg-deb --contents "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.deb" >/dev/null
           test "$ARCHIVE" = "$RELEASE_DIR/Poratake-$VERSION-linux-${{ matrix.arch }}.tar.gz"
 
       - name: Upload Linux release assets
         uses: actions/upload-artifact@v7
         with:
           name: release-linux-${{ matrix.arch }}
-          path: release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+          path: |
+            release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+            release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  manifests:
+    needs: [prepare, build-macos, build-windows, build-linux-gpui]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download Windows release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release-assets
+          pattern: release-windows-*
+          merge-multiple: true
+
+      - name: Download Linux release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release-assets
+          pattern: release-linux-*
+          merge-multiple: true
+
+      - name: Download macOS release assets
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/release-assets
+          pattern: release-macos
+          merge-multiple: true
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Write updater manifests
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          ASSET_DIR="${{ runner.temp }}/release-assets"
+          node scripts/merge-windows-latest-yml.mjs \
+            "$VERSION" \
+            "$ASSET_DIR/Poratake-$VERSION-win-x64.exe" \
+            "$ASSET_DIR/Poratake-$VERSION-win-arm64.exe" \
+            "$ASSET_DIR/latest.yml"
+          node scripts/write-updater-yml.mjs \
+            "$VERSION" \
+            "$ASSET_DIR/latest-linux.yml" \
+            "$ASSET_DIR/Poratake-$VERSION-linux-x64.tar.gz" \
+            "$ASSET_DIR/Poratake-$VERSION-linux-arm64.tar.gz"
+          grep -q "Poratake-$VERSION-win-x64.exe" "$ASSET_DIR/latest.yml"
+          grep -q "Poratake-$VERSION-win-arm64.exe" "$ASSET_DIR/latest.yml"
+          grep -q "Poratake-$VERSION-linux-x64.tar.gz" "$ASSET_DIR/latest-linux.yml"
+          grep -q "Poratake-$VERSION-linux-arm64.tar.gz" "$ASSET_DIR/latest-linux.yml"
+          grep -q "Poratake-$VERSION-universal-mac.zip" "$ASSET_DIR/latest-mac.yml"
+          EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
+          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f\n' | sort)
+          test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
+
+      - name: Upload updater manifests
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-manifests
+          path: |
+            ${{ runner.temp }}/release-assets/latest.yml
+            ${{ runner.temp }}/release-assets/latest-linux.yml
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    needs: [prepare, build-macos, build-windows, build-linux-gpui]
+    needs: [prepare, build-macos, build-windows, build-linux-gpui, manifests]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -361,9 +455,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.source_ref }}
 
       - name: Update package.json version
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version=process.env.RELEASE_VERSION;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+        run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
 
       - name: Generate release notes from commits
         run: |
@@ -415,22 +507,6 @@ jobs:
           echo -e "$RELEASE_NOTES" > release_notes.txt
           cat release_notes.txt
 
-      - name: Merge updater metadata
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          ASSET_DIR="${{ runner.temp }}/release-assets"
-          node scripts/merge-windows-latest-yml.mjs \
-            "$VERSION" \
-            "$ASSET_DIR/Poratake-$VERSION-win-x64.exe" \
-            "$ASSET_DIR/Poratake-$VERSION-win-arm64.exe" \
-            "$ASSET_DIR/latest.yml"
-          node scripts/write-updater-yml.mjs \
-            "$VERSION" \
-            "$ASSET_DIR/latest-linux.yml" \
-            "$ASSET_DIR/Poratake-$VERSION-linux-x64.tar.gz" \
-            "$ASSET_DIR/Poratake-$VERSION-linux-arm64.tar.gz"
-
       - name: Validate collected release assets
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -447,7 +523,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json
+          git add package.json src/main/app-gpui/Cargo.toml src/main/Cargo.lock
           if git diff --cached --quiet; then
             echo "Version is already set to $VERSION"
           else
@@ -506,8 +582,16 @@ jobs:
             echo "Published successfully but could not delete staging tag $DRAFT_TAG"
 
   cleanup-failed-release:
-    needs: [prepare, build-macos, build-windows, build-linux-gpui, publish]
-    if: ${{ always() && (needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
+    needs:
+      [
+        prepare,
+        build-macos,
+        build-windows,
+        build-linux-gpui,
+        manifests,
+        publish,
+      ]
+    if: ${{ always() && !inputs.dry_run && (needs.publish.result == 'failure' || needs.publish.result == 'cancelled' || needs.manifests.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

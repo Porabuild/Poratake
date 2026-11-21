@@ -167,11 +167,8 @@ pub fn reconcile_open_at_login(enabled: bool) {
     #[cfg(target_os = "linux")]
     {
         remove_legacy_linux_autostart();
-        let already_matches = linux_autostart_matches_current();
         if enabled {
-            if !already_matches {
-                set_open_at_login(true);
-            }
+            set_open_at_login(true);
         } else if is_open_at_login() {
             set_open_at_login(false);
         }
@@ -311,6 +308,143 @@ fn linux_autostart_path() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn write_startup_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    crate::util::atomic_file::write(&resolve_startup_target(path), contents.as_bytes())
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_startup_target(path: &std::path::Path) -> std::path::PathBuf {
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+            break;
+        };
+        if !metadata.file_type().is_symlink() {
+            break;
+        }
+        let Ok(target) = std::fs::read_link(&current) else {
+            break;
+        };
+        current = if target.is_absolute() {
+            target
+        } else {
+            current
+                .parent()
+                .map(|parent| parent.join(&target))
+                .unwrap_or(target)
+        };
+    }
+    current
+}
+
+#[cfg(any(target_os = "linux", test))]
+const HYPRLAND_AUTOSTART_BEGIN: &str = "# >>> Poratake start on login";
+#[cfg(any(target_os = "linux", test))]
+const HYPRLAND_AUTOSTART_END: &str = "# <<< Poratake start on login";
+
+#[cfg(target_os = "linux")]
+fn hyprland_autostart_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|config| config.join("hypr").join("autostart.conf"))
+}
+
+#[cfg(target_os = "linux")]
+fn hyprland_session() -> bool {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|name| {
+            name.to_ascii_lowercase()
+                .split(':')
+                .any(|part| part == "hyprland")
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn hyprland_launcher() -> &'static str {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let available = std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| {
+            let candidate = directory.join("uwsm-app");
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+    });
+    if available {
+        "uwsm-app -- "
+    } else {
+        ""
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn hyprland_autostart_block(executable: &str, launcher: &str) -> String {
+    format!(
+        "{HYPRLAND_AUTOSTART_BEGIN}\nexec-once = {launcher}{executable}\n{HYPRLAND_AUTOSTART_END}\n"
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn replace_hyprland_autostart_block(contents: &str, block: Option<&str>) -> String {
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut output = String::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index].trim();
+        if line == HYPRLAND_AUTOSTART_BEGIN {
+            let end = lines[index + 1..]
+                .iter()
+                .position(|candidate| candidate.trim() == HYPRLAND_AUTOSTART_END);
+            match end {
+                Some(offset) => {
+                    index += offset + 2;
+                    continue;
+                }
+                None => {
+                    index += 1;
+                    continue;
+                }
+            }
+        }
+        if line == HYPRLAND_AUTOSTART_END {
+            index += 1;
+            continue;
+        }
+        output.push_str(lines[index]);
+        output.push('\n');
+        index += 1;
+    }
+    if let Some(block) = block {
+        output.push_str(block);
+    }
+    output
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn hyprland_autostart_entries(contents: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut inside = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line == HYPRLAND_AUTOSTART_BEGIN {
+            inside = true;
+            continue;
+        }
+        if line == HYPRLAND_AUTOSTART_END {
+            inside = false;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let Some(command) = line.strip_prefix("exec-once =") else {
+            continue;
+        };
+        entries.push(command.trim().to_string());
+    }
+    entries
+}
+
+#[cfg(target_os = "linux")]
 fn remove_legacy_linux_autostart() {
     let Some(autostart) = dirs::config_dir().map(|config| config.join("autostart")) else {
         return;
@@ -360,13 +494,55 @@ fn linux_autostart_matches_current() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_open_at_login(enabled: bool) {
-    remove_legacy_linux_autostart();
+fn set_hyprland_open_at_login(enabled: bool) {
+    let Some(path) = hyprland_autostart_path() else {
+        return;
+    };
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    if !hyprland_session() {
+        if hyprland_autostart_entries(&contents).is_empty() {
+            return;
+        }
+        let updated = replace_hyprland_autostart_block(&contents, None);
+        if let Err(error) = write_startup_file(&path, &updated) {
+            eprintln!("[startup] failed to remove the Hyprland autostart entry: {error}");
+        }
+        return;
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let executable = executable.to_string_lossy();
+    if executable.chars().any(char::is_whitespace) {
+        eprintln!("[startup] Hyprland autostart needs an executable path without spaces");
+        return;
+    }
+    let block = enabled.then(|| hyprland_autostart_block(&executable, hyprland_launcher()));
+    let updated = replace_hyprland_autostart_block(&contents, block.as_deref());
+    if updated == contents {
+        return;
+    }
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    if let Err(error) = write_startup_file(&path, &updated) {
+        eprintln!("[startup] failed to write the Hyprland autostart entry: {error}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_linux_autostart_file(enabled: bool) {
     let Some(path) = linux_autostart_path() else {
         return;
     };
     if !enabled {
         let _ = std::fs::remove_file(path);
+        return;
+    }
+    if linux_autostart_matches_current() {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -382,14 +558,30 @@ pub fn set_open_at_login(enabled: bool) {
         "[Desktop Entry]\nType=Application\nName=Poratake\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
         quote_desktop_exec(executable.to_string_lossy().as_ref())
     );
-    if let Err(error) = std::fs::write(path, entry) {
+    if let Err(error) = write_startup_file(&path, &entry) {
         eprintln!("[startup] failed to write autostart entry: {error}");
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn linux_autostart_targets(enabled: bool, hyprland: bool) -> (bool, bool) {
+    (enabled && !hyprland, enabled && hyprland)
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_open_at_login(enabled: bool) {
+    remove_legacy_linux_autostart();
+    let (xdg, hyprland) = linux_autostart_targets(enabled, hyprland_session());
+    set_linux_autostart_file(xdg);
+    set_hyprland_open_at_login(hyprland);
+}
+
 #[cfg(target_os = "linux")]
 pub fn is_open_at_login() -> bool {
-    linux_autostart_path().is_some_and(|path| path.is_file())
+    let hyprland = hyprland_autostart_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|contents| !hyprland_autostart_entries(&contents).is_empty());
+    hyprland || linux_autostart_path().is_some_and(|path| path.is_file())
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
@@ -462,6 +654,49 @@ mod tests {
             quote_desktop_exec("/opt/Poratake App/poratake\"gpui"),
             "\"/opt/Poratake App/poratake\\\"gpui\""
         );
+    }
+
+    #[test]
+    fn hyprland_registers_only_the_native_autostart_entry() {
+        assert_eq!(linux_autostart_targets(true, true), (false, true));
+        assert_eq!(linux_autostart_targets(true, false), (true, false));
+        assert_eq!(linux_autostart_targets(false, true), (false, false));
+        assert_eq!(linux_autostart_targets(false, false), (false, false));
+    }
+
+    #[test]
+    fn hyprland_autostart_blocks_leave_user_configuration_untouched() {
+        let original = "# user config\nexec-once = waybar\nexec-once = mako\n";
+        let executable = "/home/me/.local/opt/poratake/poratake-gpui";
+        let block = hyprland_autostart_block(executable, "uwsm-app -- ");
+        let updated = replace_hyprland_autostart_block(original, Some(&block));
+        assert!(updated.starts_with(original));
+        assert!(updated.contains("exec-once = waybar"));
+        assert_eq!(
+            hyprland_autostart_entries(&updated),
+            vec![format!("uwsm-app -- {executable}")]
+        );
+        assert_eq!(replace_hyprland_autostart_block(&updated, None), original);
+    }
+
+    #[test]
+    fn hyprland_autostart_keeps_configuration_after_an_unterminated_block() {
+        let original =
+            format!("{HYPRLAND_AUTOSTART_BEGIN}\nexec-once = waybar\nexec-once = mako\n");
+        let cleaned = replace_hyprland_autostart_block(&original, None);
+        assert_eq!(cleaned, "exec-once = waybar\nexec-once = mako\n");
+    }
+
+    #[test]
+    fn hyprland_autostart_blocks_replace_stale_entries_once() {
+        let first = hyprland_autostart_block("/old/poratake-gpui", "");
+        let second = hyprland_autostart_block("/new/poratake-gpui", "");
+        let combined = replace_hyprland_autostart_block(&first, Some(&second));
+        assert_eq!(
+            hyprland_autostart_entries(&combined),
+            vec!["/new/poratake-gpui"]
+        );
+        assert!(!combined.contains("/old/poratake-gpui"));
     }
 
     #[test]

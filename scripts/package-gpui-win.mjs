@@ -114,6 +114,11 @@ const installerPath = path.join(outDir, installerName);
 const defaultNsisScript = path.join(SCRIPT_DIR, 'installer-gpui-win.nsi');
 const nsisScript = process.env.PORATAKE_GPUI_NSIS || defaultNsisScript;
 const iconPath = path.join(ROOT_DIR, 'build', 'icon.ico');
+if (!existsSync(iconPath)) {
+  process.stderr.write(`Missing installer icon: ${iconPath}\n`);
+  process.exit(1);
+}
+cpSync(iconPath, path.join(stageDir, 'poratake.ico'));
 const makensisProbe = spawnSync('makensis', ['/VERSION'], { stdio: 'ignore' });
 if (nsisScript && existsSync(nsisScript) && makensisProbe.status !== 0) {
   process.stderr.write(

@@ -47,7 +47,7 @@ impl Status {
     /// init on platforms without an updater, and stays `idle` elsewhere. This
     /// shell is idle wherever `installer_suffix` names a published artifact.
     pub fn initial() -> Self {
-        if installer_suffix().is_empty() {
+        if installer_suffix().is_empty() || !install_directory_is_writable() {
             Self::Unsupported
         } else {
             Self::Idle
@@ -63,7 +63,7 @@ impl Status {
             Self::Ready { .. } => "Update ready to install",
             Self::Error { .. } => "Update check failed",
             Self::UpToDate => "You are up to date",
-            Self::Unsupported => "Automatic updates are not available on this platform",
+            Self::Unsupported => "Automatic updates are not available for this installation",
             Self::Idle => "Check for updates",
         }
     }
@@ -231,7 +231,29 @@ pub fn dev_update_forced() -> bool {
 }
 
 pub fn auto_check_enabled(packaged: bool, dev_forced: bool) -> bool {
-    packaged || dev_forced
+    (packaged || dev_forced) && install_directory_is_writable()
+}
+
+#[cfg(target_os = "linux")]
+fn install_directory_is_writable() -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(directory) = executable.parent() else {
+        return false;
+    };
+    let Ok(path) = CString::new(directory.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_directory_is_writable() -> bool {
+    true
 }
 
 /// `init()` in `main/update/index.ts`: one check shortly after launch, then
@@ -437,7 +459,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// the network — the `!isSupportedPlatform` guard in `checkForUpdate`.
 pub fn check(current: &str) -> Status {
     let suffix = installer_suffix();
-    if suffix.is_empty() {
+    if suffix.is_empty() || !install_directory_is_writable() {
         return Status::Unsupported;
     }
     let response = ureq::get(&latest_release_url())

@@ -1,11 +1,12 @@
 # GPUI versus Electron verification audit
 
 Dependency evidence refreshed 2026-11-16 for Poratake 0.9.6. The workflow gates below retain their 2026-11-15 evidence.
-Electron remains the product reference. This is a verification record and current
-backlog; the earlier implementation plans are historical findings, not an open-bug
-list. A source comparison or passing unit test does not establish full manual parity.
-The intended destination is a GPUI-only app after the required workflows and
-platform behavior have been verified.
+GPUI is the shipping shell for new releases; Electron is frozen as the reference
+for the last published version until it is removed. This is a verification record
+and current backlog; the earlier implementation plans are historical findings, not
+an open-bug list. A source comparison or passing unit test does not establish full
+manual parity. The intended destination is a GPUI-only app after the required
+workflows and platform behavior have been verified.
 
 ## Current critical scope
 
@@ -11954,6 +11955,40 @@ PORATAKE_NATIVE_SAVE_CONFIRM=1 python3 tests/native/macos-save-panel-probe.py
 4. **Live UTM VM verification**:
    - **Windows 11 Pro ARM64 24H2 (`Windows 11 Agent`)**: Cross-compiled `x86_64-pc-windows-msvc` binaries via `cargo-xwin` (zero clippy warnings) and executed native Windows unit tests inside the VM (`57/57` targeted tests passed including real Windows WIC thumbnails, DPAPI encrypt/decrypt, `_heapmin()`, Named Pipe IPC, and `GetMonitorInfoW`; `1,231` tests passed across the standalone test binary). Added automatic WARP fallback in `vendor/gpui-pre-windows` (`DirectXDevices::new_warp()` in `attach_gpu`) when hardware DirectX initialization fails. Full live smoke verified `poratake-daemon.exe` (all 17 modules, `window-selector:list`, `media-devices:list`), all 13 live GPUI windows (`onboarding`, `settings-dark`, `settings-light`, `tray-menu`, `history`, `capture-preview`, `pin`, `toast`, `recording-control`, `overlay-area`, `overlay-all-in-one`, `editor`, `video-editor`), single-instance Named Pipe `file://` handoff (`before=1 after=1`), and WGC visual screenshots + UIA trees for `SettingsWindow`, `EditorWindow`, and `VideoEditorWindow` (Media Foundation H.264 decode + `FramePool` + viewport-scaled preview).
    - **Ubuntu 26.04 ARM64 GNOME 50 Wayland (`Ubuntu 26.04 Agent`)**: Native `cargo clippy --locked --all-targets -- -D warnings` passed with zero warnings for `poratake-daemon-common`, `poratake-daemon-linux`, and `poratake-gpui`; all `1,227` GPUI unit tests (under `umask 0022`) and `xvfb-run` X11 daemon tests passed; `scripts/package-gpui-linux.sh` produced verified `.tar.gz`, `.deb` (with AGPL-3.0 + `THIRD_PARTY_NOTICES.md` + `.desktop`), and `latest-linux.yml`. Live X11 daemon smoke verified `list-displays`, full/area `capture-area`, `window-selector:list`, `freeze-screen` freeze/release, and `screen-recorder` start/pause/resume/stop producing real MP4 + `cursor.json` + `system.m4a`. Live Wayland smoke verified all 9 daemon modules, `wl-copy`/`wl-paste` `text/uri-list` roundtrip, `org.freedesktop.portal.Settings` query, all 12 GPUI windows (`onboarding`, `settings-dark`, `settings-light`, `history`, `capture-preview`, `pin`, `toast`, `recording-control`, `overlay-area`, `overlay-all-in-one`, `editor`, `video-editor`), persistent `0600` Unix IPC socket, single-instance `file://` handoff, and visual screenshots of `SettingsWindow`, `EditorWindow`, and `VideoEditorWindow` (FFmpeg H.264 decode + viewport-scaled preview).
+
+### 2026-11-21 GPUI release plumbing, Windows subsystem and Omarchy packaging
+
+1. **Release pipeline**: `.github/workflows/release.yml` now builds the GPUI
+   shell for macOS (universal), Windows (x64 and arm64) and Linux (x64 and
+   arm64), publishes `.deb` packages beside the Linux tarballs, merges the two
+   Windows `latest.yml` entries, drops Electron-only blockmaps from the
+   expected asset list, and supports a `dry_run` input. The separate
+   `release-gpui.yml` workflow was removed so one workflow owns the release
+   path. Electron packaging is no longer part of a release.
+2. **Windows shell**: the GPUI binary now links as a GUI subsystem application,
+   and every FFmpeg, Whisper, PowerShell and daemon spawn uses
+   `CREATE_NO_WINDOW` through `util/process.rs`, so packaged builds do not show
+   console windows. The NSIS shortcut and uninstall entry use the staged
+   `poratake.ico`.
+3. **ARM coverage**: new `linux-arm64` and `windows-arm64` checks compile and
+   lint the GPUI shell and the platform daemon on native ARM runners. macOS
+   remains universal and cross-checks both Rust targets in the existing macOS
+   job. Windows ARM64 still needs a live packaged-build smoke test; the
+   aarch64 build has not been run on real ARM hardware in this pass.
+4. **Omarchy 4.5**: `packaging/omarchy/install.sh` installs the release after
+   verifying its SHA-512 from `latest-linux.yml` into `~/.local/opt/poratake`,
+   and the
+   start-on-login setting writes a managed `exec-once = uwsm-app -- ...` block
+   to `~/.config/hypr/autostart.conf` while preserving the rest of the file.
+   Wayland capabilities are unchanged: recording, window capture, OCR, timer,
+   scroll, freeze, display selection, wallpaper and the color picker remain
+   disabled until source-aware portal capture is implemented and verified on
+   a real Hyprland session. See `docs/omarchy.md`.
+5. **Release prerequisites**: run the workflow with `dry_run` against the
+   intended revision, verify an in-place 0.9.6 Electron to GPUI update on real
+   Windows and macOS installs, and resolve the stale `v1.0.0` tag (it has no
+   release) before publishing 1.0.0. The Windows ARM64 installer is compiled by
+   the release matrix but has not been smoke-tested on ARM hardware yet.
 
 ## Review gate
 

@@ -8,7 +8,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
-const [version, dmgPath, zipPath, metadataPath, blockmapPath, resourcesPath] =
+const [version, dmgPath, zipPath, metadataPath, resourcesPath] =
   process.argv.slice(2);
 
 function fail(message) {
@@ -49,7 +49,6 @@ function hashFile(filePath) {
 requireFile(dmgPath);
 const zipStats = requireFile(zipPath);
 requireFile(metadataPath);
-requireFile(blockmapPath);
 
 const nativePaths = [
   path.join(resourcesPath, 'daemon', 'poratake-daemon'),

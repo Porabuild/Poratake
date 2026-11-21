@@ -26,6 +26,12 @@
 
 set -eo pipefail
 
+if [[ "${PORATAKE_ELECTRON_RELEASE:-}" != "1" ]]; then
+  echo "Electron is frozen and is no longer a release target." >&2
+  echo "Use .github/workflows/release.yml to ship GPUI, or set PORATAKE_ELECTRON_RELEASE=1 for a historical Electron build." >&2
+  exit 1
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

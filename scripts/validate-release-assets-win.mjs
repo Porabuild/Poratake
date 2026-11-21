@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-const [version, nsisPath, metadataPath, blockmapPath] = process.argv.slice(2);
+const [version, nsisPath, metadataPath] = process.argv.slice(2);
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -41,7 +41,6 @@ function hashFile(filePath) {
 
 const nsisStats = requireFile(nsisPath);
 requireFile(metadataPath);
-requireFile(blockmapPath);
 
 const metadata = readFileSync(metadataPath, 'utf8');
 const lines = metadata.split(/\r?\n/);

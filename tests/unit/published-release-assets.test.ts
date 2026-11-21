@@ -1,5 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -20,35 +26,34 @@ afterEach(() => {
 });
 
 describe('published release assets', () => {
-  it('requires two Mac packages and Windows x64 plus arm64', () => {
+  it('requires two Mac packages, Windows and Linux on both architectures', () => {
     const version = '1.0.0';
     expect(macAssetNames(version)).toEqual([
       'Poratake-1.0.0-universal.dmg',
       'Poratake-1.0.0-universal-mac.zip',
       'latest-mac.yml',
-      'Poratake-1.0.0-universal-mac.zip.blockmap',
     ]);
     expect(windowsAssetNames(version)).toEqual([
       'Poratake-1.0.0-win-x64.exe',
-      'Poratake-1.0.0-win-x64.exe.blockmap',
       'Poratake-1.0.0-win-arm64.exe',
-      'Poratake-1.0.0-win-arm64.exe.blockmap',
       'latest.yml',
     ]);
     expect(linuxAssetNames(version)).toEqual([
       'Poratake-1.0.0-linux-x64.tar.gz',
+      'Poratake-1.0.0-linux-x64.deb',
       'Poratake-1.0.0-linux-arm64.tar.gz',
+      'Poratake-1.0.0-linux-arm64.deb',
       'latest-linux.yml',
     ]);
     expect(publishedAssetNames(version)).toContain(
       'Poratake-1.0.0-win-arm64.exe'
     );
     expect(publishedAssetNames(version)).toContain(
-      'Poratake-1.0.0-linux-x64.tar.gz'
+      'Poratake-1.0.0-linux-arm64.deb'
     );
-    expect(publishedAssetNames(version)).not.toEqual(
-      publishedAssetNames(version).filter(name => !name.includes('win-arm64'))
-    );
+    expect(
+      publishedAssetNames(version).some(name => name.endsWith('.blockmap'))
+    ).toBe(false);
   });
 
   it('prints the same expected list the publish job compares against', () => {
@@ -65,6 +70,47 @@ describe('published release assets', () => {
     expect(printed.stdout.trim().split('\n')).toEqual(
       publishedAssetNames('1.0.0')
     );
+  });
+
+  it('writes the release version through the shared script', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'poratake-set-version-'));
+    roots.push(root);
+    writeFileSync(
+      path.join(root, 'package.json'),
+      `${JSON.stringify({ name: 'poratake', version: '0.9.6' }, null, 2)}\n`
+    );
+    mkdirSync(path.join(root, 'src', 'main', 'app-gpui'), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(root, 'src', 'main', 'app-gpui', 'Cargo.toml'),
+      '[package]\nname = "poratake-gpui"\nversion = "0.9.6"\n'
+    );
+    writeFileSync(
+      path.join(root, 'src', 'main', 'Cargo.lock'),
+      '[[package]]\nname = "poratake-gpui"\nversion = "0.9.6"\n'
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(process.cwd(), 'scripts', 'set-package-version.mjs'), '0.9.7'],
+      { cwd: root, encoding: 'utf8' }
+    );
+
+    expect(result.status).toBe(0);
+    const pkg = JSON.parse(
+      readFileSync(path.join(root, 'package.json'), 'utf8')
+    );
+    expect(pkg).toEqual({ name: 'poratake', version: '0.9.7' });
+    expect(
+      readFileSync(
+        path.join(root, 'src', 'main', 'app-gpui', 'Cargo.toml'),
+        'utf8'
+      )
+    ).toContain('version = "0.9.7"');
+    expect(
+      readFileSync(path.join(root, 'src', 'main', 'Cargo.lock'), 'utf8')
+    ).toContain('name = "poratake-gpui"\nversion = "0.9.7"');
   });
 
   it('merges Windows x64 and arm64 installers into one updater feed', async () => {

@@ -53,7 +53,7 @@ Return to earlier captures, pin an image above other windows, copy or save the r
 
 ### Built for Real Desktops
 
-Poratake uses native capture daemons on macOS and Windows. Windows capture is HDR-aware, preserving natural SDR screenshots and recordings instead of producing washed-out results on HDR displays.
+Poratake uses native capture daemons on macOS, Windows, and Linux. Windows capture is HDR-aware, preserving natural SDR screenshots and recordings instead of producing washed-out results on HDR displays. On Linux, Omarchy 4.5 users can follow [docs/omarchy.md](docs/omarchy.md) to install the Arch build; the same page lists the Wayland feature matrix.
 
 ## What Ships Today
 
@@ -68,14 +68,15 @@ Poratake uses native capture daemons on macOS and Windows. Windows capture is HD
 
 ## Platforms
 
-| Platform | Support                                                                             |
-| -------- | ----------------------------------------------------------------------------------- |
-| macOS    | macOS 15 or later on Apple silicon and Intel; full feature set                      |
-| Windows  | Windows 10/11 (x64 and arm64); full feature set except the macOS-only capture sound |
+| Platform | Support                                                                                                                                                                                                                                                                                   |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS    | macOS 15 or later on Apple silicon and Intel; full feature set                                                                                                                                                                                                                            |
+| Windows  | Windows 10/11 (x64 and arm64); full feature set except the macOS-only capture sound                                                                                                                                                                                                       |
+| Linux    | x86_64 and aarch64. X11 has the full Linux feature set. Wayland sessions with the ScreenCast portal (GNOME verified; Omarchy 4.5 pending) have screen and area screenshots, the editor, history, print, and the video editor; Wayland recording and window capture are not available yet. |
 
 ## Install
 
-Published installers are distributed through the [GitHub releases page](https://github.com/Porabuild/Poratake/releases), with corresponding source published alongside every release. To build Poratake locally, follow the setup and native build instructions in [CONTRIBUTING.md](CONTRIBUTING.md).
+Published installers are distributed through the [GitHub releases page](https://github.com/Porabuild/Poratake/releases), with corresponding source published alongside every release. On Omarchy or Arch Linux, run `packaging/omarchy/install.sh`; see [docs/omarchy.md](docs/omarchy.md). Linux releases also include a `.deb` for package-managed installs. To build Poratake locally, follow the setup and native build instructions in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 
