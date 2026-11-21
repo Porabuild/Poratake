@@ -18,17 +18,6 @@ const PREVIEW_INSET: f32 = 16.0;
 const UNDO_HISTORY_LIMIT: usize = 100;
 const FRAME_STEP: f64 = 1.0 / 30.0;
 const LAST_FRAME_EPSILON: f64 = 0.01;
-const ACTIVE_PREVIEW_SIZES: [(u32, u32); 7] = [
-    (384, 216),
-    (432, 243),
-    (480, 270),
-    (640, 360),
-    (854, 480),
-    (960, 540),
-    (1280, 720),
-];
-const INITIAL_PREVIEW_QUALITY: usize = 3;
-const PREVIEW_QUALITY_RAISE_FRAMES: u16 = 120;
 const SIDEBAR_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 const VIDEO_EDITOR_DEFAULT_WIDTH: f32 = 1280.0;
 const VIDEO_EDITOR_DEFAULT_HEIGHT: f32 = 800.0;
@@ -58,6 +47,12 @@ use crate::theme::vars::active_theme;
 use crate::ui::icon::icon_element;
 use crate::ui::menu::MenuHandle;
 use crate::video::composition::segments as timeline_segments;
+#[cfg(test)]
+use crate::video::preview_budget::PREVIEW_QUALITY_RAISE_FRAMES;
+use crate::video::preview_budget::{
+    active_preview_budget, adjust_preview_quality, playback_tick, preview_max_dimensions,
+    INITIAL_PREVIEW_QUALITY,
+};
 use crate::video::project;
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 use crate::windows::video_editor::model::VideoEditorState;
@@ -230,21 +225,17 @@ pub struct VideoEditorWindow {
     timeline_id_seed: u64,
     drawing_text_field: Entity<herogpui::components::InputState>,
     preview_bounds: drawing_overlay::BoundsCell,
+    preview_viewport_physical: Rc<RefCell<Option<(u32, u32)>>>,
     composition_size: Option<(f64, f64)>,
     sidebar_width: f32,
     sidebar_resize: Option<(f32, f32)>,
     sidebar_animation_generation: u64,
     sidebar_closing: bool,
     bounds_sub: Option<gpui::Subscription>,
-    #[cfg(target_os = "macos")]
     preview_visibility_sub: Option<gpui::Subscription>,
-    #[cfg(target_os = "macos")]
     preview_activation_sub: Option<gpui::Subscription>,
-    #[cfg(target_os = "macos")]
     preview_window_active: bool,
-    #[cfg(target_os = "macos")]
     preview_window_hidden: bool,
-    #[cfg(target_os = "macos")]
     refresh_preview_on_show: bool,
     desktop_wallpaper_source: Option<String>,
     desktop_wallpaper_preview: Option<PreviewState>,
@@ -321,24 +312,21 @@ impl VideoEditorWindow {
                         .show();
                 });
                 view.update(cx, |editor, cx| {
-                    #[cfg(target_os = "macos")]
-                    {
-                        editor.preview_window_hidden = !window.is_visible();
-                        editor.preview_window_active = window.is_window_active();
-                        editor.preview_activation_sub = Some(cx.observe_window_activation(
-                            window,
-                            |editor, window, _| {
-                                editor.preview_window_active = window.is_window_active();
-                                editor.release_inactive_preview_buffers();
-                            },
-                        ));
-                        editor.preview_visibility_sub = Some(cx.observe_window_visibility(
-                            window,
-                            |editor, visibility, _, cx| {
-                                editor.set_preview_window_hidden(!visibility.is_visible(), cx);
-                            },
-                        ));
-                    }
+                    editor.preview_window_hidden = !window.is_visible();
+                    editor.preview_window_active = window.is_window_active();
+                    editor.preview_activation_sub = Some(cx.observe_window_activation(
+                        window,
+                        |editor, window, _| {
+                            editor.preview_window_active = window.is_window_active();
+                            editor.release_inactive_preview_buffers();
+                        },
+                    ));
+                    editor.preview_visibility_sub = Some(cx.observe_window_visibility(
+                        window,
+                        |editor, visibility, _, cx| {
+                            editor.set_preview_window_hidden(!visibility.is_visible(), cx);
+                        },
+                    ));
                     let mut last_size = window.bounds().size;
                     editor.bounds_sub =
                         Some(cx.observe_window_bounds(window, move |_, window, _| {
@@ -501,21 +489,17 @@ impl VideoEditorWindow {
             timeline_id_seed: 0,
             drawing_text_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             preview_bounds: Rc::new(RefCell::new(None)),
+            preview_viewport_physical: Rc::new(RefCell::new(None)),
             composition_size: None,
             sidebar_width: crate::ui::chrome::VIDEO_SIDEBAR_WIDTH,
             sidebar_resize: None,
             sidebar_animation_generation: 0,
             sidebar_closing: false,
             bounds_sub: None,
-            #[cfg(target_os = "macos")]
             preview_visibility_sub: None,
-            #[cfg(target_os = "macos")]
             preview_activation_sub: None,
-            #[cfg(target_os = "macos")]
             preview_window_active: true,
-            #[cfg(target_os = "macos")]
             preview_window_hidden: false,
-            #[cfg(target_os = "macos")]
             refresh_preview_on_show: false,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
@@ -981,7 +965,6 @@ impl VideoEditorWindow {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn set_preview_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
         if self.preview_window_hidden == hidden {
             return;
@@ -1010,7 +993,6 @@ impl VideoEditorWindow {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn release_inactive_preview_buffers(&mut self) {
         let paused_in_background = !self.preview_window_active
             && !self.is_playing
@@ -1030,7 +1012,6 @@ impl VideoEditorWindow {
 
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
         if self.preview_window_hidden {
             self.refresh_preview_on_show = true;
             self.release_inactive_preview_buffers();
@@ -1040,9 +1021,10 @@ impl VideoEditorWindow {
             return;
         };
         let time = self.preview_playhead.unwrap_or(self.playhead);
+        let active_motion = self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some();
+        let viewport_physical = *self.preview_viewport_physical.borrow();
         let max_dimensions =
-            (self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some())
-                .then_some(ACTIVE_PREVIEW_SIZES[self.preview_quality]);
+            preview_max_dimensions(active_motion, self.preview_quality, viewport_physical);
         let camera_visible_in_playback = self.is_playing
             && crate::video::sidecars::editor_camera_visible_at(
                 &self.state,
@@ -1071,10 +1053,8 @@ impl VideoEditorWindow {
         self.compose_in_flight = true;
         self.queued_frame = None;
         let generation = self.preview_frame_generation;
-        #[cfg(target_os = "macos")]
-        let park_after_first_preview = self.preview_image.is_none() && max_dimensions.is_none();
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let release_at_end = max_dimensions.is_none()
+        let park_after_first_preview = self.preview_image.is_none() && !active_motion;
+        let release_at_end = !active_motion
             && self.preview_playhead.is_none()
             && time > 0.0
             && time >= self.total_duration();
@@ -1099,11 +1079,9 @@ impl VideoEditorWindow {
                         )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if release_at_end && !cancelled.is_closed() {
                         guard.release_buffered_frames();
                     }
-                    #[cfg(target_os = "macos")]
                     if park_after_first_preview
                         && !release_at_end
                         && image.is_some()
@@ -1120,7 +1098,7 @@ impl VideoEditorWindow {
                 this.preview_frame_cancellation = None;
                 this.preview_camera_wait = None;
                 if this.preview_frame_generation == generation {
-                    if max_dimensions.is_some() && composed.is_some() {
+                    if active_motion && composed.is_some() {
                         (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
                             this.preview_quality,
                             this.preview_fast_frames,
@@ -1128,7 +1106,7 @@ impl VideoEditorWindow {
                             decode_wait,
                             active_preview_budget(this.source_frame_rate),
                         );
-                    } else if max_dimensions.is_some() {
+                    } else if active_motion {
                         this.preview_fast_frames = 0;
                     }
                     #[cfg(all(feature = "parity", target_os = "macos"))]
@@ -1158,7 +1136,6 @@ impl VideoEditorWindow {
                 if this.queued_frame.take().is_some() {
                     this.request_frame(cx);
                 }
-                #[cfg(target_os = "macos")]
                 this.release_inactive_preview_buffers();
             });
         })
@@ -1215,10 +1192,7 @@ impl VideoEditorWindow {
     }
 
     fn defer_covered_playback(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        return self.is_playing && self.preview_window_hidden && !self.preview_audio.has_samples();
-        #[cfg(not(target_os = "macos"))]
-        false
+        self.is_playing && self.preview_window_hidden && !self.preview_audio.has_samples()
     }
 
     fn schedule_playback(&mut self, cx: &mut Context<Self>) {
@@ -1261,7 +1235,6 @@ impl VideoEditorWindow {
             self.invalidate_preview_frames();
         } else {
             self.sync_audio_transport();
-            #[cfg(target_os = "macos")]
             if self.preview_window_hidden {
                 return true;
             }
@@ -4067,6 +4040,17 @@ impl Render for VideoEditorWindow {
         if let Some((width, height)) = self.composition_size {
             stage_box = stage_box.max_w(px(width as f32)).max_h(px(height as f32));
         }
+        let viewport_cell = self.preview_viewport_physical.clone();
+        let stage_box = stage_box.on_children_prepainted(move |bounds, window, _| {
+            if let Some(stage) = bounds.first() {
+                let scale = window.scale_factor().max(1.0);
+                let width = (f32::from(stage.size.width) * scale).round() as u32;
+                let height = (f32::from(stage.size.height) * scale).round() as u32;
+                if width > 0 && height > 0 {
+                    *viewport_cell.borrow_mut() = Some((width, height));
+                }
+            }
+        });
         let preview = div()
             .id("video-editor-preview")
             .debug_selector(|| "video-editor-preview".into())
@@ -4485,44 +4469,6 @@ fn first_frame_duration(state: &VideoEditorState) -> f64 {
         return 0.0;
     }
     1.0 / crate::video::export::frame_rate(state).max(1) as f64
-}
-
-fn adjust_preview_quality(
-    index: usize,
-    fast_frames: u16,
-    elapsed: Duration,
-    decode_wait: Duration,
-    budget: Duration,
-) -> (usize, u16) {
-    let adjustable_elapsed = if decode_wait >= budget {
-        elapsed.saturating_sub(decode_wait)
-    } else {
-        elapsed
-    };
-    if adjustable_elapsed > budget && index > 0 {
-        return (index - 1, 0);
-    }
-    if elapsed >= budget.mul_f32(0.65) {
-        return (index, 0);
-    }
-    let fast_frames = fast_frames.saturating_add(1);
-    if fast_frames < PREVIEW_QUALITY_RAISE_FRAMES || index + 1 >= ACTIVE_PREVIEW_SIZES.len() {
-        return (index, fast_frames);
-    }
-    (index + 1, 0)
-}
-
-fn active_preview_budget(frame_rate: f64) -> Duration {
-    playback_tick(frame_rate).mul_f32(0.5)
-}
-
-fn playback_tick(frame_rate: f64) -> Duration {
-    let frame_rate = if frame_rate.is_finite() && frame_rate > 0.0 {
-        frame_rate.min(240.0)
-    } else {
-        60.0
-    };
-    Duration::from_secs_f64(1.0 / frame_rate)
 }
 
 fn materialize_builtin_audio_tracks(

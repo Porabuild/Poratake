@@ -292,7 +292,6 @@ impl Source {
             warmup.cancel.close();
         }
         if std::mem::take(&mut self.camera_decode_active) {
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
             match (&self.camera, &self.camera_opening) {
                 (Some(decoder), _) => decoder.release_frames(),
                 (None, Some(opening)) => opening.release_frames(),
@@ -301,14 +300,12 @@ impl Source {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(super) fn release_buffered_frames(&mut self) {
         self.video_frame = None;
         self.camera_frame = None;
         self.park_decoders();
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(super) fn park_decoders(&mut self) {
         if let Some(video) = &self.video {
             video.release_frames();

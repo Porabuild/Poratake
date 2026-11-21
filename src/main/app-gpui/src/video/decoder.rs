@@ -146,7 +146,6 @@ enum FramePosition {
 
 enum Command {
     Frame(FrameCommand),
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     ReleaseFrames,
 }
 
@@ -233,7 +232,6 @@ impl DecoderOpening {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn release_frames(&self) {
         let _ = self.commands.send(Command::ReleaseFrames);
     }
@@ -329,7 +327,6 @@ impl VideoDecoder {
         .await
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn release_frames(&self) {
         let _ = self.commands.send(Command::ReleaseFrames);
     }
@@ -447,14 +444,20 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(Command::Frame(FrameCommand {
-                position,
-                reply,
-                cancelled,
-                superseded,
-                abandoned,
-            })) = commands.recv()
-            {
+            let pool = crate::video::frame_pool::FramePool::new(2);
+            while let Ok(command) = commands.recv() {
+                let Command::Frame(FrameCommand {
+                    position,
+                    reply,
+                    cancelled,
+                    superseded,
+                    abandoned,
+                }) = command
+                else {
+                    cursor.clear(&pool);
+                    pool.clear();
+                    continue;
+                };
                 if abandoned.is_closed()
                     || cancelled.as_ref().is_some_and(FrameCancellation::is_closed)
                     || superseded
@@ -468,7 +471,7 @@ mod backend {
                     FramePosition::First => 0.0,
                     FramePosition::Time(time) => time,
                 };
-                let frame = read_frame(&reader, time, info, &mut cursor);
+                let frame = read_frame(&reader, time, info, &mut cursor, &pool);
                 reply.send(frame);
             }
 
@@ -567,6 +570,31 @@ mod backend {
                 .or(self.next.as_ref())
                 .map(|frame| frame.frame.clone())
         }
+
+        fn replace_current(
+            &mut self,
+            frame: Option<TimedFrame>,
+            pool: &crate::video::frame_pool::FramePool,
+        ) {
+            if let Some(previous) = std::mem::replace(&mut self.current, frame) {
+                pool.recycle_arc(previous.frame.bgra);
+            }
+        }
+
+        fn replace_next(
+            &mut self,
+            frame: Option<TimedFrame>,
+            pool: &crate::video::frame_pool::FramePool,
+        ) {
+            if let Some(previous) = std::mem::replace(&mut self.next, frame) {
+                pool.recycle_arc(previous.frame.bgra);
+            }
+        }
+
+        fn clear(&mut self, pool: &crate::video::frame_pool::FramePool) {
+            self.replace_current(None, pool);
+            self.replace_next(None, pool);
+        }
     }
 
     fn bounded_time(time: f64, info: VideoInfo) -> f64 {
@@ -591,12 +619,13 @@ mod backend {
         time: f64,
         info: VideoInfo,
         cursor: &mut DecodeCursor,
+        pool: &crate::video::frame_pool::FramePool,
     ) -> Option<DecodedFrame> {
         const TIMESTAMP_TOLERANCE: i64 = 100;
         let position = (bounded_time(time, info) * UNITS_PER_SECOND).round() as i64;
         if cursor.needs_seek(position) {
             set_reader_position(reader, position)?;
-            *cursor = DecodeCursor::default();
+            cursor.clear(pool);
         }
 
         if cursor
@@ -604,7 +633,8 @@ mod backend {
             .as_ref()
             .is_some_and(|next| next.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE))
         {
-            cursor.current = cursor.next.take();
+            let next = cursor.next.take();
+            cursor.replace_current(next, pool);
         }
         if cursor
             .next
@@ -637,18 +667,16 @@ mod backend {
 
             if stream_flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
                 if let Some((timestamp, sample)) = candidate {
-                    cursor.current = Some(TimedFrame {
-                        timestamp,
-                        frame: copy_sample(&sample, info)?,
-                    });
-                    cursor.next = None;
+                    let frame = copy_sample(&sample, info, pool)?;
+                    cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
+                    cursor.replace_next(None, pool);
                 } else if !retried_tail && cursor.frame().is_none() && info.duration > 0.0 {
                     retried_tail = true;
                     let tail = ((info.duration - 1.0 / info.frame_rate()).max(0.0)
                         * UNITS_PER_SECOND)
                         .round() as i64;
                     set_reader_position(reader, tail)?;
-                    *cursor = DecodeCursor::default();
+                    cursor.clear(pool);
                     continue;
                 }
                 return cursor.frame();
@@ -658,30 +686,28 @@ mod backend {
             };
             if timestamp > position.saturating_add(TIMESTAMP_TOLERANCE) {
                 if let Some((timestamp, sample)) = candidate {
-                    cursor.current = Some(TimedFrame {
-                        timestamp,
-                        frame: copy_sample(&sample, info)?,
-                    });
+                    let frame = copy_sample(&sample, info, pool)?;
+                    cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
                 }
-                cursor.next = Some(TimedFrame {
-                    timestamp,
-                    frame: copy_sample(&sample, info)?,
-                });
+                let frame = copy_sample(&sample, info, pool)?;
+                cursor.replace_next(Some(TimedFrame { timestamp, frame }), pool);
                 return cursor.frame();
             }
             if timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE) {
-                cursor.current = Some(TimedFrame {
-                    timestamp,
-                    frame: copy_sample(&sample, info)?,
-                });
-                cursor.next = None;
+                let frame = copy_sample(&sample, info, pool)?;
+                cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
+                cursor.replace_next(None, pool);
                 return cursor.frame();
             }
             candidate = Some((timestamp, sample));
         }
     }
 
-    unsafe fn copy_sample(sample: &IMFSample, info: VideoInfo) -> Option<DecodedFrame> {
+    unsafe fn copy_sample(
+        sample: &IMFSample,
+        info: VideoInfo,
+        pool: &crate::video::frame_pool::FramePool,
+    ) -> Option<DecodedFrame> {
         let buffer = sample.ConvertToContiguousBuffer().ok()?;
         let stride = (info.width * 4) as i32;
 
@@ -701,7 +727,7 @@ mod backend {
                     &mut length,
                 )
                 .ok()?;
-            let frame = copy_rows(scanline, pitch, info);
+            let frame = copy_rows(scanline, pitch, info, pool);
             let _ = two_d.Unlock2D();
             return frame;
         }
@@ -712,18 +738,23 @@ mod backend {
         buffer
             .Lock(&mut data, Some(&mut max_length), Some(&mut current_length))
             .ok()?;
-        let frame = copy_rows(data, stride, info);
+        let frame = copy_rows(data, stride, info, pool);
         let _ = buffer.Unlock();
         frame
     }
 
     /// Copies `info.height` rows, honouring a negative pitch (bottom-up).
-    unsafe fn copy_rows(start: *mut u8, pitch: i32, info: VideoInfo) -> Option<DecodedFrame> {
+    unsafe fn copy_rows(
+        start: *mut u8,
+        pitch: i32,
+        info: VideoInfo,
+        pool: &crate::video::frame_pool::FramePool,
+    ) -> Option<DecodedFrame> {
         if start.is_null() || info.width == 0 || info.height == 0 {
             return None;
         }
         let row_bytes = (info.width * 4) as usize;
-        let mut bgra = vec![0u8; row_bytes * info.height as usize];
+        let mut bgra = pool.take(row_bytes * info.height as usize);
 
         for row in 0..info.height as usize {
             let source = start.offset(pitch as isize * row as isize);
@@ -810,7 +841,7 @@ mod backend {
     struct DecoderProcess {
         child: Child,
         frames: smol::channel::Receiver<Option<TimedFrame>>,
-        spare_frame: smol::channel::Sender<Vec<u8>>,
+        pool: crate::video::frame_pool::FramePool,
         seek_start: f64,
         fallback_seek_start: Option<f64>,
         current: Option<TimedFrame>,
@@ -820,15 +851,14 @@ mod backend {
     impl DecoderProcess {
         fn advance(&mut self, frame: TimedFrame) {
             if let Some(previous) = self.current.replace(frame) {
-                if let Ok(bytes) = Arc::try_unwrap(previous.frame.bgra) {
-                    let _ = self.spare_frame.try_send(bytes);
-                }
+                self.pool.recycle_arc(previous.frame.bgra);
             }
         }
     }
 
     impl Drop for DecoderProcess {
         fn drop(&mut self) {
+            self.pool.clear();
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
@@ -1165,55 +1195,36 @@ mod backend {
             .map(|frame| frame.frame.clone())
     }
 
-    #[cfg(target_os = "macos")]
     const FRAME_SOCKET_BUFFER: usize = 1024 * 1024;
-
-    #[cfg(target_os = "macos")]
     const MAX_FRAME_SOCKET_SEND_BUFFER: usize = 4 * 1024 * 1024;
 
-    #[cfg(target_os = "macos")]
     fn frame_socket(frame_size: usize) -> Option<(std::os::unix::net::UnixStream, Stdio)> {
-        use std::ffi::{c_int, c_void};
         use std::os::fd::{AsRawFd, OwnedFd};
         use std::os::unix::net::UnixStream;
-
-        unsafe extern "C" {
-            fn setsockopt(
-                socket: c_int,
-                level: c_int,
-                option: c_int,
-                value: *const c_void,
-                length: u32,
-            ) -> c_int;
-        }
-
-        const SOL_SOCKET: c_int = 0xffff;
-        const SO_SNDBUF: c_int = 0x1001;
-        const SO_RCVBUF: c_int = 0x1002;
 
         if frame_size <= FRAME_SOCKET_BUFFER {
             return None;
         }
         let (reader, writer) = UnixStream::pair().ok()?;
         let configure_buffer = |fd, option, capacity: usize| {
-            let capacity = capacity as c_int;
+            let capacity = capacity as libc::c_int;
             unsafe {
-                setsockopt(
+                libc::setsockopt(
                     fd,
-                    SOL_SOCKET,
+                    libc::SOL_SOCKET,
                     option,
-                    (&capacity as *const c_int).cast(),
-                    std::mem::size_of::<c_int>() as u32,
+                    (&capacity as *const libc::c_int).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                 ) == 0
             }
         };
-        if !configure_buffer(reader.as_raw_fd(), SO_RCVBUF, FRAME_SOCKET_BUFFER) {
+        if !configure_buffer(reader.as_raw_fd(), libc::SO_RCVBUF, FRAME_SOCKET_BUFFER) {
             return None;
         }
         let capacity = frame_size.min(MAX_FRAME_SOCKET_SEND_BUFFER);
         let writer_fd = writer.as_raw_fd();
-        if !configure_buffer(writer_fd, SO_SNDBUF, capacity)
-            && !configure_buffer(writer_fd, SO_SNDBUF, FRAME_SOCKET_BUFFER)
+        if !configure_buffer(writer_fd, libc::SO_SNDBUF, capacity)
+            && !configure_buffer(writer_fd, libc::SO_SNDBUF, FRAME_SOCKET_BUFFER)
         {
             return None;
         }
@@ -1222,10 +1233,9 @@ mod backend {
 
     fn spawn_frame_reader(
         mut command: ProcessCommand,
-        _frame_size: usize,
+        frame_size: usize,
     ) -> Option<(Child, Box<dyn Read + Send>)> {
-        #[cfg(target_os = "macos")]
-        if let Some((reader, stdout)) = frame_socket(_frame_size) {
+        if let Some((reader, stdout)) = frame_socket(frame_size) {
             if let Ok(child) = command.stdout(stdout).spawn() {
                 return Some((child, Box::new(reader)));
             }
@@ -1327,7 +1337,8 @@ mod backend {
         let trace_pid =
             std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").map(|_| child.id());
         let (frame_tx, frames) = smol::channel::bounded(1);
-        let (spare_frame, reusable) = smol::channel::bounded(1);
+        let pool = crate::video::frame_pool::FramePool::new(1);
+        let reader_pool = pool.clone();
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
@@ -1338,10 +1349,13 @@ mod backend {
                     let timestamp_started = trace_pid.map(|_| std::time::Instant::now());
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
-                    let bytes = reusable.try_recv();
                     #[cfg(all(feature = "parity", target_os = "macos"))]
-                    let reused = bytes.is_ok();
-                    let mut bytes = bytes.unwrap_or_else(|_| vec![0; frame_size]);
+                    let (mut bytes, reused) = match reader_pool.try_take(frame_size) {
+                        Ok(bytes) => (bytes, true),
+                        Err(bytes) => (bytes, false),
+                    };
+                    #[cfg(not(all(feature = "parity", target_os = "macos")))]
+                    let mut bytes = reader_pool.take(frame_size);
                     let payload = bytes.as_mut_slice();
                     #[cfg(all(feature = "parity", target_os = "macos"))]
                     let (payload, payload_phases) = if trace_pid.is_some() {
@@ -1405,7 +1419,7 @@ mod backend {
         Some(DecoderProcess {
             child,
             frames,
-            spare_frame,
+            pool,
             seek_start,
             fallback_seek_start: None,
             current: None,
@@ -1490,7 +1504,7 @@ esac
                     .spawn()
                     .unwrap(),
                 frames,
-                spare_frame: smol::channel::bounded(1).0,
+                pool: crate::video::frame_pool::FramePool::new(1),
                 seek_start: 0.0,
                 fallback_seek_start: None,
                 current: None,
@@ -1549,7 +1563,7 @@ esac
             let mut decoder = DecoderProcess {
                 child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
                 frames,
-                spare_frame: smol::channel::bounded(1).0,
+                pool: crate::video::frame_pool::FramePool::new(1),
                 seek_start: 0.0,
                 fallback_seek_start: None,
                 current: None,
@@ -1588,11 +1602,11 @@ esac
 
         #[test]
         fn decoder_reuses_only_unshared_frame_storage() {
-            let (spare_frame, reusable) = smol::channel::bounded(1);
+            let pool = crate::video::frame_pool::FramePool::new(1);
             let mut decoder = DecoderProcess {
                 child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
                 frames: smol::channel::bounded(1).1,
-                spare_frame,
+                pool: pool.clone(),
                 seek_start: 0.0,
                 fallback_seek_start: None,
                 current: None,
@@ -1609,21 +1623,20 @@ esac
             decoder.advance(frame(0.0, 10));
             let held = selected_frame(&decoder).unwrap();
             decoder.advance(frame(1.0, 20));
-            assert!(reusable.try_recv().is_err());
+            assert_eq!(pool.take(4), vec![0, 0, 0, 0]);
             assert_eq!(held.bgra[0], 10);
 
             let current = decoder.current.as_ref().unwrap();
             let cached = Arc::downgrade(&current.frame.bgra);
             let address = current.frame.bgra.as_ptr();
             decoder.advance(frame(2.0, 30));
-            let bytes = reusable.try_recv().unwrap();
+            let bytes = pool.take(4);
             assert_eq!(bytes.as_ptr(), address);
             assert_eq!(bytes.as_slice(), [20, 0, 0, 255]);
             assert!(cached.upgrade().is_none());
             assert_eq!(selected_frame(&decoder).unwrap().bgra[0], 30);
         }
 
-        #[cfg(target_os = "macos")]
         #[test]
         fn large_frame_reader_delivers_stdout_then_eof() {
             let mut command = ProcessCommand::new("/usr/bin/printf");
@@ -1863,7 +1876,7 @@ esac
                 let mut decoder = Some(DecoderProcess {
                     child,
                     frames,
-                    spare_frame: smol::channel::bounded(1).0,
+                    pool: crate::video::frame_pool::FramePool::new(1),
                     seek_start: 0.0,
                     fallback_seek_start: None,
                     current: last_frame.map(|timestamp| TimedFrame {
@@ -2155,11 +2168,9 @@ mod backend {
 mod tests {
     use super::*;
 
-    #[allow(clippy::infallible_destructuring_match)]
     fn expect_frame(command: Command) -> FrameCommand {
         match command {
             Command::Frame(command) => command,
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
             Command::ReleaseFrames => panic!("expected a frame request"),
         }
     }
