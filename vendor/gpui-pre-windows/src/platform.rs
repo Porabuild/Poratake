@@ -421,10 +421,27 @@ impl WindowsPlatform {
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
-        if let Some(text_system) = &self.direct_write_text_system {
-            text_system.handle_gpu_lost(&devices)?;
-        }
+        let attach = |devices: DirectXDevices| -> Result<DirectXDevices> {
+            if let Some(text_system) = &self.direct_write_text_system {
+                text_system.handle_gpu_lost(&devices)?;
+            }
+            Ok(devices)
+        };
+        let devices = match DirectXDevices::new()
+            .context("Creating DirectX devices")
+            .and_then(&attach)
+        {
+            Ok(devices) => devices,
+            Err(hardware_error) => {
+                log::warn!(
+                    "Hardware DirectX initialization failed ({hardware_error:#}); retrying with WARP"
+                );
+                DirectXDevices::new_warp()
+                    .context("Creating WARP DirectX devices")
+                    .and_then(&attach)
+                    .map_err(|_| hardware_error)?
+            }
+        };
         *self.inner.state.directx_devices.borrow_mut() = Some(devices);
         self.begin_vsync_thread();
         Ok(())
