@@ -1137,13 +1137,12 @@ fn open_overlay_window(
                 replacement.color_frame_generation = color_frame_generation;
                 *overlay = replacement;
                 after_new(overlay, cx);
-                window.focus(&overlay.focus_handle, cx);
                 cx.notify();
-                window.refresh();
                 let shown = reveal_overlay_window(window, launch, active);
                 if launch.focus && shown {
                     window.activate_window();
                 }
+                window.focus(&overlay.focus_handle, cx);
             });
             if let Err(failure) = updated {
                 eprintln!("[overlay] failed to reuse {error}: {failure}");
