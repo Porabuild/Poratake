@@ -2678,7 +2678,12 @@ impl RecordingControl {
             if !show_preview {
                 cx.update(|cx| {
                     let path = project.to_string_lossy().into_owned();
-                    crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
+                    let focus = !crate::capture::overlay::is_active(cx);
+                    crate::windows::video_editor::VideoEditorWindow::open_with_focus(
+                        cx,
+                        Some(path),
+                        focus,
+                    );
                 });
             }
         })

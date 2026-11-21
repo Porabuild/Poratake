@@ -256,6 +256,13 @@ pub struct VideoEditorWindow {
 
 impl VideoEditorWindow {
     pub fn open(cx: &mut App, path: Option<String>) {
+        Self::open_with_focus(cx, path, true);
+    }
+
+    pub fn open_with_focus(cx: &mut App, path: Option<String>, focus: bool) {
+        if !focus && registry::is_open(RegistryKind::VideoEditor, cx) {
+            return;
+        }
         registry::open_or_activate(RegistryKind::VideoEditor, cx, move |cx| {
             let music_session = match path.as_deref() {
                 Some(path) => match crate::video::music_retention::MusicRetentionSession::open(
@@ -297,6 +304,7 @@ impl VideoEditorWindow {
                 })
                 .unwrap_or(bounds);
             let mut options = crate::windows::app_window_options(bounds, Some(min_size));
+            options.focus = focus;
             options.display_id = display.map(|display| display.id());
             cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| {

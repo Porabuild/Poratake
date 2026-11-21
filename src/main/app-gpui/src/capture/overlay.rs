@@ -194,9 +194,14 @@ pub(crate) fn release_capture_hide(
     }
 }
 
+pub(crate) fn is_active(cx: &App) -> bool {
+    cx.try_global::<OverlaySession>()
+        .is_some_and(|session| !session.handles.is_empty())
+}
+
 #[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn parity_is_active(cx: &mut App) -> bool {
-    !session(cx).handles.is_empty()
+    is_active(cx)
 }
 
 #[cfg(any(all(test, windows), feature = "parity"))]
