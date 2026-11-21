@@ -7,10 +7,26 @@ use herogpui::gpui;
 #[cfg(feature = "parity")]
 use image::RgbaImage;
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod windows;
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn file_uri_for_path(path: &Path) -> String {
+    let mut uri = String::from("file://");
+    for &byte in path.to_string_lossy().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
+            uri.push(byte as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
+}
 
 pub struct ClipboardService;
 
@@ -37,7 +53,9 @@ impl ClipboardService {
         return macos::write_file(path);
         #[cfg(windows)]
         return windows::write_file(path);
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "linux")]
+        return linux::write_file(path);
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             let _ = path;
             false
@@ -67,5 +85,13 @@ mod tests {
                 vec![1, 2, 3]
             );
         });
+    }
+
+    #[test]
+    fn encodes_linux_clipboard_file_uris() {
+        assert_eq!(
+            file_uri_for_path(Path::new("/tmp/My Captures/shot #1.png")),
+            "file:///tmp/My%20Captures/shot%20%231.png"
+        );
     }
 }

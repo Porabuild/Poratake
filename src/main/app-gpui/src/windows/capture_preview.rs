@@ -798,16 +798,9 @@ impl CapturePreviewWindow {
                 super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
                 #[cfg(windows)]
                 if !cfg!(test) {
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::configure_transparent_surface(hwnd);
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                            false,
-                        );
-                        sync_preview_viewport(window, bounds);
-                    }
+                    crate::system::window_surface::prepare_transparent_surface(window);
+                    crate::system::window_surface::stage(window, bounds, None, false);
+                    sync_preview_viewport(window, bounds);
                 }
                 let handle = window.window_handle();
                 let display_observer = cx.observe_displays(move |_, cx| {

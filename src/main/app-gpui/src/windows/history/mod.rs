@@ -182,16 +182,8 @@ impl HistoryWindow {
                     },
                 ),
                 |window, cx| {
-                    #[cfg(windows)]
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::disable_transitions(hwnd);
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                            true,
-                        );
-                    }
+                    crate::system::window_surface::disable_transitions(window);
+                    crate::system::window_surface::stage(window, bounds, None, true);
                     let view = cx.new(|cx| Self::new(store, window, cx));
                     let focus = view.read(cx).focus_handle.clone();
                     window.focus(&focus, cx);
@@ -199,10 +191,12 @@ impl HistoryWindow {
                     {
                         let settled = view.clone();
                         window.on_next_frame(move |window, _cx| {
+                            crate::system::window_surface::set_rounded_clip(
+                                window,
+                                crate::ui::chrome::HISTORY_RADIUS,
+                            );
                             window.on_next_frame(move |window, _| {
-                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                                    crate::system::window_composition::reveal_window(hwnd, true, 0);
-                                }
+                                crate::system::window_surface::reveal(window, true, 0);
                                 window.activate_window();
                                 window.on_next_frame(move |window, cx| {
                                     settled.update(cx, |this, _cx| this.revealing = false);

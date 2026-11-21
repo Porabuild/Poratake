@@ -89,14 +89,17 @@ impl PinWindow {
             image_size.height.0 as f32 / scale,
         );
 
-        let (work_width, work_height) = display
+        let (work_origin_x, work_origin_y, work_width, work_height) = display
             .map(|display| {
+                let area = crate::system::work_area::work_area(display.as_ref());
                 (
-                    f32::from(display.bounds().size.width),
-                    f32::from(display.bounds().size.height),
+                    f32::from(area.origin.x),
+                    f32::from(area.origin.y),
+                    f32::from(area.size.width),
+                    f32::from(area.size.height),
                 )
             })
-            .unwrap_or((1920.0, 1080.0));
+            .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
         let (window_width, window_height) =
             chrome::pin_window_size(width, height, work_width, work_height);
         let existing = cx
@@ -106,7 +109,10 @@ impl PinWindow {
             .count();
         let (origin_x, origin_y) = chrome::pin_window_origin(window_width, work_width, existing);
         let bounds = Bounds {
-            origin: gpui::point(px(origin_x.max(0.0)), px(origin_y.max(0.0))),
+            origin: gpui::point(
+                px(work_origin_x + origin_x.max(0.0)),
+                px(work_origin_y + origin_y.max(0.0)),
+            ),
             size: size(px(window_width), px(window_height)),
         };
         let mut options = super::popup_window_options(

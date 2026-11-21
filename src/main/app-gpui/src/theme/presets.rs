@@ -85,7 +85,43 @@ pub fn system_theme_mode() -> ThemeMode {
 }
 
 #[cfg(target_os = "linux")]
+fn portal_color_scheme() -> Option<ThemeMode> {
+    use std::time::Duration;
+
+    use dbus::arg::{RefArg, Variant};
+    use dbus::blocking::Connection;
+
+    let connection = Connection::new_session().ok()?;
+    let proxy = connection.with_proxy(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        Duration::from_millis(500),
+    );
+    let (outer,): (Variant<Box<dyn RefArg>>,) = proxy
+        .method_call(
+            "org.freedesktop.portal.Settings",
+            "Read",
+            ("org.freedesktop.appearance", "color-scheme"),
+        )
+        .ok()?;
+    let scheme = outer
+        .0
+        .as_iter()
+        .and_then(|mut iter| iter.next())
+        .and_then(|inner| inner.as_u64())
+        .or_else(|| outer.0.as_u64())?;
+    match scheme {
+        1 => Some(ThemeMode::Dark),
+        2 => Some(ThemeMode::Light),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub fn system_theme_mode() -> ThemeMode {
+    if let Some(mode) = portal_color_scheme() {
+        return mode;
+    }
     let environment_dark = std::env::var("GTK_THEME")
         .ok()
         .is_some_and(|theme| theme.to_ascii_lowercase().contains("dark"));

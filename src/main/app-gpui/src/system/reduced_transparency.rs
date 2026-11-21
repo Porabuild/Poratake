@@ -28,11 +28,46 @@ fn platform_reduced_transparency() -> bool {
 }
 
 #[cfg(all(windows, not(test)))]
+fn high_contrast_enabled() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    #[repr(C)]
+    struct HighContrastW {
+        cb_size: u32,
+        dw_flags: u32,
+        lpsz_default_scheme: *mut u16,
+    }
+
+    const HCF_HIGHCONTRASTON: u32 = 0x0000_0001;
+    let mut hc = HighContrastW {
+        cb_size: std::mem::size_of::<HighContrastW>() as u32,
+        dw_flags: 0,
+        lpsz_default_scheme: std::ptr::null_mut(),
+    };
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.cb_size,
+            Some((&mut hc as *mut HighContrastW).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+            && (hc.dw_flags & HCF_HIGHCONTRASTON) != 0
+    }
+}
+
+#[cfg(all(windows, not(test)))]
 fn platform_reduced_transparency() -> bool {
     use windows::core::w;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
     };
+
+    if high_contrast_enabled() {
+        return true;
+    }
 
     let mut key = HKEY::default();
     unsafe {
@@ -63,7 +98,38 @@ fn platform_reduced_transparency() -> bool {
     }
 }
 
-#[cfg(any(test, all(not(windows), not(target_os = "macos"))))]
+#[cfg(all(target_os = "linux", not(test)))]
+fn platform_reduced_transparency() -> bool {
+    use std::time::Duration;
+
+    use dbus::arg::{RefArg, Variant};
+    use dbus::blocking::Connection;
+
+    let Ok(connection) = Connection::new_session() else {
+        return false;
+    };
+    let proxy = connection.with_proxy(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        Duration::from_millis(500),
+    );
+    let result: Result<(Variant<Box<dyn RefArg>>,), _> = proxy.method_call(
+        "org.freedesktop.portal.Settings",
+        "Read",
+        ("org.freedesktop.appearance", "contrast"),
+    );
+    result.is_ok_and(|(outer,)| {
+        outer
+            .0
+            .as_iter()
+            .and_then(|mut iter| iter.next())
+            .and_then(|inner| inner.as_u64())
+            .or_else(|| outer.0.as_u64())
+            == Some(1)
+    })
+}
+
+#[cfg(any(test, not(any(windows, target_os = "macos", target_os = "linux"))))]
 fn platform_reduced_transparency() -> bool {
     false
 }

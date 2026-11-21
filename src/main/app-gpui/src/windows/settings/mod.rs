@@ -62,8 +62,7 @@ pub struct SettingsWindow {
     cloud_test_error: Option<String>,
     devices: device_cache::DeviceCache,
     focus_handle: FocusHandle,
-    #[cfg(windows)]
-    acrylic_dark: Option<bool>,
+    backdrop_state: Option<(bool, bool)>,
     /// The update check's state, shared with the thread that performs it.
     update: crate::update::Shared,
     /// Which "beyond Electron" disclosures the user has opened this session.
@@ -101,8 +100,7 @@ impl SettingsWindow {
             nav_scroll: gpui::ScrollHandle::new(),
             release_notes_scroll: gpui::ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
-            #[cfg(windows)]
-            acrylic_dark: None,
+            backdrop_state: None,
         }
     }
 
@@ -628,15 +626,11 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.config = self.store.get();
         let theme = active_theme(cx);
-        #[cfg(windows)]
-        {
-            let dark = active_mode(cx) == ThemeMode::Dark;
-            if self.acrylic_dark != Some(dark) && !crate::system::reduced_transparency::enabled() {
-                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                    crate::system::window_composition::configure_acrylic_surface(hwnd, dark);
-                    self.acrylic_dark = Some(dark);
-                }
-            }
+        let dark = crate::theme::vars::active_mode(cx) == crate::theme::presets::ThemeMode::Dark;
+        let translucent = !crate::system::reduced_transparency::enabled();
+        if self.backdrop_state != Some((dark, translucent)) {
+            crate::system::window_surface::set_backdrop_mode(window, dark, translucent);
+            self.backdrop_state = Some((dark, translucent));
         }
         let query = self.search_query(cx);
         let searching = !query.is_empty();

@@ -202,6 +202,30 @@ pub fn configure_acrylic_surface(window: HWND, dark: bool) -> bool {
     applied
 }
 
+pub fn configure_opaque_surface(window: HWND, dark: bool) {
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMSBT_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let dark = BOOL::from(dark);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            window,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&dark) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            window,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &DWMSBT_NONE as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&DWMSBT_NONE) as u32,
+        );
+    }
+    disable_accent(window);
+}
+
 pub fn disable_transitions(window: HWND) {
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 

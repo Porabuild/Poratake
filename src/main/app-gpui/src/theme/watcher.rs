@@ -1,9 +1,9 @@
 //! Follows the OS light/dark switch while the app runs.
 //!
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::thread;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use smol::channel::Receiver;
 
 use crate::theme::presets::ThemeMode;
@@ -45,7 +45,7 @@ pub fn window_theme_mode(appearance: gpui::WindowAppearance) -> ThemeMode {
 /// Starts the watcher thread and returns the channel it reports the OS theme
 /// mode on. Each notification re-reads the mode and sends it, changed or not;
 /// the decision to repaint is `needs_refresh` on the main thread.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn spawn() -> Receiver<ThemeMode> {
     let (tx, rx) = smol::channel::unbounded();
     thread::Builder::new()
@@ -53,6 +53,44 @@ pub fn spawn() -> Receiver<ThemeMode> {
         .spawn(move || watch(tx))
         .ok();
     rx
+}
+
+#[cfg(target_os = "linux")]
+fn watch(tx: smol::channel::Sender<ThemeMode>) {
+    use std::time::Duration;
+
+    use dbus::blocking::Connection;
+    use dbus::channel::MatchingReceiver as _;
+    use dbus::message::MatchRule;
+
+    let Ok(connection) = Connection::new_session() else {
+        return;
+    };
+    let mut rule = MatchRule::new_signal("org.freedesktop.portal.Settings", "SettingChanged");
+    rule.path = Some("/org/freedesktop/portal/desktop".into());
+    let sender = tx.clone();
+    let _token = connection.start_receive(
+        rule,
+        Box::new(move |message, _| {
+            let mut items = message.iter_init();
+            let namespace = items.read::<String>().ok();
+            let key = items.read::<String>().ok();
+            if namespace.as_deref() == Some("org.freedesktop.appearance")
+                && matches!(key.as_deref(), Some("color-scheme" | "contrast"))
+            {
+                let _ = sender.send_blocking(crate::theme::presets::system_theme_mode());
+            }
+            true
+        }),
+    );
+    let _ = connection.add_match_no_cb(
+        "type='signal',interface='org.freedesktop.portal.Settings',member='SettingChanged',path='/org/freedesktop/portal/desktop'",
+    );
+    while !tx.is_closed() {
+        if connection.process(Duration::from_secs(2)).is_err() {
+            return;
+        }
+    }
 }
 
 #[cfg(windows)]

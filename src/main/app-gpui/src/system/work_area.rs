@@ -460,7 +460,47 @@ fn appkit_visible_work_rect(
     )
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(any(target_os = "linux", test))]
+fn parse_x11_net_workarea(output: &str) -> Option<Rect> {
+    let (_, rhs) = output.split_once('=')?;
+    let mut values = rhs
+        .split(',')
+        .filter_map(|token| token.trim().parse::<i32>().ok());
+    let x = values.next()?;
+    let y = values.next()?;
+    let width = values.next()?;
+    let height = values.next()?;
+    (width > 0 && height > 0).then_some((x, y, x + width, y + height))
+}
+
+#[cfg(target_os = "linux")]
+fn monitor_rects(display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
+    if crate::system::linux_session::current() != crate::system::linux_session::LinuxSession::X11 {
+        return None;
+    }
+    let output = std::process::Command::new("xprop")
+        .args(["-root", "_NET_WORKAREA"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let work = parse_x11_net_workarea(&String::from_utf8_lossy(&output.stdout))?;
+    let bounds = display.bounds();
+    let monitor = (
+        f32::from(bounds.origin.x).round() as i32,
+        f32::from(bounds.origin.y).round() as i32,
+        (f32::from(bounds.origin.x) + f32::from(bounds.size.width)).round() as i32,
+        (f32::from(bounds.origin.y) + f32::from(bounds.size.height)).round() as i32,
+    );
+    let clamped = (
+        work.0.max(monitor.0),
+        work.1.max(monitor.1),
+        work.2.min(monitor.2),
+        work.3.min(monitor.3),
+    );
+    (clamped.2 > clamped.0 && clamped.3 > clamped.1).then_some((monitor, clamped))
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn monitor_rects(_display: &dyn gpui::PlatformDisplay) -> Option<(Rect, Rect)> {
     None
 }
@@ -574,6 +614,17 @@ mod tests {
     fn capture_scale_uses_the_selected_displays_physical_width() {
         assert_eq!(scale_from_widths(1280.0, 1920.0), Some(1.5));
         assert_eq!(scale_from_widths(1920.0, 1920.0), Some(1.0));
+    }
+
+    #[test]
+    fn parses_x11_net_workarea_property_output() {
+        assert_eq!(
+            parse_x11_net_workarea(
+                "_NET_WORKAREA(CARDINAL) = 72, 27, 1848, 1053, 72, 27, 1848, 1053\n"
+            ),
+            Some((72, 27, 1920, 1080))
+        );
+        assert_eq!(parse_x11_net_workarea("_NET_WORKAREA:  not found."), None);
     }
 
     #[cfg(windows)]

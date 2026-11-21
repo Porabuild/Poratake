@@ -24,5 +24,6 @@ pub mod startup;
 pub mod tooltip_macos;
 pub mod tray;
 pub mod window_composition;
+pub mod window_surface;
 pub mod window_visibility;
 pub mod work_area;

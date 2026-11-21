@@ -21,12 +21,10 @@ use gpui::{prelude::*, px, size, App, Bounds};
 use herogpui::application;
 use herogpui::gpui;
 
-#[cfg(any(windows, target_os = "macos"))]
-use crate::system::native::NativeCommand;
-use crate::system::native::{self, NativeEvent};
+use crate::system::native::{self, NativeCommand, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::theme::watcher;
 use crate::ui::chrome;
 
@@ -338,7 +336,7 @@ fn main() {
         // the first `init_theme` below publishes the app's resolved tokens.
         herogpui::init(cx);
         theme::vars::init_theme(cx, mode, &settings.appearance.theme);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             let system_theme = watcher::spawn();
             cx.spawn(async move |cx| {
@@ -366,7 +364,6 @@ fn main() {
             TrayMenuState::from_config(&settings, &crate::update::current_status(cx)),
             system::hotkeys::bindings(&settings),
         );
-        #[cfg(any(windows, target_os = "macos"))]
         if settings.general.hide_menu_bar_icon {
             bridge.send(NativeCommand::SetTrayVisible(false));
         }
