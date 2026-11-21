@@ -952,7 +952,7 @@ mod platform {
     }
 
     fn load_or_create_gpui_key() -> Option<[u8; 32]> {
-        let mut cached = GPUI_MASTER_KEY.lock().ok()?;
+        let cached = GPUI_MASTER_KEY.lock().ok()?;
         if let Some(key) = *cached {
             return Some(key);
         }

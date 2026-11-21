@@ -354,9 +354,9 @@ impl SingleInstanceGuard {
                     let err = unsafe { GetLastError().0 };
                     let connected = connect_res.is_ok() || err == 535 || err == 232;
                     if connected {
-                        let file = unsafe { std::fs::File::from_raw_handle(handle.0) };
+                        let mut file = unsafe { std::fs::File::from_raw_handle(handle.0) };
                         let mut payload = String::new();
-                        let _ = file.take(MAX_IPC_BYTES).read_to_string(&mut payload);
+                        let _ = (&mut file).take(MAX_IPC_BYTES).read_to_string(&mut payload);
                         unsafe {
                             let _ = DisconnectNamedPipe(handle);
                         }
