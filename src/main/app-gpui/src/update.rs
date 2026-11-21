@@ -1267,6 +1267,7 @@ pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new(path)
+            .args(windows_installer_args())
             .spawn()
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -1276,6 +1277,11 @@ pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
         let _ = path;
         Err("automatic updates are not available on this platform".to_string())
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_installer_args() -> &'static [&'static str] {
+    &["/S"]
 }
 
 #[cfg(target_os = "macos")]
@@ -1562,6 +1568,7 @@ mod artifact_tests {
         assert!(installer_path("Poratake-0.9.6-linux-x64.tar.gz").is_ok());
         assert!(installer_path("../Poratake.exe").is_err());
         assert!(installer_path("C:\\Poratake.exe").is_err());
+        assert_eq!(windows_installer_args(), &["/S"]);
     }
 
     #[test]

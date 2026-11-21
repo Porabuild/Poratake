@@ -868,7 +868,7 @@ mod platform {
             else {
                 return false;
             };
-            prompt.as_cstr().to_bytes() == b"/" && !unlocked.is_empty()
+            &*prompt == "/" && !unlocked.is_empty()
         }
 
         fn read_secret(&self, attrs: HashMap<&str, &str>) -> Option<Vec<u8>> {
@@ -921,9 +921,7 @@ mod platform {
                 "CreateItem",
                 (props, secret, true),
             );
-            result.is_ok_and(|(item, prompt)| {
-                item.as_cstr().to_bytes() != b"/" && prompt.as_cstr().to_bytes() == b"/"
-            })
+            result.is_ok_and(|(item, prompt)| &*item != "/" && &*prompt == "/")
         }
     }
 

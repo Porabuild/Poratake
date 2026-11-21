@@ -245,6 +245,13 @@ fn dispatch_instance_command(command: system::single_instance::InstanceCommand, 
     }
 }
 
+struct SingleInstanceState {
+    _guard: system::single_instance::SingleInstanceGuard,
+    _tx: smol::channel::Sender<system::single_instance::InstanceCommand>,
+}
+
+impl gpui::Global for SingleInstanceState {}
+
 fn main() {
     #[cfg(feature = "parity")]
     if std::env::var_os(ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
@@ -310,8 +317,10 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
-        let _single_instance_guard = single_instance;
-        let _instance_tx = instance_tx;
+        cx.set_global(SingleInstanceState {
+            _guard: single_instance,
+            _tx: instance_tx,
+        });
         cx.spawn(async move |cx| {
             while let Ok(command) = instance_rx.recv().await {
                 cx.update(|cx| dispatch_instance_command(command, cx));
