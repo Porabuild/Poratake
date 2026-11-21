@@ -1114,6 +1114,22 @@ fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
     let _ = (window, display_bounds);
 }
 
+#[cfg(target_os = "linux")]
+fn align_fallback_overlay_with_work_area(
+    handle: gpui::WindowHandle<AreaOverlay>,
+    display_id: DisplayId,
+    cx: &mut App,
+) {
+    let Some(display) = cx.find_display(display_id) else {
+        return;
+    };
+    let work = crate::system::work_area::work_area(display.as_ref());
+    let _ = handle.update(cx, |overlay, _, cx| {
+        overlay.display_bounds = work;
+        cx.notify();
+    });
+}
+
 fn reveal_overlay_window(window: &Window, launch: OverlayLaunch, active: bool) -> bool {
     if !active {
         return false;
@@ -1227,9 +1243,20 @@ fn open_overlay_window(
         build_overlay,
     );
     #[cfg(not(target_os = "linux"))]
-    let opened = cx.open_window(make_options(), build_overlay);
+    let opened = cx
+        .open_window(make_options(), build_overlay)
+        .map(|handle| (handle, false));
     match opened {
-        Ok(handle) => {
+        Ok((handle, layer_shell)) => {
+            #[cfg(target_os = "linux")]
+            if !layer_shell
+                && crate::system::linux_session::current()
+                    == crate::system::linux_session::LinuxSession::Wayland
+            {
+                align_fallback_overlay_with_work_area(handle, display_id, cx);
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = layer_shell;
             #[cfg(all(target_os = "macos", not(test)))]
             let positioned = handle
                 .update(cx, |overlay, window, cx| {

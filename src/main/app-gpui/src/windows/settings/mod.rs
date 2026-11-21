@@ -629,8 +629,11 @@ impl Render for SettingsWindow {
         let dark = crate::theme::vars::active_mode(cx) == crate::theme::presets::ThemeMode::Dark;
         let translucent = !crate::system::reduced_transparency::enabled();
         if self.backdrop_state != Some((dark, translucent)) {
-            crate::system::window_surface::set_backdrop_mode(window, dark, translucent);
-            self.backdrop_state = Some((dark, translucent));
+            let applied =
+                crate::system::window_surface::set_backdrop_mode(window, dark, translucent);
+            if applied || !cfg!(windows) {
+                self.backdrop_state = Some((dark, translucent));
+            }
         }
         let query = self.search_query(cx);
         let searching = !query.is_empty();

@@ -370,8 +370,13 @@ impl RecordingControl {
                 gpui::layer_shell::LayerShellOptions {
                     namespace: "poratake-recording-control".to_string(),
                     layer: gpui::layer_shell::Layer::Overlay,
-                    anchor: gpui::layer_shell::Anchor::BOTTOM,
-                    margin: Some((px(0.0), px(0.0), px(24.0), px(0.0))),
+                    anchor: gpui::layer_shell::Anchor::TOP,
+                    margin: Some((
+                        px(chrome::RECORDING_TOP_MARGIN - chrome::RECORDING_BAR_PAD_TOP),
+                        px(0.0),
+                        px(0.0),
+                        px(0.0),
+                    )),
                     keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::OnDemand,
                     ..Default::default()
                 },
@@ -379,8 +384,10 @@ impl RecordingControl {
                 build_toolbar,
             );
             #[cfg(not(target_os = "linux"))]
-            let opened = cx.open_window(make_options(), build_toolbar);
-            opened.ok().map(Into::into)
+            let opened = cx
+                .open_window(make_options(), build_toolbar)
+                .map(|handle| (handle, false));
+            opened.ok().map(|(handle, _)| handle).map(Into::into)
         });
         if registry::is_open(RegistryKind::RecordingControl, cx) {
             set_pre_recording_escape(true, cx);

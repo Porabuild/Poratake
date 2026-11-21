@@ -92,19 +92,7 @@ ARCHIVE="$OUTPUT_DIR/$ARCHIVE_NAME"
 tar -C "$STAGING" -czf "$ARCHIVE" .
 test -s "$ARCHIVE"
 
-SHA512="$(openssl dgst -sha512 -binary "$ARCHIVE" | openssl base64 -A)"
-SIZE="$(stat -c%s "$ARCHIVE" 2>/dev/null || stat -f%z "$ARCHIVE")"
-RELEASE_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-cat > "$OUTPUT_DIR/latest-linux.yml" <<YAML
-version: '${VERSION}'
-files:
-  - url: '${ARCHIVE_NAME}'
-    sha512: ${SHA512}
-    size: ${SIZE}
-path: '${ARCHIVE_NAME}'
-sha512: ${SHA512}
-releaseDate: '${RELEASE_DATE}'
-YAML
+bun "$ROOT_DIR/scripts/write-updater-yml.mjs" "$VERSION" "$OUTPUT_DIR/latest-linux.yml" "$ARCHIVE"
 
 if command -v dpkg-deb >/dev/null 2>&1; then
   DEB_ROOT="$STAGING/deb-root"

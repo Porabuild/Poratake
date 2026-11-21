@@ -907,10 +907,10 @@ impl CapturePreviewWindow {
                 layer: gpui::layer_shell::Layer::Overlay,
                 anchor: layer_anchor,
                 margin: Some((
-                    px(chrome::PREVIEW_MARGIN),
-                    px(chrome::PREVIEW_MARGIN),
-                    px(chrome::PREVIEW_MARGIN),
-                    px(chrome::PREVIEW_MARGIN),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
                 )),
                 keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::None,
                 ..Default::default()
@@ -919,8 +919,10 @@ impl CapturePreviewWindow {
             build_preview,
         );
         #[cfg(not(target_os = "linux"))]
-        let opened = cx.open_window(make_options(), build_preview);
-        if let Ok(handle) = opened {
+        let opened = cx
+            .open_window(make_options(), build_preview)
+            .map(|handle| (handle, false));
+        if let Ok((handle, _)) = opened {
             let handle: AnyWindowHandle = handle.into();
             registry::remember(WindowKind::CapturePreview, handle, cx);
             schedule_revealed_previews(handle, cx);

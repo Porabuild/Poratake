@@ -22,6 +22,20 @@ pub fn needs_refresh(selected: ThemeMode, applied: ThemeMode, current: ThemeMode
 /// Re-applies the theme from the freshly-read OS mode, but only when the user
 /// follows the system and the mode actually changed. An explicit light/dark
 /// choice must survive OS changes underneath it.
+#[cfg(any(windows, target_os = "linux"))]
+pub enum SystemAppearanceEvent {
+    Mode(ThemeMode),
+    Contrast,
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+pub fn apply_system_event(event: SystemAppearanceEvent, cx: &mut gpui::App) {
+    match event {
+        SystemAppearanceEvent::Mode(mode) => apply_system_mode(mode, cx),
+        SystemAppearanceEvent::Contrast => cx.refresh_windows(),
+    }
+}
+
 pub fn apply_system_mode(mode: ThemeMode, cx: &mut gpui::App) {
     let store = crate::state::state(cx).config;
     let config = store.get();
@@ -46,17 +60,25 @@ pub fn window_theme_mode(appearance: gpui::WindowAppearance) -> ThemeMode {
 /// mode on. Each notification re-reads the mode and sends it, changed or not;
 /// the decision to repaint is `needs_refresh` on the main thread.
 #[cfg(any(windows, target_os = "linux"))]
-pub fn spawn() -> Receiver<ThemeMode> {
+pub fn spawn() -> Receiver<SystemAppearanceEvent> {
     let (tx, rx) = smol::channel::unbounded();
+    let mode_tx = tx.clone();
     thread::Builder::new()
         .name("theme-watcher".into())
-        .spawn(move || watch(tx))
+        .spawn(move || watch(mode_tx))
         .ok();
+    #[cfg(windows)]
+    thread::Builder::new()
+        .name("contrast-watcher".into())
+        .spawn(move || watch_high_contrast(tx))
+        .ok();
+    #[cfg(not(windows))]
+    drop(tx);
     rx
 }
 
 #[cfg(target_os = "linux")]
-fn watch(tx: smol::channel::Sender<ThemeMode>) {
+fn watch(tx: smol::channel::Sender<SystemAppearanceEvent>) {
     use std::time::Duration;
 
     use dbus::blocking::Connection;
@@ -75,10 +97,17 @@ fn watch(tx: smol::channel::Sender<ThemeMode>) {
             let mut items = message.iter_init();
             let namespace = items.read::<String>().ok();
             let key = items.read::<String>().ok();
-            if namespace.as_deref() == Some("org.freedesktop.appearance")
-                && matches!(key.as_deref(), Some("color-scheme" | "contrast"))
-            {
-                let _ = sender.send_blocking(crate::theme::presets::system_theme_mode());
+            if namespace.as_deref() == Some("org.freedesktop.appearance") {
+                let event = match key.as_deref() {
+                    Some("contrast") => Some(SystemAppearanceEvent::Contrast),
+                    Some("color-scheme") => Some(SystemAppearanceEvent::Mode(
+                        crate::theme::presets::system_theme_mode(),
+                    )),
+                    _ => None,
+                };
+                if let Some(event) = event {
+                    let _ = sender.send_blocking(event);
+                }
             }
             true
         }),
@@ -94,7 +123,7 @@ fn watch(tx: smol::channel::Sender<ThemeMode>) {
 }
 
 #[cfg(windows)]
-fn watch(tx: smol::channel::Sender<ThemeMode>) {
+fn watch(tx: smol::channel::Sender<SystemAppearanceEvent>) {
     use windows::core::w;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
@@ -128,9 +157,46 @@ fn watch(tx: smol::channel::Sender<ThemeMode>) {
         }
 
         if tx
-            .send_blocking(crate::theme::presets::system_theme_mode())
+            .send_blocking(SystemAppearanceEvent::Mode(
+                crate::theme::presets::system_theme_mode(),
+            ))
             .is_err()
         {
+            return;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn watch_high_contrast(tx: smol::channel::Sender<SystemAppearanceEvent>) {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegNotifyChangeKeyValue, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        REG_NOTIFY_CHANGE_LAST_SET,
+    };
+
+    loop {
+        let mut key = HKEY::default();
+        unsafe {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                w!(r"Control Panel\Accessibility\HighContrast"),
+                None,
+                KEY_READ,
+                &mut key,
+            )
+            .is_err()
+            {
+                return;
+            }
+            let result =
+                RegNotifyChangeKeyValue(key, false, REG_NOTIFY_CHANGE_LAST_SET, None, false);
+            let _ = RegCloseKey(key);
+            if result.is_err() {
+                return;
+            }
+        }
+        if tx.send_blocking(SystemAppearanceEvent::Contrast).is_err() {
             return;
         }
     }

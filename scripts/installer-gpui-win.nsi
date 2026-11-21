@@ -1,6 +1,8 @@
 Unicode True
 SetCompressor /SOLID lzma
 !include "LogicLib.nsh"
+!include "StrFunc.nsh"
+${StrStr}
 
 !define PRODUCT_NAME "Poratake"
 !define PRODUCT_PUBLISHER "Porabuild"
@@ -32,7 +34,10 @@ Section "Install"
   nsExec::ExecToLog 'taskkill /F /IM Poratake.exe /T'
   Sleep 400
 
-  ${If} ${FileExists} "$INSTDIR\Poratake.exe"
+  File /r "${STAGE_DIR}\*.*"
+
+  ${If} ${FileExists} "$INSTDIR\poratake-gpui.exe"
+  ${AndIf} ${FileExists} "$INSTDIR\Poratake.exe"
     Delete "$INSTDIR\Poratake.exe"
     Delete "$INSTDIR\*.dll"
     Delete "$INSTDIR\*.pak"
@@ -40,8 +45,6 @@ Section "Install"
     RMDir /r "$INSTDIR\resources"
     Delete "$SMPROGRAMS\Poratake.lnk"
   ${EndIf}
-
-  File /r "${STAGE_DIR}\*.*"
 
   WriteUninstaller "$INSTDIR\Uninstall Poratake.exe"
 
@@ -58,8 +61,14 @@ Section "Install"
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
 
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake"
-  ${If} $0 != ""
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake" '"$INSTDIR\poratake-gpui.exe"'
+  ${StrStr} $1 $0 "Poratake.exe"
+  ${If} $1 != ""
+    ${StrStr} $2 $0 " --"
+    ${If} $2 != ""
+      WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake" '"$INSTDIR\poratake-gpui.exe"$2'
+    ${Else}
+      WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake" '"$INSTDIR\poratake-gpui.exe"'
+    ${EndIf}
   ${EndIf}
 
   WriteRegStr HKCU "Software\Classes\.poratake" "" "Poratake.Recording"
@@ -77,10 +86,6 @@ Section "Uninstall"
   nsExec::ExecToLog 'taskkill /F /IM poratake-daemon.exe /T'
   Sleep 400
 
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake"
-  DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
-  DeleteRegKey HKCU "Software\Classes\.poratake"
-  DeleteRegKey HKCU "Software\Classes\Poratake.Recording"
   Delete "$SMPROGRAMS\Poratake\Poratake.lnk"
   RMDir "$SMPROGRAMS\Poratake"
 
@@ -88,7 +93,17 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\binaries"
   RMDir /r "$INSTDIR\licenses"
   RMDir /r "$INSTDIR\sounds"
+  RMDir /r "$INSTDIR\locales"
+  RMDir /r "$INSTDIR\resources"
+  Delete "$INSTDIR\*.dll"
+  Delete "$INSTDIR\*.pak"
   Delete "$INSTDIR\poratake-gpui.exe"
+  Delete "$INSTDIR\Poratake.exe"
   Delete "$INSTDIR\Uninstall Poratake.exe"
   RMDir "$INSTDIR"
+
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake"
+  DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
+  DeleteRegKey HKCU "Software\Classes\.poratake"
+  DeleteRegKey HKCU "Software\Classes\Poratake.Recording"
 SectionEnd

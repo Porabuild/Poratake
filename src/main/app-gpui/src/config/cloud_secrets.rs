@@ -871,26 +871,38 @@ mod platform {
             &*prompt == "/" && !unlocked.is_empty()
         }
 
-        fn read_secret(&self, attrs: HashMap<&str, &str>) -> Option<Vec<u8>> {
+        fn search_secrets(&self, attrs: HashMap<&str, &str>) -> Result<Vec<Vec<u8>>, ()> {
             let collection =
                 self.connection
                     .with_proxy(SECRET_SERVICE, DEFAULT_COLLECTION_PATH, DBUS_TIMEOUT);
             let (items,): (Vec<DbusPath<'static>>,) = collection
                 .method_call("org.freedesktop.Secret.Collection", "SearchItems", (attrs,))
-                .ok()?;
-            let item_path = items.into_iter().next()?;
-            let _ = self.unlock_if_needed(&item_path);
-            let item = self
-                .connection
-                .with_proxy(SECRET_SERVICE, item_path, DBUS_TIMEOUT);
-            let ((_, _, value, _),): ((DbusPath<'static>, Vec<u8>, Vec<u8>, String),) = item
-                .method_call(
+                .map_err(|_| ())?;
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut secrets = Vec::with_capacity(items.len());
+            for item_path in items {
+                let _ = self.unlock_if_needed(&item_path);
+                let item = self
+                    .connection
+                    .with_proxy(SECRET_SERVICE, item_path, DBUS_TIMEOUT);
+                let Ok(((_, _, value, _),)): Result<
+                    ((DbusPath<'static>, Vec<u8>, Vec<u8>, String),),
+                    _,
+                > = item.method_call(
                     "org.freedesktop.Secret.Item",
                     "GetSecret",
                     (&self.session_path,),
-                )
-                .ok()?;
-            Some(value)
+                ) else {
+                    continue;
+                };
+                secrets.push(value);
+            }
+            if secrets.is_empty() {
+                return Err(());
+            }
+            Ok(secrets)
         }
 
         fn write_secret(&self, label: &str, attrs: HashMap<String, String>, value: &[u8]) -> bool {
@@ -940,18 +952,34 @@ mod platform {
     }
 
     fn load_or_create_gpui_key() -> Option<[u8; 32]> {
-        let session = SecretSession::open()?;
-        if let Some(bytes) = session.read_secret(gpui_key_lookup()) {
-            if bytes.len() == 32 {
-                return bytes.try_into().ok();
-            }
+        let mut cached = GPUI_MASTER_KEY.lock().ok()?;
+        if let Some(key) = *cached {
+            return Some(key);
         }
-        let key = random_master_key()?;
-        let attrs = HashMap::from([
-            ("service".to_string(), KEY_SERVICE.to_string()),
-            ("account".to_string(), KEY_ACCOUNT.to_string()),
-        ]);
-        session.write_secret(KEY_LABEL, attrs, &key).then_some(key)
+        drop(cached);
+        let session = SecretSession::open()?;
+        let key = match super::master_key_decision(session.search_secrets(gpui_key_lookup())) {
+            super::MasterKeyDecision::Use(key) => key,
+            super::MasterKeyDecision::Abort => return None,
+            super::MasterKeyDecision::Create => {
+                let key = random_master_key()?;
+                let attrs = HashMap::from([
+                    ("service".to_string(), KEY_SERVICE.to_string()),
+                    ("account".to_string(), KEY_ACCOUNT.to_string()),
+                ]);
+                if !session.write_secret(KEY_LABEL, attrs, &key) {
+                    return None;
+                }
+                key
+            }
+        };
+        if let Ok(mut cached) = GPUI_MASTER_KEY.lock() {
+            if let Some(existing) = *cached {
+                return Some(existing);
+            }
+            *cached = Some(key);
+        }
+        Some(key)
     }
 
     pub fn encrypt_system_secret(plaintext: &str) -> Option<String> {
@@ -960,9 +988,26 @@ mod platform {
     }
 
     pub fn decrypt_system_gpui_secret(payload: &[u8]) -> Option<String> {
-        let session = SecretSession::open()?;
-        let bytes = session.read_secret(gpui_key_lookup())?;
-        let key: [u8; 32] = bytes.try_into().ok()?;
+        let key = {
+            let cached = GPUI_MASTER_KEY.lock().ok()?;
+            if let Some(key) = *cached {
+                key
+            } else {
+                drop(cached);
+                let session = SecretSession::open()?;
+                let super::MasterKeyDecision::Use(key) =
+                    super::master_key_decision(session.search_secrets(gpui_key_lookup()))
+                else {
+                    return None;
+                };
+                if let Ok(mut cached) = GPUI_MASTER_KEY.lock() {
+                    if cached.is_none() {
+                        *cached = Some(key);
+                    }
+                }
+                key
+            }
+        };
         super::open_with_key(&key, payload)
     }
 
@@ -997,10 +1042,12 @@ mod platform {
                 ("xdg:schema", "chrome_libsecret_os_crypt_password_v2"),
                 ("application", "poratake"),
             ]),
-            HashMap::from([("application", "Poratake")]),
         ];
         for attrs in candidates {
-            if let Some(password) = session.read_secret(attrs) {
+            let Ok(passwords) = session.search_secrets(attrs) else {
+                continue;
+            };
+            for password in passwords {
                 if let Some(plain) = decrypt_electron_linux_with_password(&password, payload) {
                     return Some(plain);
                 }
@@ -1008,6 +1055,8 @@ mod platform {
         }
         None
     }
+
+    static GPUI_MASTER_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 }
 
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
@@ -1041,6 +1090,35 @@ mod platform {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MasterKeyDecision {
+    Use([u8; 32]),
+    Create,
+    Abort,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn master_key_decision(read: Result<Vec<Vec<u8>>, ()>) -> MasterKeyDecision {
+    let Ok(items) = read else {
+        return MasterKeyDecision::Abort;
+    };
+    let mut keys = items.iter().filter(|item| item.len() == 32);
+    let Some(first) = keys.next() else {
+        return if items.is_empty() {
+            MasterKeyDecision::Create
+        } else {
+            MasterKeyDecision::Abort
+        };
+    };
+    if keys.next().is_some() || items.len() != 1 {
+        return MasterKeyDecision::Abort;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(first);
+    MasterKeyDecision::Use(key)
+}
+
 fn random_iv() -> Option<[u8; 16]> {
     platform::random_iv()
 }
@@ -1069,6 +1147,28 @@ fn decrypt_system_safe_storage(payload: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::schema::RestHeader;
+
+    #[test]
+    fn a_failed_or_ambiguous_keyring_read_does_not_replace_the_master_key() {
+        let key = vec![7u8; 32];
+        assert_eq!(
+            master_key_decision(Ok(vec![key.clone()])),
+            MasterKeyDecision::Use([7u8; 32])
+        );
+        assert_eq!(
+            master_key_decision(Ok(Vec::new())),
+            MasterKeyDecision::Create
+        );
+        assert_eq!(master_key_decision(Err(())), MasterKeyDecision::Abort);
+        assert_eq!(
+            master_key_decision(Ok(vec![vec![1, 2, 3]])),
+            MasterKeyDecision::Abort
+        );
+        assert_eq!(
+            master_key_decision(Ok(vec![key.clone(), key])),
+            MasterKeyDecision::Abort
+        );
+    }
 
     #[test]
     fn round_trips_secrets_without_leaving_plaintext_on_disk() {

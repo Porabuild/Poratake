@@ -115,6 +115,12 @@ const defaultNsisScript = path.join(SCRIPT_DIR, 'installer-gpui-win.nsi');
 const nsisScript = process.env.PORATAKE_GPUI_NSIS || defaultNsisScript;
 const iconPath = path.join(ROOT_DIR, 'build', 'icon.ico');
 const makensisProbe = spawnSync('makensis', ['/VERSION'], { stdio: 'ignore' });
+if (nsisScript && existsSync(nsisScript) && makensisProbe.status !== 0) {
+  process.stderr.write(
+    'makensis is required to build the Windows GPUI installer\n'
+  );
+  process.exit(1);
+}
 if (nsisScript && existsSync(nsisScript) && makensisProbe.status === 0) {
   const nsisArgs = [
     `/DVERSION=${version}`,

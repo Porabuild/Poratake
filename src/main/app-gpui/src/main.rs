@@ -349,8 +349,8 @@ fn main() {
         {
             let system_theme = watcher::spawn();
             cx.spawn(async move |cx| {
-                while let Ok(mode) = system_theme.recv().await {
-                    cx.update(|cx| watcher::apply_system_mode(mode, cx));
+                while let Ok(event) = system_theme.recv().await {
+                    cx.update(|cx| watcher::apply_system_event(event, cx));
                 }
             })
             .detach();

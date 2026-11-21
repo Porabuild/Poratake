@@ -143,16 +143,6 @@ fn windows_run_value_matches(stored: &str, executable: &str) -> bool {
             .eq_ignore_ascii_case(executable.trim())
 }
 
-/// Whether the Run entry for this app exists right now.
-///
-/// Read-only counterpart to [`set_open_at_login`], mirroring the Electron
-/// shell's `app.getLoginItemSettings`.
-#[cfg(windows)]
-#[allow(dead_code)]
-pub fn is_open_at_login() -> bool {
-    read_windows_run_value().is_some()
-}
-
 pub fn reconcile_open_at_login(enabled: bool) {
     #[cfg(windows)]
     {
@@ -327,10 +317,28 @@ fn remove_legacy_linux_autostart() {
     };
     for legacy in ["Poratake.desktop", "poratake.desktop"] {
         let path = autostart.join(legacy);
-        if path.is_file() {
+        if path.is_file() && legacy_desktop_belongs_to_poratake(&path) {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn legacy_desktop_belongs_to_poratake(path: &std::path::Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    legacy_desktop_contents_belong_to_poratake(&contents)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn legacy_desktop_contents_belong_to_poratake(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        let Some(exec) = line.trim().strip_prefix("Exec=") else {
+            return false;
+        };
+        exec.to_ascii_lowercase().contains("poratake")
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -432,6 +440,19 @@ mod tests {
             quote_path("\"C:\\Program Files\\Poratake\\poratake.exe\""),
             "\"C:\\Program Files\\Poratake\\poratake.exe\""
         );
+    }
+
+    #[test]
+    fn legacy_autostart_removal_keeps_unrelated_desktop_files() {
+        assert!(legacy_desktop_contents_belong_to_poratake(
+            "[Desktop Entry]\nExec=/usr/bin/poratake\n"
+        ));
+        assert!(legacy_desktop_contents_belong_to_poratake(
+            "Exec=\"/opt/Poratake/Poratake.exe\"\n"
+        ));
+        assert!(!legacy_desktop_contents_belong_to_poratake(
+            "[Desktop Entry]\nExec=/usr/bin/gedit\n"
+        ));
     }
 
     #[test]

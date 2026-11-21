@@ -439,7 +439,9 @@ impl WindowsPlatform {
                 DirectXDevices::new_warp()
                     .context("Creating WARP DirectX devices")
                     .and_then(&attach)
-                    .map_err(|_| hardware_error)?
+                    .map_err(|warp_error| {
+                        hardware_error.context(format!("WARP fallback also failed: {warp_error:#}"))
+                    })?
             }
         };
         *self.inner.state.directx_devices.borrow_mut() = Some(devices);
@@ -1810,9 +1812,13 @@ fn handle_gpu_device_lost(
     std::thread::sleep(std::time::Duration::from_millis(350));
 
     *directx_devices = try_to_recover_from_device_lost(|| {
-        DirectXDevices::new()
-            .or_else(|_| DirectXDevices::new_warp())
-            .context("Failed to recreate new DirectX devices after device lost")
+        DirectXDevices::new().context("Failed to recreate DirectX devices after device lost")
+    })
+    .or_else(|hardware_error| {
+        log::warn!(
+            "Hardware DirectX recovery failed ({hardware_error:#}); retrying with WARP"
+        );
+        DirectXDevices::new_warp().context("Failed to recreate WARP devices after device lost")
     })?;
     log::info!("DirectX devices successfully recreated.");
 

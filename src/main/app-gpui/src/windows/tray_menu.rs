@@ -360,13 +360,32 @@ impl TrayMenuWindow {
             view
         };
         #[cfg(target_os = "linux")]
+        let (anchor, margin) = {
+            let work = geometry
+                .display_id
+                .and_then(|id| cx.find_display(id))
+                .map(|display| crate::system::work_area::work_area(display.as_ref()))
+                .unwrap_or(geometry.bounds);
+            let (corner, gaps) = super::window_corner_gaps(
+                f32::from(geometry.bounds.origin.x),
+                f32::from(geometry.bounds.origin.y),
+                f32::from(geometry.bounds.size.width),
+                f32::from(geometry.bounds.size.height),
+                f32::from(work.origin.x),
+                f32::from(work.origin.y),
+                f32::from(work.size.width),
+                f32::from(work.size.height),
+            );
+            (super::layer_anchor(corner), Some(super::layer_margin(gaps)))
+        };
+        #[cfg(target_os = "linux")]
         let opened = super::open_wayland_layer_or_fallback(
             cx,
             gpui::layer_shell::LayerShellOptions {
                 namespace: "poratake-tray-menu".to_string(),
                 layer: gpui::layer_shell::Layer::Overlay,
-                anchor: gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::RIGHT,
-                margin: Some((px(SCREEN_GAP), px(SCREEN_GAP), px(0.0), px(0.0))),
+                anchor,
+                margin,
                 keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::Exclusive,
                 ..Default::default()
             },
@@ -374,8 +393,10 @@ impl TrayMenuWindow {
             build_tray,
         );
         #[cfg(not(target_os = "linux"))]
-        let opened = cx.open_window(make_options(), build_tray);
-        opened.ok()
+        let opened = cx
+            .open_window(make_options(), build_tray)
+            .map(|handle| (handle, false));
+        opened.ok().map(|(handle, _)| handle)
     }
 
     #[cfg(windows)]

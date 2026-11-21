@@ -10,13 +10,11 @@ pub fn write_file(path: &Path) -> bool {
         LinuxSession::Wayland => {
             pipe_clipboard("wl-copy", &["--type", "text/uri-list"], uri.as_bytes())
         }
-        LinuxSession::X11 => {
-            pipe_clipboard(
-                "xclip",
-                &["-selection", "clipboard", "-t", "text/uri-list", "-i"],
-                uri.as_bytes(),
-            ) || pipe_clipboard("xsel", &["--clipboard", "--input"], uri.as_bytes())
-        }
+        LinuxSession::X11 => pipe_clipboard(
+            "xclip",
+            &["-selection", "clipboard", "-t", "text/uri-list", "-i"],
+            uri.as_bytes(),
+        ),
         LinuxSession::Headless => false,
     }
 }
