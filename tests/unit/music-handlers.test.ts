@@ -228,7 +228,9 @@ describe('music handlers', () => {
         error:
           'Could not retain imported music: retention directory is unavailable',
       });
-      expect(mockUnlink).toHaveBeenCalledWith('/p/Rec.poratake/music/song.mp3');
+      expect(mockUnlink).toHaveBeenCalledWith(
+        path.join('/p/Rec.poratake', 'music', 'song.mp3')
+      );
     });
 
     it('does not overwrite a file created during a concurrent import', async () => {
@@ -264,13 +266,13 @@ describe('music handlers', () => {
       expect(mockCopyFile).toHaveBeenNthCalledWith(
         1,
         '/path/song.mp3',
-        '/p/Rec.poratake/music/song.mp3',
+        path.join('/p/Rec.poratake', 'music', 'song.mp3'),
         1
       );
       expect(mockCopyFile).toHaveBeenNthCalledWith(
         2,
         '/path/song.mp3',
-        '/p/Rec.poratake/music/song (1).mp3',
+        path.join('/p/Rec.poratake', 'music', 'song (1).mp3'),
         1
       );
     });

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   getEditorStatePath,
@@ -198,7 +199,7 @@ export class MusicRetentionSession {
 }
 
 function syncDirectory(directory: string): void {
-  if (process.platform === 'win32') return;
+  if (process.platform === 'win32' || os.platform() === 'win32') return;
   const descriptor = fs.openSync(directory, 'r');
   try {
     fs.fsyncSync(descriptor);

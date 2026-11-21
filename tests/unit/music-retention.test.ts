@@ -108,7 +108,7 @@ describe('music retention records', () => {
     expect(() => recordMusicCandidate(root, '../../outside/song.wav')).toThrow(
       'Invalid music path'
     );
-    if (process.platform === 'win32') return;
+    if (os.platform() === 'win32') return;
     fs.rmSync(path.join(root, 'music'), { recursive: true });
     fs.symlinkSync(outside, path.join(root, 'music'));
     expect(() => recordMusicCandidate(root, 'song.wav')).toThrow(
@@ -224,7 +224,7 @@ describe('music retention records', () => {
     let calls = 0;
     fsync.mockImplementation(descriptor => {
       calls += 1;
-      if (calls === (process.platform === 'win32' ? 2 : 3)) {
+      if (calls === (os.platform() === 'win32' ? 2 : 3)) {
         throw new Error('injected collector sync failure');
       }
       originalFsync(descriptor);
@@ -270,7 +270,7 @@ describe('music retention records', () => {
   });
 
   it('preserves a saved filename that aliases the candidate on this filesystem', async () => {
-    if (process.platform !== 'darwin' && process.platform !== 'win32') return;
+    if (os.platform() !== 'darwin' && os.platform() !== 'win32') return;
     const root = project();
     const folder = path.join(root, 'music');
     fs.writeFileSync(path.join(folder, 'song.wav'), 'song');
@@ -321,7 +321,7 @@ describe('music retention records', () => {
   });
 
   it('opens a project through a directory symlink', async () => {
-    if (process.platform === 'win32') return;
+    if (os.platform() === 'win32') return;
     const root = project();
     const link = path.join(path.dirname(root), 'linked.poratake');
     fs.symlinkSync(root, link, 'dir');
