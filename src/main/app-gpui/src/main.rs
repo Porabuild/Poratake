@@ -21,12 +21,10 @@ use gpui::{prelude::*, px, size, App, Bounds};
 use herogpui::application;
 use herogpui::gpui;
 
-#[cfg(any(windows, target_os = "macos"))]
-use crate::system::native::NativeCommand;
-use crate::system::native::{self, NativeEvent};
+use crate::system::native::{self, NativeCommand, NativeEvent};
 use crate::system::tray::{Intent, TrayMenuState};
 use crate::theme::presets::{resolve_theme_mode, ThemeMode};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::theme::watcher;
 use crate::ui::chrome;
 
@@ -188,6 +186,7 @@ fn is_video_path(path: &std::path::Path) -> bool {
 }
 
 fn open_path(cx: &mut App, path: String, activate: bool) {
+    let path = system::single_instance::decode_file_url(&path).unwrap_or(path);
     let candidate = std::path::Path::new(&path);
     if is_video_path(candidate) {
         windows::video_editor::VideoEditorWindow::open(cx, Some(path));
@@ -197,28 +196,6 @@ fn open_path(cx: &mut App, path: String, activate: bool) {
         return;
     }
     open_editor_async(cx, path, activate);
-}
-
-fn decode_file_url(raw: &str) -> Option<String> {
-    let stripped = raw.strip_prefix("file://")?;
-    let path = stripped.strip_prefix("localhost").unwrap_or(stripped);
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
-                if let Ok(value) = u8::from_str_radix(hex, 16) {
-                    out.push(value);
-                    index += 3;
-                    continue;
-                }
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8(out).ok()
 }
 
 fn dispatch_cli_intent(id: Option<&str>, extra: Option<String>, cx: &mut App) {
@@ -268,6 +245,13 @@ fn dispatch_instance_command(command: system::single_instance::InstanceCommand, 
     }
 }
 
+struct SingleInstanceState {
+    _guard: system::single_instance::SingleInstanceGuard,
+    _tx: smol::channel::Sender<system::single_instance::InstanceCommand>,
+}
+
+impl gpui::Global for SingleInstanceState {}
+
 fn main() {
     #[cfg(feature = "parity")]
     if std::env::var_os(ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
@@ -314,13 +298,7 @@ fn main() {
     app.on_open_urls(move |urls| {
         let paths: Vec<String> = urls
             .into_iter()
-            .filter_map(|url| {
-                if url.starts_with("file://") {
-                    decode_file_url(&url)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|url| system::single_instance::decode_file_url(&url))
             .collect();
         if !paths.is_empty() {
             let _ =
@@ -339,8 +317,10 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
-        let _single_instance_guard = single_instance;
-        let _instance_tx = instance_tx;
+        cx.set_global(SingleInstanceState {
+            _guard: single_instance,
+            _tx: instance_tx,
+        });
         cx.spawn(async move |cx| {
             while let Ok(command) = instance_rx.recv().await {
                 cx.update(|cx| dispatch_instance_command(command, cx));
@@ -365,12 +345,12 @@ fn main() {
         // the first `init_theme` below publishes the app's resolved tokens.
         herogpui::init(cx);
         theme::vars::init_theme(cx, mode, &settings.appearance.theme);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             let system_theme = watcher::spawn();
             cx.spawn(async move |cx| {
-                while let Ok(mode) = system_theme.recv().await {
-                    cx.update(|cx| watcher::apply_system_mode(mode, cx));
+                while let Ok(event) = system_theme.recv().await {
+                    cx.update(|cx| watcher::apply_system_event(event, cx));
                 }
             })
             .detach();
@@ -387,15 +367,12 @@ fn main() {
         // shell's half of that, so both shells agree on one entry. Comparing
         // first keeps every launch from rewriting a registry value that is
         // already correct.
-        if system::startup::is_open_at_login() != settings.general.start_on_login {
-            system::startup::set_open_at_login(settings.general.start_on_login);
-        }
+        system::startup::reconcile_open_at_login(settings.general.start_on_login);
 
         let bridge = native::spawn(
             TrayMenuState::from_config(&settings, &crate::update::current_status(cx)),
             system::hotkeys::bindings(&settings),
         );
-        #[cfg(any(windows, target_os = "macos"))]
         if settings.general.hide_menu_bar_icon {
             bridge.send(NativeCommand::SetTrayVisible(false));
         }
@@ -509,7 +486,10 @@ fn main() {
             // during a live capture that takes over the display.
             Some("--preview-overlay") => {
                 let service = state::state(cx);
-                let Some(display) = cx.primary_display() else {
+                let Some(display) = cx
+                    .primary_display()
+                    .or_else(|| cx.displays().into_iter().next())
+                else {
                     eprintln!("[cli] no display to preview the overlay on");
                     return;
                 };
@@ -553,16 +533,18 @@ fn main() {
 
 #[cfg(test)]
 mod single_instance_url_tests {
+    use crate::system::single_instance::decode_file_url;
+
     #[test]
     fn decodes_percent_encoded_macos_file_urls() {
         assert_eq!(
-            super::decode_file_url("file:///Users/test/My%20Captures/shot%201.png").as_deref(),
+            decode_file_url("file:///Users/test/My%20Captures/shot%201.png").as_deref(),
             Some("/Users/test/My Captures/shot 1.png")
         );
         assert_eq!(
-            super::decode_file_url("file://localhost/tmp/test.poratake").as_deref(),
+            decode_file_url("file://localhost/tmp/test.poratake").as_deref(),
             Some("/tmp/test.poratake")
         );
-        assert!(super::decode_file_url("https://example.com/a.png").is_none());
+        assert!(decode_file_url("https://example.com/a.png").is_none());
     }
 }

@@ -314,7 +314,7 @@ impl TrayMenuWindow {
         } else {
             window_bounds
         };
-        cx.open_window(
+        let make_options = || {
             super::popup_window_options(
                 initial_bounds,
                 super::PopupWindowConfig {
@@ -323,51 +323,80 @@ impl TrayMenuWindow {
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
-            ),
-            |window, cx| {
-                window.set_window_title("Poratake tray menu");
-                super::remove_popup_frame(window);
-                configure_tray_menu_window(window);
-                #[cfg(windows)]
-                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                    crate::system::window_composition::stage_window(
-                        hwnd,
-                        initial_bounds,
-                        window.scale_factor(),
-                        false,
-                    );
-                }
-                let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
-                    Rc::new(RefCell::new(None));
-                let dismiss: DismissHandler = {
-                    let owner = owner.clone();
-                    Rc::new(move |window, cx| {
-                        let _ = owner
-                            .borrow()
-                            .clone()
-                            .map(|owner| owner.update(cx, |this, cx| this.begin_close(window, cx)));
-                    })
-                };
-                let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
-                if visible {
-                    window.focus(&menu.read(cx).focus_handle(), cx);
-                }
-                let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
-                *owner.borrow_mut() = Some(view.downgrade());
-                #[cfg(target_os = "macos")]
-                if visible {
-                    window.activate_window();
-                }
-                #[cfg(windows)]
-                if visible {
-                    let generation = view.read(cx).reveal_generation;
-                    Self::schedule_reveal(view.clone(), window, generation);
-                    window.activate_window();
-                }
-                view
+            )
+        };
+        let build_tray = |window: &mut Window, cx: &mut App| {
+            window.set_window_title("Poratake tray menu");
+            super::remove_popup_frame(window);
+            configure_tray_menu_window(window);
+            crate::system::window_surface::stage(window, initial_bounds, None, false);
+            let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
+                Rc::new(RefCell::new(None));
+            let dismiss: DismissHandler = {
+                let owner = owner.clone();
+                Rc::new(move |window, cx| {
+                    let _ = owner
+                        .borrow()
+                        .clone()
+                        .map(|owner| owner.update(cx, |this, cx| this.begin_close(window, cx)));
+                })
+            };
+            let menu = cx.new(|cx| build_menu(entries, dismiss.clone(), max_height, cx));
+            if visible {
+                window.focus(&menu.read(cx).focus_handle(), cx);
+            }
+            let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
+            *owner.borrow_mut() = Some(view.downgrade());
+            #[cfg(target_os = "macos")]
+            if visible {
+                window.activate_window();
+            }
+            #[cfg(windows)]
+            if visible {
+                let generation = view.read(cx).reveal_generation;
+                Self::schedule_reveal(view.clone(), window, generation);
+                window.activate_window();
+            }
+            view
+        };
+        #[cfg(target_os = "linux")]
+        let (anchor, margin) = {
+            let work = geometry
+                .display_id
+                .and_then(|id| cx.find_display(id))
+                .map(|display| crate::system::work_area::work_area(display.as_ref()))
+                .unwrap_or(geometry.bounds);
+            let (corner, gaps) = super::window_corner_gaps(
+                f32::from(geometry.bounds.origin.x),
+                f32::from(geometry.bounds.origin.y),
+                f32::from(geometry.bounds.size.width),
+                f32::from(geometry.bounds.size.height),
+                f32::from(work.origin.x),
+                f32::from(work.origin.y),
+                f32::from(work.size.width),
+                f32::from(work.size.height),
+            );
+            (super::layer_anchor(corner), Some(super::layer_margin(gaps)))
+        };
+        #[cfg(target_os = "linux")]
+        let opened = super::open_wayland_layer_or_fallback(
+            cx,
+            gpui::layer_shell::LayerShellOptions {
+                namespace: "poratake-tray-menu".to_string(),
+                layer: gpui::layer_shell::Layer::Overlay,
+                anchor,
+                margin,
+                keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::Exclusive,
+                ..Default::default()
             },
-        )
-        .ok()
+            make_options,
+            build_tray,
+        );
+        #[cfg(not(target_os = "linux"))]
+        let opened = cx
+            .open_window(make_options(), build_tray)
+            .map(|handle| (handle, false));
+        opened.ok().map(|(handle, _)| handle)
     }
 
     #[cfg(windows)]
@@ -377,16 +406,7 @@ impl TrayMenuWindow {
         let entries = crate::system::tray::entries(&state, tray_rect);
         let geometry = menu_geometry(tray_rect, estimated_menu_height(&entries), cx);
         let max_height = geometry.bounds.size.height;
-        if let Some(hwnd) = crate::windows::window_hwnd(window) {
-            crate::system::window_composition::stage_window(
-                hwnd,
-                geometry.bounds,
-                geometry
-                    .scale_factor
-                    .unwrap_or_else(|| window.scale_factor()),
-                false,
-            );
-        }
+        crate::system::window_surface::stage(window, geometry.bounds, geometry.scale_factor, false);
         self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), max_height, cx));
         self.tray_rect = tray_rect;
         self.visibility = TrayMenuVisibility::Revealing;
@@ -410,9 +430,7 @@ impl TrayMenuWindow {
                 if !reveal_view.read(cx).is_current_reveal(generation) {
                     return;
                 }
-                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                    crate::system::window_composition::reveal_window(hwnd, true, MENU_FADE_MS);
-                }
+                crate::system::window_surface::reveal(window, true, MENU_FADE_MS);
                 window.activate_window();
                 let settle_view = reveal_view.clone();
                 window.on_next_frame(move |window, cx| {
@@ -491,15 +509,11 @@ impl Render for TrayMenuWindow {
                             bounds.origin = gpui::point(px(-32000.), px(-32000.));
                         }
                         window.resize(bounds.size);
-                        if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                            crate::system::window_composition::apply_window_bounds(
-                                hwnd,
-                                bounds,
-                                geometry
-                                    .scale_factor
-                                    .unwrap_or_else(|| window.scale_factor()),
-                            );
-                        }
+                        crate::system::window_surface::apply_bounds(
+                            window,
+                            bounds,
+                            geometry.scale_factor,
+                        );
                         configure_tray_menu_window(window);
                     })
                     .ok();
@@ -534,19 +548,8 @@ fn hide_tray_menu_window(window: &Window) {
 }
 
 fn configure_tray_menu_window(window: &Window) {
-    #[cfg(windows)]
-    {
-        let Some(hwnd) = crate::windows::window_hwnd(window) else {
-            return;
-        };
-        crate::system::window_composition::configure_transparent_surface(hwnd);
-        crate::system::window_composition::set_rounded_client_region(
-            window,
-            crate::ui::chrome::RADIUS_3XL,
-        );
-    }
-    #[cfg(not(windows))]
-    let _ = window;
+    crate::system::window_surface::prepare_transparent_surface(window);
+    crate::system::window_surface::set_rounded_clip(window, crate::ui::chrome::RADIUS_3XL);
 }
 
 fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> MenuGeometry {

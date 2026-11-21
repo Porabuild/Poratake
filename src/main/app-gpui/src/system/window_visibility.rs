@@ -72,5 +72,40 @@ fn platform_set_visible(window: &Window, visible: bool) {
     }
 }
 
-#[cfg(any(test, all(not(windows), not(target_os = "macos"))))]
+#[cfg(all(target_os = "linux", not(test)))]
+fn platform_set_visible(window: &Window, visible: bool) {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+
+    #[link(name = "xcb")]
+    unsafe extern "C" {
+        fn xcb_unmap_window(c: *mut core::ffi::c_void, window: u32) -> u32;
+        fn xcb_map_window(c: *mut core::ffi::c_void, window: u32) -> u32;
+        fn xcb_flush(c: *mut core::ffi::c_void) -> core::ffi::c_int;
+    }
+
+    let Ok(win_handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let Ok(display_handle) = HasDisplayHandle::display_handle(window) else {
+        return;
+    };
+    let (RawWindowHandle::Xcb(xcb_win), RawDisplayHandle::Xcb(xcb_display)) =
+        (win_handle.as_raw(), display_handle.as_raw())
+    else {
+        return;
+    };
+    let Some(connection) = xcb_display.connection else {
+        return;
+    };
+    unsafe {
+        if visible {
+            let _ = xcb_map_window(connection.as_ptr(), xcb_win.window.get());
+        } else {
+            let _ = xcb_unmap_window(connection.as_ptr(), xcb_win.window.get());
+        }
+        let _ = xcb_flush(connection.as_ptr());
+    }
+}
+
+#[cfg(any(test, not(any(windows, target_os = "macos", target_os = "linux"))))]
 fn platform_set_visible(_window: &Window, _visible: bool) {}

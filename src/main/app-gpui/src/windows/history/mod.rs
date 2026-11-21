@@ -165,7 +165,7 @@ impl HistoryWindow {
                     crate::system::work_area::local_window_bounds(bounds, display.as_ref())
                 })
                 .unwrap_or(bounds);
-            cx.open_window(
+            let make_options = || {
                 super::popup_window_options(
                     window_bounds,
                     super::PopupWindowConfig {
@@ -175,50 +175,81 @@ impl HistoryWindow {
                             crate::system::reduced_transparency::window_background(
                                 gpui::WindowBackgroundAppearance::Blurred,
                             )
+                        } else if cfg!(target_os = "linux") {
+                            gpui::WindowBackgroundAppearance::Transparent
                         } else {
                             gpui::WindowBackgroundAppearance::Opaque
                         },
                         ..Default::default()
                     },
-                ),
-                |window, cx| {
-                    #[cfg(windows)]
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::disable_transitions(hwnd);
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                            true,
+                )
+            };
+            let build_history = |window: &mut Window, cx: &mut App| {
+                crate::system::window_surface::disable_transitions(window);
+                crate::system::window_surface::stage(window, bounds, None, true);
+                let view = cx.new(|cx| Self::new(store, window, cx));
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                #[cfg(windows)]
+                {
+                    let settled = view.clone();
+                    window.on_next_frame(move |window, _cx| {
+                        crate::system::window_surface::set_rounded_clip(
+                            window,
+                            crate::ui::chrome::HISTORY_RADIUS,
                         );
-                    }
-                    let view = cx.new(|cx| Self::new(store, window, cx));
-                    let focus = view.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    #[cfg(windows)]
-                    {
-                        let settled = view.clone();
-                        window.on_next_frame(move |window, _cx| {
-                            window.on_next_frame(move |window, _| {
-                                if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                                    crate::system::window_composition::reveal_window(hwnd, true, 0);
+                        window.on_next_frame(move |window, _| {
+                            crate::system::window_surface::reveal(window, true, 0);
+                            window.activate_window();
+                            window.on_next_frame(move |window, cx| {
+                                settled.update(cx, |this, _cx| this.revealing = false);
+                                if !window.is_window_active() {
+                                    settled.update(cx, |this, cx| this.close(window, cx));
                                 }
-                                window.activate_window();
-                                window.on_next_frame(move |window, cx| {
-                                    settled.update(cx, |this, _cx| this.revealing = false);
-                                    if !window.is_window_active() {
-                                        settled.update(cx, |this, cx| this.close(window, cx));
-                                    }
-                                });
                             });
                         });
-                        window.activate_window();
-                    }
-                    view
+                    });
+                    window.activate_window();
+                }
+                view
+            };
+            #[cfg(target_os = "linux")]
+            let (anchor, margin) = {
+                let work = display_id
+                    .and_then(|id| cx.find_display(id))
+                    .map(|display| crate::system::work_area::work_area(display.as_ref()))
+                    .unwrap_or(bounds);
+                let (corner, gaps) = super::window_corner_gaps(
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height),
+                    f32::from(work.origin.x),
+                    f32::from(work.origin.y),
+                    f32::from(work.size.width),
+                    f32::from(work.size.height),
+                );
+                (super::layer_anchor(corner), Some(super::layer_margin(gaps)))
+            };
+            #[cfg(target_os = "linux")]
+            let opened = super::open_wayland_layer_or_fallback(
+                cx,
+                gpui::layer_shell::LayerShellOptions {
+                    namespace: "poratake-history".to_string(),
+                    layer: gpui::layer_shell::Layer::Overlay,
+                    anchor,
+                    margin,
+                    keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::OnDemand,
+                    ..Default::default()
                 },
-            )
-            .ok()
-            .map(Into::into)
+                make_options,
+                build_history,
+            );
+            #[cfg(not(target_os = "linux"))]
+            let opened = cx
+                .open_window(make_options(), build_history)
+                .map(|handle| (handle, false));
+            opened.ok().map(|(handle, _)| handle).map(Into::into)
         });
     }
 

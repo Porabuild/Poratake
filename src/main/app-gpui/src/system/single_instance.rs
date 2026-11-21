@@ -20,6 +20,134 @@ pub enum InstanceCommand {
     Intent { id: String, extra: Option<String> },
 }
 
+pub fn decode_file_url(raw: &str) -> Option<String> {
+    let stripped = raw.strip_prefix("file://")?;
+    let decoded = percent_decode(stripped)?;
+    let (host, path) = split_file_authority(&decoded)?;
+    if path.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    if cfg!(windows) {
+        return windows_file_path(host, path);
+    }
+    if !host.is_empty() {
+        return None;
+    }
+    if path.starts_with('/') {
+        return Some(path.to_string());
+    }
+    (!path.is_empty()).then(|| format!("/{path}"))
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(decoded) = u8::from_str_radix(hex, 16) {
+                    out.push(decoded);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
+fn split_file_authority(decoded: &str) -> Option<(&str, &str)> {
+    if decoded.starts_with('/') {
+        return Some(("", decoded));
+    }
+    let (host, path) = decoded.split_once('/')?;
+    if is_windows_drive(host) {
+        return Some(("", decoded));
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        return Some(("", path));
+    }
+    remote_file_host(host).then_some((host, path))
+}
+
+fn is_windows_drive(host: &str) -> bool {
+    let bytes = host.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn remote_file_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.contains("..")
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+}
+
+const MAX_IPC_BYTES: u64 = 16 * 1024;
+
+#[cfg(any(windows, test))]
+fn named_pipe_should_retry(raw_os_error: Option<i32>, attempt: u32) -> bool {
+    raw_os_error == Some(231) && attempt < 2
+}
+
+#[cfg(not(windows))]
+fn bind_private_socket(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    struct RestoreUmask(libc::mode_t);
+    impl Drop for RestoreUmask {
+        fn drop(&mut self) {
+            unsafe {
+                libc::umask(self.0);
+            }
+        }
+    }
+
+    let previous = unsafe { libc::umask(0o077) };
+    let _restore = RestoreUmask(previous);
+    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    if std::fs::set_permissions(path, permissions).is_err() {
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(std::io::Error::other("ipc socket is not private"));
+    }
+    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(std::io::Error::other("ipc socket is not private"));
+    }
+    Ok(listener)
+}
+
+fn windows_file_path(host: &str, path: &str) -> Option<String> {
+    if !host.is_empty() {
+        return Some(format!("\\\\{host}\\{}", path.replace('/', "\\")));
+    }
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    if trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':' {
+        return Some(trimmed.replace('/', "\\"));
+    }
+    if path.starts_with('/') {
+        return Some(path.to_string());
+    }
+    (!path.is_empty()).then(|| format!("/{path}"))
+}
+
+pub fn resolve_cli_path(arg: &str) -> Option<String> {
+    if arg.starts_with("--") {
+        return None;
+    }
+    let candidate = decode_file_url(arg).unwrap_or_else(|| arg.to_string());
+    Path::new(&candidate).exists().then_some(candidate)
+}
+
 impl InstanceCommand {
     pub fn from_args(args: &[String]) -> Self {
         let mut iter = args.iter().skip(1);
@@ -37,8 +165,8 @@ impl InstanceCommand {
         }
         let mut paths = Vec::new();
         for arg in std::iter::once(first).chain(iter) {
-            if !arg.starts_with("--") && Path::new(arg).exists() {
-                paths.push(arg.clone());
+            if let Some(path) = resolve_cli_path(arg) {
+                paths.push(path);
             }
         }
         if paths.is_empty() {
@@ -153,16 +281,20 @@ impl SingleInstanceGuard {
         let ipc_tx = tx.clone();
         let socket_path = self.socket_path.clone();
         let _ = std::fs::remove_file(&socket_path);
-        let Ok(listener) = std::os::unix::net::UnixListener::bind(&socket_path) else {
+        let Ok(listener) = bind_private_socket(&socket_path) else {
             return (tx, rx);
         };
         let _ = std::thread::Builder::new()
             .name("single-instance-ipc".into())
             .spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    let mut stream = stream;
+                    let stream = stream;
                     let mut payload = String::new();
-                    if stream.read_to_string(&mut payload).is_ok() {
+                    if stream
+                        .take(MAX_IPC_BYTES)
+                        .read_to_string(&mut payload)
+                        .is_ok()
+                    {
                         if let Ok(command) = serde_json::from_str::<InstanceCommand>(&payload) {
                             if ipc_tx.send_blocking(command).is_err() {
                                 break;
@@ -227,7 +359,7 @@ impl SingleInstanceGuard {
                     if connected {
                         let mut file = unsafe { std::fs::File::from_raw_handle(handle.0) };
                         let mut payload = String::new();
-                        let _ = file.read_to_string(&mut payload);
+                        let _ = (&mut file).take(MAX_IPC_BYTES).read_to_string(&mut payload);
                         unsafe {
                             let _ = DisconnectNamedPipe(handle);
                         }
@@ -263,14 +395,28 @@ fn notify_running_in(dir: &Path, command: &InstanceCommand) -> bool {
 
 #[cfg(windows)]
 fn notify_running_in(dir: &Path, command: &InstanceCommand) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::System::Pipes::WaitNamedPipeW;
+
     let pipe = pipe_name_for(dir);
-    let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(pipe) else {
-        return false;
-    };
     let Ok(payload) = serde_json::to_vec(command) else {
         return false;
     };
-    file.write_all(&payload).is_ok()
+    let wide: Vec<u16> = OsStr::new(&pipe)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    for attempt in 0..3 {
+        match std::fs::OpenOptions::new().write(true).open(&pipe) {
+            Ok(mut file) => return file.write_all(&payload).is_ok(),
+            Err(error) if named_pipe_should_retry(error.raw_os_error(), attempt) => unsafe {
+                let _ = WaitNamedPipeW(windows::core::PCWSTR(wide.as_ptr()), 500);
+            },
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -316,6 +462,16 @@ mod tests {
         let (_tx, rx) = guard.start_listener();
         let command = InstanceCommand::OpenPaths(vec!["/tmp/sample.png".into()]);
         assert!(notify_running_in(dir.path(), &command));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(dir.path().join("poratake-gpui.sock"))
+                .expect("ipc socket")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = done_tx.send(rx.recv_blocking().ok());
@@ -346,5 +502,64 @@ mod tests {
                 extra: Some("cloud".into()),
             }
         );
+    }
+
+    #[test]
+    fn decodes_file_urls_passed_through_cli_arguments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("my shot.png");
+        std::fs::write(&file, b"png").expect("write file");
+        let encoded = format!(
+            "file://{}",
+            file.to_string_lossy()
+                .replace('\\', "/")
+                .replace(' ', "%20")
+        );
+        assert_eq!(
+            InstanceCommand::from_args(&["poratake".into(), encoded]),
+            InstanceCommand::OpenPaths(vec![file.to_string_lossy().into_owned()])
+        );
+    }
+
+    #[test]
+    fn decodes_file_urls_without_treating_the_host_as_a_relative_path() {
+        assert_eq!(
+            windows_file_path("", "/Users/test/My Captures/shot 1.png").as_deref(),
+            Some("/Users/test/My Captures/shot 1.png")
+        );
+        assert_eq!(
+            windows_file_path("", "tmp/test.poratake").as_deref(),
+            Some("/tmp/test.poratake")
+        );
+        assert_eq!(decode_file_url("file://localhost../.ssh/id_rsa"), None);
+        assert_eq!(decode_file_url("file:///tmp/../secret"), None);
+        if cfg!(windows) {
+            assert_eq!(
+                decode_file_url("file://localhost/C:/tmp/shot.png").as_deref(),
+                Some("C:\\tmp\\shot.png")
+            );
+            assert_eq!(
+                decode_file_url("file://server/share/clip.mp4").as_deref(),
+                Some("\\\\server\\share\\clip.mp4")
+            );
+            assert_eq!(
+                decode_file_url("file:///C:/Shots/a.png").as_deref(),
+                Some("C:\\Shots\\a.png")
+            );
+        } else {
+            assert_eq!(
+                decode_file_url("file://localhost/tmp/shot.png").as_deref(),
+                Some("/tmp/shot.png")
+            );
+            assert_eq!(decode_file_url("file://server/share/clip.mp4"), None);
+        }
+    }
+
+    #[test]
+    fn retries_a_busy_named_pipe_only_twice() {
+        assert!(named_pipe_should_retry(Some(231), 0));
+        assert!(named_pipe_should_retry(Some(231), 1));
+        assert!(!named_pipe_should_retry(Some(231), 2));
+        assert!(!named_pipe_should_retry(Some(2), 0));
     }
 }

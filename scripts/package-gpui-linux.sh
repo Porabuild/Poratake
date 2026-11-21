@@ -13,8 +13,14 @@ fi
 
 MACHINE="$(uname -m)"
 case "$MACHINE" in
-  x86_64 | amd64) ARCH="x64" ;;
-  aarch64 | arm64) ARCH="arm64" ;;
+  x86_64 | amd64)
+    ARCH="x64"
+    DEB_ARCH="amd64"
+    ;;
+  aarch64 | arm64)
+    ARCH="arm64"
+    DEB_ARCH="arm64"
+    ;;
   *)
     echo "Unsupported Linux architecture: $MACHINE" >&2
     exit 1
@@ -40,10 +46,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$STAGING/daemon" "$STAGING/licenses"
+mkdir -p "$STAGING/daemon" "$STAGING/licenses" "$STAGING/share/applications" "$STAGING/share/icons/hicolor/256x256/apps"
 cp "$GPUI" "$STAGING/poratake-gpui"
 cp "$DAEMON" "$STAGING/daemon/poratake-daemon-linux"
 chmod 755 "$STAGING/poratake-gpui" "$STAGING/daemon/poratake-daemon-linux"
+
+if [[ -f "$ROOT_DIR/build/icon.png" ]]; then
+  cp "$ROOT_DIR/build/icon.png" "$STAGING/share/icons/hicolor/256x256/apps/poratake.png"
+fi
+
+cat > "$STAGING/share/applications/com.porabuild.poratake.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Poratake
+Comment=Capture, annotate, record, and share screenshots and videos
+Exec=poratake-gpui %U
+Icon=poratake
+Terminal=false
+Categories=Utility;Graphics;AudioVideo;
+MimeType=image/png;image/jpeg;image/webp;image/gif;video/mp4;video/quicktime;video/webm;
+StartupNotify=true
+DESKTOP
 
 cp "$ROOT_DIR/LICENSE" "$STAGING/licenses/Poratake-AGPL-3.0.txt"
 cp "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$STAGING/licenses/THIRD_PARTY_NOTICES.md"
@@ -64,7 +87,38 @@ if [[ -f "$ROOT_DIR/src/main/binaries/whisper/whisper" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
-ARCHIVE="$OUTPUT_DIR/Poratake-${VERSION}-linux-${ARCH}.tar.gz"
+ARCHIVE_NAME="Poratake-${VERSION}-linux-${ARCH}.tar.gz"
+ARCHIVE="$OUTPUT_DIR/$ARCHIVE_NAME"
 tar -C "$STAGING" -czf "$ARCHIVE" .
 test -s "$ARCHIVE"
+
+bun "$ROOT_DIR/scripts/write-updater-yml.mjs" "$VERSION" "$OUTPUT_DIR/latest-linux.yml" "$ARCHIVE"
+
+if command -v dpkg-deb >/dev/null 2>&1; then
+  DEB_ROOT="$STAGING/deb-root"
+  mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/opt/Poratake" "$DEB_ROOT/usr/bin" "$DEB_ROOT/usr/share/applications" "$DEB_ROOT/usr/share/icons/hicolor/256x256/apps"
+  cp "$STAGING/poratake-gpui" "$DEB_ROOT/opt/Poratake/poratake-gpui"
+  cp -R "$STAGING/daemon" "$DEB_ROOT/opt/Poratake/daemon"
+  cp -R "$STAGING/licenses" "$DEB_ROOT/opt/Poratake/licenses"
+  if [[ -d "$STAGING/binaries" ]]; then
+    cp -R "$STAGING/binaries" "$DEB_ROOT/opt/Poratake/binaries"
+  fi
+  ln -sf /opt/Poratake/poratake-gpui "$DEB_ROOT/usr/bin/poratake-gpui"
+  cp "$STAGING/share/applications/com.porabuild.poratake.desktop" "$DEB_ROOT/usr/share/applications/com.porabuild.poratake.desktop"
+  if [[ -f "$STAGING/share/icons/hicolor/256x256/apps/poratake.png" ]]; then
+    cp "$STAGING/share/icons/hicolor/256x256/apps/poratake.png" "$DEB_ROOT/usr/share/icons/hicolor/256x256/apps/poratake.png"
+  fi
+  cat > "$DEB_ROOT/DEBIAN/control" <<CONTROL
+Package: poratake
+Version: ${VERSION}
+Section: utils
+Priority: optional
+Architecture: ${DEB_ARCH}
+Maintainer: Porabuild <https://github.com/Porabuild/Poratake>
+Description: Poratake screenshot, annotation, and screen recording tool
+ Licensed under GNU AGPL-3.0-only.
+CONTROL
+  dpkg-deb --build --root-owner-group "$DEB_ROOT" "$OUTPUT_DIR/Poratake-${VERSION}-linux-${ARCH}.deb" >/dev/null
+fi
+
 echo "$ARCHIVE"

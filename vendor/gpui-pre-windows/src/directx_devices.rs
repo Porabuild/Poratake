@@ -70,6 +70,28 @@ impl DirectXDevices {
             device_context,
         })
     }
+
+    pub(crate) fn new_warp() -> Result<Self> {
+        let debug_layer_available = check_debug_layer_available();
+        let dxgi_factory =
+            get_dxgi_factory(debug_layer_available).context("Creating DXGI factory")?;
+        let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumWarpAdapter()? };
+        let mut context: Option<ID3D11DeviceContext> = None;
+        let mut feature_level = D3D_FEATURE_LEVEL::default();
+        let device = get_device(
+            &adapter,
+            Some(&mut context),
+            Some(&mut feature_level),
+            debug_layer_available,
+        )
+        .context("Creating WARP Direct3D device")?;
+        Ok(Self {
+            adapter,
+            dxgi_factory,
+            device,
+            device_context: context.context("Missing WARP device context")?,
+        })
+    }
 }
 
 #[inline]

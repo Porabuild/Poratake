@@ -676,25 +676,41 @@ mod platform {
         fn LocalFree(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     }
 
-    #[allow(dead_code)]
-    pub fn random_iv() -> Option<[u8; 16]> {
-        None
+    #[link(name = "bcrypt")]
+    unsafe extern "system" {
+        fn BCryptGenRandom(
+            algorithm: *mut core::ffi::c_void,
+            buffer: *mut u8,
+            buffer_len: u32,
+            flags: u32,
+        ) -> i32;
     }
 
-    pub fn aes_256_cbc_encrypt(
-        _key: &[u8; 32],
-        _iv: &[u8; 16],
-        _plaintext: &[u8],
-    ) -> Option<Vec<u8>> {
-        None
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+
+    pub fn random_iv() -> Option<[u8; 16]> {
+        let mut iv = [0u8; 16];
+        let status = unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                iv.as_mut_ptr(),
+                iv.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        (status >= 0).then_some(iv)
+    }
+
+    pub fn aes_256_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Option<Vec<u8>> {
+        crate::config::crypto::aes_cbc_encrypt(key, iv, plaintext)
     }
 
     pub fn aes_256_cbc_decrypt(
-        _key: &[u8; 32],
-        _iv: &[u8; 16],
-        _ciphertext: &[u8],
+        key: &[u8; 32],
+        iv: &[u8; 16],
+        ciphertext: &[u8],
     ) -> Option<Vec<u8>> {
-        None
+        crate::config::crypto::aes_cbc_decrypt(key, iv, ciphertext)
     }
 
     pub fn encrypt_system_secret(plaintext: &str) -> Option<String> {
@@ -770,27 +786,295 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
 mod platform {
-    #[allow(dead_code)]
+    use std::collections::HashMap;
+    use std::io::Read as _;
+    use std::time::Duration;
+
+    use dbus::arg::{PropMap, RefArg, Variant};
+    use dbus::blocking::Connection;
+    use dbus::Path as DbusPath;
+
+    const SECRET_SERVICE: &str = "org.freedesktop.secrets";
+    const SECRET_PATH: &str = "/org/freedesktop/secrets";
+    const DEFAULT_COLLECTION_PATH: &str = "/org/freedesktop/secrets/aliases/default";
+    const DBUS_TIMEOUT: Duration = Duration::from_secs(3);
+    const KEY_SERVICE: &str = "com.porabuild.poratake.gpui.cloud-secrets";
+    const KEY_ACCOUNT: &str = "master-key";
+    const KEY_LABEL: &str = "Poratake Cloud Secrets Master Key";
+
+    fn fill_random(buffer: &mut [u8]) -> bool {
+        let Ok(mut file) = std::fs::File::open("/dev/urandom") else {
+            return false;
+        };
+        file.read_exact(buffer).is_ok()
+    }
+
+    pub fn random_iv() -> Option<[u8; 16]> {
+        let mut iv = [0u8; 16];
+        fill_random(&mut iv).then_some(iv)
+    }
+
+    fn random_master_key() -> Option<[u8; 32]> {
+        let mut key = [0u8; 32];
+        fill_random(&mut key).then_some(key)
+    }
+
+    pub fn aes_256_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Option<Vec<u8>> {
+        crate::config::crypto::aes_cbc_encrypt(key, iv, plaintext)
+    }
+
+    pub fn aes_256_cbc_decrypt(
+        key: &[u8; 32],
+        iv: &[u8; 16],
+        ciphertext: &[u8],
+    ) -> Option<Vec<u8>> {
+        crate::config::crypto::aes_cbc_decrypt(key, iv, ciphertext)
+    }
+
+    struct SecretSession {
+        connection: Connection,
+        session_path: DbusPath<'static>,
+    }
+
+    impl SecretSession {
+        fn open() -> Option<Self> {
+            let connection = Connection::new_session().ok()?;
+            let service = connection.with_proxy(SECRET_SERVICE, SECRET_PATH, DBUS_TIMEOUT);
+            let (_, session_path): (Variant<Box<dyn RefArg>>, DbusPath<'static>) = service
+                .method_call(
+                    "org.freedesktop.Secret.Service",
+                    "OpenSession",
+                    ("plain", Variant(Box::new(String::new()) as Box<dyn RefArg>)),
+                )
+                .ok()?;
+            Some(Self {
+                connection,
+                session_path,
+            })
+        }
+
+        fn unlock_if_needed(&self, path: &DbusPath<'static>) -> bool {
+            let service = self
+                .connection
+                .with_proxy(SECRET_SERVICE, SECRET_PATH, DBUS_TIMEOUT);
+            let Ok((unlocked, prompt)): Result<(Vec<DbusPath<'static>>, DbusPath<'static>), _> =
+                service.method_call(
+                    "org.freedesktop.Secret.Service",
+                    "Unlock",
+                    (vec![path.clone()],),
+                )
+            else {
+                return false;
+            };
+            &*prompt == "/" && !unlocked.is_empty()
+        }
+
+        fn search_secrets(&self, attrs: HashMap<&str, &str>) -> Result<Vec<Vec<u8>>, ()> {
+            let collection =
+                self.connection
+                    .with_proxy(SECRET_SERVICE, DEFAULT_COLLECTION_PATH, DBUS_TIMEOUT);
+            let (items,): (Vec<DbusPath<'static>>,) = collection
+                .method_call("org.freedesktop.Secret.Collection", "SearchItems", (attrs,))
+                .map_err(|_| ())?;
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let mut secrets = Vec::with_capacity(items.len());
+            for item_path in items {
+                let _ = self.unlock_if_needed(&item_path);
+                let item = self
+                    .connection
+                    .with_proxy(SECRET_SERVICE, item_path, DBUS_TIMEOUT);
+                let Ok(((_, _, value, _),)): Result<
+                    ((DbusPath<'static>, Vec<u8>, Vec<u8>, String),),
+                    _,
+                > = item.method_call(
+                    "org.freedesktop.Secret.Item",
+                    "GetSecret",
+                    (&self.session_path,),
+                ) else {
+                    continue;
+                };
+                secrets.push(value);
+            }
+            if secrets.is_empty() {
+                return Err(());
+            }
+            Ok(secrets)
+        }
+
+        fn write_secret(&self, label: &str, attrs: HashMap<String, String>, value: &[u8]) -> bool {
+            let default_path = DbusPath::new(DEFAULT_COLLECTION_PATH).ok();
+            if let Some(default_path) = default_path {
+                let _ = self.unlock_if_needed(&default_path);
+            }
+            let collection =
+                self.connection
+                    .with_proxy(SECRET_SERVICE, DEFAULT_COLLECTION_PATH, DBUS_TIMEOUT);
+            let mut props: PropMap = HashMap::new();
+            props.insert(
+                "org.freedesktop.Secret.Item.Label".to_string(),
+                Variant(Box::new(label.to_string()) as Box<dyn RefArg>),
+            );
+            props.insert(
+                "org.freedesktop.Secret.Item.Attributes".to_string(),
+                Variant(Box::new(attrs) as Box<dyn RefArg>),
+            );
+            let secret = (
+                self.session_path.clone(),
+                Vec::<u8>::new(),
+                value.to_vec(),
+                "application/octet-stream".to_string(),
+            );
+            let result: Result<(DbusPath<'static>, DbusPath<'static>), _> = collection.method_call(
+                "org.freedesktop.Secret.Collection",
+                "CreateItem",
+                (props, secret, true),
+            );
+            result.is_ok_and(|(item, prompt)| &*item != "/" && &*prompt == "/")
+        }
+    }
+
+    impl Drop for SecretSession {
+        fn drop(&mut self) {
+            let session =
+                self.connection
+                    .with_proxy(SECRET_SERVICE, self.session_path.clone(), DBUS_TIMEOUT);
+            let _: Result<(), _> =
+                session.method_call("org.freedesktop.Secret.Session", "Close", ());
+        }
+    }
+
+    fn gpui_key_lookup() -> HashMap<&'static str, &'static str> {
+        HashMap::from([("service", KEY_SERVICE), ("account", KEY_ACCOUNT)])
+    }
+
+    fn load_or_create_gpui_key() -> Option<[u8; 32]> {
+        let cached = GPUI_MASTER_KEY.lock().ok()?;
+        if let Some(key) = *cached {
+            return Some(key);
+        }
+        drop(cached);
+        let session = SecretSession::open()?;
+        let key = match super::master_key_decision(session.search_secrets(gpui_key_lookup())) {
+            super::MasterKeyDecision::Use(key) => key,
+            super::MasterKeyDecision::Abort => return None,
+            super::MasterKeyDecision::Create => {
+                let key = random_master_key()?;
+                let attrs = HashMap::from([
+                    ("service".to_string(), KEY_SERVICE.to_string()),
+                    ("account".to_string(), KEY_ACCOUNT.to_string()),
+                ]);
+                if !session.write_secret(KEY_LABEL, attrs, &key) {
+                    return None;
+                }
+                key
+            }
+        };
+        if let Ok(mut cached) = GPUI_MASTER_KEY.lock() {
+            if let Some(existing) = *cached {
+                return Some(existing);
+            }
+            *cached = Some(key);
+        }
+        Some(key)
+    }
+
+    pub fn encrypt_system_secret(plaintext: &str) -> Option<String> {
+        let key = load_or_create_gpui_key()?;
+        super::seal_with_key(&key, plaintext.as_bytes())
+    }
+
+    pub fn decrypt_system_gpui_secret(payload: &[u8]) -> Option<String> {
+        let key = {
+            let cached = GPUI_MASTER_KEY.lock().ok()?;
+            if let Some(key) = *cached {
+                key
+            } else {
+                drop(cached);
+                let session = SecretSession::open()?;
+                let super::MasterKeyDecision::Use(key) =
+                    super::master_key_decision(session.search_secrets(gpui_key_lookup()))
+                else {
+                    return None;
+                };
+                if let Ok(mut cached) = GPUI_MASTER_KEY.lock() {
+                    if cached.is_none() {
+                        *cached = Some(key);
+                    }
+                }
+                key
+            }
+        };
+        super::open_with_key(&key, payload)
+    }
+
+    pub fn decrypt_electron_linux_with_password(password: &[u8], payload: &[u8]) -> Option<String> {
+        let ciphertext = payload
+            .strip_prefix(b"v11")
+            .or_else(|| payload.strip_prefix(b"v10"))?;
+        if ciphertext.is_empty() {
+            return None;
+        }
+        let mut derived = [0u8; 16];
+        crate::config::crypto::pbkdf2_hmac_sha1(password, b"saltysalt", 1, &mut derived);
+        let iv = [b' '; 16];
+        let plain = crate::config::crypto::aes_cbc_decrypt(&derived, &iv, ciphertext)?;
+        String::from_utf8(plain).ok()
+    }
+
+    pub fn decrypt_system_safe_storage(payload: &[u8]) -> Option<String> {
+        if payload.starts_with(b"v10") {
+            return decrypt_electron_linux_with_password(b"peanuts", payload);
+        }
+        if !payload.starts_with(b"v11") {
+            return None;
+        }
+        let session = SecretSession::open()?;
+        let candidates = [
+            HashMap::from([
+                ("xdg:schema", "chrome_libsecret_os_crypt_password_v2"),
+                ("application", "Poratake"),
+            ]),
+            HashMap::from([
+                ("xdg:schema", "chrome_libsecret_os_crypt_password_v2"),
+                ("application", "poratake"),
+            ]),
+        ];
+        for attrs in candidates {
+            let Ok(passwords) = session.search_secrets(attrs) else {
+                continue;
+            };
+            for password in passwords {
+                if let Some(plain) = decrypt_electron_linux_with_password(&password, payload) {
+                    return Some(plain);
+                }
+            }
+        }
+        None
+    }
+
+    static GPUI_MASTER_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+mod platform {
     pub fn random_iv() -> Option<[u8; 16]> {
         None
     }
 
-    pub fn aes_256_cbc_encrypt(
-        _key: &[u8; 32],
-        _iv: &[u8; 16],
-        _plaintext: &[u8],
-    ) -> Option<Vec<u8>> {
-        None
+    pub fn aes_256_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Option<Vec<u8>> {
+        crate::config::crypto::aes_cbc_encrypt(key, iv, plaintext)
     }
 
     pub fn aes_256_cbc_decrypt(
-        _key: &[u8; 32],
-        _iv: &[u8; 16],
-        _ciphertext: &[u8],
+        key: &[u8; 32],
+        iv: &[u8; 16],
+        ciphertext: &[u8],
     ) -> Option<Vec<u8>> {
-        None
+        crate::config::crypto::aes_cbc_decrypt(key, iv, ciphertext)
     }
 
     pub fn encrypt_system_secret(_plaintext: &str) -> Option<String> {
@@ -806,36 +1090,45 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn random_iv() -> Option<[u8; 16]> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let mut hasher = Sha256::new();
-    hasher.update(nanos.to_le_bytes());
-    hasher.update(std::process::id().to_le_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
-    digest[..16].try_into().ok()
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MasterKeyDecision {
+    Use([u8; 32]),
+    Create,
+    Abort,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", test))]
+fn master_key_decision(read: Result<Vec<Vec<u8>>, ()>) -> MasterKeyDecision {
+    let Ok(items) = read else {
+        return MasterKeyDecision::Abort;
+    };
+    let mut keys = items.iter().filter(|item| item.len() == 32);
+    let Some(first) = keys.next() else {
+        return if items.is_empty() {
+            MasterKeyDecision::Create
+        } else {
+            MasterKeyDecision::Abort
+        };
+    };
+    if keys.next().is_some() || items.len() != 1 {
+        return MasterKeyDecision::Abort;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(first);
+    MasterKeyDecision::Use(key)
+}
+
 fn random_iv() -> Option<[u8; 16]> {
     platform::random_iv()
 }
 
 fn aes_256_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Option<Vec<u8>> {
-    if cfg!(target_os = "macos") {
-        return platform::aes_256_cbc_encrypt(key, iv, plaintext);
-    }
-    None
+    platform::aes_256_cbc_encrypt(key, iv, plaintext)
 }
 
 fn aes_256_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
-    if cfg!(target_os = "macos") {
-        return platform::aes_256_cbc_decrypt(key, iv, ciphertext);
-    }
-    None
+    platform::aes_256_cbc_decrypt(key, iv, ciphertext)
 }
 
 fn encrypt_system_secret(plaintext: &str) -> Option<String> {
@@ -856,6 +1149,28 @@ mod tests {
     use crate::config::schema::RestHeader;
 
     #[test]
+    fn a_failed_or_ambiguous_keyring_read_does_not_replace_the_master_key() {
+        let key = vec![7u8; 32];
+        assert_eq!(
+            master_key_decision(Ok(vec![key.clone()])),
+            MasterKeyDecision::Use([7u8; 32])
+        );
+        assert_eq!(
+            master_key_decision(Ok(Vec::new())),
+            MasterKeyDecision::Create
+        );
+        assert_eq!(master_key_decision(Err(())), MasterKeyDecision::Abort);
+        assert_eq!(
+            master_key_decision(Ok(vec![vec![1, 2, 3]])),
+            MasterKeyDecision::Abort
+        );
+        assert_eq!(
+            master_key_decision(Ok(vec![key.clone(), key])),
+            MasterKeyDecision::Abort
+        );
+    }
+
+    #[test]
     fn round_trips_secrets_without_leaving_plaintext_on_disk() {
         let mut cloud = CloudConfig {
             active_provider: "s3".into(),
@@ -868,33 +1183,88 @@ mod tests {
         }];
 
         let mut retained = RetainedCloudSecrets::default();
-        if cfg!(target_os = "macos") {
-            let policy = SecretPolicy::InMemory(*b"0123456789abcdef0123456789abcdef");
-            let failed = protect_cloud_secrets(&mut cloud, &mut retained, policy);
-            assert!(!failed);
-            assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
-            assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
-            assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
+        let policy = SecretPolicy::InMemory(*b"0123456789abcdef0123456789abcdef");
+        let failed = protect_cloud_secrets(&mut cloud, &mut retained, policy);
+        assert!(!failed);
+        assert!(cloud.s3.secret_access_key.starts_with(GPUI_SECRET_PREFIX));
+        assert!(cloud.rest.headers[0].value.starts_with(GPUI_SECRET_PREFIX));
+        assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
 
-            let _ = reveal_cloud_secrets(&mut cloud, policy);
-            assert_eq!(cloud.s3.secret_access_key, "top-secret-s3");
-            assert_eq!(cloud.rest.headers[0].value, "Bearer top-secret-token");
-        } else if cfg!(windows) {
-            let failed = protect_cloud_secrets(&mut cloud, &mut retained, SecretPolicy::System);
-            assert!(!failed);
-            assert!(cloud.s3.secret_access_key.starts_with(SAFE_STORAGE_PREFIX));
-            assert!(cloud.rest.headers[0].value.starts_with(SAFE_STORAGE_PREFIX));
-            assert!(!cloud.s3.secret_access_key.contains("top-secret-s3"));
+        let _ = reveal_cloud_secrets(&mut cloud, policy);
+        assert_eq!(cloud.s3.secret_access_key, "top-secret-s3");
+        assert_eq!(cloud.rest.headers[0].value, "Bearer top-secret-token");
 
-            let _ = reveal_cloud_secrets(&mut cloud, SecretPolicy::System);
-            assert_eq!(cloud.s3.secret_access_key, "top-secret-s3");
-            assert_eq!(cloud.rest.headers[0].value, "Bearer top-secret-token");
-        } else {
-            let failed = protect_cloud_secrets(&mut cloud, &mut retained, SecretPolicy::System);
-            assert!(failed);
-            assert_eq!(cloud.s3.secret_access_key, "");
-            assert_eq!(cloud.rest.headers[0].value, "");
+        #[cfg(windows)]
+        {
+            let mut dpapi_cloud = CloudConfig {
+                active_provider: "s3".into(),
+                ..CloudConfig::default()
+            };
+            dpapi_cloud.s3.secret_access_key = "top-secret-s3".into();
+            dpapi_cloud.rest.headers = vec![RestHeader {
+                key: "Authorization".into(),
+                value: "Bearer top-secret-token".into(),
+            }];
+            let mut dpapi_retained = RetainedCloudSecrets::default();
+            let failed =
+                protect_cloud_secrets(&mut dpapi_cloud, &mut dpapi_retained, SecretPolicy::System);
+            assert!(!failed);
+            assert!(dpapi_cloud
+                .s3
+                .secret_access_key
+                .starts_with(SAFE_STORAGE_PREFIX));
+            assert!(dpapi_cloud.rest.headers[0]
+                .value
+                .starts_with(SAFE_STORAGE_PREFIX));
+
+            let _ = reveal_cloud_secrets(&mut dpapi_cloud, SecretPolicy::System);
+            assert_eq!(dpapi_cloud.s3.secret_access_key, "top-secret-s3");
+            assert_eq!(dpapi_cloud.rest.headers[0].value, "Bearer top-secret-token");
         }
+    }
+
+    #[test]
+    fn decrypts_electron_linux_v10_and_v11_payloads() {
+        let mut key_v10 = [0u8; 16];
+        crate::config::crypto::pbkdf2_hmac_sha1(b"peanuts", b"saltysalt", 1, &mut key_v10);
+        let iv = [b' '; 16];
+        let encrypted_v10 =
+            crate::config::crypto::aes_cbc_encrypt(&key_v10, &iv, b"linux-v10-secret").unwrap();
+        let mut payload_v10 = b"v10".to_vec();
+        payload_v10.extend_from_slice(&encrypted_v10);
+        let plain_v10 =
+            crate::config::crypto::aes_cbc_decrypt(&key_v10, &iv, &payload_v10[3..]).unwrap();
+        assert_eq!(plain_v10, b"linux-v10-secret");
+
+        let mut key_v11 = [0u8; 16];
+        crate::config::crypto::pbkdf2_hmac_sha1(
+            b"libsecret-passphrase",
+            b"saltysalt",
+            1,
+            &mut key_v11,
+        );
+        let encrypted_v11 =
+            crate::config::crypto::aes_cbc_encrypt(&key_v11, &iv, b"linux-v11-secret").unwrap();
+        let mut payload_v11 = b"v11".to_vec();
+        payload_v11.extend_from_slice(&encrypted_v11);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                platform::decrypt_electron_linux_with_password(b"peanuts", &payload_v10).as_deref(),
+                Some("linux-v10-secret")
+            );
+            assert_eq!(
+                platform::decrypt_electron_linux_with_password(
+                    b"libsecret-passphrase",
+                    &payload_v11
+                )
+                .as_deref(),
+                Some("linux-v11-secret")
+            );
+        }
+        let plain_v11 =
+            crate::config::crypto::aes_cbc_decrypt(&key_v11, &iv, &payload_v11[3..]).unwrap();
+        assert_eq!(plain_v11, b"linux-v11-secret");
     }
 
     #[test]

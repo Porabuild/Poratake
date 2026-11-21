@@ -234,6 +234,8 @@ pub fn run_with_camera_segments_presence(
         total_frames: export_frame_count(total_duration, fps),
         total_duration,
         source_duration: request.state.source_duration.unwrap_or(info.duration),
+        video_frame: None,
+        camera_frame: None,
     };
 
     let result = if is_gif {
@@ -281,6 +283,8 @@ struct Session<'a> {
     total_frames: u64,
     total_duration: f64,
     source_duration: f64,
+    video_frame: Option<Pixmap>,
+    camera_frame: Option<Pixmap>,
 }
 
 fn encode(
@@ -585,27 +589,38 @@ fn compose_pixmap(
         })
         .unwrap_or(adjusted);
 
-    let video = session
-        .decoder
-        .frame_at(video_time)
-        .and_then(|frame| frame.to_pixmap());
-    let camera_frame = session
-        .camera
-        .and_then(|decoder| decoder.frame_at(video_time))
-        .and_then(|frame| frame.to_pixmap());
+    update_frame_pixmap(session.decoder, video_time, &mut session.video_frame);
+    match session.camera {
+        Some(camera) => update_frame_pixmap(camera, video_time, &mut session.camera_frame),
+        None => session.camera_frame = None,
+    }
 
     session
         .engine
         .render_frame_at(
             timeline_time,
             Frames {
-                video: video.as_ref().map(Pixmap::as_ref),
-                camera: camera_frame.as_ref().map(Pixmap::as_ref),
+                video: session.video_frame.as_ref().map(Pixmap::as_ref),
+                camera: session.camera_frame.as_ref().map(Pixmap::as_ref),
             },
             session.dimensions.width,
             session.dimensions.height,
         )
         .ok_or_else(|| "the frame could not be composed".to_string())
+}
+
+fn update_frame_pixmap(decoder: &VideoDecoder, time: f64, scratch: &mut Option<Pixmap>) {
+    let Some(frame) = decoder.frame_at(time) else {
+        *scratch = None;
+        return;
+    };
+    if scratch
+        .as_mut()
+        .is_some_and(|pixmap| frame.write_to_pixmap(pixmap).is_some())
+    {
+        return;
+    }
+    *scratch = frame.to_pixmap();
 }
 
 fn build_audio(

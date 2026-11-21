@@ -13,6 +13,7 @@ use crate::capture::{
     capture_screenshot_to_file, prepare_screenshot, publish_captured_screenshot, uuid_simple,
     CachedCaptureReservation, CaptureService, DisplayCapture,
 };
+use crate::config::shortcuts::ScreenshotConfig;
 
 pub struct Coordinator {
     pub service: CaptureService,
@@ -324,6 +325,9 @@ impl Coordinator {
         }
         let service = self.service.clone();
         let resolve_destination = service.screenshot_destination();
+        if preview_will_open(&service.config.get().screenshot) {
+            crate::windows::capture_preview::CapturePreviewWindow::prewarm(cx);
+        }
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
@@ -392,7 +396,7 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     let _ = (play_sound, silent);
 
     let copy = screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard;
-    let show_preview = screenshot.show_preview && !screenshot.capture_to_clipboard;
+    let show_preview = preview_will_open(&screenshot);
     let (finalization, pending) = if show_preview && (history.is_some() || copy) {
         let (sender, receiver) = smol::channel::bounded(1);
         (Some(sender), Some(receiver))
@@ -407,6 +411,8 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
                 pending,
             );
         });
+    } else {
+        cx.update(crate::windows::capture_preview::CapturePreviewWindow::discard_idle);
     }
     let clipboard = copy.then(|| {
         let generation = cx.update(|cx| {
@@ -476,7 +482,14 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
     let body = body.to_string();
-    cx.update(|cx| crate::windows::toast::Toast::show(cx, title, body));
+    cx.update(|cx| {
+        crate::windows::capture_preview::CapturePreviewWindow::discard_idle(cx);
+        crate::windows::toast::Toast::show(cx, title, body);
+    });
+}
+
+fn preview_will_open(config: &ScreenshotConfig) -> bool {
+    config.show_preview && !config.capture_to_clipboard
 }
 
 fn restore_editor_window(window: AnyWindowHandle, cx: &mut gpui::App) {

@@ -98,6 +98,41 @@ pub fn popup_window_options(bounds: Bounds<Pixels>, config: PopupWindowConfig) -
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn open_wayland_layer_or_fallback<V: 'static + gpui::Render>(
+    cx: &mut gpui::App,
+    layer_options: gpui::layer_shell::LayerShellOptions,
+    fallback: impl Fn() -> WindowOptions,
+    build: impl FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V>,
+) -> anyhow::Result<(gpui::WindowHandle<V>, bool)> {
+    if crate::system::linux_session::current()
+        != crate::system::linux_session::LinuxSession::Wayland
+    {
+        return cx
+            .open_window(fallback(), build)
+            .map(|handle| (handle, false));
+    }
+    let mut build = Some(build);
+    let mut primary = fallback();
+    primary.kind = WindowKind::LayerShell(layer_options);
+    if let Some(bounds) = primary.window_bounds {
+        primary.window_bounds = Some(WindowBounds::Windowed(bounds.get_bounds()));
+    }
+    match cx.open_window(primary, |window, cx| {
+        (build.take().expect("window builder"))(window, cx)
+    }) {
+        Ok(handle) => Ok((handle, true)),
+        Err(error) => {
+            if let Some(build) = build.take() {
+                cx.open_window(fallback(), build)
+                    .map(|handle| (handle, false))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn remove_popup_frame(window: &gpui::Window) {
     use cocoa::appkit::NSWindowStyleMask;
@@ -246,5 +281,90 @@ pub(crate) fn macos_window_id(window: &gpui::Window) -> Option<i64> {
         }
         let number: isize = msg_send![native_window, windowNumber];
         (number >= 0).then_some(number as i64)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EdgeGaps {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn window_corner_gaps(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    work_x: f32,
+    work_y: f32,
+    work_width: f32,
+    work_height: f32,
+) -> (WindowCorner, EdgeGaps) {
+    let center_x = x + width / 2.0;
+    let center_y = y + height / 2.0;
+    let to_right = center_x >= work_x + work_width / 2.0;
+    let to_bottom = center_y >= work_y + work_height / 2.0;
+    let corner = match (to_bottom, to_right) {
+        (false, false) => WindowCorner::TopLeft,
+        (false, true) => WindowCorner::TopRight,
+        (true, false) => WindowCorner::BottomLeft,
+        (true, true) => WindowCorner::BottomRight,
+    };
+    (
+        corner,
+        EdgeGaps {
+            top: (y - work_y).max(0.0),
+            left: (x - work_x).max(0.0),
+            right: (work_x + work_width - (x + width)).max(0.0),
+            bottom: (work_y + work_height - (y + height)).max(0.0),
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn layer_anchor(corner: WindowCorner) -> gpui::layer_shell::Anchor {
+    use gpui::layer_shell::Anchor;
+    match corner {
+        WindowCorner::TopLeft => Anchor::TOP | Anchor::LEFT,
+        WindowCorner::TopRight => Anchor::TOP | Anchor::RIGHT,
+        WindowCorner::BottomLeft => Anchor::BOTTOM | Anchor::LEFT,
+        WindowCorner::BottomRight => Anchor::BOTTOM | Anchor::RIGHT,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn layer_margin(gaps: EdgeGaps) -> (Pixels, Pixels, Pixels, Pixels) {
+    (px(gaps.top), px(gaps.right), px(gaps.bottom), px(gaps.left))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corner_gaps_follow_the_window_instead_of_a_fixed_edge() {
+        let (corner, gaps) =
+            window_corner_gaps(40.0, 700.0, 200.0, 120.0, 0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(corner, WindowCorner::BottomLeft);
+        assert_eq!(gaps.left, 40.0);
+        assert_eq!(gaps.bottom, 1080.0 - 820.0);
+        let (corner, gaps) =
+            window_corner_gaps(1600.0, 8.0, 300.0, 400.0, 0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(corner, WindowCorner::TopRight);
+        assert_eq!(gaps.top, 8.0);
+        assert_eq!(gaps.right, 20.0);
     }
 }

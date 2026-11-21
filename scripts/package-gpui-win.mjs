@@ -111,19 +111,28 @@ cpSync(
 
 const installerName = `Poratake-${version}-win-${arch}.exe`;
 const installerPath = path.join(outDir, installerName);
-const nsisScript = process.env.PORATAKE_GPUI_NSIS;
-if (nsisScript && existsSync(nsisScript)) {
-  const nsisResult = spawnSync(
-    'makensis',
-    [
-      `/DVERSION=${version}`,
-      `/DARCH=${arch}`,
-      `/DSTAGE_DIR=${stageDir}`,
-      `/DOUT_FILE=${installerPath}`,
-      nsisScript,
-    ],
-    { stdio: 'inherit' }
+const defaultNsisScript = path.join(SCRIPT_DIR, 'installer-gpui-win.nsi');
+const nsisScript = process.env.PORATAKE_GPUI_NSIS || defaultNsisScript;
+const iconPath = path.join(ROOT_DIR, 'build', 'icon.ico');
+const makensisProbe = spawnSync('makensis', ['/VERSION'], { stdio: 'ignore' });
+if (nsisScript && existsSync(nsisScript) && makensisProbe.status !== 0) {
+  process.stderr.write(
+    'makensis is required to build the Windows GPUI installer\n'
   );
+  process.exit(1);
+}
+if (nsisScript && existsSync(nsisScript) && makensisProbe.status === 0) {
+  const nsisArgs = [
+    `/DVERSION=${version}`,
+    `/DARCH=${arch}`,
+    `/DSTAGE_DIR=${stageDir}`,
+    `/DOUT_FILE=${installerPath}`,
+  ];
+  if (existsSync(iconPath)) {
+    nsisArgs.push(`/DICON_PATH=${iconPath}`);
+  }
+  nsisArgs.push(nsisScript);
+  const nsisResult = spawnSync('makensis', nsisArgs, { stdio: 'inherit' });
   if (nsisResult.status !== 0) {
     process.exit(nsisResult.status ?? 1);
   }

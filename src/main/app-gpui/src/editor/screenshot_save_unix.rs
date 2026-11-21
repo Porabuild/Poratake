@@ -10,34 +10,13 @@ use crate::util::file_identity::from_file as file_identity;
 
 static NEXT_BACKUP_ID: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(target_os = "linux")]
-const OPEN_NONBLOCK: i32 = 0x800;
-#[cfg(target_os = "macos")]
-const OPEN_NONBLOCK: i32 = 0x4;
-#[cfg(target_os = "linux")]
-const OPEN_DIRECTORY: i32 = 0x10000;
-#[cfg(target_os = "macos")]
-const OPEN_DIRECTORY: i32 = 0x100000;
-#[cfg(target_os = "linux")]
-const OPEN_NOFOLLOW: i32 = 0x20000;
-#[cfg(target_os = "macos")]
-const OPEN_NOFOLLOW: i32 = 0x100;
-#[cfg(target_os = "linux")]
-const OPEN_READ_WRITE: i32 = 0x2;
-#[cfg(target_os = "macos")]
-const OPEN_READ_WRITE: i32 = 0x2;
-#[cfg(target_os = "linux")]
-const OPEN_CREATE: i32 = 0x40;
-#[cfg(target_os = "macos")]
-const OPEN_CREATE: i32 = 0x200;
-#[cfg(target_os = "linux")]
-const OPEN_EXCLUSIVE: i32 = 0x80;
-#[cfg(target_os = "macos")]
-const OPEN_EXCLUSIVE: i32 = 0x800;
-#[cfg(target_os = "linux")]
-const OPEN_CLOEXEC: i32 = 0x80000;
-#[cfg(target_os = "macos")]
-const OPEN_CLOEXEC: i32 = 0x1000000;
+const OPEN_NONBLOCK: i32 = libc::O_NONBLOCK;
+const OPEN_DIRECTORY: i32 = libc::O_DIRECTORY;
+const OPEN_NOFOLLOW: i32 = libc::O_NOFOLLOW;
+const OPEN_READ_WRITE: i32 = libc::O_RDWR;
+const OPEN_CREATE: i32 = libc::O_CREAT;
+const OPEN_EXCLUSIVE: i32 = libc::O_EXCL;
+const OPEN_CLOEXEC: i32 = libc::O_CLOEXEC;
 #[cfg(target_os = "macos")]
 const MACOS_ACL_TYPE_EXTENDED: i32 = 0x00000100;
 #[cfg(target_os = "macos")]
@@ -53,8 +32,8 @@ const MACOS_EINVAL: i32 = 22;
 #[link(name = "c")]
 unsafe extern "C" {
     fn fchmod(fd: i32, mode: u32) -> i32;
-    fn openat(dirfd: i32, path: *const i8, flags: i32, mode: u32) -> i32;
-    fn unlinkat(dirfd: i32, path: *const i8, flags: i32) -> i32;
+    fn openat(dirfd: i32, path: *const std::ffi::c_char, flags: i32, mode: u32) -> i32;
+    fn unlinkat(dirfd: i32, path: *const std::ffi::c_char, flags: i32) -> i32;
     fn geteuid() -> u32;
 }
 
@@ -62,8 +41,8 @@ unsafe extern "C" {
 #[link(name = "System")]
 unsafe extern "C" {
     fn fchmod(fd: i32, mode: u32) -> i32;
-    fn openat(dirfd: i32, path: *const i8, flags: i32, mode: u32) -> i32;
-    fn unlinkat(dirfd: i32, path: *const i8, flags: i32) -> i32;
+    fn openat(dirfd: i32, path: *const std::ffi::c_char, flags: i32, mode: u32) -> i32;
+    fn unlinkat(dirfd: i32, path: *const std::ffi::c_char, flags: i32) -> i32;
     fn geteuid() -> u32;
 }
 

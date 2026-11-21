@@ -421,10 +421,29 @@ impl WindowsPlatform {
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
-        if let Some(text_system) = &self.direct_write_text_system {
-            text_system.handle_gpu_lost(&devices)?;
-        }
+        let attach = |devices: DirectXDevices| -> Result<DirectXDevices> {
+            if let Some(text_system) = &self.direct_write_text_system {
+                text_system.handle_gpu_lost(&devices)?;
+            }
+            Ok(devices)
+        };
+        let devices = match DirectXDevices::new()
+            .context("Creating DirectX devices")
+            .and_then(&attach)
+        {
+            Ok(devices) => devices,
+            Err(hardware_error) => {
+                log::warn!(
+                    "Hardware DirectX initialization failed ({hardware_error:#}); retrying with WARP"
+                );
+                DirectXDevices::new_warp()
+                    .context("Creating WARP DirectX devices")
+                    .and_then(&attach)
+                    .map_err(|warp_error| {
+                        hardware_error.context(format!("WARP fallback also failed: {warp_error:#}"))
+                    })?
+            }
+        };
         *self.inner.state.directx_devices.borrow_mut() = Some(devices);
         self.begin_vsync_thread();
         Ok(())
@@ -1793,7 +1812,13 @@ fn handle_gpu_device_lost(
     std::thread::sleep(std::time::Duration::from_millis(350));
 
     *directx_devices = try_to_recover_from_device_lost(|| {
-        DirectXDevices::new().context("Failed to recreate new DirectX devices after device lost")
+        DirectXDevices::new().context("Failed to recreate DirectX devices after device lost")
+    })
+    .or_else(|hardware_error| {
+        log::warn!(
+            "Hardware DirectX recovery failed ({hardware_error:#}); retrying with WARP"
+        );
+        DirectXDevices::new_warp().context("Failed to recreate WARP devices after device lost")
     })?;
     log::info!("DirectX devices successfully recreated.");
 

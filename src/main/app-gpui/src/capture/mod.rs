@@ -594,23 +594,23 @@ fn each_display(
 /// `prewarmFreezeScreen()`: warms the daemon's capture pipeline off the main
 /// thread at startup.
 pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
-    if desktop_icons::is_shutting_down()
-        || !crate::system::capabilities::is_supported(
-            crate::system::capabilities::Feature::FreezeScreen,
-        )
-    {
+    if desktop_icons::is_shutting_down() || !freeze_available(cx, true) {
         return;
     }
     let service = crate::state::state(cx);
-    if !service
-        .config
-        .read(|config| config.screenshot.freeze_screen)
-    {
-        return;
-    }
     cx.background_executor()
         .spawn(async move { service.prewarm_freeze() })
         .detach();
+}
+
+fn freeze_available(cx: &mut gpui::App, freeze: bool) -> bool {
+    freeze
+        && crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::FreezeScreen,
+        )
+        && crate::state::state(cx)
+            .config
+            .read(|config| config.screenshot.freeze_screen)
 }
 
 fn with_frozen_screen(
@@ -618,6 +618,7 @@ fn with_frozen_screen(
     release_first: Option<u64>,
     freeze: bool,
     failure_title: &'static str,
+    gate: Option<IconHideGate>,
     open: impl FnOnce(&mut gpui::App, bool, u64) -> bool + 'static,
 ) {
     if desktop_icons::is_shutting_down() {
@@ -636,7 +637,7 @@ fn with_frozen_screen(
             }
             cx.update(|cx| {
                 if overlay::revision(cx) == owner && !desktop_icons::is_shutting_down() {
-                    with_frozen_screen(cx, release_first, freeze, failure_title, open);
+                    with_frozen_screen(cx, release_first, freeze, failure_title, gate, open);
                 }
             });
         })
@@ -668,19 +669,15 @@ fn with_frozen_screen(
                     );
                     return;
                 }
-                with_frozen_screen(cx, release_first, freeze, failure_title, open);
+                with_frozen_screen(cx, release_first, freeze, failure_title, gate, open);
             });
         })
         .detach();
         return;
     }
     let capture_hide = overlay::capture_hide(cx);
-    if !freeze
-        || !crate::system::capabilities::is_supported(
-            crate::system::capabilities::Feature::FreezeScreen,
-        )
-        || !service.config.get().screenshot.freeze_screen
-    {
+    if !freeze_available(cx, freeze) {
+        drop(gate);
         if let Some(generation) = release_first.filter(|generation| *generation != 0) {
             overlay::set_pending_freeze(generation, cx);
             cx.spawn(async move |cx| {
@@ -738,10 +735,17 @@ fn with_frozen_screen(
             .freeze
             .scheduled_for_test
             .store(generation, std::sync::atomic::Ordering::SeqCst);
-        let (frozen, released) = cx
+        let (frozen, released, hide_failure) = cx
             .background_executor()
             .spawn(async move {
                 freezer.wait_for_freeze_turn(generation);
+                let hide_failure = match gate {
+                    Some(gate) => match gate.recv().await {
+                        Ok(Err(error)) => Some(error),
+                        Ok(Ok(())) | Err(_) => None,
+                    },
+                    None => None,
+                };
                 let _operation = freezer.freeze.operation.lock();
                 let release = |generation| {
                     freezer.release_generation(generation, freezer.freeze.state.lock(), || {
@@ -749,16 +753,27 @@ fn with_frozen_screen(
                     })
                 };
                 let released = release_first.is_none_or(release);
-                let result = if released {
-                    freezer.freeze_screen_started()
-                } else {
+                let result = if !released {
                     Err(anyhow::anyhow!("Could not release the frozen screen"))
+                } else if let Some(error) = hide_failure.as_ref() {
+                    Err(anyhow::anyhow!(error.clone()))
+                } else {
+                    freezer.freeze_screen_started()
                 };
                 let released = released && (result.is_ok() || release(generation));
-                (freezer.finish_freeze(generation, result), released)
+                (
+                    freezer.finish_freeze(generation, result),
+                    released,
+                    hide_failure,
+                )
             })
             .await;
-        if !released {
+        let failure = if released {
+            hide_failure
+        } else {
+            Some("Could not release the frozen screen".to_string())
+        };
+        if let Some(message) = failure {
             cx.update(|cx| {
                 if overlay::revision(cx) != owner {
                     return;
@@ -767,11 +782,7 @@ fn with_frozen_screen(
                 overlay::set_pending_freeze(pending, cx);
                 let coordinator = crate::state::coordinator(cx);
                 coordinator.update(cx, |coordinator, cx| coordinator.cancel_editor_attach(cx));
-                crate::windows::toast::Toast::show(
-                    cx,
-                    failure_title,
-                    "Could not release the frozen screen",
-                );
+                crate::windows::toast::Toast::show(cx, failure_title, message);
             });
             return;
         }
@@ -802,7 +813,11 @@ fn with_frozen_screen(
             opened_early.unwrap()
         };
         if !opened {
-            cx.update(|cx| overlay::release_capture_hide(capture_hide, cx));
+            cx.update(|cx| {
+                if overlay::revision(cx) == owner {
+                    overlay::release_capture_hide(overlay::capture_hide(cx), cx);
+                }
+            });
             let released = cx
                 .background_executor()
                 .spawn(async move { freezing.release_screen(generation) })
@@ -835,21 +850,32 @@ fn selection_failure_title(intent: intent::CaptureIntent) -> &'static str {
     }
 }
 
+type IconHideGate = smol::channel::Receiver<Result<(), String>>;
+
 fn with_selection_icon_hide(
     cx: &mut gpui::App,
     release_first: Option<u64>,
     failure_title: &'static str,
-    open: impl FnOnce(&mut gpui::App) + 'static,
+    gate_freeze: bool,
+    open: impl FnOnce(&mut gpui::App, Option<IconHideGate>) + 'static,
 ) {
     let service = crate::state::state(cx);
     if !desktop_icons::should_hide_for_capture(&service.config) {
-        open(cx);
+        open(cx, None);
         return;
     }
     let owner = overlay::revision(cx);
     if let Some(generation) = release_first.filter(|generation| *generation != 0) {
         overlay::set_pending_freeze(generation, cx);
     }
+    let mut open = Some(open);
+    let gate = gate_freeze.then(|| {
+        let (gate, receiver) = smol::channel::bounded(1);
+        if let Some(open) = open.take() {
+            open(cx, Some(receiver));
+        }
+        gate
+    });
     let transition = desktop_icons::track_transition();
     cx.spawn(async move |cx| {
         let current =
@@ -862,35 +888,53 @@ fn with_selection_icon_hide(
             .background_executor()
             .spawn(async move { desktop_icons::hide_for_capture(&service.daemon, &service.config) })
             .await;
-        let stale = cx.update(|cx| {
+        let outcome = cx.update(|cx| {
             if overlay::revision(cx) != owner || desktop_icons::is_shutting_down() {
-                return Some((hide.ok().flatten(), transition));
+                return HideOutcome::Cancelled(hide.ok().flatten());
             }
-            drop(transition);
             match hide {
                 Ok(hide) => {
                     overlay::set_capture_hide(hide, cx);
-                    open(cx);
+                    if let Some(open) = open.take() {
+                        open(cx, None);
+                    }
+                    HideOutcome::Done(Ok(()))
                 }
                 Err(error) => {
                     if let Some(generation) = release_first {
                         overlay::release_frozen_screen(generation, cx);
                     }
-                    crate::windows::toast::Toast::show(cx, failure_title, error);
+                    if gate.is_none() {
+                        crate::windows::toast::Toast::show(cx, failure_title, error);
+                    }
+                    HideOutcome::Done(Err(error.to_string()))
                 }
             }
-            None
         });
-        if let Some((hide, transition)) = stale {
-            cx.background_executor()
-                .spawn(async move {
-                    drop(hide);
-                    drop(transition);
-                })
-                .detach();
+        match outcome {
+            HideOutcome::Done(result) => {
+                drop(transition);
+                if let Some(gate) = gate {
+                    let _ = gate.send(result).await;
+                }
+            }
+            HideOutcome::Cancelled(hide) => {
+                drop(gate);
+                cx.background_executor()
+                    .spawn(async move {
+                        drop(hide);
+                        drop(transition);
+                    })
+                    .detach();
+            }
         }
     })
     .detach();
+}
+
+enum HideOutcome {
+    Done(Result<(), String>),
+    Cancelled(Option<Arc<desktop_icons::CaptureHide>>),
 }
 
 /// Opens the shared area overlay for one of the selection-driven flows.
@@ -916,22 +960,25 @@ pub fn start_area_selection(intent: intent::CaptureIntent, cx: &mut gpui::App) {
     }
     let release_first = overlay::replace_all(cx);
     if hides_icons_before_selection(intent) {
+        let gate_freeze = freeze_available(cx, intent.allows_freeze());
         with_selection_icon_hide(
             cx,
             release_first,
             selection_failure_title(intent),
-            move |cx| {
-                open_area_selection(intent, release_first, cx);
+            gate_freeze,
+            move |cx, gate| {
+                open_area_selection(intent, release_first, gate, cx);
             },
         );
         return;
     }
-    open_area_selection(intent, release_first, cx);
+    open_area_selection(intent, release_first, None, cx);
 }
 
 fn open_area_selection(
     intent: intent::CaptureIntent,
     release_first: Option<u64>,
+    gate: Option<IconHideGate>,
     cx: &mut gpui::App,
 ) {
     let freeze = intent.allows_freeze();
@@ -940,6 +987,7 @@ fn open_area_selection(
         release_first,
         freeze,
         selection_failure_title(intent),
+        gate,
         move |cx, deferred_show, generation| {
             let opened = each_display(cx, |service, id, bounds, focus, cx| {
                 overlay::AreaOverlay::open(
@@ -989,35 +1037,43 @@ pub fn start_all_in_one(cx: &mut gpui::App) {
     } else {
         "Capture Failed"
     };
-    with_selection_icon_hide(cx, release_first, failure_title, move |cx| {
-        with_frozen_screen(
-            cx,
-            release_first,
-            true,
-            if choices.mode == all_in_one::Mode::Record {
-                "Recording failed"
-            } else {
-                "Capture Failed"
-            },
-            move |cx, deferred_show, generation| {
-                each_display(cx, |service, id, bounds, focus, cx| {
-                    overlay::AreaOverlay::open_all_in_one(
-                        service,
-                        id,
-                        bounds,
-                        choices,
-                        overlay::OverlayLaunch {
-                            focus,
-                            deferred_show,
-                            generation,
-                        },
-                        cx,
-                    )
-                    .is_some()
-                })
-            },
-        );
-    });
+    let gate_freeze = freeze_available(cx, true);
+    with_selection_icon_hide(
+        cx,
+        release_first,
+        failure_title,
+        gate_freeze,
+        move |cx, gate| {
+            with_frozen_screen(
+                cx,
+                release_first,
+                true,
+                if choices.mode == all_in_one::Mode::Record {
+                    "Recording failed"
+                } else {
+                    "Capture Failed"
+                },
+                gate,
+                move |cx, deferred_show, generation| {
+                    each_display(cx, |service, id, bounds, focus, cx| {
+                        overlay::AreaOverlay::open_all_in_one(
+                            service,
+                            id,
+                            bounds,
+                            choices,
+                            overlay::OverlayLaunch {
+                                focus,
+                                deferred_show,
+                                generation,
+                            },
+                            cx,
+                        )
+                        .is_some()
+                    })
+                },
+            );
+        },
+    );
 }
 
 fn capture_topology_supported(_cx: &mut gpui::App) -> bool {
@@ -1080,6 +1136,7 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
             release_first,
             false,
             "Recording failed",
+            None,
             move |cx, deferred_show, generation| {
                 let service = crate::state::state(cx);
                 let target_count = targets.len();
@@ -1121,6 +1178,7 @@ pub fn start_screen_recording(cx: &mut gpui::App) {
         release_first,
         false,
         "Recording failed",
+        None,
         move |cx, _, _| {
             open_screen_recording_bar(&target, cx);
             true
@@ -1161,6 +1219,7 @@ fn start_window_picker(intent: intent::CaptureIntent, cx: &mut gpui::App) {
         } else {
             "Capture Failed"
         },
+        None,
         move |cx, deferred_show, generation| {
             let mut pending = Vec::new();
             each_display(cx, |service, id, bounds, focus, cx| {
@@ -1338,11 +1397,7 @@ fn capture_screen_target(target: ScreenTarget, owner: u64, cx: &mut gpui::App) {
 
 fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut gpui::App) {
     let service = crate::state::state(cx);
-    let reservation = (service.config.get().screenshot.freeze_screen
-        && crate::system::capabilities::is_supported(
-            crate::system::capabilities::Feature::FreezeScreen,
-        ))
-    .then(|| service.reserve_cached_capture());
+    let reservation = freeze_available(cx, true).then(|| service.reserve_cached_capture());
     let capture = overlay::display_capture(target.bounds, target.scale, target.capture_display_id);
     let coordinator = crate::state::coordinator(cx);
     if close_overlays {
@@ -1406,12 +1461,13 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
         )
     {
         let fallback = targets[0].clone();
-        let show_picker = move |cx: &mut gpui::App| {
+        let show_picker = move |cx: &mut gpui::App, gate: Option<IconHideGate>| {
             with_frozen_screen(
                 cx,
                 release_first,
                 true,
                 "Capture Failed",
+                gate,
                 move |cx, deferred_show, generation| {
                     let service = crate::state::state(cx);
                     let target_count = targets.len();
@@ -1442,18 +1498,10 @@ pub fn start_screen_capture(cx: &mut gpui::App) {
                 },
             );
         };
-        if crate::state::state(cx)
-            .config
-            .get()
-            .screenshot
-            .freeze_screen
-            && crate::system::capabilities::is_supported(
-                crate::system::capabilities::Feature::FreezeScreen,
-            )
-        {
-            with_selection_icon_hide(cx, release_first, "Capture Failed", show_picker);
+        if freeze_available(cx, true) {
+            with_selection_icon_hide(cx, release_first, "Capture Failed", true, show_picker);
         } else {
-            show_picker(cx);
+            show_picker(cx, None);
         }
         return;
     }
@@ -2278,7 +2326,7 @@ mod tests {
                 .freeze
                 .release_fails_for_test
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            super::with_frozen_screen(cx, None, true, "Capture Failed", |_, _, _| false);
+            super::with_frozen_screen(cx, None, true, "Capture Failed", None, |_, _, _| false);
             service
         });
         cx.run_until_parked();
@@ -2760,6 +2808,7 @@ mod tests {
                 None,
                 true,
                 "Capture Failed",
+                None,
                 move |_, deferred_show, generation| {
                     assert!(deferred_show);
                     assert_eq!(generation, 1);
@@ -2770,6 +2819,51 @@ mod tests {
         });
 
         assert!(opened.load(Ordering::SeqCst));
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn the_frozen_snapshot_waits_for_the_icon_hide_gate(cx: &mut gpui::TestAppContext) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        config.update(|config| config.screenshot.freeze_screen = true);
+        let service = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            let service = crate::state::state(cx);
+            service
+                .freeze
+                .freeze_succeeds_for_test
+                .store(true, Ordering::SeqCst);
+            service
+        });
+        let (gate, wait) = smol::channel::bounded(1);
+        let opened = Arc::new(AtomicBool::new(false));
+        let observed = opened.clone();
+
+        cx.update(|cx| {
+            super::with_frozen_screen(
+                cx,
+                None,
+                true,
+                "Capture Failed",
+                Some(wait),
+                move |_, deferred_show, generation| {
+                    assert!(deferred_show);
+                    assert_eq!(generation, 1);
+                    observed.store(true, Ordering::SeqCst);
+                    true
+                },
+            );
+        });
+        cx.run_until_parked();
+        assert!(opened.load(Ordering::SeqCst));
+        assert_eq!(service.freeze.state.lock().frozen_generation, None);
+        let _ = gate.try_send(Ok(()));
+        cx.run_until_parked();
+        assert_eq!(service.freeze.state.lock().frozen_generation, Some(1));
     }
 
     #[test]

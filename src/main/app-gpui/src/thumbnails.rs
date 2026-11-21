@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use md5::{Digest, Md5};
 
+#[cfg(windows)]
+use windows::Win32::Graphics::Imaging::IWICImagingFactory;
+
 use crate::config::store::config_dir;
 use crate::history_store::HistoryItemType;
 
@@ -256,6 +259,146 @@ fn generate_native_thumbnail(original: &Path, target: &Path) -> Option<Vec<u8>> 
     }
 }
 
+#[cfg(any(windows, test))]
+fn scaled_thumbnail_size(width: u32, height: u32, max_dimension: u32) -> (u32, u32) {
+    if width == 0 || height == 0 || max_dimension == 0 {
+        return (1, 1);
+    }
+    let longest = width.max(height);
+    if longest <= max_dimension {
+        return (width, height);
+    }
+    let scale = max_dimension as f64 / longest as f64;
+    let target_w = ((width as f64 * scale).round() as u32).max(1);
+    let target_h = ((height as f64 * scale).round() as u32).max(1);
+    (target_w, target_h)
+}
+
+#[cfg(windows)]
+fn wic_factory() -> Option<IWICImagingFactory> {
+    use std::cell::RefCell;
+    use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+
+    thread_local! {
+        static FACTORY: RefCell<Option<IWICImagingFactory>> = const { RefCell::new(None) };
+    }
+
+    FACTORY.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(factory) = slot.as_ref() {
+            return Some(factory.clone());
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let factory: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            *slot = Some(factory.clone());
+            Some(factory)
+        }
+    })
+}
+
+#[cfg(windows)]
+fn generate_native_thumbnail(original: &Path, _target: &Path) -> Option<Vec<u8>> {
+    use windows::core::{Interface as _, HSTRING, PCWSTR};
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::{
+        GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, WICBitmapInterpolationModeFant,
+        WICDecodeMetadataCacheOnDemand,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        CreateStreamOnHGlobal, GetHGlobalFromStream, PROPBAG2,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Variant::VARIANT;
+
+    let factory = wic_factory()?;
+    unsafe {
+        let wide_path = HSTRING::from(original.as_os_str());
+        let decoder = factory
+            .CreateDecoderFromFilename(
+                PCWSTR(wide_path.as_ptr()),
+                None,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnDemand,
+            )
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let mut width = 0u32;
+        let mut height = 0u32;
+        frame.GetSize(&mut width, &mut height).ok()?;
+        let (target_w, target_h) = scaled_thumbnail_size(width, height, THUMBNAIL_WIDTH);
+
+        let scaler = factory.CreateBitmapScaler().ok()?;
+        scaler
+            .Initialize(&frame, target_w, target_h, WICBitmapInterpolationModeFant)
+            .ok()?;
+
+        let converter = factory.CreateFormatConverter().ok()?;
+        converter
+            .Initialize(
+                &scaler,
+                &GUID_WICPixelFormat24bppBGR,
+                windows::Win32::Graphics::Imaging::WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                windows::Win32::Graphics::Imaging::WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
+
+        let stream = CreateStreamOnHGlobal(Default::default(), true).ok()?;
+        let encoder = factory
+            .CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null())
+            .ok()?;
+        encoder
+            .Initialize(
+                &stream,
+                windows::Win32::Graphics::Imaging::WICBitmapEncoderNoCache,
+            )
+            .ok()?;
+
+        let mut out_frame = None;
+        let mut props = None;
+        encoder.CreateNewFrame(&mut out_frame, &mut props).ok()?;
+        let out_frame = out_frame?;
+        if let Some(props) = props {
+            let mut quality_name: Vec<u16> = "ImageQuality\0".encode_utf16().collect();
+            let bag = PROPBAG2 {
+                pstrName: windows::core::PWSTR(quality_name.as_mut_ptr()),
+                ..Default::default()
+            };
+            let quality = VARIANT::from(f32::from(THUMBNAIL_QUALITY) / 100.0);
+            let _ = props.Write(1, &bag, &quality);
+            out_frame.Initialize(&props).ok()?;
+        } else {
+            out_frame.Initialize(None).ok()?;
+        }
+        out_frame.SetSize(target_w, target_h).ok()?;
+        let mut format = GUID_WICPixelFormat24bppBGR;
+        out_frame.SetPixelFormat(&mut format).ok()?;
+        let source: windows::Win32::Graphics::Imaging::IWICBitmapSource = converter.cast().ok()?;
+        out_frame.WriteSource(&source, std::ptr::null()).ok()?;
+        out_frame.Commit().ok()?;
+        encoder.Commit().ok()?;
+
+        let hglobal = GetHGlobalFromStream(&stream).ok()?;
+        let len = GlobalSize(hglobal);
+        if len == 0 {
+            return None;
+        }
+        let ptr = GlobalLock(hglobal);
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec();
+        let _ = GlobalUnlock(hglobal);
+        Some(bytes)
+    }
+}
+
 fn generate(original: &Path, target: &Path) -> bool {
     let Some(parent) = target.parent() else {
         return false;
@@ -268,7 +411,7 @@ fn generate(original: &Path, target: &Path) -> bool {
         return false;
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if let Some(bytes) = generate_native_thumbnail(original, target) {
         if let Err(error) = crate::util::atomic_file::write(target, &bytes) {
             eprintln!("[thumbnails] failed to save {}: {error}", target.display());
@@ -357,5 +500,13 @@ mod tests {
         let thumb = image::open(&target).expect("open thumbnail");
         assert!(thumb.width() <= THUMBNAIL_WIDTH);
         assert!(thumb.height() <= THUMBNAIL_WIDTH);
+    }
+
+    #[test]
+    fn scales_thumbnail_dimensions_preserving_aspect_ratio() {
+        assert_eq!(scaled_thumbnail_size(3840, 2160, 300), (300, 169));
+        assert_eq!(scaled_thumbnail_size(1080, 1920, 300), (169, 300));
+        assert_eq!(scaled_thumbnail_size(200, 150, 300), (200, 150));
+        assert_eq!(scaled_thumbnail_size(0, 100, 300), (1, 1));
     }
 }

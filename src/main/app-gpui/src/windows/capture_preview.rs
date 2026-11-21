@@ -671,6 +671,10 @@ impl CapturePreviewWindow {
                             }
                             view.previews.push(preview);
                             configure_stack_window(window, cx, view.window_preview_count());
+                            #[cfg(windows)]
+                            if !view.revealed {
+                                schedule_preview_reveal(window, cx.entity());
+                            }
                             cx.notify();
                             view.revealed
                                 && view
@@ -763,7 +767,40 @@ impl CapturePreviewWindow {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn prewarm(cx: &mut App) {
+        if registry::handle(WindowKind::CapturePreview, cx).is_some() {
+            return;
+        }
+        Self::open_stack_window(cx, Vec::new());
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn prewarm(_cx: &mut App) {}
+
+    #[cfg(windows)]
+    pub(crate) fn discard_idle(cx: &mut App) {
+        let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) else {
+            return;
+        };
+        let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+            registry::forget(WindowKind::CapturePreview, cx);
+            return;
+        };
+        let idle = handle
+            .update(cx, |view, _, _| !view.revealed && view.previews.is_empty())
+            .unwrap_or(true);
+        if idle {
+            registry::forget(WindowKind::CapturePreview, cx);
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn discard_idle(_cx: &mut App) {}
+
     fn open_stack_window(cx: &mut App, previews: Vec<CapturePreview>) {
+        let announce = !previews.is_empty();
         let (bounds, display_id) = preview_stack_placement(cx, previews.len());
         let window_bounds = display_id
             .and_then(|id| cx.find_display(id))
@@ -780,7 +817,23 @@ impl CapturePreviewWindow {
             },
             _ => "The saved previews could not be opened.",
         };
-        let opened = cx.open_window(
+        #[cfg(target_os = "linux")]
+        let layer_anchor =
+            match PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner) {
+                PreviewCorner::TopLeft => {
+                    gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::LEFT
+                }
+                PreviewCorner::TopRight => {
+                    gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::RIGHT
+                }
+                PreviewCorner::BottomLeft => {
+                    gpui::layer_shell::Anchor::BOTTOM | gpui::layer_shell::Anchor::LEFT
+                }
+                PreviewCorner::BottomRight => {
+                    gpui::layer_shell::Anchor::BOTTOM | gpui::layer_shell::Anchor::RIGHT
+                }
+            };
+        let make_options = || {
             super::popup_window_options(
                 window_bounds,
                 super::PopupWindowConfig {
@@ -790,112 +843,125 @@ impl CapturePreviewWindow {
                     display_id,
                     ..Default::default()
                 },
-            ),
-            |window, cx| {
-                window.set_window_title("Poratake capture preview");
-                super::remove_popup_frame(window);
-                #[cfg(all(target_os = "macos", not(test)))]
-                super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
-                #[cfg(windows)]
-                if !cfg!(test) {
-                    if let Some(hwnd) = crate::windows::window_hwnd(window) {
-                        crate::system::window_composition::configure_transparent_surface(hwnd);
-                        crate::system::window_composition::stage_window(
-                            hwnd,
-                            bounds,
-                            window.scale_factor(),
-                            false,
-                        );
-                        sync_preview_viewport(window, bounds);
-                    }
+            )
+        };
+        let build_preview = |window: &mut Window, cx: &mut App| {
+            window.set_window_title("Poratake capture preview");
+            super::remove_popup_frame(window);
+            #[cfg(all(target_os = "macos", not(test)))]
+            super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
+            #[cfg(windows)]
+            if !cfg!(test) {
+                crate::system::window_surface::prepare_transparent_surface(window);
+                crate::system::window_surface::stage(window, bounds, None, false);
+                sync_preview_viewport(window, bounds);
+            }
+            let handle = window.window_handle();
+            let display_observer = cx.observe_displays(move |_, cx| {
+                let Some(preview) = handle.downcast::<CapturePreviewWindow>() else {
+                    return;
+                };
+                if preview
+                    .update(cx, |view, window, cx| {
+                        view.display_menu.close(window, cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
                 }
-                let handle = window.window_handle();
-                let display_observer = cx.observe_displays(move |_, cx| {
-                    let Some(preview) = handle.downcast::<CapturePreviewWindow>() else {
-                        return;
-                    };
-                    if preview
-                        .update(cx, |view, window, cx| {
-                            view.display_menu.close(window, cx);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        return;
+                cx.defer(move |cx| {
+                    if registry::handle(WindowKind::CapturePreview, cx) == Some(handle) {
+                        CapturePreviewWindow::reposition(cx);
                     }
-                    cx.defer(move |cx| {
-                        if registry::handle(WindowKind::CapturePreview, cx) == Some(handle) {
-                            CapturePreviewWindow::reposition(cx);
-                        }
-                    });
                 });
-                let view = cx.new(|_| Self {
-                    previews,
-                    revealed: !cfg!(windows) || cfg!(test),
-                    layout_generation: 0,
-                    #[cfg(target_os = "macos")]
-                    pointer_inside: false,
-                    #[cfg(target_os = "macos")]
-                    keyboard_controls: false,
-                    #[cfg(target_os = "macos")]
-                    pending_keyboard_tab: None,
-                    #[cfg(target_os = "macos")]
-                    viewport_scroll: None,
-                    display_menu: crate::ui::menu::MenuHandle::new(),
-                    tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
-                        "capture-preview",
-                    ),
-                    _display_observer: Some(display_observer),
-                    #[cfg(target_os = "macos")]
-                    _visibility_observer: None,
-                });
+            });
+            let view = cx.new(|_| Self {
+                previews,
+                revealed: !cfg!(windows) || cfg!(test),
+                layout_generation: 0,
                 #[cfg(target_os = "macos")]
-                view.update(cx, |view, cx| {
-                    view._visibility_observer = Some(cx.observe_window_visibility(
-                        window,
-                        |view, visibility, window, cx| {
-                            let visible = visibility.is_visible();
-                            for preview in &view.previews {
-                                if let Some(video) = &preview.video {
-                                    let _ = video.visibility_changed.try_send(());
-                                }
-                                if !visible {
-                                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
-                                }
+                pointer_inside: false,
+                #[cfg(target_os = "macos")]
+                keyboard_controls: false,
+                #[cfg(target_os = "macos")]
+                pending_keyboard_tab: None,
+                #[cfg(target_os = "macos")]
+                viewport_scroll: None,
+                display_menu: crate::ui::menu::MenuHandle::new(),
+                tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
+                    "capture-preview",
+                ),
+                _display_observer: Some(display_observer),
+                #[cfg(target_os = "macos")]
+                _visibility_observer: None,
+            });
+            #[cfg(target_os = "macos")]
+            view.update(cx, |view, cx| {
+                view._visibility_observer = Some(cx.observe_window_visibility(
+                    window,
+                    |view, visibility, window, cx| {
+                        let visible = visibility.is_visible();
+                        for preview in &view.previews {
+                            if let Some(video) = &preview.video {
+                                let _ = video.visibility_changed.try_send(());
                             }
-                            if visible {
-                                let handle = window.window_handle();
-                                cx.defer(move |cx| {
-                                    if registry::handle(WindowKind::CapturePreview, cx)
-                                        == Some(handle)
-                                    {
-                                        schedule_revealed_previews(handle, cx);
-                                    }
-                                });
-                            } else {
-                                view.pointer_inside = false;
-                                view.clear_native_tooltip(window);
-                                cx.notify();
+                            if !visible {
+                                preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
                             }
-                        },
-                    ));
-                });
-                #[cfg(windows)]
-                if !cfg!(test) {
-                    let reveal_handle = window.window_handle();
-                    let reveal_view = view.clone();
-                    window.on_next_frame(move |window, cx| {
-                        reveal_preview_when_ready(window, reveal_handle, reveal_view, false, cx);
-                    });
-                }
-                view
+                        }
+                        if visible {
+                            let handle = window.window_handle();
+                            cx.defer(move |cx| {
+                                if registry::handle(WindowKind::CapturePreview, cx) == Some(handle)
+                                {
+                                    schedule_revealed_previews(handle, cx);
+                                }
+                            });
+                        } else {
+                            view.pointer_inside = false;
+                            view.clear_native_tooltip(window);
+                            cx.notify();
+                        }
+                    },
+                ));
+            });
+            #[cfg(windows)]
+            if announce {
+                schedule_preview_reveal(window, view.clone());
+            }
+            view
+        };
+        #[cfg(target_os = "linux")]
+        let opened = super::open_wayland_layer_or_fallback(
+            cx,
+            gpui::layer_shell::LayerShellOptions {
+                namespace: "poratake-preview".to_string(),
+                layer: gpui::layer_shell::Layer::Overlay,
+                anchor: layer_anchor,
+                margin: Some((
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                    px(chrome::PREVIEW_MARGIN - chrome::PREVIEW_SHADOW_PADDING),
+                )),
+                keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::None,
+                ..Default::default()
             },
+            make_options,
+            build_preview,
         );
-        if let Ok(handle) = opened {
+        #[cfg(not(target_os = "linux"))]
+        let opened = cx
+            .open_window(make_options(), build_preview)
+            .map(|handle| (handle, false));
+        if let Ok((handle, _)) = opened {
             let handle: AnyWindowHandle = handle.into();
             registry::remember(WindowKind::CapturePreview, handle, cx);
-            schedule_revealed_previews(handle, cx);
-        } else {
+            if announce {
+                schedule_revealed_previews(handle, cx);
+            }
+        } else if announce {
             crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
         }
     }
@@ -912,6 +978,17 @@ fn preview_viewport_ready(
     bounds: Bounds<gpui::Pixels>,
 ) -> bool {
     viewport == bounds.size
+}
+
+#[cfg(windows)]
+fn schedule_preview_reveal(window: &mut Window, view: Entity<CapturePreviewWindow>) {
+    if cfg!(test) {
+        return;
+    }
+    let handle = window.window_handle();
+    window.on_next_frame(move |window, cx| {
+        reveal_preview_when_ready(window, handle, view, false, cx);
+    });
 }
 
 #[cfg(windows)]
@@ -2488,7 +2565,7 @@ impl CapturePreviewWindow {
         }
         root = root.child(match thumbnail {
             Some(render_image) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 {
                     let render_image = render_image.clone();
                     gpui::canvas(
@@ -2526,7 +2603,7 @@ impl CapturePreviewWindow {
                     .inset_0()
                     .into_any_element()
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 div()
                     .absolute()
                     .inset_0()
@@ -2545,7 +2622,7 @@ impl CapturePreviewWindow {
             None => div()
                 .absolute()
                 .inset_0()
-                .when(chrome::is_macos(), |el| {
+                .when(cfg!(any(target_os = "macos", target_os = "linux")), |el| {
                     el.rounded(px(PREVIEW_RADIUS - 1.0))
                 })
                 .flex()
@@ -2567,7 +2644,9 @@ impl CapturePreviewWindow {
                     div()
                         .absolute()
                         .inset_0()
-                        .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS - 1.0)))
+                        .when(cfg!(any(target_os = "macos", target_os = "linux")), |el| {
+                            el.rounded(px(PREVIEW_RADIUS - 1.0))
+                        })
                         // `bg-black/25` behind `animate-in fade-in duration-200`.
                         .bg(gpui::hsla(0.0, 0.0, 0.0, 0.25 * progress)),
                 )
@@ -3669,6 +3748,56 @@ mod tests {
             .is_none());
         assert_eq!(cx.update(|cx| cx.windows().len()), 0);
         assert!(capture_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_prewarmed_preview_window_is_discarded_until_a_preview_arrives() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        cx.update(CapturePreviewWindow::prewarm);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+
+        let handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .expect("prewarmed window");
+        cx.update(|cx| {
+            handle
+                .downcast::<CapturePreviewWindow>()
+                .expect("preview window")
+                .update(cx, |view, _, _| view.revealed = true)
+                .unwrap();
+        });
+        cx.update(CapturePreviewWindow::discard_idle);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_some());
+
+        let handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .unwrap();
+        cx.update(|cx| {
+            handle
+                .downcast::<CapturePreviewWindow>()
+                .unwrap()
+                .update(cx, |view, _, _| view.revealed = false)
+                .unwrap();
+        });
+        cx.update(CapturePreviewWindow::discard_idle);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_none());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     }
 
     #[cfg(windows)]

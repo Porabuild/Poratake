@@ -245,127 +245,149 @@ impl RecordingControl {
             .unwrap_or(bounds);
 
         registry::open_or_activate(RegistryKind::RecordingControl, cx, move |cx| {
-            cx.open_window(
+            let make_options = || {
                 super::popup_window_options(
                     window_bounds,
                     super::PopupWindowConfig {
                         display_id: platform_display_id,
                         ..Default::default()
                     },
-                ),
-                |window, cx| {
-                    window.set_window_title("Poratake recording controls");
-                    configure_toolbar_window(window);
-                    let view = cx.new(|cx| Self {
-                        mode: Mode::PreRecording,
-                        preference_scope,
-                        target,
-                        target_name: target_name.map(SharedString::from),
-                        rect,
-                        display_id,
-                        window_id,
-                        project: None,
-                        system_audio: toggles.system_audio,
-                        #[cfg(target_os = "macos")]
-                        system_audio_pending: false,
-                        #[cfg(target_os = "macos")]
-                        microphone_pending: false,
-                        #[cfg(target_os = "macos")]
-                        camera_pending: false,
-                        #[cfg(target_os = "macos")]
-                        pause_pending: false,
-                        #[cfg(target_os = "macos")]
-                        camera_protection_pending: false,
-                        microphone: toggles.mic_enabled,
-                        camera: toggles.camera_enabled,
-                        camera_locked: false,
-                        camera_preview_visible: false,
-                        camera_preview_position: Arc::default(),
-                        camera_preview_subscription: None,
-                        selected_mic_id: config.selected_mic_id.clone(),
-                        selected_camera_id: config.camera.selected_device_id.clone(),
-                        selected_ios_id: config.ios_device.as_ref().map(|device| device.id.clone()),
-                        selected_ios_name: config
-                            .ios_device
-                            .as_ref()
-                            .and_then(|device| device.name.clone()),
-                        ios_devices: Vec::new(),
-                        devices: crate::system::devices::MediaDeviceLists::default(),
-                        device_request: 0,
-                        pending_device_menu: None,
-                        menu: MenuHandle::new(),
-                        bounds_subscription: None,
-                        #[cfg(target_os = "macos")]
-                        activation_subscription: None,
-                        started_at: None,
-                        paused_at: None,
-                        paused_total: Duration::ZERO,
-                        elapsed: 0,
-                        measured_width: None,
-                        #[cfg(all(target_os = "macos", not(test)))]
-                        pending_native_bounds: Default::default(),
-                        countdown_generation: 0,
-                        countdown_active: false,
-                        countdown_remaining: None,
-                        focus_handle: cx.focus_handle(),
-                        recorder_error_subscription: None,
-                        recorder_terminal_error: None,
-                        #[cfg(target_os = "macos")]
-                        stop_previous_state: None,
-                        #[cfg(target_os = "macos")]
-                        stop_target_closed: false,
-                        #[cfg(target_os = "macos")]
-                        start_target_closed: false,
-                        #[cfg(target_os = "macos")]
-                        start_stop_requested: None,
-                        recording_error_generation: 0,
-                        #[cfg(target_os = "macos")]
-                        pointer_inside: false,
-                        tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
-                            "recording-control",
-                        ),
-                    });
-                    view.update(cx, |this, cx| {
-                        this.bounds_subscription =
-                            Some(cx.observe_window_bounds(window, |this, window, cx| {
-                                this.open_pending_device_menu(window, cx);
-                            }));
-                        #[cfg(target_os = "macos")]
-                        {
-                            this.activation_subscription =
-                                Some(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
-                        }
-                        #[cfg(target_os = "macos")]
-                        if this.camera && !this.request_pre_recording_camera(None, cx) {
+                )
+            };
+            let build_toolbar = |window: &mut Window, cx: &mut App| {
+                window.set_window_title("Poratake recording controls");
+                configure_toolbar_window(window);
+                let view = cx.new(|cx| Self {
+                    mode: Mode::PreRecording,
+                    preference_scope,
+                    target,
+                    target_name: target_name.map(SharedString::from),
+                    rect,
+                    display_id,
+                    window_id,
+                    project: None,
+                    system_audio: toggles.system_audio,
+                    #[cfg(target_os = "macos")]
+                    system_audio_pending: false,
+                    #[cfg(target_os = "macos")]
+                    microphone_pending: false,
+                    #[cfg(target_os = "macos")]
+                    camera_pending: false,
+                    #[cfg(target_os = "macos")]
+                    pause_pending: false,
+                    #[cfg(target_os = "macos")]
+                    camera_protection_pending: false,
+                    microphone: toggles.mic_enabled,
+                    camera: toggles.camera_enabled,
+                    camera_locked: false,
+                    camera_preview_visible: false,
+                    camera_preview_position: Arc::default(),
+                    camera_preview_subscription: None,
+                    selected_mic_id: config.selected_mic_id.clone(),
+                    selected_camera_id: config.camera.selected_device_id.clone(),
+                    selected_ios_id: config.ios_device.as_ref().map(|device| device.id.clone()),
+                    selected_ios_name: config
+                        .ios_device
+                        .as_ref()
+                        .and_then(|device| device.name.clone()),
+                    ios_devices: Vec::new(),
+                    devices: crate::system::devices::MediaDeviceLists::default(),
+                    device_request: 0,
+                    pending_device_menu: None,
+                    menu: MenuHandle::new(),
+                    bounds_subscription: None,
+                    #[cfg(target_os = "macos")]
+                    activation_subscription: None,
+                    started_at: None,
+                    paused_at: None,
+                    paused_total: Duration::ZERO,
+                    elapsed: 0,
+                    measured_width: None,
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    pending_native_bounds: Default::default(),
+                    countdown_generation: 0,
+                    countdown_active: false,
+                    countdown_remaining: None,
+                    focus_handle: cx.focus_handle(),
+                    recorder_error_subscription: None,
+                    recorder_terminal_error: None,
+                    #[cfg(target_os = "macos")]
+                    stop_previous_state: None,
+                    #[cfg(target_os = "macos")]
+                    stop_target_closed: false,
+                    #[cfg(target_os = "macos")]
+                    start_target_closed: false,
+                    #[cfg(target_os = "macos")]
+                    start_stop_requested: None,
+                    recording_error_generation: 0,
+                    #[cfg(target_os = "macos")]
+                    pointer_inside: false,
+                    tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
+                        "recording-control",
+                    ),
+                });
+                view.update(cx, |this, cx| {
+                    this.bounds_subscription =
+                        Some(cx.observe_window_bounds(window, |this, window, cx| {
+                            this.open_pending_device_menu(window, cx);
+                        }));
+                    #[cfg(target_os = "macos")]
+                    {
+                        this.activation_subscription =
+                            Some(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
+                    }
+                    #[cfg(target_os = "macos")]
+                    if this.camera && !this.request_pre_recording_camera(None, cx) {
+                        this.camera = false;
+                        this.persist_pre_recording_preference(
+                            RecordingPreference::Camera(false),
+                            cx,
+                        );
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    if this.camera {
+                        if let Err(error) = this.show_camera_preview(cx) {
                             this.camera = false;
                             this.persist_pre_recording_preference(
                                 RecordingPreference::Camera(false),
                                 cx,
                             );
+                            crate::windows::toast::Toast::show(
+                                cx,
+                                "Camera preview failed",
+                                error.to_string(),
+                            );
                         }
-                        #[cfg(not(target_os = "macos"))]
-                        if this.camera {
-                            if let Err(error) = this.show_camera_preview(cx) {
-                                this.camera = false;
-                                this.persist_pre_recording_preference(
-                                    RecordingPreference::Camera(false),
-                                    cx,
-                                );
-                                crate::windows::toast::Toast::show(
-                                    cx,
-                                    "Camera preview failed",
-                                    error.to_string(),
-                                );
-                            }
-                        }
-                    });
-                    let focus = view.read(cx).focus_handle.clone();
-                    window.focus(&focus, cx);
-                    view
+                    }
+                });
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                view
+            };
+            #[cfg(target_os = "linux")]
+            let opened = super::open_wayland_layer_or_fallback(
+                cx,
+                gpui::layer_shell::LayerShellOptions {
+                    namespace: "poratake-recording-control".to_string(),
+                    layer: gpui::layer_shell::Layer::Overlay,
+                    anchor: gpui::layer_shell::Anchor::TOP,
+                    margin: Some((
+                        px(chrome::RECORDING_TOP_MARGIN - chrome::RECORDING_BAR_PAD_TOP),
+                        px(0.0),
+                        px(0.0),
+                        px(0.0),
+                    )),
+                    keyboard_interactivity: gpui::layer_shell::KeyboardInteractivity::OnDemand,
+                    ..Default::default()
                 },
-            )
-            .ok()
-            .map(Into::into)
+                make_options,
+                build_toolbar,
+            );
+            #[cfg(not(target_os = "linux"))]
+            let opened = cx
+                .open_window(make_options(), build_toolbar)
+                .map(|handle| (handle, false));
+            opened.ok().map(|(handle, _)| handle).map(Into::into)
         });
         if registry::is_open(RegistryKind::RecordingControl, cx) {
             set_pre_recording_escape(true, cx);

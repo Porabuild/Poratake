@@ -323,7 +323,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config =
             std::sync::Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
-        config.update(|settings| settings.screenshot.freeze_screen = false);
+        config.update(|settings| {
+            settings.screenshot.freeze_screen = false;
+            settings.screenshot.hide_desktop_icons = true;
+        });
         let running = Arc::new(CaptureHide {
             daemon: DaemonHandle::with_binary(std::path::PathBuf::new()),
         });

@@ -930,7 +930,8 @@ fn overlay_options(
     };
     #[cfg(not(target_os = "macos"))]
     let window_bounds = display_bounds;
-    crate::windows::popup_window_options(
+    #[allow(unused_mut)]
+    let mut options = crate::windows::popup_window_options(
         window_bounds,
         crate::windows::PopupWindowConfig {
             focus,
@@ -938,7 +939,14 @@ fn overlay_options(
             display_id: Some(display_id),
             ..Default::default()
         },
-    )
+    );
+    #[cfg(target_os = "linux")]
+    if crate::system::linux_session::current()
+        == crate::system::linux_session::LinuxSession::Wayland
+    {
+        options.window_bounds = Some(gpui::WindowBounds::Maximized(window_bounds));
+    }
+    options
 }
 
 #[cfg(windows)]
@@ -1106,6 +1114,22 @@ fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
     let _ = (window, display_bounds);
 }
 
+#[cfg(target_os = "linux")]
+fn align_fallback_overlay_with_work_area(
+    handle: gpui::WindowHandle<AreaOverlay>,
+    display_id: DisplayId,
+    cx: &mut App,
+) {
+    let Some(display) = cx.find_display(display_id) else {
+        return;
+    };
+    let work = crate::system::work_area::work_area(display.as_ref());
+    let _ = handle.update(cx, |overlay, _, cx| {
+        overlay.display_bounds = work;
+        cx.notify();
+    });
+}
+
 fn reveal_overlay_window(window: &Window, launch: OverlayLaunch, active: bool) -> bool {
     if !active {
         return false;
@@ -1164,43 +1188,75 @@ fn open_overlay_window(
         }
     }
 
-    let opened = cx.open_window(
-        overlay_options(display_bounds, display_id, launch.focus),
-        |window, cx| {
-            prepare_overlay_window(window, display_bounds);
-            let scale = window.scale_factor();
-            let focus_handle = cx.focus_handle();
-            let view = cx.new(|_| {
-                let mut view = build(scale, focus_handle);
-                view.display_id = Some(u64::from(display_id) as u32);
-                view
-            });
-            view.update(cx, |overlay, cx| {
-                cx.observe_window_activation(window, |overlay, window, _| {
-                    let active = window.is_window_active();
-                    if !active {
-                        overlay.menu_activation_key = None;
-                        overlay.menu_return_focus = false;
-                    }
-                    #[cfg(all(windows, not(test)))]
-                    if active {
-                        prepare_overlay_window(window, overlay.display_bounds);
-                    }
-                })
-                .detach();
-                after_new(overlay, cx);
-            });
-            let shown = reveal_overlay_window(window, launch, active);
-            if launch.focus && shown {
-                window.activate_window();
-            }
-            let focus = view.read(cx).focus_handle.clone();
-            window.focus(&focus, cx);
+    let make_options = || overlay_options(display_bounds, display_id, launch.focus);
+    let build_overlay = |window: &mut Window, cx: &mut App| {
+        prepare_overlay_window(window, display_bounds);
+        let scale = window.scale_factor();
+        let focus_handle = cx.focus_handle();
+        let view = cx.new(|_| {
+            let mut view = build(scale, focus_handle);
+            view.display_id = Some(u64::from(display_id) as u32);
             view
+        });
+        view.update(cx, |overlay, cx| {
+            cx.observe_window_activation(window, |overlay, window, _| {
+                let active = window.is_window_active();
+                if !active {
+                    overlay.menu_activation_key = None;
+                    overlay.menu_return_focus = false;
+                }
+                #[cfg(all(windows, not(test)))]
+                if active {
+                    prepare_overlay_window(window, overlay.display_bounds);
+                }
+            })
+            .detach();
+            after_new(overlay, cx);
+        });
+        let shown = reveal_overlay_window(window, launch, active);
+        if launch.focus && shown {
+            window.activate_window();
+        }
+        let focus = view.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+        view
+    };
+    #[cfg(target_os = "linux")]
+    let opened = crate::windows::open_wayland_layer_or_fallback(
+        cx,
+        gpui::layer_shell::LayerShellOptions {
+            namespace: "poratake-overlay".to_string(),
+            layer: gpui::layer_shell::Layer::Overlay,
+            anchor: gpui::layer_shell::Anchor::TOP
+                | gpui::layer_shell::Anchor::BOTTOM
+                | gpui::layer_shell::Anchor::LEFT
+                | gpui::layer_shell::Anchor::RIGHT,
+            exclusive_zone: Some(px(-1.0)),
+            keyboard_interactivity: if launch.focus {
+                gpui::layer_shell::KeyboardInteractivity::Exclusive
+            } else {
+                gpui::layer_shell::KeyboardInteractivity::OnDemand
+            },
+            ..Default::default()
         },
+        make_options,
+        build_overlay,
     );
+    #[cfg(not(target_os = "linux"))]
+    let opened = cx
+        .open_window(make_options(), build_overlay)
+        .map(|handle| (handle, false));
     match opened {
-        Ok(handle) => {
+        Ok((handle, layer_shell)) => {
+            #[cfg(target_os = "linux")]
+            if !layer_shell
+                && crate::system::linux_session::current()
+                    == crate::system::linux_session::LinuxSession::Wayland
+            {
+                align_fallback_overlay_with_work_area(handle, display_id, cx);
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = layer_shell;
             #[cfg(all(target_os = "macos", not(test)))]
             let positioned = handle
                 .update(cx, |overlay, window, cx| {
@@ -1831,6 +1887,7 @@ impl AreaOverlay {
         launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
+        let prefetch_window_list = launch.focus;
         open_overlay_window(
             display_id,
             display_bounds,
@@ -1845,7 +1902,17 @@ impl AreaOverlay {
                 )
                 .with_all_in_one(choices)
             },
-            |this, cx| this.apply_all_in_one_target(cx),
+            move |this, cx| {
+                this.apply_all_in_one_target(cx);
+                if prefetch_window_list
+                    && !this.picking_windows
+                    && this.all_in_one.is_some_and(|choices| {
+                        choices.mode != crate::capture::all_in_one::Mode::Ocr
+                    })
+                {
+                    this.request_window_list(cx);
+                }
+            },
             true,
             "the all-in-one overlay",
             cx,
@@ -1964,34 +2031,35 @@ impl AreaOverlay {
             gpui::CursorStyle::Crosshair
         };
         self.hovered_window = None;
-        self.window_list_generation = self.window_list_generation.wrapping_add(1);
         self.picking_windows = choices.target == Target::Window;
-        if choices.target == Target::Window {
-            self.windows.clear();
-            let request_generation = self.window_list_generation;
-            let daemon = self.service.daemon.clone();
-            cx.spawn(async move |entity, cx| {
-                let windows = cx
-                    .background_executor()
-                    .spawn(async move { crate::capture::windows_list::list(&daemon) })
-                    .await;
-                let _ = entity.update(cx, |this, cx| {
-                    if !accepts_window_list(
-                        this.all_in_one,
-                        this.window_list_generation,
-                        request_generation,
-                    ) {
-                        return;
-                    }
-                    this.windows = windows;
-                    cx.notify();
-                });
-            })
-            .detach();
-        } else {
-            self.windows = Vec::new();
+        if self.picking_windows {
+            self.request_window_list(cx);
         }
         cx.notify();
+    }
+
+    fn request_window_list(&mut self, cx: &mut Context<Self>) {
+        self.window_list_generation = self.window_list_generation.wrapping_add(1);
+        let request_generation = self.window_list_generation;
+        let daemon = self.service.daemon.clone();
+        cx.spawn(async move |entity, cx| {
+            let windows = cx
+                .background_executor()
+                .spawn(async move { crate::capture::windows_list::list(&daemon) })
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if !accepts_window_list(
+                    this.all_in_one,
+                    this.window_list_generation,
+                    request_generation,
+                ) {
+                    return;
+                }
+                this.windows = windows;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2500,10 +2568,7 @@ fn accepts_window_list(
     request_generation: u64,
 ) -> bool {
     current_generation == request_generation
-        && all_in_one.is_some_and(|choices| {
-            choices.mode != crate::capture::all_in_one::Mode::Ocr
-                && choices.target == crate::capture::all_in_one::Target::Window
-        })
+        && all_in_one.is_some_and(|choices| choices.mode != crate::capture::all_in_one::Mode::Ocr)
 }
 
 fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::intent::CaptureIntent {
@@ -4019,7 +4084,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_window_lists_are_rejected_after_leaving_window_mode() {
+    fn window_lists_follow_the_overlay_generation_and_skip_ocr() {
         use crate::capture::all_in_one::{Choices, Mode, Target};
 
         assert!(super::accepts_window_list(
@@ -4046,7 +4111,7 @@ mod tests {
             2,
             2,
         ));
-        assert!(!super::accepts_window_list(
+        assert!(super::accepts_window_list(
             Some(Choices {
                 mode: Mode::Record,
                 target: Target::Screen,
@@ -4054,6 +4119,62 @@ mod tests {
             2,
             2,
         ));
+    }
+
+    #[herogpui::test]
+    fn switching_to_the_window_target_reuses_a_prefetched_list(cx: &mut TestAppContext) {
+        use crate::capture::all_in_one::{Choices, Mode, Target};
+        use crate::capture::windows_list::{Rect, WindowListItem};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            let mut overlay = super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(Choices {
+                mode: Mode::Screenshot,
+                target: Target::Area,
+            });
+            overlay.windows = vec![WindowListItem {
+                window_id: 7,
+                title: "Docs".into(),
+                owner_name: "Browser".into(),
+                owner_pid: 1,
+                bounds: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 300.0,
+                    height: 200.0,
+                },
+            }];
+            overlay
+        });
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+        let generation = overlay.read_with(cx, |overlay, _| overlay.window_list_generation());
+        overlay.update(cx, |overlay, cx| {
+            overlay.set_all_in_one_target(Target::Window, cx);
+        });
+        overlay.read_with(cx, |overlay, _| {
+            assert!(overlay.is_picking_windows());
+            assert!(overlay.window_list_generation() > generation);
+            assert_eq!(overlay.windows.len(), 1);
+            assert_eq!(overlay.windows[0].window_id, 7);
+        });
     }
 
     #[herogpui::test]
