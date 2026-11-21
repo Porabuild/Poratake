@@ -510,6 +510,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                     overlay.picking_color = false;
                     overlay.color_frame = None;
                     overlay.rect = None;
+                    overlay.handed_off = false;
                     overlay.interaction = None;
                     overlay.pointer = None;
                     park_overlay(window);
@@ -1127,7 +1128,7 @@ fn open_overlay_window(
             let updated = handle.update(cx, |overlay, window, cx| {
                 prepare_overlay_window(window, display_bounds);
                 let scale = window.scale_factor();
-                let focus_handle = cx.focus_handle();
+                let focus_handle = overlay.focus_handle.clone();
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                 let mut replacement = build(scale, focus_handle);
@@ -1136,12 +1137,13 @@ fn open_overlay_window(
                 replacement.color_frame_generation = color_frame_generation;
                 *overlay = replacement;
                 after_new(overlay, cx);
+                window.focus(&overlay.focus_handle, cx);
                 cx.notify();
+                window.refresh();
                 let shown = reveal_overlay_window(window, launch, active);
                 if launch.focus && shown {
                     window.activate_window();
                 }
-                window.focus(&overlay.focus_handle, cx);
             });
             if let Err(failure) = updated {
                 eprintln!("[overlay] failed to reuse {error}: {failure}");
