@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 function writeFileAtomic(
@@ -29,7 +28,7 @@ function writeFileAtomic(
       fs.renameSync(temporary, filePath);
     }
     ownsTemporary = false;
-    if (process.platform !== 'win32' && os.platform() !== 'win32') {
+    if (process.platform !== 'win32' && path.sep !== '\\') {
       const directory = fs.openSync(parent, 'r');
       try {
         fs.fsyncSync(directory);

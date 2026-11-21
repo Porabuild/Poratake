@@ -79,7 +79,7 @@ function failRetentionDirectorySync(): void {
   let calls = 0;
   fsync.mockImplementation(descriptor => {
     calls += 1;
-    if (calls === (os.platform() === 'win32' ? 1 : 3))
+    if (calls === (path.sep === '\\' ? 1 : 3))
       throw new Error('injected retention directory sync failure');
     originalFsync(descriptor);
   });
