@@ -486,7 +486,10 @@ fn main() {
             // during a live capture that takes over the display.
             Some("--preview-overlay") => {
                 let service = state::state(cx);
-                let Some(display) = cx.primary_display() else {
+                let Some(display) = cx
+                    .primary_display()
+                    .or_else(|| cx.displays().into_iter().next())
+                else {
                     eprintln!("[cli] no display to preview the overlay on");
                     return;
                 };

@@ -175,6 +175,8 @@ impl HistoryWindow {
                             crate::system::reduced_transparency::window_background(
                                 gpui::WindowBackgroundAppearance::Blurred,
                             )
+                        } else if cfg!(target_os = "linux") {
+                            gpui::WindowBackgroundAppearance::Transparent
                         } else {
                             gpui::WindowBackgroundAppearance::Opaque
                         },
