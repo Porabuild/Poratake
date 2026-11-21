@@ -4323,6 +4323,9 @@ impl Render for VideoEditorWindow {
                 window,
                 cx,
             ));
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
