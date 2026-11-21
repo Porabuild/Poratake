@@ -134,7 +134,10 @@ fn windows_file_path(host: &str, path: &str) -> Option<String> {
     if trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':' {
         return Some(trimmed.replace('/', "\\"));
     }
-    trimmed.starts_with('/').then(|| trimmed.replace('/', "\\"))
+    if path.starts_with('/') {
+        return Some(path.to_string());
+    }
+    (!path.is_empty()).then(|| format!("/{path}"))
 }
 
 pub fn resolve_cli_path(arg: &str) -> Option<String> {
@@ -520,6 +523,14 @@ mod tests {
 
     #[test]
     fn decodes_file_urls_without_treating_the_host_as_a_relative_path() {
+        assert_eq!(
+            windows_file_path("", "/Users/test/My Captures/shot 1.png").as_deref(),
+            Some("/Users/test/My Captures/shot 1.png")
+        );
+        assert_eq!(
+            windows_file_path("", "tmp/test.poratake").as_deref(),
+            Some("/tmp/test.poratake")
+        );
         assert_eq!(decode_file_url("file://localhost../.ssh/id_rsa"), None);
         assert_eq!(decode_file_url("file:///tmp/../secret"), None);
         if cfg!(windows) {
