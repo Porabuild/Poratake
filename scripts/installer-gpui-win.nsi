@@ -46,16 +46,33 @@ Section "Install"
     Delete "$SMPROGRAMS\Poratake.lnk"
   ${EndIf}
 
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\e53962ac-3318-5756-a837-be6d81ff8e94" "InstallLocation"
+  ${StrStr} $1 "$INSTDIR" "$0"
+  ${If} $0 != ""
+  ${AndIf} $0 != "$INSTDIR"
+  ${AndIf} $1 != "$INSTDIR"
+  ${AndIf} ${FileExists} "$0\Poratake.exe"
+    RMDir /r "$0"
+    Delete "$SMPROGRAMS\Poratake.lnk"
+  ${EndIf}
+
   WriteUninstaller "$INSTDIR\Uninstall Poratake.exe"
 
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\e53962ac-3318-5756-a837-be6d81ff8e94"
+
   CreateDirectory "$SMPROGRAMS\Poratake"
-  CreateShortcut "$SMPROGRAMS\Poratake\Poratake.lnk" "$INSTDIR\poratake-gpui.exe" "" "$INSTDIR\poratake-gpui.exe" 0
+  CreateShortcut "$SMPROGRAMS\Poratake\Poratake.lnk" "$INSTDIR\poratake-gpui.exe" "" "$INSTDIR\poratake.ico" 0
+
+  Delete "$DESKTOP\Poratake.lnk"
+  CreateShortcut "$DESKTOP\Poratake.lnk" "$INSTDIR\poratake-gpui.exe" "" "$INSTDIR\poratake.ico" 0
 
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+  WriteRegStr HKCU "Software\Classes\AppUserModelId\electron.app.Poratake" "DisplayName" "${PRODUCT_NAME}"
+  WriteRegStr HKCU "Software\Classes\AppUserModelId\electron.app.Poratake" "IconUri" "$INSTDIR\poratake.ico"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\poratake-gpui.exe"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\poratake.ico"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall Poratake.exe"'
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
@@ -88,6 +105,7 @@ Section "Uninstall"
 
   Delete "$SMPROGRAMS\Poratake\Poratake.lnk"
   RMDir "$SMPROGRAMS\Poratake"
+  Delete "$DESKTOP\Poratake.lnk"
 
   RMDir /r "$INSTDIR\daemon"
   RMDir /r "$INSTDIR\binaries"
@@ -100,10 +118,12 @@ Section "Uninstall"
   Delete "$INSTDIR\poratake-gpui.exe"
   Delete "$INSTDIR\Poratake.exe"
   Delete "$INSTDIR\Uninstall Poratake.exe"
+  Delete "$INSTDIR\poratake.ico"
   RMDir "$INSTDIR"
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake"
   DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\electron.app.Poratake"
   DeleteRegKey HKCU "Software\Classes\.poratake"
   DeleteRegKey HKCU "Software\Classes\Poratake.Recording"
 SectionEnd

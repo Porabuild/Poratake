@@ -34,7 +34,6 @@ function createFixture(
   const dmgPath = path.join(root, `Poratake-${version}-universal.dmg`);
   const zipPath = path.join(root, `Poratake-${version}-universal-mac.zip`);
   const metadataPath = path.join(root, 'latest-mac.yml');
-  const blockmapPath = `${zipPath}.blockmap`;
   const resourcesPath = path.join(
     root,
     'mac-universal',
@@ -47,7 +46,6 @@ function createFixture(
 
   writeFileSync(dmgPath, 'dmg-bytes');
   writeFileSync(zipPath, zip);
-  writeFileSync(blockmapPath, 'blockmap-bytes');
   for (const nativePath of [
     path.join(resourcesPath, 'daemon', 'poratake-daemon'),
     path.join(resourcesPath, 'binaries', 'ffmpeg', 'ffmpeg'),
@@ -79,7 +77,6 @@ function createFixture(
     dmgPath,
     zipPath,
     metadataPath,
-    blockmapPath,
     resourcesPath,
   };
 }
@@ -93,7 +90,6 @@ function validate(fixture: ReturnType<typeof createFixture>) {
       fixture.dmgPath,
       fixture.zipPath,
       fixture.metadataPath,
-      fixture.blockmapPath,
       fixture.resourcesPath,
     ],
     { encoding: 'utf8' }
@@ -134,21 +130,20 @@ describe('release asset validation', () => {
     expect(workflow).not.toContain('build-mac:local');
     expect(workflow).toContain('group: release-stable');
     expect(workflow).toContain('cancel-in-progress: false');
-    expect(workflow).toContain('timeout-minutes: 60');
     expect(workflow).toMatch(/build-macos:\r?\n {4}needs: prepare/);
     expect(workflow).toMatch(/build-windows:\r?\n {4}needs: prepare/);
     expect(workflow).not.toMatch(/build-windows:\r?\n {4}needs: build-macos/);
     expect(workflow).toContain('uses: actions/upload-artifact@v7');
     expect(workflow).toContain('uses: actions/download-artifact@v8');
-    expect(workflow).toContain('bun run build-native-mac');
-    expect(workflow).toContain('bun run package-mac');
+    expect(workflow).toContain('bun run build:gpui:mac');
+    expect(workflow).toContain('bash scripts/package-gpui-mac.sh');
     expect(workflow).toContain('brew install nasm pkg-config cmake');
     expect(workflow).toContain(
       'security set-keychain-settings -lut 21600 build.keychain'
     );
     expect(workflow).toContain('ELECTRON_SKIP_BINARY_DOWNLOAD: 1');
-    expect(workflow).toContain('path: ~/Library/Caches/electron');
-    expect(workflow).toContain('path: ~/AppData/Local/electron/Cache');
+    expect(workflow).not.toContain('~/Library/Caches/electron');
+    expect(workflow).not.toContain('~/AppData/Local/electron/Cache');
     expect(workflow).toContain('release-draft-${{ github.run_id }}');
     expect(workflow).toContain('-f tag_name="$TAG"');
     expect(workflow).not.toContain('git push origin "v$VERSION"');
@@ -164,9 +159,16 @@ describe('release asset validation', () => {
         'utf8'
       )
     ).toContain('ffmpeg already built, skipping');
-    expect(workflow).toContain('notarize.*options were unable to be generated');
+    const macPackageScript = readFileSync(
+      path.join(process.cwd(), 'scripts', 'package-gpui-mac.sh'),
+      'utf8'
+    );
+    expect(workflow).toContain('test -n "$PORATAKE_CODESIGN_IDENTITY"');
     expect(workflow).toContain('codesign --verify --deep --strict');
     expect(workflow).toContain('xcrun stapler validate');
+    expect(macPackageScript).toContain('notarytool submit');
+    expect(macPackageScript).toContain('stapler staple');
+    expect(macPackageScript).toContain('stapler validate');
     expect(releaseScript).toContain(
       '[[ "$NOTARIZE" == "false" ]] && [[ "$SKIP_UPLOAD" == "false" ]]'
     );

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Weak};
@@ -267,7 +267,7 @@ impl DaemonHandle {
             return Ok(());
         }
 
-        let mut command = Command::new(&self.inner.binary_path);
+        let mut command = crate::util::process::command(&self.inner.binary_path);
         #[cfg(target_os = "linux")]
         {
             command
@@ -281,10 +281,14 @@ impl DaemonHandle {
                 command.env("PORATAKE_FFMPEG_PATH", &ffmpeg);
             }
         }
+        #[cfg(windows)]
+        let stderr = Stdio::null();
+        #[cfg(not(windows))]
+        let stderr = Stdio::inherit();
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(stderr)
             .spawn()
             .map_err(|error| anyhow!("failed to spawn daemon: {error}"))?;
 

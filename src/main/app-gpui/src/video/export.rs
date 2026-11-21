@@ -445,7 +445,7 @@ fn convert_to_gif(
     let filter = format!(
         "[0:v]fps={fps},scale={width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[out]"
     );
-    let mut command = std::process::Command::new(ffmpeg);
+    let mut command = crate::util::process::command(ffmpeg);
     command
         .args([
             "-hide_banner",

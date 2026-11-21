@@ -7,11 +7,17 @@ Thanks for your interest in contributing to Poratake.
 - Discuss significant changes in an issue first.
 - Keep pull requests focused and small.
 - Follow the existing architecture, structure, and coding standards.
-- Poratake targets macOS 15 or later (Intel + Apple Silicon) and Windows 10/11 (x64 and arm64).
+- Poratake targets macOS 15 or later (Intel + Apple Silicon), Windows 10/11 (x64 and arm64), and Linux (x86_64 and aarch64; see [docs/omarchy.md](docs/omarchy.md) for the Wayland limits).
 
 ## Development Setup
 
-The native binaries are not committed to the repository. Build them once before your first run.
+GPUI (`src/main/app-gpui/`) is the shipping shell. The Electron shell in
+`src/renderer/` and its TypeScript main process are frozen and no longer part of
+a release; changes should target GPUI unless they are explicitly about the frozen
+reference.
+
+The native binaries are not committed to the repository. Build them once before
+your first run.
 
 ### macOS
 
@@ -19,6 +25,7 @@ The native binaries are not committed to the repository. Build them once before 
 xcode-select --install
 brew install nasm pkg-config cmake
 bun install
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ./scripts/build-daemon.sh
 ./scripts/build-ffmpeg.sh
 ./scripts/build-whisper.sh
@@ -30,32 +37,57 @@ bun install
 
 ### Windows
 
-Install Bun, Git, the Rust MSVC toolchain with the Windows SDK, CMake with the Visual Studio 2022 C++ toolchain, and MSYS2 UCRT64 with `gcc`, `make`, `nasm`, `pkg-config`, `curl`, and `tar`.
+Install Bun, Git, the Rust MSVC toolchain with the Windows SDK, CMake with the
+Visual Studio 2022 C++ toolchain, and MSYS2 UCRT64 with `gcc`, `make`, `nasm`,
+`pkg-config`, `curl`, and `tar`.
 
 ```powershell
 bun install
 bun run build-native-win
 ```
 
-`build-native-win` builds the Rust daemon, LGPL-compliant FFmpeg, and whisper.cpp. Create an NSIS installer with `bun run build-win`.
+`build-native-win` builds the Rust daemon, LGPL-compliant FFmpeg, and whisper.cpp.
+Create the GPUI NSIS installer with:
 
-Then start the app:
-
-```bash
-bun run dev
+```powershell
+cargo build --release --locked --manifest-path src/main/Cargo.toml --target x86_64-pc-windows-msvc --package poratake-daemon --package poratake-gpui
+bun run package:gpui:win
 ```
 
-Rebuild the daemon whenever you change anything under `src/main/daemon/` on macOS or `src/main/daemon-win/` on Windows. Use `bun run build-daemon-win` for the Windows daemon.
+### Linux
+
+Install the GPUI dependencies listed in `.github/workflows/checks.yml`, then:
+
+```bash
+cargo build --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui
+bun run dev:gpui
+```
+
+Omarchy 4.5 installation and the Wayland feature matrix are documented in
+[docs/omarchy.md](docs/omarchy.md).
+
+### Running the app
+
+```bash
+bun run dev:gpui
+```
+
+Rebuild the daemon whenever you change anything under `src/main/daemon/` on
+macOS or `src/main/daemon-win/` on Windows. Use `bun run build-daemon-win` for the
+Windows daemon.
 
 ### Testing auto-update in dev
 
-electron-updater does not run in dev mode, so the in-app updater shows no updates by default. To simulate one, start dev with a fake newer version (and optional release notes):
+Packaged builds check the GitHub release feed; dev mode does not. To simulate an
+update, start GPUI with a fake newer version:
 
 ```bash
-PORATAKE_DEV_UPDATE_VERSION=99.9.9 PORATAKE_DEV_UPDATE_NOTES="Test notes" bun run dev
+PORATAKE_DEV_UPDATE_VERSION=99.9.9 PORATAKE_DEV_UPDATE_NOTES="Test notes" bun run dev:gpui
 ```
 
-The update UI then reports that version as ready to install. Real update checks only run in packaged macOS builds against the GitHub release feed.
+Linux updates are disabled when the install directory is not writable, such as a
+root-owned `/opt` package installed by `dpkg`; update those through the package
+manager.
 
 ## Before You Open a Pull Request
 
@@ -63,11 +95,17 @@ The update UI then reports that version as ready to install. Real update checks 
 bun run checks
 ```
 
-Write tests for new features and bug fixes. Main-process tests run with Vitest.
+Write tests for new features and bug fixes. GPUI tests run with `cargo test`
+from `src/main/Cargo.toml`; the frozen Electron shell still runs its Vitest
+suite. `bun run checks` covers the TypeScript checks and that suite. Run
+`cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` for any GPUI or
+daemon change.
 
 ## Commit and Pull Request Titles
 
 Prefix titles with `feat:`, `fix:`, or `internal:` — release notes are generated from them.
+
+Release steps are documented in [docs/release.md](docs/release.md).
 
 ## Contribution Terms
 

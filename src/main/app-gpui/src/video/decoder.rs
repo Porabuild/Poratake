@@ -926,7 +926,7 @@ mod backend {
 
     fn describe(ffmpeg: &Path, path: &Path) -> Option<MediaInfo> {
         let output = crate::video::command_output(
-            ProcessCommand::new(ffmpeg)
+            crate::util::process::command(ffmpeg)
                 .args(["-hide_banner", "-i"])
                 .arg(path)
                 .stdin(Stdio::null()),
@@ -1298,7 +1298,7 @@ mod backend {
             filter
         };
         let seek_start = seek_start.max(0.0);
-        let mut command = ProcessCommand::new(ffmpeg);
+        let mut command = crate::util::process::command(ffmpeg);
         command.args(["-hide_banner", "-loglevel", "info", "-copyts"]);
         if seek_start > 0.0 {
             command.args(["-ss", &format!("{seek_start:.6}"), "-noaccurate_seek"]);

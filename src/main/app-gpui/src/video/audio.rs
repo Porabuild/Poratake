@@ -433,7 +433,7 @@ mod backend {
 mod backend {
     use std::io::{BufReader, Read as _};
     use std::path::Path;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     use super::Pcm;
 
@@ -443,7 +443,7 @@ mod backend {
 
     fn decode_with_ffmpeg(ffmpeg: &Path, path: &Path) -> Option<Pcm> {
         let output = crate::video::command_stdout(
-            Command::new(ffmpeg)
+            crate::util::process::command(ffmpeg)
                 .args(["-hide_banner", "-loglevel", "error", "-i"])
                 .arg(path)
                 .args([

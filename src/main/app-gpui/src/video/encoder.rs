@@ -538,7 +538,7 @@ mod backend {
 mod backend {
     use super::*;
     use std::io::{Read, Write};
-    use std::process::{Child, ChildStdin, Command as ProcessCommand, Stdio};
+    use std::process::{Child, ChildStdin, Stdio};
 
     pub fn run(
         path: PathBuf,
@@ -697,7 +697,7 @@ mod backend {
         settings: Settings,
         audio_path: Option<&Path>,
     ) -> Result<(Child, ChildStdin), String> {
-        let mut command = ProcessCommand::new(ffmpeg);
+        let mut command = crate::util::process::command(ffmpeg);
         command
             .args([
                 "-hide_banner",
@@ -818,7 +818,6 @@ mod backend {
     use super::*;
 
     use std::io::Write;
-    use std::process::Command as StdCommand;
     use std::process::{ChildStdin, Stdio};
     use std::sync::{Arc, Mutex};
 
@@ -870,7 +869,7 @@ mod backend {
                 settings.bitrate,
             )));
             args.push("-y".into());
-            let mut process = StdCommand::new(&ffmpeg)
+            let mut process = crate::util::process::command(&ffmpeg)
                 .args(&args)
                 .arg(&video_temp)
                 .stdin(Stdio::piped())
@@ -978,7 +977,7 @@ mod backend {
                 remove_staged_files(&video_temp, &None);
                 return moved;
             };
-            let mux = StdCommand::new(&ffmpeg)
+            let mux = crate::util::process::command(&ffmpeg)
                 .args(["-hide_banner", "-loglevel", "error", "-i"])
                 .arg(&video_temp)
                 .args([

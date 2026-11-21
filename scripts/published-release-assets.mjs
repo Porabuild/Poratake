@@ -3,16 +3,13 @@ export function macAssetNames(version) {
     `Poratake-${version}-universal.dmg`,
     `Poratake-${version}-universal-mac.zip`,
     'latest-mac.yml',
-    `Poratake-${version}-universal-mac.zip.blockmap`,
   ];
 }
 
 export function windowsAssetNames(version) {
   return [
     `Poratake-${version}-win-x64.exe`,
-    `Poratake-${version}-win-x64.exe.blockmap`,
     `Poratake-${version}-win-arm64.exe`,
-    `Poratake-${version}-win-arm64.exe.blockmap`,
     'latest.yml',
   ];
 }
@@ -20,7 +17,9 @@ export function windowsAssetNames(version) {
 export function linuxAssetNames(version) {
   return [
     `Poratake-${version}-linux-x64.tar.gz`,
+    `Poratake-${version}-linux-x64.deb`,
     `Poratake-${version}-linux-arm64.tar.gz`,
+    `Poratake-${version}-linux-arm64.deb`,
     'latest-linux.yml',
   ];
 }
