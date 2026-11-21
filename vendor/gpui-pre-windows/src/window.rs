@@ -370,6 +370,9 @@ impl WindowsWindowInner {
         let Some(open_status) = self.state.initial_placement.take() else {
             return Ok(());
         };
+        if unsafe { IsWindowVisible(self.hwnd).as_bool() } {
+            return Ok(());
+        }
         match open_status.state {
             WindowOpenState::Maximized => unsafe {
                 SetWindowPlacement(self.hwnd, &open_status.placement)

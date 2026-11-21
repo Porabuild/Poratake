@@ -319,7 +319,7 @@ impl TrayMenuWindow {
                 initial_bounds,
                 super::PopupWindowConfig {
                     focus: visible,
-                    show: !cfg!(target_os = "macos") && (!cfg!(windows) || !visible),
+                    show: !cfg!(any(target_os = "macos", windows)),
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
