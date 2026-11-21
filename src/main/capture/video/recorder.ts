@@ -1,6 +1,5 @@
 import { app, screen } from 'electron';
 import path from 'path';
-import { existsSync } from 'fs';
 import {
   hideRecordingOverlay,
   showRecordedWindowOutline,
@@ -82,12 +81,21 @@ async function handleTerminalRecordingError(
   currentRecordingPath = null;
   currentDuration = 0;
   hideRecordingTray();
-  await hideRecordingOverlay(true);
-
-  try {
-    await onFailure?.(error, outputPath);
-  } catch (failureError) {
-    console.error('Failed to handle recording error:', failureError);
+  const [stopResult, , failureResult] = await Promise.allSettled([
+    Promise.resolve().then(() =>
+      daemon.call('screen-recorder', 'stop', undefined, 60000)
+    ),
+    Promise.resolve().then(() => hideRecordingOverlay(true)),
+    Promise.resolve().then(() => onFailure?.(error, outputPath)),
+  ]);
+  if (stopResult.status === 'rejected') {
+    console.error(
+      'Failed to finalize recording after error:',
+      stopResult.reason
+    );
+  }
+  if (failureResult.status === 'rejected') {
+    console.error('Failed to handle recording error:', failureResult.reason);
   }
 }
 
@@ -125,12 +133,20 @@ export function createRecordingProject(): string {
   let projectPath = path.join(recordingsDir, generatedName);
   let suffix = 2;
 
-  while (existsSync(projectPath)) {
-    projectPath = path.join(recordingsDir, `${name} ${suffix}${ext}`);
-    suffix++;
+  while (true) {
+    try {
+      return createProjectFolder(projectPath);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        (error as NodeJS.ErrnoException).code !== 'EEXIST'
+      ) {
+        throw error;
+      }
+      projectPath = path.join(recordingsDir, `${name} ${suffix}${ext}`);
+      suffix++;
+    }
   }
-
-  return createProjectFolder(projectPath);
 }
 
 export function generateRecordingExportName(extension = 'mp4'): string {
@@ -484,6 +500,7 @@ async function stopActiveRecording(
     outputPath: finalPath,
     cursorPath: response?.cursorPath,
     cameraPath: response?.cameraPath,
+    cameraTrackMissing: response?.cameraTrackMissing,
     keysPath: response?.keysPath,
     systemAudioPath: response?.systemAudioPath,
     micAudioPath: response?.micAudioPath,

@@ -36,9 +36,31 @@ struct ItemMedia {
     features: RecordingFeatures,
 }
 
+fn load_media_batch(
+    pending: impl IntoIterator<Item = (String, PathBuf, HistoryItemType)>,
+    canceled: smol::channel::Receiver<()>,
+) -> Vec<(String, ItemMedia)> {
+    pending
+        .into_iter()
+        .take_while(|_| !canceled.is_closed())
+        .map(|(id, path, kind)| {
+            let media = ItemMedia {
+                thumbnail: crate::thumbnails::ensure(&path, kind),
+                features: if kind == HistoryItemType::Video {
+                    recording_features(&path)
+                } else {
+                    RecordingFeatures::default()
+                },
+            };
+            (id, media)
+        })
+        .collect()
+}
+
 pub struct HistoryWindow {
     items: Vec<HistoryItem>,
     media: HashMap<String, ItemMedia>,
+    media_cancel: Option<smol::channel::Sender<()>>,
     filter: HistoryFilter,
     sort_order: HistorySortOrder,
     layout: HistoryLayout,
@@ -54,6 +76,9 @@ pub struct HistoryWindow {
     activation: Option<gpui::Subscription>,
     revealing: bool,
     closing: bool,
+    opening_screenshot: bool,
+    mutation_status: Option<&'static str>,
+    loading: bool,
 }
 
 impl HistoryWindow {
@@ -62,6 +87,7 @@ impl HistoryWindow {
         let mut view = Self {
             items: Vec::new(),
             media: HashMap::new(),
+            media_cancel: None,
             filter: HistoryFilter::parse(&preferences.filter),
             sort_order: HistorySortOrder::parse(&preferences.sort_order),
             layout: HistoryLayout::parse(&preferences.layout),
@@ -77,6 +103,9 @@ impl HistoryWindow {
             activation: None,
             revealing: cfg!(windows),
             closing: false,
+            opening_screenshot: false,
+            mutation_status: None,
+            loading: true,
         };
         view.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
             if this.revealing
@@ -87,7 +116,7 @@ impl HistoryWindow {
             }
             this.close(window, cx);
         }));
-        view.reload(cx);
+        Self::load_items(cx);
         view
     }
 
@@ -99,13 +128,20 @@ impl HistoryWindow {
     #[cfg(feature = "parity")]
     pub(crate) fn parity_state(&self) -> (bool, bool, usize, HistoryLayout) {
         (
-            self.items
-                .iter()
-                .all(|item| self.media.contains_key(&item.id)),
+            !self.loading
+                && self
+                    .items
+                    .iter()
+                    .all(|item| self.media.contains_key(&item.id)),
             self.keyboard_navigation,
             self.selected_index,
             self.layout,
         )
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn has_items_for_parity(&self) -> bool {
+        !self.loading && !self.items.is_empty()
     }
 
     #[cfg(feature = "parity")]
@@ -114,7 +150,13 @@ impl HistoryWindow {
     }
 
     pub fn toggle(tray_rect: Option<TrayRect>, cx: &mut App) {
-        registry::toggle(RegistryKind::History, cx, |cx| {
+        if let Some(handle) =
+            registry::handle(RegistryKind::History, cx).and_then(|handle| handle.downcast::<Self>())
+        {
+            let _ = handle.update(cx, |this, window, cx| this.close(window, cx));
+            return;
+        }
+        registry::open_or_activate(RegistryKind::History, cx, |cx| {
             let store = crate::state::state(cx).config;
             let (bounds, display_id) = popover_placement(tray_rect, cx);
             let window_bounds = display_id
@@ -180,12 +222,25 @@ impl HistoryWindow {
         });
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        self.items = history_store::load_history();
-        self.now_ms = chrono::Local::now().timestamp_millis();
-        self.selected_index = 0;
-        self.load_media(cx);
-        cx.notify();
+    fn load_items(cx: &mut Context<Self>) {
+        cx.spawn(async move |entity, cx| {
+            let items = cx
+                .background_executor()
+                .spawn(async { history_store::load_history() })
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if this.closing || !this.loading {
+                    return;
+                }
+                this.loading = false;
+                this.items = items;
+                this.now_ms = chrono::Local::now().timestamp_millis();
+                this.selected_index = 0;
+                this.load_media(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -193,7 +248,12 @@ impl HistoryWindow {
             return;
         }
         self.closing = true;
-        registry::close(RegistryKind::History, cx);
+        self.media_cancel.take();
+        self.media.clear();
+        registry::forget(RegistryKind::History, cx);
+        #[cfg(all(target_os = "macos", not(test)))]
+        crate::system::window_visibility::disable_macos_transitions(window);
+        crate::system::memory::reclaim_idle_memory();
         window.remove_window();
     }
 
@@ -214,26 +274,19 @@ impl HistoryWindow {
             return;
         }
 
-        let task = cx.background_executor().spawn(async move {
-            pending
-                .into_iter()
-                .map(|(id, path, kind)| {
-                    let media = ItemMedia {
-                        thumbnail: crate::thumbnails::ensure(&path, kind),
-                        features: if kind == HistoryItemType::Video {
-                            recording_features(&path)
-                        } else {
-                            RecordingFeatures::default()
-                        },
-                    };
-                    (id, media)
-                })
-                .collect::<Vec<_>>()
-        });
+        let (cancel, canceled) = smol::channel::bounded(1);
+        self.media_cancel = Some(cancel);
+        let task = cx
+            .background_executor()
+            .spawn(async move { load_media_batch(pending, canceled) });
 
         cx.spawn(async move |entity, cx| {
             let resolved = task.await;
             let _ = entity.update(cx, |this, cx| {
+                if this.closing {
+                    return;
+                }
+                this.media_cancel.take();
                 this.media.extend(resolved);
                 cx.notify();
             });
@@ -310,15 +363,27 @@ impl HistoryWindow {
     }
 
     pub fn open_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing || self.opening_screenshot || self.mutation_status.is_some() {
+            return;
+        }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
         let path = item.original_path.clone();
         let kind = item.r#type;
         if kind == HistoryItemType::Screenshot {
-            if crate::open_editor_for(cx, &path) {
-                self.close(window, cx);
-            }
+            self.opening_screenshot = true;
+            let prepared = crate::prepare_editor_open(cx, path.clone());
+            cx.spawn_in(window, async move |entity, cx| {
+                let (state, image) = prepared.await;
+                let _ = entity.update_in(cx, |this, window, cx| {
+                    this.opening_screenshot = false;
+                    if !this.closing && crate::open_editor_with_image(cx, &path, state, image) {
+                        this.close(window, cx);
+                    }
+                });
+            })
+            .detach();
             return;
         }
         self.close(window, cx);
@@ -338,109 +403,155 @@ impl HistoryWindow {
         cx.notify();
     }
 
+    fn can_mutate(&self) -> bool {
+        !self.closing && !self.loading && !self.opening_screenshot && self.mutation_status.is_none()
+    }
+
     pub fn delete_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.can_mutate() {
+            return;
+        }
         let Some(item) = self.visible().get(index).map(|item| (*item).clone()) else {
             return;
         };
-        match history_store::delete_item(&item.id) {
-            history_store::DeleteOutcome::Deleted => {}
-            history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "History recovery copy remains",
-                    format!("Could not remove the saved recovery copy at {path}"),
-                );
-            }
-            history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "History update failed",
-                    format!(
-                        "The capture was deleted, but its history entry may return after restart: {error}"
-                    ),
-                );
-            }
-            history_store::DeleteOutcome::SourceDeletionFailed
-            | history_store::DeleteOutcome::HistoryUnavailable
-            | history_store::DeleteOutcome::NotFound => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Delete failed",
-                    "The capture could not be deleted",
-                );
-                return;
-            }
-        }
-        self.media.remove(&item.id);
-        self.items.retain(|candidate| candidate.id != item.id);
-
-        let remaining = self.visible().len();
-        self.selected_index = match remaining {
-            0 => 0,
-            count if self.selected_index >= count => count - 1,
-            _ => self.selected_index,
-        };
+        self.mutation_status = Some("Deleting capture…");
         cx.notify();
+        let id = item.id;
+        cx.spawn(async move |entity, cx| {
+            let delete_id = id.clone();
+            let outcome = cx.background_executor()
+                .spawn(async move { history_store::delete_item(&delete_id) })
+                .await;
+            let deleted = cx.update(|cx| {
+                match outcome {
+                    history_store::DeleteOutcome::Deleted => {}
+                    history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "History recovery copy remains",
+                            format!("Could not remove the saved recovery copy at {path}"),
+                        );
+                    }
+                    history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "History update failed",
+                            format!(
+                                "The capture was deleted. Its history entry may return after restart. {error}"
+                            ),
+                        );
+                    }
+                    history_store::DeleteOutcome::SourceDeletionFailed
+                    | history_store::DeleteOutcome::HistoryUnavailable
+                    | history_store::DeleteOutcome::NotFound => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Delete failed",
+                            "The capture could not be deleted",
+                        );
+                        return false;
+                    }
+                }
+                true
+            });
+            let _ = entity.update(cx, |this, cx| {
+                this.mutation_status = None;
+                if !deleted {
+                    cx.notify();
+                    return;
+                }
+                this.media.remove(&id);
+                this.items.retain(|candidate| candidate.id != id);
+
+                let remaining = this.visible().len();
+                this.selected_index = match remaining {
+                    0 => 0,
+                    count if this.selected_index >= count => count - 1,
+                    _ => this.selected_index,
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn clear_all(&mut self, cx: &mut Context<Self>) {
-        let outcome = match history_store::clear_history() {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                crate::windows::toast::Toast::show(
-                    cx,
-                    "Clear history failed",
-                    format!("History could not be read; no captures were deleted: {error}"),
-                );
-                return;
-            }
-        };
-        let retained_ids: std::collections::HashSet<_> = outcome
-            .retained
-            .iter()
-            .map(|item| item.id.clone())
-            .collect();
-        self.items = outcome.retained;
-        self.media.retain(|id, _| retained_ids.contains(id));
-        self.selected_index = 0;
+        if !self.can_mutate() {
+            return;
+        }
+        self.mutation_status = Some("Clearing history…");
         cx.notify();
-        if !outcome.history_updated || outcome.source_deletion_failures > 0 {
-            let source_failure = if outcome.source_deletion_failures == 0 {
-                String::new()
-            } else {
-                format!(
-                    "{} capture(s) could not be deleted. ",
-                    outcome.source_deletion_failures
-                )
-            };
-            let history_failure = if outcome.history_updated {
-                String::new()
-            } else {
-                format!(
-                    "Deleted captures may return in history after restart: {}.",
-                    outcome
-                        .history_error
-                        .as_deref()
-                        .unwrap_or("history write failed")
-                )
-            };
-            crate::windows::toast::Toast::show(
-                cx,
-                if outcome.history_updated {
-                    "Clear history incomplete"
-                } else {
-                    "History update failed"
-                },
-                format!("{source_failure}{history_failure}"),
-            );
-        }
-        if let Some(path) = outcome.backup_warning.as_deref() {
-            crate::windows::toast::Toast::show(
-                cx,
-                "History recovery copy remains",
-                format!("Could not remove the saved recovery copy at {path}"),
-            );
-        }
+        cx.spawn(async move |entity, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { history_store::clear_history() })
+                .await;
+            let retained = cx.update(|cx| {
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Clear history failed",
+                            format!("History could not be read. No captures were deleted. {error}"),
+                        );
+                        return None;
+                    }
+                };
+                if !outcome.history_updated || outcome.source_deletion_failures > 0 {
+                    let source_failure = if outcome.source_deletion_failures == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            "{} capture(s) could not be deleted. ",
+                            outcome.source_deletion_failures
+                        )
+                    };
+                    let history_failure = if outcome.history_updated {
+                        String::new()
+                    } else {
+                        format!(
+                            "Deleted captures may return in history after restart: {}.",
+                            outcome
+                                .history_error
+                                .as_deref()
+                                .unwrap_or("history write failed")
+                        )
+                    };
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        if outcome.history_updated {
+                            "Clear history incomplete"
+                        } else {
+                            "History update failed"
+                        },
+                        format!("{source_failure}{history_failure}"),
+                    );
+                }
+                if let Some(path) = outcome.backup_warning.as_deref() {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "History recovery copy remains",
+                        format!("Could not remove the saved recovery copy at {path}"),
+                    );
+                }
+                Some(outcome.retained)
+            });
+            let _ = entity.update(cx, |this, cx| {
+                this.mutation_status = None;
+                let Some(retained) = retained else {
+                    cx.notify();
+                    return;
+                };
+                let retained_ids: std::collections::HashSet<_> =
+                    retained.iter().map(|item| item.id.clone()).collect();
+                this.items = retained;
+                this.media.retain(|id, _| retained_ids.contains(id));
+                this.selected_index = 0;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -598,13 +709,30 @@ impl Render for HistoryWindow {
             .when(self.layout == HistoryLayout::Grid, |el| {
                 el.flex_row()
                     .flex_wrap()
+                    .content_start()
                     .gap(px(crate::ui::chrome::HISTORY_GRID_GAP))
             })
             .when(self.layout == HistoryLayout::List, |el| {
                 el.flex_col().gap(px(crate::ui::chrome::HISTORY_LIST_GAP))
             });
 
-        if !has_items {
+        if self.loading {
+            scroller = scroller.flex_col().child(
+                div()
+                    .debug_selector(|| "history-loading".to_string())
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .text_color(theme.muted_foreground)
+                    .text_center()
+                    .text_size(px(crate::ui::chrome::TEXT_SM))
+                    .child(crate::ui::icon::spinner_element("history-loading", px(16.)))
+                    .child(div().w_full().child("Loading recent captures…")),
+            );
+        } else if !has_items {
             scroller = scroller.flex_col().child(toolbar::empty_state(
                 crate::ui::chrome::HISTORY_EMPTY_ICON,
                 "No captures yet",
@@ -654,6 +782,12 @@ impl Render for HistoryWindow {
             }
         }
 
+        let background =
+            if cfg!(target_os = "macos") && !crate::system::reduced_transparency::enabled() {
+                theme.background.opacity(0.9)
+            } else {
+                theme.background
+            };
         let content = crate::ui::font::root()
             .id("history-window")
             .key_context("HistoryWindow")
@@ -665,9 +799,23 @@ impl Render for HistoryWindow {
             .flex_col()
             .overflow_hidden()
             .rounded(px(crate::ui::chrome::HISTORY_RADIUS))
-            .when(!cfg!(target_os = "macos"), |el| el.bg(theme.background))
+            .bg(background)
             .text_color(theme.foreground)
             .child(toolbar::header(has_items, columns == 1, &theme, cx))
+            .children(self.mutation_status.map(|status| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(crate::ui::chrome::HISTORY_CONTENT_PAD))
+                    .text_size(px(crate::ui::chrome::TEXT_SM))
+                    .text_color(theme.muted_foreground)
+                    .child(crate::ui::icon::spinner_element(
+                        "history-mutation",
+                        px(14.),
+                    ))
+                    .child(status)
+            }))
             .when(has_items, |el| {
                 el.child(toolbar::toolbar(
                     self.filter,
@@ -698,6 +846,26 @@ impl Render for HistoryWindow {
 mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
+
+    #[test]
+    fn thumbnail_batch_stops_after_cancellation_between_items() {
+        let directory = tempfile::tempdir().unwrap();
+        let (cancel, canceled) = smol::channel::bounded(1);
+        let mut cancel = Some(cancel);
+        let pending = (0..4).map(|index| {
+            if index == 1 {
+                cancel.take();
+            }
+            (
+                index.to_string(),
+                directory.path().join(format!("{index}.png")),
+                HistoryItemType::Screenshot,
+            )
+        });
+        let resolved = load_media_batch(pending, canceled);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, "0");
+    }
 
     #[test]
     fn history_closes_when_the_window_blurs() {
@@ -749,6 +917,70 @@ mod tests {
     }
 
     #[herogpui::test]
+    fn history_retries_after_open_failure_and_prepares_only_one_editor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::editor::EditorWindow;
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let path = directory.path().join("capture.png");
+        let pixels = image::RgbaImage::from_pixel(20, 10, image::Rgba([64, 112, 192, 255]));
+        pixels.save(&path).unwrap();
+        let missing = directory.path().join("missing.png");
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let history = cx.add_window(|window, cx| {
+            let mut history = HistoryWindow::new(store, window, cx);
+            history.loading = false;
+            history.items = [(&missing, 2), (&path, 1)]
+                .into_iter()
+                .map(|(path, timestamp)| HistoryItem {
+                    id: timestamp.to_string(),
+                    timestamp,
+                    original_path: path.to_string_lossy().into_owned(),
+                    r#type: HistoryItemType::Screenshot,
+                    editor_state: None,
+                    duration: None,
+                })
+                .collect();
+            history.filter = HistoryFilter::All;
+            history.sort_order = HistorySortOrder::Newest;
+            history
+        });
+        let find_editors = |cx: &App| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .collect::<Vec<_>>()
+        };
+
+        history
+            .update(cx, |history, window, cx| history.open_index(0, window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(cx.read(|cx| find_editors(cx).is_empty()));
+        assert!(cx.read(|cx| cx.windows().contains(&history.into())));
+
+        history
+            .update(cx, |history, window, cx| {
+                history.open_index(1, window, cx);
+                history.open_index(1, window, cx);
+                assert!(find_editors(cx).is_empty());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert!(!cx.windows().contains(&history.into()));
+            let editors = find_editors(cx);
+            assert_eq!(editors.len(), 1);
+            let editor = editors[0].read(cx).unwrap();
+            assert_eq!(PathBuf::from(&editor.file_path), path);
+            let png = editor.export_png().unwrap();
+            assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8(), pixels);
+        });
+    }
+
+    #[herogpui::test]
     fn history_layout_fits_narrow_windows(cx: &mut gpui::TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
@@ -770,6 +1002,7 @@ mod tests {
                     })
                     .collect(),
                 media: HashMap::new(),
+                media_cancel: None,
                 filter: HistoryFilter::All,
                 sort_order: HistorySortOrder::Newest,
                 layout: HistoryLayout::Grid,
@@ -785,11 +1018,40 @@ mod tests {
                 activation: None,
                 revealing: false,
                 closing: false,
+                opening_screenshot: false,
+                mutation_status: None,
+                loading: false,
             }
         });
         visual.update(|_, cx| {
             crate::theme::vars::update_theme(cx, crate::theme::presets::ThemeMode::Light, "default")
         });
+        visual.simulate_scale_factor_change(2.0);
+        visual.simulate_resize(size(px(400.0), px(500.0)));
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.loading = true;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("history-loading").is_some());
+        assert!(visual.debug_bounds("history-card-first").is_none());
+        visual.update(|_, cx| {
+            history.update(cx, |history, cx| {
+                history.loading = false;
+                cx.notify();
+            });
+        });
+        visual.settle();
+        let first = visual.expect("history-card-first");
+        let second = visual.expect("history-card-second");
+        let third = visual.expect("history-card-third");
+        assert_eq!(first.top(), second.top());
+        assert_eq!(
+            third.top() - first.bottom(),
+            px(crate::ui::chrome::HISTORY_GRID_GAP)
+        );
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
             visual.simulate_scale_factor_change(scale);
             for width in [140.0, 148.0] {

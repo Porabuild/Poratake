@@ -97,3 +97,154 @@ pub fn popup_window_options(bounds: Bounds<Pixels>, config: PopupWindowConfig) -
         ..Default::default()
     }
 }
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn remove_popup_frame(window: &gpui::Window) {
+    use cocoa::appkit::NSWindowStyleMask;
+    use cocoa::base::nil;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let native_window: cocoa::base::id = msg_send![view, window];
+        if native_window == nil {
+            return;
+        }
+        let style: NSWindowStyleMask = msg_send![native_window, styleMask];
+        let style = style
+            & !(NSWindowStyleMask::NSTitledWindowMask
+                | NSWindowStyleMask::NSFullSizeContentViewWindowMask);
+        let _: () = msg_send![native_window, setStyleMask: style];
+        let _: () = msg_send![native_window, setHasShadow: false];
+    }
+}
+
+#[cfg(any(test, not(target_os = "macos")))]
+pub(crate) fn remove_popup_frame(_window: &gpui::Window) {}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn macos_window_and_primary_height(window: &gpui::Window) -> Option<(cocoa::base::id, f64)> {
+    use cocoa::appkit::NSScreen;
+    use cocoa::base::nil;
+    use cocoa::foundation::{NSArray, NSRect};
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let native_window: cocoa::base::id = msg_send![view, window];
+        let screens = NSScreen::screens(nil);
+        if native_window == nil || NSArray::count(screens) == 0 {
+            return None;
+        }
+        let primary = screens.objectAtIndex(0);
+        let primary_frame: NSRect = msg_send![primary, frame];
+        Some((native_window, primary_frame.size.height))
+    }
+}
+
+pub(crate) fn desktop_window_bounds(window: &gpui::Window) -> Bounds<Pixels> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    if let Some((native_window, primary_height)) = macos_window_and_primary_height(window) {
+        use cocoa::foundation::NSRect;
+        use objc::{msg_send, sel, sel_impl};
+
+        let frame: NSRect = unsafe { msg_send![native_window, frame] };
+        return Bounds::new(
+            point(
+                px(frame.origin.x as f32),
+                px((primary_height - frame.origin.y - frame.size.height) as f32),
+            ),
+            gpui::size(px(frame.size.width as f32), px(frame.size.height as f32)),
+        );
+    }
+    window.bounds()
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixels>) -> bool {
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    use objc::{msg_send, sel, sel_impl};
+
+    let Some((native_window, primary_height)) = macos_window_and_primary_height(window) else {
+        return false;
+    };
+    unsafe {
+        let frame = NSRect::new(
+            NSPoint::new(
+                f64::from(f32::from(bounds.origin.x)),
+                primary_height - f64::from(f32::from(bounds.origin.y + bounds.size.height)),
+            ),
+            NSSize::new(
+                f64::from(f32::from(bounds.size.width)),
+                f64::from(f32::from(bounds.size.height)),
+            ),
+        );
+        let _: () = msg_send![native_window, setFrame: frame display: true];
+        true
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn pin_macos_window_contents(window: &gpui::Window, bottom_aligned: bool) {
+    use cocoa::base::{id, nil, BOOL, YES};
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[link(name = "QuartzCore", kind = "framework")]
+    unsafe extern "C" {
+        static kCAGravityTop: id;
+        static kCAGravityBottom: id;
+    }
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let layer: id = msg_send![appkit.ns_view.as_ptr() as id, layer];
+        if layer != nil {
+            let flipped: BOOL = msg_send![layer, contentsAreFlipped];
+            let gravity = if bottom_aligned != (flipped == YES) {
+                kCAGravityBottom
+            } else {
+                kCAGravityTop
+            };
+            let _: () = msg_send![layer, setContentsGravity: gravity];
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn macos_window_id(window: &gpui::Window) -> Option<i64> {
+    use cocoa::base::nil;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let native_window: cocoa::base::id = msg_send![view, window];
+        if native_window == nil {
+            return None;
+        }
+        let number: isize = msg_send![native_window, windowNumber];
+        (number >= 0).then_some(number as i64)
+    }
+}

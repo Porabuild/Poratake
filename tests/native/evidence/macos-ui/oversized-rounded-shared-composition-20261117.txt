@@ -1,0 +1,70 @@
+macOS GPUI oversized rounded screenshot composition, 2026-11-17, source ad341ff2
+
+An isolated Metal fixture generated textured 17,024x128 and 128x17,024 images
+with opaque or varying-alpha pixels. It used an unframed wallpaper, padding 20,
+rounded corners 24, no inset and no shadow. Before the change, at simulated
+125% and 25% zoom the first horizontal opaque preview differed from its
+reopened PNG at 17,218 pixels by more than two channel levels, maximum 123.
+The preview now rasterizes the static rounded image and wallpaper together
+before tiling. Bounded annotation patches replay the source and prior
+annotations within the original screenshot bounds, reuse the full-size rounded
+corner mask, and place the wallpaper behind the clipped result.
+
+For a solid wallpaper, a 48-run matrix covered both app appearances, simulated
+100%, 125% and 200% scales, 25% and 50% zoom, and no annotation or one
+blackout, blur or pixelation across a tile seam. Each orientation/alpha case
+was compared before and after panning: 384 visible-region comparisons had zero
+pixels more than two channel levels apart; the maximum difference was one.
+Removing each enabled corner or redaction effect changed exported pixels.
+
+For a transparent wallpaper, 12 runs covered both appearances, all three
+simulated scales and both zooms without an annotation; six more covered the
+three redactions at 125% and 50% zoom in both appearances. All 144
+visible-region comparisons matched within one level. A representative final
+run also asserted zero alpha at the PNG's outer corner.
+
+Ten further runs placed a rectangle and redaction at a visible rounded corner
+with editor-supported padding: blackout at 100%, 125% and 200%, and blur and
+pixelation at 125%, in both appearances. They used 100% zoom, 300 padding at
+100% and 125%, and 200 padding at 200% to keep the corner visible. All 40
+orientation/alpha comparisons matched the reopened PNG within one level.
+The exported blackout and shape colors and the visible corner were asserted.
+
+The generated before, after and reopened 125% previews are retained as:
+  oversized-rounded-125-preview-20261117.png
+  oversized-rounded-125-after-20261117.png
+  oversized-rounded-125-reopened-20261117.png
+
+CPU tests compare rounded annotation patches against flattened exports for
+opaque and translucent input, blackout, blur, pixelation and overlapping
+redactions. Another test checks native and scaled corner sampling. The editor
+suite also checks backdrop retirement and source replacement at unchanged
+oversized dimensions.
+
+The path retains an additional full-size wallpaper matte. At 17,074x178 this
+is approximately 11.59 MiB of RGBA pixel storage, excluding source images,
+composed tiles, temporary allocations and GPU upload. This is a size
+calculation, not a measurement of peak memory or interactive latency.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-rounded-shared-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.25 PORATAKE_PARITY_LARGE_FRAME=none PORATAKE_PARITY_LARGE_SHADOW=0 PORATAKE_PARITY_LARGE_INSET=0 PORATAKE_PARITY_LARGE_CORNERS=24 PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
+
+The seam matrix varied DPI, zoom and theme as above and set
+PORATAKE_PARITY_LARGE_ANNOTATION to blackout, blur or pixelate where applicable.
+The transparent matrix added PORATAKE_PARITY_LARGE_TRANSPARENT_BACKGROUND=1.
+The visible-corner matrix set PORATAKE_PARITY_LARGE_PADDING to 300 or 200,
+zoom to 1, and annotation to corner, corner-blur or corner-pixelate. Every run
+used generated content and an isolated profile.
+
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui editor::
+350 passed, 4 ignored.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the existing unrelated editor/window.rs lint suppressed.
+
+These checks cover visible regions, not the entire oversized image at once.
+They do not exercise live capture, the native Save dialog, real media, physical
+displays or input, interactive annotation gestures, attached layers, arbitrary
+zoom, translucent custom wallpaper, or other platforms. Peak memory and
+interactive performance remain unmeasured. No privacy setting was changed and
+no capture permission was requested.

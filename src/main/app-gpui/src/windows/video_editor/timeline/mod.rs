@@ -207,10 +207,18 @@ pub fn time_at_position(
     pixels_per_second: f32,
     total_duration: f64,
 ) -> f64 {
+    raw_time_at_position(x, scroll, pixels_per_second).clamp(0.0, total_duration.max(0.0))
+}
+
+pub fn raw_time_at_position(
+    x: gpui::Pixels,
+    scroll: &gpui::ScrollHandle,
+    pixels_per_second: f32,
+) -> f64 {
     let bounds = scroll.bounds();
     let offset = scroll.offset().x;
     let local = f32::from(x - bounds.left() - offset);
-    ((local / pixels_per_second.max(0.01)) as f64).clamp(0.0, total_duration.max(0.0))
+    (local / pixels_per_second.max(0.01)) as f64
 }
 
 #[cfg(test)]

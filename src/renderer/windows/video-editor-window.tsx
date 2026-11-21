@@ -294,6 +294,7 @@ export default function VideoEditorWindow({ params }: VideoEditorWindowProps) {
     useEditorStatePersistence({
       isReady: originalDuration > 0,
       values: {
+        sourceDuration: originalDuration,
         segments,
         cursorStyle: editorData.cursorStyle,
         cameraStyle: editorData.cameraStyle,

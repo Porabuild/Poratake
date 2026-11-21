@@ -9,9 +9,12 @@ use crate::editor::window::EditorWindow;
 use crate::history_store::{HistoryItem, HistoryItemType};
 
 use super::{
-    capture, click, click_measured, event, hover, point, px, settle, size, take_notifications,
+    capture, click_measured, event, hover, point, px, settle, size, take_notifications,
     HeadlessAppContext, Modifiers, Path,
 };
+
+#[cfg(any(windows, target_os = "macos"))]
+use super::click;
 
 #[cfg(windows)]
 struct DuplicateDisplayTarget;
@@ -118,6 +121,7 @@ fn select_area_rect(cx: &mut HeadlessAppContext, picker: gpui::AnyWindowHandle, 
         .update_window(picker, |_, window, _| window.scale_factor())
         .unwrap();
     assert_eq!(scale, 2.);
+    let scale = crate::capture::overlay::capture_coordinate_scale(scale);
     let start = point(px(rect.x as f32 / scale), px(rect.y as f32 / scale));
     let end = point(
         px((rect.x + rect.width) as f32 / scale),
@@ -167,9 +171,1415 @@ fn wait_for_icon_restoration(cx: &mut HeadlessAppContext) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn configure_recording_fixture(fixture: &mut serde_json::Value, target: &str) -> f64 {
+    let source = std::env::var_os(format!(
+        "PORATAKE_PARITY_{}_RECORDING",
+        target.to_uppercase()
+    ));
+    let duration = source.as_ref().map_or(2.0, |source| {
+        let path = Path::new(source);
+        let info = crate::video::decoder::VideoDecoder::open(path)
+            .expect("open supplied recording")
+            .info();
+        assert!(info.is_valid() && info.duration > 1.5);
+        info.duration
+    });
+    let prefix = match target {
+        "area" => "recordingArea",
+        "window" => "recordingWindow",
+        "screen" => "recordingScreen",
+        _ => panic!("invalid recording fixture target"),
+    };
+    fixture[format!("{prefix}FixtureVideo")] = true.into();
+    fixture[format!("{prefix}Duration")] = duration.into();
+    if let Some(source) = source {
+        fixture[format!("{prefix}Source")] = source.to_str().expect("UTF-8 fixture path").into();
+    }
+    duration
+}
+
+#[cfg(target_os = "macos")]
+fn set_recording_fixture_scale(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
+    let Some(scale) = std::env::var("PORATAKE_PARITY_VIDEO_DPI")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+    else {
+        return;
+    };
+    assert!(scale.is_finite() && scale > 0.);
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn recorded_editor_and_export(
+    cx: &mut HeadlessAppContext,
+    project: &Path,
+    output: &Path,
+    target: &str,
+) {
+    use crate::windows::registry::{self, WindowKind};
+    use crate::windows::video_editor::{model, preview, sidebar::SidebarTab, VideoEditorWindow};
+
+    if let Some(source) = std::env::var_os(format!(
+        "PORATAKE_PARITY_{}_RECORDING",
+        target.to_uppercase()
+    )) {
+        let expected = crate::video::decoder::VideoDecoder::open(Path::new(&source))
+            .unwrap()
+            .frame_at(1.)
+            .unwrap();
+        let actual = crate::video::decoder::VideoDecoder::open(
+            &project.join(crate::video::project::RECORDING),
+        )
+        .unwrap()
+        .frame_at(1.)
+        .unwrap();
+        assert!(
+            actual.bgra == expected.bgra,
+            "{target} project did not retain its supplied source frame"
+        );
+    }
+
+    let video = cx.update(|cx| {
+        registry::handle(WindowKind::VideoEditor, cx)
+            .unwrap()
+            .downcast::<VideoEditorWindow>()
+            .unwrap()
+    });
+    set_recording_fixture_scale(cx, video.into());
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if cx.update(|cx| video.read(cx).unwrap().preview_image().is_some()) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{target} recording preview did not load"
+        );
+        std::thread::yield_now();
+    }
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| editor.set_timeline_zoom(100.0, cx))
+            .unwrap()
+    });
+    let window = video.into();
+    settle(cx, window);
+    let lane = super::measured("video-timeline-lanes", 1);
+    let lane_y = f32::from(lane.size.height) / 2.0;
+    drag_rectangle(cx, window, lane.origin, (25.0, lane_y), (150.0, lane_y));
+    settle(cx, window);
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| {
+                editor.set_zoom_target_mode("manual".into(), cx);
+                editor.set_zoom_focus_point(0.7, 0.4, cx);
+                editor.update_zoom_settings(cx, |settings| {
+                    settings.transition_in_duration = 0.0;
+                    settings.transition_out_duration = 0.0;
+                });
+                editor.update_export(cx, |settings| settings.resolution = "original".into());
+                editor.set_playhead(1.0, cx);
+            })
+            .unwrap()
+    });
+    cx.advance_clock(std::time::Duration::from_secs(1));
+    settle(cx, window);
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| {
+                editor.activate_tab(SidebarTab::Drawing, cx);
+                editor.update_drawing_tools(cx, |tools| {
+                    tools.active_tool = "rectangle".into();
+                    tools.selected_color = "#ff0000".into();
+                    tools.shape_fill_mode = "filled".into();
+                });
+            })
+            .unwrap();
+    });
+    settle(cx, window);
+    let content = cx.update(|cx| {
+        video
+            .read(cx)
+            .unwrap()
+            .preview_content_rect()
+            .expect("recording preview bounds")
+    });
+    drag_rectangle(
+        cx,
+        window,
+        point(px(content.x), px(content.y)),
+        (content.width * 0.2, content.height * 0.2),
+        (content.width * 0.4, content.height * 0.4),
+    );
+    settle(cx, window);
+    let redaction = std::env::var_os("PORATAKE_PARITY_VIDEO_REDACTION").is_some();
+    if redaction {
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.update_drawing_tools(cx, |tools| {
+                        tools.active_tool = "redact".into();
+                        tools.redact_style = "pixelate".into();
+                        tools.redact_intensity = 8.0;
+                    });
+                })
+                .unwrap();
+        });
+        settle(cx, window);
+        drag_rectangle(
+            cx,
+            window,
+            point(px(content.x), px(content.y)),
+            (content.width * 0.35, content.height * 0.35),
+            (content.width * 0.50, content.height * 0.50),
+        );
+        settle(cx, window);
+    }
+    cx.advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        use crate::windows::video_editor::timeline::tracks::TrackKind;
+
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.cut_at(0.75, Some(TrackKind::Video), cx);
+                    editor.cut_at(1.0, Some(TrackKind::Video), cx);
+                })
+                .unwrap();
+        });
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        let cut = model::load_state(project);
+        assert_eq!(cut.segments.len(), 3);
+        let removed = cut.segments[1].id.clone();
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.delete_clip(TrackKind::Video, removed.into(), cx);
+                    editor.set_playhead(1.0, cx);
+                })
+                .unwrap();
+        });
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+    }
+    let state = model::load_state(project);
+    assert_eq!(state.zoom_segments.len(), 1);
+    if redaction {
+        assert!(matches!(
+            state.drawing_segments.as_slice(),
+            [model::DrawingSegment { annotations: first, .. }, model::DrawingSegment { annotations: second, .. }]
+                if matches!(first.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
+                && matches!(second.as_slice(), [crate::editor::annotations::Annotation::Redact { style, .. }] if style == "pixelate")
+        ));
+    } else {
+        assert!(matches!(
+            state.drawing_segments.as_slice(),
+            [model::DrawingSegment { annotations, .. }]
+                if matches!(annotations.as_slice(), [crate::editor::annotations::Annotation::Rectangle { .. }])
+        ));
+    }
+    assert!((state.zoom_segments[0].start_time - 0.25).abs() < 0.02);
+    assert!((state.zoom_segments[0].end_time - 1.5).abs() < 0.02);
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        assert_eq!(state.segments.len(), 2);
+        assert!((state.segments[0].original_end - 0.75).abs() < 0.001);
+        assert!((state.segments[1].original_start - 1.0).abs() < 0.001);
+    }
+    let mut preview = preview::Source::open(project, state.clone()).unwrap();
+    let expected = preview::to_render_image_opaque(&preview.compose(1.0, None).unwrap()).unwrap();
+    cx.update(|cx| {
+        registry::close(WindowKind::VideoEditor, cx);
+        VideoEditorWindow::open(cx, Some(project.to_string_lossy().into_owned()));
+    });
+    let video = cx.update(|cx| {
+        registry::handle(WindowKind::VideoEditor, cx)
+            .unwrap_or_else(|| {
+                panic!(
+                    "reopen of {target} recording failed: {:?}",
+                    take_notifications()
+                )
+            })
+            .downcast::<VideoEditorWindow>()
+            .unwrap()
+    });
+    set_recording_fixture_scale(cx, video.into());
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if cx.update(|cx| video.read(cx).unwrap().preview_image().is_some()) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "reopened {target} recording preview did not load"
+        );
+        std::thread::yield_now();
+    }
+    cx.update(|cx| {
+        video
+            .update(cx, |editor, _, cx| editor.set_playhead(1.0, cx))
+            .unwrap()
+    });
+    cx.advance_clock(std::time::Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        let matches = cx.update(|cx| {
+            video
+                .read(cx)
+                .unwrap()
+                .preview_image()
+                .is_some_and(|actual| actual.as_bytes(0) == expected.as_bytes(0))
+        });
+        if matches {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "edited {target} preview did not converge"
+        );
+        std::thread::yield_now();
+    }
+    let mut without_zoom = state.clone();
+    without_zoom.zoom_segments.clear();
+    let mut baseline = preview::Source::open(project, without_zoom).unwrap();
+    let baseline = preview::to_render_image_opaque(&baseline.compose(1.0, None).unwrap()).unwrap();
+    let mut without_drawing = state.clone();
+    without_drawing.drawing_segments.clear();
+    let mut undrawn = preview::Source::open(project, without_drawing).unwrap();
+    let undrawn = preview::to_render_image_opaque(&undrawn.compose(1.0, None).unwrap()).unwrap();
+    let drawing_changes = expected
+        .as_bytes(0)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(undrawn.as_bytes(0).unwrap().as_chunks::<4>().0.iter())
+        .filter(|(edited, original)| {
+            edited[..3]
+                .iter()
+                .zip(&original[..3])
+                .any(|(edited, original)| edited.abs_diff(*original) >= 16)
+        })
+        .count();
+    assert!(
+        drawing_changes > 20,
+        "{target} drawing did not change the preview"
+    );
+    assert_ne!(
+        expected.as_bytes(0),
+        baseline.as_bytes(0),
+        "zoom must affect the preview"
+    );
+    let changed = expected
+        .as_bytes(0)
+        .unwrap()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(baseline.as_bytes(0).unwrap().as_chunks::<4>().0.iter())
+        .filter(|(edited, original)| {
+            edited[..3]
+                .iter()
+                .zip(&original[..3])
+                .any(|(edited, original)| edited.abs_diff(*original) >= 16)
+        })
+        .count();
+    eprintln!("fixture {target} zoom changes {changed} preview pixels by at least 16 levels");
+    let window = video.into();
+    settle(cx, window);
+    capture(
+        cx,
+        window,
+        output,
+        &format!("recording-{target}-edited-preview"),
+    );
+    let screenshot = cx.capture_screenshot(window).unwrap();
+    let content = cx.update(|cx| video.read(cx).unwrap().preview_content_rect().unwrap());
+    let display_scale = cx
+        .update_window(window, |_, window, _| window.scale_factor())
+        .unwrap();
+    let scaled_preview = redaction.then(|| {
+        super::recording_redaction::capture_scaled(cx, video, project, &state, output, target)
+    });
+    let exported = output.join(format!("recording-{target}-edited.mp4"));
+    crate::video::export::run(
+        crate::video::export::Request {
+            project: project.to_path_buf(),
+            output: exported.clone(),
+            state,
+        },
+        &mut |_| {},
+        &|| false,
+    )
+    .unwrap();
+    let decoder = crate::video::decoder::VideoDecoder::open(&exported).unwrap();
+    for time in [0.5, 1.0, 1.5] {
+        let expected =
+            preview::to_render_image_opaque(&preview.compose(time, None).unwrap()).unwrap();
+        let expected = expected.as_bytes(0).unwrap();
+        let decoded = decoder.frame_at(time).unwrap();
+        assert_eq!(decoded.bgra.len(), expected.len());
+        let error: u64 = decoded
+            .bgra
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum();
+        let mean = error as f64 / expected.len() as f64;
+        assert!(
+            mean < 3.0,
+            "{target} preview and decoded export differ at {time}s: {mean}"
+        );
+        if time == 1.0 {
+            if let Some(scaled) = &scaled_preview {
+                scaled.compare_export(&decoded, target);
+                if target == "area" {
+                    let unencoded = crate::video::decoder::DecodedFrame {
+                        width: decoded.width,
+                        height: decoded.height,
+                        bgra: expected.to_vec().into(),
+                    };
+                    super::recording_preview_comparison::save_frame(
+                        &unencoded,
+                        &output.join("recording-area-redaction-composed.png"),
+                    );
+                    super::recording_preview_comparison::save_frame(
+                        &decoded,
+                        &output.join("recording-area-redaction-decoded.png"),
+                    );
+                    std::fs::write(
+                        output.join("recording-area-redaction-region.json"),
+                        serde_json::to_vec(&scaled.region()).unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+            let rendered = super::recording_preview_comparison::compare(
+                &screenshot,
+                content,
+                display_scale,
+                &decoded,
+            );
+            assert!(
+                rendered.mean < 5.,
+                "{target} rendered preview differs from decoded export: {}",
+                rendered.mean
+            );
+            let unencoded = crate::video::decoder::DecodedFrame {
+                width: decoded.width,
+                height: decoded.height,
+                bgra: expected.to_vec().into(),
+            };
+            let displayed = super::recording_preview_comparison::compare(
+                &screenshot,
+                content,
+                display_scale,
+                &unencoded,
+            );
+            let at_display_size = super::recording_preview_comparison::compare_at_display_size(
+                &screenshot,
+                content,
+                display_scale,
+                &unencoded,
+            );
+            if (content.width * display_scale - decoded.width as f32).abs() < 0.01
+                && (content.height * display_scale - decoded.height as f32).abs() < 0.01
+            {
+                assert!(
+                    at_display_size.maximum <= 2,
+                    "{target} one-to-one preview differs from its composition by {} levels",
+                    at_display_size.maximum
+                );
+            }
+            eprintln!(
+                "fixture {target} rendered preview/export mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                rendered.mean, rendered.above_twelve, rendered.above_thirty_two, rendered.maximum
+            );
+            eprintln!(
+                "fixture {target} rendered preview/composition mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                displayed.mean, displayed.above_twelve, displayed.above_thirty_two, displayed.maximum
+            );
+            eprintln!(
+                "fixture {target} display-size preview/composition mean RGB error: {:.3}, channels above 12: {}, above 32: {}, maximum: {}",
+                at_display_size.mean, at_display_size.above_twelve, at_display_size.above_thirty_two, at_display_size.maximum
+            );
+            let undrawn = undrawn.as_bytes(0).unwrap();
+            let mut drawing_pixels = 0_u64;
+            let mut drawing_error = 0_u64;
+            let mut undrawn_error = 0_u64;
+            for ((edited, original), actual) in expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(undrawn.as_chunks::<4>().0.iter())
+                .zip(decoded.bgra.as_chunks::<4>().0.iter())
+            {
+                if !(0..3).any(|channel| edited[channel].abs_diff(original[channel]) >= 16) {
+                    continue;
+                }
+                drawing_pixels += 1;
+                for channel in 0..3 {
+                    drawing_error += u64::from(edited[channel].abs_diff(actual[channel]));
+                    undrawn_error += u64::from(original[channel].abs_diff(actual[channel]));
+                }
+            }
+            assert!(drawing_pixels > 20);
+            assert!(
+                drawing_error < undrawn_error,
+                "{target} export does not contain the drawing: {drawing_error} vs {undrawn_error}"
+            );
+            eprintln!(
+                "fixture {target} drawing export error: edited {drawing_error}, undrawn {undrawn_error} across {drawing_pixels} pixels"
+            );
+            let original = baseline.as_bytes(0).unwrap();
+            let mut changed_pixels = 0;
+            let mut edited_error = 0_u64;
+            let mut original_error = 0_u64;
+            for ((edited, original), actual) in expected
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(original.as_chunks::<4>().0.iter())
+                .zip(decoded.bgra.as_chunks::<4>().0.iter())
+            {
+                if !(0..3).any(|channel| edited[channel].abs_diff(original[channel]) >= 16) {
+                    continue;
+                }
+                changed_pixels += 1;
+                for channel in 0..3 {
+                    edited_error += u64::from(edited[channel].abs_diff(actual[channel]));
+                    original_error += u64::from(original[channel].abs_diff(actual[channel]));
+                }
+            }
+            assert!(
+                changed_pixels > 0,
+                "{target} zoom has no clear visual effect"
+            );
+            assert!(
+                edited_error < original_error,
+                "{target} export does not favor the edited preview: {edited_error} vs {original_error}"
+            );
+            eprintln!(
+                "fixture {target} changed-pixel export error: edited {edited_error}, unzoomed {original_error} across {changed_pixels} pixels"
+            );
+        }
+        eprintln!(
+            "fixture {target} recording preview/export mean channel error at {time}s: {mean:.3}"
+        );
+    }
+    cx.update(|cx| registry::close(WindowKind::VideoEditor, cx));
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn wait_for_recording_start(cx: &mut HeadlessAppContext) {
+    use crate::windows::recording_control::RecordingControl;
+    use crate::windows::registry::{self, WindowKind};
+
+    let started = std::time::Instant::now();
+    while crate::video::recorder::state() == crate::video::recorder::RecorderState::Starting
+        || cx.update(|cx| {
+            crate::capture::overlay::pending_recording_preparation(cx).is_some()
+                || registry::handle(WindowKind::RecordingControl, cx)
+                    .and_then(|handle| handle.downcast::<RecordingControl>())
+                    .and_then(|handle| handle.read(cx).ok())
+                    .is_some_and(RecordingControl::parity_protection_pending)
+        })
+    {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_recording_stop(cx: &mut HeadlessAppContext) {
+    let started = std::time::Instant::now();
+    while crate::video::recorder::state() == crate::video::recorder::RecorderState::Stopping {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn accept_fixture_barrier(
+    listener: &std::net::TcpListener,
+) -> std::sync::mpsc::Receiver<std::net::TcpStream> {
+    use std::io::Read;
+
+    let listener = listener.try_clone().unwrap();
+    let (ready, stream) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        stream.read_exact(&mut [1]).unwrap();
+        ready.send(stream).unwrap();
+    });
+    stream
+}
+
+#[cfg(target_os = "macos")]
+fn recorded_screen_handoff(
+    cx: &mut HeadlessAppContext,
+    control: gpui::AnyWindowHandle,
+    output: &Path,
+) {
+    use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
+
+    let recordings = output.join("recording-screen-handoff");
+    std::fs::create_dir_all(&recordings).unwrap();
+    let previous = cx.update(|cx| {
+        let config = crate::state::state(cx).config.get();
+        (
+            config.storage.recordings_path,
+            config.recording.start_delay,
+            config.recording.show_preview,
+            config.history.enabled,
+        )
+    });
+    let mut fixture = serde_json::json!({"freeze": "live"});
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let protection = accept_fixture_barrier(&listener);
+    fixture["recordingProtectionStartBarrier"] = true.into();
+    fixture["recordingProtectionBarrier"] = true.into();
+    fixture["barrier"] = listener.local_addr().unwrap().to_string().into();
+    let duration = configure_recording_fixture(&mut fixture, "screen");
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.0;
+            config.recording.show_preview = false;
+            config.history.enabled = true;
+        })
+    });
+    let before = super::daemon_fixture::calls(output).len();
+    click_measured(cx, control, "recording-controls", 0);
+    settle(cx, control);
+    let mut enabling = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(
+        crate::video::recorder::state(),
+        crate::video::recorder::RecorderState::Idle
+    );
+    assert!(super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .all(|call| { call["module"] != "screen-recorder" || call["method"] != "start" }));
+    enabling.write_all(&[1]).unwrap();
+    let protection = accept_fixture_barrier(&listener);
+    wait_for_recording_start(cx);
+    assert_eq!(
+        crate::video::recorder::state(),
+        crate::video::recorder::RecorderState::Recording
+    );
+    cx.advance_clock(std::time::Duration::from_secs(2));
+    settle(cx, control);
+    click_measured(cx, control, "recording-controls", 1);
+    cx.run_until_parked();
+    wait_for_recording_stop(cx);
+    let mut protection = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| registry::is_open(WindowKind::VideoEditor, cx)),
+        "The recording editor must open while the camera protection reply is held"
+    );
+    protection.write_all(&[1]).unwrap();
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    let calls = super::daemon_fixture::calls(output);
+    let recording = Path::new(
+        calls[before..]
+            .iter()
+            .find(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+            .unwrap()["params"]["outputPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let project = recording.parent().unwrap();
+    assert!(recording.is_file());
+    assert_eq!(
+        crate::windows::video_editor::model::load_state(project).source_duration,
+        Some(duration)
+    );
+    assert_eq!(
+        crate::history_store::load_history()
+            .iter()
+            .find(|item| Path::new(&item.original_path) == project)
+            .unwrap()
+            .duration,
+        Some(duration)
+    );
+    recorded_editor_and_export(cx, project, output, "screen");
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.0;
+            config.recording.start_delay = previous.1;
+            config.recording.show_preview = previous.2;
+            config.history.enabled = previous.3;
+        })
+    });
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn recording_failure_preserves_project(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    on_stop: bool,
+    queued: bool,
+    during_stop: bool,
+) {
+    use crate::video::recorder::RecordingTarget;
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+
+    let recordings = output.join(if during_stop {
+        "recording-terminal-error-during-stop"
+    } else if queued {
+        "recording-queued-terminal-failure"
+    } else if on_stop {
+        "recording-stop-audio-failure"
+    } else {
+        "recording-audio-failure"
+    });
+    std::fs::create_dir_all(&recordings).unwrap();
+    let mut fixture = serde_json::json!({
+        "freeze": "live",
+        "recordingAudioFailure": !on_stop && !queued && !during_stop,
+        "recordingStopAudioFailure": on_stop,
+        "recordingErrorBeforeStopSuccess": during_stop,
+    });
+    configure_recording_fixture(&mut fixture, if queued { "window" } else { "area" });
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    let previous = cx.update(|cx| crate::state::state(cx).config.get());
+    let control = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.0;
+            config.recording.camera.enabled = false;
+            config.recording.mic_enabled = false;
+            config.recording.system_audio = false;
+        });
+        RecordingControl::open(
+            cx,
+            if queued {
+                RecordingTarget::Window
+            } else {
+                RecordingTarget::Area
+            },
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            if queued { Some(43) } else { None },
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    settle(cx, control);
+    let before = super::daemon_fixture::calls(output).len();
+    click_measured(cx, control, "recording-controls", 0);
+    settle(cx, control);
+    wait_for_recording_start(cx);
+    let calls = super::daemon_fixture::calls(output);
+    let start = calls[before..]
+        .iter()
+        .find(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+        .unwrap();
+    let recording = Path::new(start["params"]["outputPath"].as_str().unwrap()).to_owned();
+    let contents = std::fs::read(&recording).unwrap();
+    if queued || during_stop {
+        take_notifications();
+    }
+    if queued {
+        cx.update(|cx| {
+            let daemon = &crate::state::state(cx).daemon;
+            for code in ["TARGET_CLOSED", "TARGET_CLOSED", "CAPTURE_ERROR"] {
+                daemon.emit_parity_event(
+                    poratake_daemon_common::contract::SCREEN_RECORDER_ERROR_EVENT,
+                    &serde_json::json!({"code": code, "message": "Fixture terminal failure"}),
+                );
+            }
+        });
+    } else {
+        click_measured(
+            cx,
+            control,
+            "recording-controls",
+            if on_stop || during_stop { 1 } else { 5 },
+        );
+    }
+    cx.run_until_parked();
+    if !on_stop && !queued && !during_stop {
+        let started = std::time::Instant::now();
+        while cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+    }
+    wait_for_recording_stop(cx);
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    assert_eq!(std::fs::read(&recording).unwrap(), contents);
+    assert_eq!(
+        crate::video::recorder::state(),
+        crate::video::recorder::RecorderState::Idle
+    );
+    if queued || during_stop {
+        let notifications = take_notifications();
+        assert!(notifications.iter().any(|(title, body, _)| {
+            title == "Recording failed"
+                && body.contains("Fixture terminal failure")
+                && body.contains(recording.parent().unwrap().to_str().unwrap())
+        }));
+        assert_eq!(
+            super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .filter(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+                .count(),
+            usize::from(during_stop)
+        );
+    }
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.storage.recordings_path;
+            config.recording = previous.recording;
+        })
+    });
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        b"{\"freeze\":\"frozen\"}",
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn recording_start_timeout_handoff(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    succeeds: bool,
+    release_before_stop: bool,
+    target_closed: bool,
+    stop_first: bool,
+) {
+    use crate::video::recorder::{RecorderState, RecordingTarget};
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
+
+    let recordings = output.join(format!(
+        "recording-held-start-{succeeds}-{release_before_stop}-{target_closed}-{stop_first}"
+    ));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let protection = accept_fixture_barrier(&listener);
+    let start_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut fixture = serde_json::json!({
+        "freeze": "live",
+        "barrier": listener.local_addr().unwrap().to_string(),
+        "recordingProtectionStartBarrier": true,
+        "recordingHoldStartUntilStop": true,
+        "recordingHeldStartBarrier": start_listener.local_addr().unwrap().to_string(),
+        "recordingHeldStartFails": !succeeds,
+        "recordingReleaseHeldStartOnProtection": release_before_stop || stop_first,
+        "recordingHeldStartStopFirst": stop_first,
+    });
+    configure_recording_fixture(&mut fixture, "area");
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    let previous = cx.update(|cx| crate::state::state(cx).config.get());
+    let control = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.;
+            config.recording.camera.enabled = false;
+            config.recording.mic_enabled = false;
+            config.recording.system_audio = false;
+            config.recording.show_preview = false;
+            config.history.enabled = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    settle(cx, control);
+    let before = super::daemon_fixture::calls(output).len();
+    take_notifications();
+    let start_requested_at = std::time::Instant::now();
+    click_measured(cx, control, "recording-controls", 0);
+    assert!(start_requested_at.elapsed() < std::time::Duration::from_secs(5));
+    settle(cx, control);
+    let mut protection = protection
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(crate::video::recorder::state(), RecorderState::Idle);
+    let await_barrier = |cx: &mut HeadlessAppContext,
+                         ready: std::sync::mpsc::Receiver<std::net::TcpStream>,
+                         phase: &str| {
+        let waiting = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            match ready.try_recv() {
+                Ok(stream) => break stream,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("{phase} barrier closed")
+                }
+            }
+            assert!(
+                waiting.elapsed() < std::time::Duration::from_secs(5),
+                "{phase} barrier timed out"
+            );
+            std::thread::yield_now();
+        }
+    };
+    let start_barrier = accept_fixture_barrier(&start_listener);
+    protection.write_all(&[1]).unwrap();
+    let mut held_start = await_barrier(cx, start_barrier, "held start");
+    settle(cx, control);
+    assert_eq!(crate::video::recorder::state(), RecorderState::Starting);
+    assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    let cleanup_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cleanup_barrier = accept_fixture_barrier(&cleanup_listener);
+    fixture["recordingProtectionBarrier"] =
+        cleanup_listener.local_addr().unwrap().to_string().into();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    held_start.write_all(&[1]).unwrap();
+    capture(
+        cx,
+        control,
+        output,
+        &format!("recording-held-start-{succeeds}"),
+    );
+    let starting_timer = super::measured("recording-controls", 2);
+    let calls = super::daemon_fixture::calls(output);
+    let start = calls[before..]
+        .iter()
+        .find(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+        .unwrap();
+    let recording = Path::new(start["params"]["outputPath"].as_str().unwrap()).to_owned();
+    let bytes = std::fs::read(&recording).unwrap();
+    assert!(!calls[before..].iter().any(|call| {
+        call["module"] == "camera-preview"
+            && call["method"] == "setContentProtection"
+            && call["params"]["enabled"] == false
+    }));
+    if target_closed {
+        cx.update(|cx| {
+            crate::state::state(cx).daemon.emit_parity_event(
+                poratake_daemon_common::contract::SCREEN_RECORDER_ERROR_EVENT,
+                &serde_json::json!({"code": "TARGET_CLOSED"}),
+            );
+        });
+        cx.run_until_parked();
+        assert!(!super::daemon_fixture::calls(output)[before..]
+            .iter()
+            .any(|call| call["module"] == "screen-recorder" && call["method"] == "stop"));
+    }
+    if release_before_stop {
+        cx.update(|cx| {
+            crate::state::state(cx)
+                .daemon
+                .camera_preview()
+                .set_content_protection(true)
+                .unwrap();
+        });
+        let started = std::time::Instant::now();
+        while crate::video::recorder::state() == RecorderState::Starting {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        if !target_closed {
+            assert_eq!(
+                crate::video::recorder::state(),
+                if succeeds {
+                    RecorderState::Recording
+                } else {
+                    RecorderState::Idle
+                }
+            );
+        }
+        if succeeds && !target_closed {
+            super::frame(cx, control);
+            assert_eq!(
+                super::measured("recording-controls", 2),
+                starting_timer,
+                "Starting and the running timer must occupy the same space"
+            );
+        }
+    }
+    if (!target_closed || stop_first) && (succeeds || !release_before_stop) {
+        click_measured(
+            cx,
+            control,
+            "recording-controls",
+            if target_closed { 7 } else { 1 },
+        );
+        if stop_first {
+            wait_for_recording_stop(cx);
+            assert_eq!(crate::video::recorder::state(), RecorderState::Starting);
+            cx.update(|cx| {
+                crate::state::state(cx)
+                    .daemon
+                    .camera_preview()
+                    .set_content_protection(true)
+                    .unwrap();
+            });
+        }
+    } else if !target_closed {
+        assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        settle(cx, control);
+        capture(cx, control, output, "recording-start-rejected-controls");
+        assert!(cx.update(RecordingControl::cancel_pre_recording));
+    }
+    let mut cleanup = await_barrier(cx, cleanup_barrier, "protection cleanup");
+    cleanup.write_all(&[1]).unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if !cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx))
+            && !cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx))
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "start case: {succeeds} {release_before_stop} {target_closed} {stop_first}"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(crate::video::recorder::state(), RecorderState::Idle);
+    if target_closed && stop_first {
+        assert!(!recording.parent().unwrap().exists());
+    } else {
+        assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+    }
+    let notifications = take_notifications();
+    if !succeeds {
+        assert!(notifications.iter().any(|(title, body, _)| {
+            title == "Recording failed"
+                && body.contains("Fixture late start failure")
+                && body.contains(recording.parent().unwrap().to_str().unwrap())
+        }));
+    }
+    assert!(super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "camera-preview"
+            && call["method"] == "setContentProtection"
+            && call["params"]["enabled"] == false));
+    assert_eq!(
+        super::daemon_fixture::calls(output)[before..]
+            .iter()
+            .filter(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+            .count(),
+        if target_closed && stop_first {
+            2
+        } else {
+            usize::from(succeeds || !release_before_stop || target_closed)
+        }
+    );
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.storage.recordings_path;
+            config.recording = previous.recording;
+            config.history = previous.history;
+        })
+    });
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        b"{\"freeze\":\"frozen\"}",
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn recording_stop_timeout_handoff(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    case: (bool, bool, bool, bool, bool, bool),
+    deny_discard: bool,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::video::recorder::{RecorderState, RecordingTarget};
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+
+    let (fails, discard, terminal, start_pending, paused, target_closed) = case;
+    let suffix = if deny_discard { "-read-only" } else { "" };
+    let recordings = output.join(format!(
+        "held-stop-{fails}-{discard}-{terminal}-{start_pending}-{paused}-{target_closed}{suffix}"
+    ));
+    std::fs::create_dir_all(&recordings).unwrap();
+    let mut fixture = serde_json::json!({
+        "freeze": "live",
+        "recordingHoldStop": true,
+        "recordingHeldStopFails": fails,
+        "recordingHeldStopTerminalError": terminal,
+        "recordingReleaseHeldStopOnProtection": true,
+        "recordingHoldStartUntilStop": start_pending,
+    });
+    configure_recording_fixture(&mut fixture, "area");
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+    let previous = cx.update(|cx| crate::state::state(cx).config.get());
+    let control = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.;
+            config.recording.camera.enabled = false;
+            config.recording.mic_enabled = false;
+            config.recording.system_audio = false;
+            config.recording.show_preview = false;
+            config.history.enabled = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    settle(cx, control);
+    let before = super::daemon_fixture::calls(output).len();
+    click_measured(cx, control, "recording-controls", 0);
+    settle(cx, control);
+    if !start_pending {
+        wait_for_recording_start(cx);
+    }
+    assert_eq!(
+        crate::video::recorder::state(),
+        if start_pending {
+            RecorderState::Starting
+        } else {
+            RecorderState::Recording
+        }
+    );
+    if paused {
+        click_measured(cx, control, "recording-controls", 0);
+        assert_eq!(crate::video::recorder::state(), RecorderState::Paused);
+    }
+    super::frame(cx, control);
+    let active_timer = super::measured("recording-controls", 2);
+    let calls = super::daemon_fixture::calls(output);
+    let start = calls[before..]
+        .iter()
+        .find(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+        .unwrap();
+    let recording = Path::new(start["params"]["outputPath"].as_str().unwrap()).to_owned();
+    let bytes = std::fs::read(&recording).unwrap();
+    let project = recording.parent().unwrap();
+    let original_permissions = deny_discard.then(|| {
+        let permissions = std::fs::metadata(project).unwrap().permissions();
+        std::fs::set_permissions(project, std::fs::Permissions::from_mode(0o555)).unwrap();
+        permissions
+    });
+    take_notifications();
+    let stop_requested_at = std::time::Instant::now();
+    click_measured(
+        cx,
+        control,
+        "recording-controls",
+        if discard { 7 } else { 1 },
+    );
+    assert!(stop_requested_at.elapsed() < std::time::Duration::from_secs(5));
+    settle(cx, control);
+    assert_eq!(crate::video::recorder::state(), RecorderState::Stopping);
+    assert_eq!(
+        super::measured("recording-controls", 2),
+        active_timer,
+        "Stopping must keep the timer space reserved during recording"
+    );
+    assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+    if !deny_discard {
+        capture(
+            cx,
+            control,
+            output,
+            &format!("recording-held-stop-{fails}-{discard}-{terminal}-{start_pending}"),
+        );
+    }
+    click_measured(cx, control, "recording-controls", 1);
+    assert_eq!(
+        super::daemon_fixture::calls(output)[before..]
+            .iter()
+            .filter(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+            .count(),
+        1
+    );
+    if target_closed {
+        cx.update(|cx| {
+            crate::state::state(cx).daemon.emit_parity_event(
+                poratake_daemon_common::contract::SCREEN_RECORDER_ERROR_EVENT,
+                &serde_json::json!({"code": "TARGET_CLOSED"}),
+            );
+        });
+        cx.run_until_parked();
+    }
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .daemon
+            .camera_preview()
+            .set_content_protection(true)
+            .unwrap()
+    });
+    let started = std::time::Instant::now();
+    while crate::video::recorder::state() == RecorderState::Stopping {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    if fails && !terminal && !target_closed {
+        let started = std::time::Instant::now();
+        while start_pending && crate::video::recorder::state() == RecorderState::Starting {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            crate::video::recorder::state(),
+            if paused {
+                RecorderState::Paused
+            } else {
+                RecorderState::Recording
+            }
+        );
+        assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+        settle(cx, control);
+        click_measured(
+            cx,
+            control,
+            "recording-controls",
+            if discard { 7 } else { 1 },
+        );
+        cx.run_until_parked();
+    }
+    let started = std::time::Instant::now();
+    while cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)) {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    assert_eq!(crate::video::recorder::state(), RecorderState::Idle);
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    if let Some(original_permissions) = original_permissions {
+        let started = std::time::Instant::now();
+        let warning = loop {
+            cx.run_until_parked();
+            if let Some(warning) = take_notifications()
+                .into_iter()
+                .find(|(title, _, _)| title == "Recording could not be discarded")
+            {
+                break Some(warning);
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(8) {
+                break None;
+            }
+            std::thread::yield_now();
+        };
+        std::fs::set_permissions(project, original_permissions).unwrap();
+        let (_, message, _) = warning.expect("a failed discard must report the recording path");
+        assert!(message.contains(project.to_str().unwrap()));
+        assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+    } else if discard && !terminal {
+        let started = std::time::Instant::now();
+        while project.exists() {
+            cx.run_until_parked();
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+    } else {
+        assert_eq!(std::fs::read(&recording).unwrap(), bytes);
+    }
+    if terminal {
+        assert!(take_notifications()
+            .iter()
+            .any(|(title, body, _)| title == "Recording failed"
+                && body.contains("Fixture held stop terminal failure")
+                && body.contains(recording.parent().unwrap().to_str().unwrap())));
+    }
+    if target_closed {
+        assert_eq!(
+            super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .filter(|call| call["module"] == "screen-recorder" && call["method"] == "stop")
+                .count(),
+            2
+        );
+    }
+    cx.update(|cx| {
+        registry::close(WindowKind::VideoEditor, cx);
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.storage.recordings_path;
+            config.recording = previous.recording;
+            config.history = previous.history;
+        });
+    });
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        b"{\"freeze\":\"frozen\"}",
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn recording_project_failure_and_retry(cx: &mut HeadlessAppContext, output: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::video::recorder::{self, RecorderState, RecordingTarget};
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+
+    let recordings = output.join("recording-project-failure");
+    std::fs::create_dir_all(&recordings).unwrap();
+    let permissions = std::fs::metadata(&recordings).unwrap().permissions();
+    std::fs::set_permissions(&recordings, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut fixture = serde_json::json!({"freeze": "live"});
+    configure_recording_fixture(&mut fixture, "area");
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&fixture).unwrap(),
+    )
+    .unwrap();
+
+    let previous = cx.update(|cx| crate::state::state(cx).config.get());
+    let control = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+            config.recording.start_delay = 0.;
+            config.recording.camera.enabled = false;
+            config.recording.mic_enabled = false;
+            config.recording.system_audio = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    settle(cx, control);
+    let before = super::daemon_fixture::calls(output).len();
+    take_notifications();
+    click_measured(cx, control, "recording-controls", 0);
+    wait_for_recording_start(cx);
+    let notifications = take_notifications();
+    std::fs::set_permissions(&recordings, permissions).unwrap();
+
+    assert_eq!(recorder::state(), RecorderState::Idle);
+    assert!(recordings.read_dir().unwrap().next().is_none());
+    assert!(!super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+    assert!(
+        notifications.iter().any(|(title, body, _)| {
+            title == "Recording failed" && body.contains(recordings.to_str().unwrap())
+        }),
+        "project creation failure must name the recording folder"
+    );
+
+    let started = std::time::Instant::now();
+    let control_handle = control.downcast::<RecordingControl>().unwrap();
+    while !cx.update(|cx| control_handle.read(cx).unwrap().start_enabled(cx)) {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    settle(cx, control);
+    click_measured(cx, control, "recording-controls", 0);
+    wait_for_recording_start(cx);
+    assert_eq!(recorder::state(), RecorderState::Recording);
+    click_measured(cx, control, "recording-controls", 7);
+    wait_for_recording_stop(cx);
+    let started = std::time::Instant::now();
+    while recordings.read_dir().unwrap().next().is_some() {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.storage.recordings_path = previous.storage.recordings_path;
+            config.recording = previous.recording;
+        });
+    });
+}
+
 pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output: &Path) {
     #[cfg(windows)]
-    use std::io::{Read, Write};
+    use std::io::Read;
+    #[cfg(any(windows, target_os = "macos"))]
+    use std::io::Write;
 
     use crate::windows::registry::{self, WindowKind};
 
@@ -179,7 +1589,7 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
     )
     .unwrap();
     for target in ["area", "window", "screen"] {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let before = super::daemon_fixture::calls(output).len();
         cx.update(|cx| {
             crate::state::state(cx).config.update(|config| {
@@ -202,6 +1612,23 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
         });
         cx.run_until_parked();
         let picker = area_picker(cx);
+        #[cfg(target_os = "macos")]
+        let release = (target == "window").then(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "freeze": "frozen",
+                    "holdFreezeRelease": true,
+                    "recordingHoldOutlineShow": true,
+                    "barrier": listener.local_addr().unwrap().to_string(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let release = accept_fixture_barrier(&listener);
+            (listener, release)
+        });
         if target == "area" {
             select_area(cx, picker);
         } else {
@@ -218,6 +1645,58 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             );
         }
         cx.run_until_parked();
+        #[cfg(target_os = "macos")]
+        if let Some((listener, release)) = release {
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| {
+                    call["module"] == "recording-overlay" && call["method"] == "showWindow"
+                }));
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "window selection must keep processing events while Release is held"
+            );
+            let show = accept_fixture_barrier(&listener);
+            release.write_all(&[0]).unwrap();
+            let started = std::time::Instant::now();
+            let mut show = loop {
+                cx.run_until_parked();
+                if let Ok(stream) = show.try_recv() {
+                    break stream;
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            };
+            cx.update(|cx| {
+                let control = registry::handle(WindowKind::RecordingControl, cx)
+                    .unwrap()
+                    .downcast::<crate::windows::recording_control::RecordingControl>()
+                    .unwrap();
+                assert!(!control
+                    .update(cx, |control, _, cx| control.start_enabled(cx))
+                    .unwrap());
+            });
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| call["module"] == "screen-recorder" && call["method"] == "start"));
+            show.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(show.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the window toolbar must respond before ShowWindow is acknowledged"
+            );
+            show.write_all(&[0]).unwrap();
+            wait_for_recording_start(cx);
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+            )
+            .unwrap();
+        }
         #[cfg(windows)]
         wait_for_icon_restoration(cx);
         #[cfg(windows)]
@@ -283,13 +1762,16 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                     .update(cx, |control, _, _| control.parity_rect())
                     .unwrap()
             });
+            let scale = cx
+                .update_window(picker, |_, window, _| window.scale_factor())
+                .unwrap();
+            let offset = (10. * crate::capture::overlay::capture_coordinate_scale(scale)) as i32;
             assert_eq!(
                 rect,
                 CaptureRect {
-                    x: 100,
-                    y: 110,
-                    width: 640,
-                    height: 360,
+                    x: SELECTED_RECT.x + offset,
+                    y: SELECTED_RECT.y + offset,
+                    ..SELECTED_RECT
                 },
                 "the selected area remains adjustable after the recording controls open"
             );
@@ -300,7 +1782,246 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 assert!(config.all_in_one.recording.system_audio);
             });
         }
-        #[cfg(windows)]
+        #[cfg(target_os = "macos")]
+        if target == "area" {
+            use crate::windows::recording_control::RecordingControl;
+
+            let recordings = output.join("recording-area-failed-start");
+            std::fs::create_dir_all(&recordings).unwrap();
+            let previous = cx.update(|cx| {
+                let config = crate::state::state(cx).config.get();
+                (
+                    config.storage.recordings_path,
+                    config.recording.start_delay,
+                    config.recording.show_preview,
+                    config.history.enabled,
+                )
+            });
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut fixture = serde_json::json!({
+                "freeze": "frozen", "recordingAreaStartFails": true,
+                "recordingAreaStartWritesPartial": true,
+                "holdFreezeRelease": true,
+                "barrier": listener.local_addr().unwrap().to_string(),
+            });
+            let expected_duration = configure_recording_fixture(&mut fixture, "area");
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&fixture).unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                crate::state::state(cx).config.update(|config| {
+                    config.storage.recordings_path = recordings.to_string_lossy().into_owned();
+                    config.recording.start_delay = 0.0;
+                    config.recording.show_preview = false;
+                    config.history.enabled = true;
+                })
+            });
+            let before = super::daemon_fixture::calls(output).len();
+            take_notifications();
+            let release = accept_fixture_barrier(&listener);
+            click_measured(cx, control, "recording-controls", 0);
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(
+                !control
+                    .downcast::<RecordingControl>()
+                    .unwrap()
+                    .update(cx, |control, _, cx| { control.start_enabled(cx) })
+                    .unwrap(),
+                "Start must remain disabled while releasing the frozen selection"
+            );
+            assert!(
+                !super::daemon_fixture::calls(output)[before..]
+                    .iter()
+                    .any(|call| matches!(
+                        call["module"].as_str(),
+                        Some("recording-overlay" | "screen-recorder")
+                    )),
+                "recording must wait for the freeze release"
+            );
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+            release.write_all(&[0]).unwrap();
+            wait_for_recording_start(cx);
+            let cleanup_started = std::time::Instant::now();
+            while cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
+                cx.run_until_parked();
+                assert!(cleanup_started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            }
+            let calls = super::daemon_fixture::calls(output);
+            let calls = &calls[before..];
+            let show = calls
+                .iter()
+                .position(|call| call["module"] == "recording-overlay" && call["method"] == "show")
+                .expect("area overlay shown");
+            let start = calls
+                .iter()
+                .position(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                .expect("area start attempted");
+            let hide = calls
+                .iter()
+                .position(|call| call["module"] == "recording-overlay" && call["method"] == "hide")
+                .expect("failed area overlay hidden");
+            assert!(show < start && start < hide);
+            assert_eq!(
+                calls[start]["params"]["excludedWindowIds"],
+                serde_json::json!([
+                    crate::windows::recording_control::PARITY_RECORDING_CONTROL_WINDOW_ID
+                ])
+            );
+            assert!(!calls
+                .iter()
+                .any(|call| call["module"] == "screen-recorder" && call["method"] == "stop"));
+            assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            let failed_recording =
+                Path::new(calls[start]["params"]["outputPath"].as_str().unwrap());
+            assert_eq!(
+                std::fs::read(failed_recording).unwrap(),
+                include_bytes!("fixtures/capture.mov")
+            );
+            let notifications = take_notifications();
+            assert!(notifications.iter().any(|(title, body, _)| {
+                title == "Recording failed"
+                    && body.contains(failed_recording.parent().unwrap().to_str().unwrap())
+            }));
+            fixture["holdFreezeRelease"] = false.into();
+            fixture["recordingHoldOutlineShow"] = true.into();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&fixture).unwrap(),
+            )
+            .unwrap();
+            let show = accept_fixture_barrier(&listener);
+            click_measured(cx, control, "recording-controls", 0);
+            let mut show = show
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(cx
+                .update(|cx| crate::capture::overlay::pending_recording_preparation(cx).is_some()));
+            assert!(!control
+                .downcast::<RecordingControl>()
+                .unwrap()
+                .update(cx, |control, _, cx| { control.start_enabled(cx) })
+                .unwrap());
+            assert_eq!(
+                super::daemon_fixture::calls(output)[before..]
+                    .iter()
+                    .filter(|call| {
+                        call["module"] == "screen-recorder" && call["method"] == "start"
+                    })
+                    .count(),
+                1,
+                "only the first failed Start may have been sent"
+            );
+            show.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(show.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the fixture must still be waiting for outline Show release"
+            );
+            show.write_all(&[0]).unwrap();
+            wait_for_recording_start(cx);
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Recording
+            );
+            cx.advance_clock(std::time::Duration::from_secs(2));
+            settle(cx, control);
+            fixture["recordingHoldOutlineShow"] = false.into();
+            fixture["recordingHoldOutlineHide"] = true.into();
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&fixture).unwrap(),
+            )
+            .unwrap();
+            let hide = accept_fixture_barrier(&listener);
+            click_measured(cx, control, "recording-controls", 1);
+            cx.run_until_parked();
+            wait_for_recording_stop(cx);
+            let mut hide = hide
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            cx.run_until_parked();
+            assert!(
+                cx.update(|cx| registry::is_open(WindowKind::VideoEditor, cx)),
+                "the recording editor must open while outline cleanup is pending"
+            );
+            hide.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(hide.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "the fixture must still be waiting for outline cleanup release"
+            );
+            hide.write_all(&[0]).unwrap();
+            assert_eq!(
+                crate::video::recorder::state(),
+                crate::video::recorder::RecorderState::Idle
+            );
+            assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+            let calls = super::daemon_fixture::calls(output);
+            let starts: Vec<_> = calls[before..]
+                .iter()
+                .filter(|call| call["module"] == "screen-recorder" && call["method"] == "start")
+                .collect();
+            assert_eq!(starts.len(), 2);
+            assert_eq!(
+                starts[1]["params"]["excludedWindowIds"],
+                serde_json::json!([
+                    crate::windows::recording_control::PARITY_RECORDING_CONTROL_WINDOW_ID
+                ])
+            );
+            let recording = Path::new(starts[1]["params"]["outputPath"].as_str().unwrap());
+            let project = recording.parent().unwrap();
+            assert!(recording.is_file());
+            let history = crate::history_store::load_history();
+            let item = history
+                .iter()
+                .find(|item| Path::new(&item.original_path) == project)
+                .unwrap();
+            assert_eq!(
+                item.duration,
+                Some(expected_duration),
+                "history must use the finalized media duration"
+            );
+            assert_eq!(
+                crate::windows::video_editor::model::load_state(project).source_duration,
+                Some(expected_duration),
+                "the editor must use the finalized media duration"
+            );
+            recorded_editor_and_export(cx, project, output, "area");
+            cx.update(|cx| {
+                crate::state::state(cx).config.update(|config| {
+                    config.storage.recordings_path = previous.0;
+                    config.recording.start_delay = previous.1;
+                    config.recording.show_preview = previous.2;
+                    config.history.enabled = previous.3;
+                })
+            });
+            std::fs::write(
+                output.join("capture-fixture.json"),
+                serde_json::to_vec(&serde_json::json!({"freeze": "frozen"})).unwrap(),
+            )
+            .unwrap();
+        }
+        #[cfg(any(windows, target_os = "macos"))]
         if target == "window" {
             let recordings = output.join("recording-target-close-handoff");
             std::fs::create_dir_all(&recordings).unwrap();
@@ -313,15 +2034,21 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                     config.history.enabled,
                 )
             });
+            let fixture = serde_json::json!({
+                "freeze": "live",
+                "recordingStartFailsAfterQueuedError": true,
+                "recordingTargetClosedDuringStart": true,
+                "recordingStopFailsAfterQueuedTargetClosed": true,
+            });
+            #[cfg(target_os = "macos")]
+            let (fixture, expected_duration) = {
+                let mut fixture = fixture;
+                let duration = configure_recording_fixture(&mut fixture, "window");
+                (fixture, duration)
+            };
             std::fs::write(
                 output.join("capture-fixture.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "freeze": "live",
-                    "recordingStartFailsAfterQueuedError": true,
-                    "recordingTargetClosedDuringStart": true,
-                    "recordingStopFailsAfterQueuedTargetClosed": true,
-                }))
-                .unwrap(),
+                serde_json::to_vec(&fixture).unwrap(),
             )
             .unwrap();
             cx.update(|cx| {
@@ -341,6 +2068,8 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             let recording_before = super::daemon_fixture::calls(output).len();
             click_measured(cx, control, "recording-controls", 2);
             cx.run_until_parked();
+            #[cfg(target_os = "macos")]
+            wait_for_recording_start(cx);
             let first_calls = super::daemon_fixture::calls(output);
             let first_attempt = &first_calls[recording_before..];
             assert_eq!(
@@ -369,6 +2098,14 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 crate::video::recorder::state(),
                 crate::video::recorder::RecorderState::Idle
             );
+            let protection: Vec<_> = first_attempt
+                .iter()
+                .filter(|call| {
+                    call["module"] == "camera-preview" && call["method"] == "setContentProtection"
+                })
+                .map(|call| call["params"]["enabled"].as_bool().unwrap())
+                .collect();
+            assert_eq!(protection, [true, false]);
             assert!(!first_attempt.iter().any(|call| {
                 call["module"] == "screen-recorder" && call["method"] == "stop"
                     || call["module"] == "recording-overlay" && call["method"] == "hide"
@@ -453,6 +2190,36 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
                 last_stop < preview_hide,
                 "the camera preview must survive a failed stop"
             );
+            #[cfg(target_os = "macos")]
+            {
+                let recording = Path::new(
+                    calls
+                        .iter()
+                        .rfind(|call| {
+                            call["module"] == "screen-recorder" && call["method"] == "start"
+                        })
+                        .unwrap()["params"]["outputPath"]
+                        .as_str()
+                        .unwrap(),
+                );
+                let project = recording.parent().unwrap();
+                assert!(recording.is_file());
+                assert_eq!(
+                    crate::windows::video_editor::model::load_state(project).source_duration,
+                    Some(expected_duration)
+                );
+                let history = crate::history_store::load_history();
+                assert_eq!(
+                    history
+                        .iter()
+                        .find(|item| Path::new(&item.original_path) == project)
+                        .unwrap()
+                        .duration,
+                    Some(expected_duration)
+                );
+                recorded_editor_and_export(cx, project, output, "window");
+            }
+            #[cfg(not(target_os = "macos"))]
             cx.update(|cx| registry::close(WindowKind::VideoEditor, cx));
             cx.update(|cx| {
                 crate::state::state(cx).config.update(|config| {
@@ -468,20 +2235,81 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
             )
             .unwrap();
         } else {
+            #[cfg(target_os = "macos")]
+            if target == "screen" {
+                recorded_screen_handoff(cx, control, output);
+            }
             cx.update(|cx| {
-                assert!(
-                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx)
-                );
+                if registry::is_open(WindowKind::RecordingControl, cx) {
+                    assert!(
+                        crate::windows::recording_control::RecordingControl::cancel_pre_recording(
+                            cx
+                        )
+                    );
+                }
                 crate::capture::overlay::close_all(cx);
             });
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         cx.update(|cx| {
             assert!(crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx));
             crate::capture::overlay::close_all(cx);
         });
         cx.run_until_parked();
     }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("PORATAKE_PARITY_DISTINCT_RECORDINGS").is_some() {
+        super::recording_preview_comparison::assert_distinct_exports(output);
+    }
+    #[cfg(target_os = "macos")]
+    for (on_stop, queued, during_stop) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        recording_failure_preserves_project(cx, output, on_stop, queued, during_stop);
+    }
+    #[cfg(target_os = "macos")]
+    for (succeeds, release_before_stop, target_closed, stop_first) in [
+        (true, false, false, false),
+        (false, false, false, false),
+        (true, true, false, false),
+        (false, true, false, false),
+        (true, true, true, false),
+        (false, false, false, true),
+        (true, false, true, true),
+    ] {
+        recording_start_timeout_handoff(
+            cx,
+            output,
+            succeeds,
+            release_before_stop,
+            target_closed,
+            stop_first,
+        );
+    }
+    #[cfg(target_os = "macos")]
+    for case in [
+        (false, false, false, false, false, false),
+        (true, false, false, false, false, false),
+        (true, true, false, false, false, false),
+        (false, true, false, false, false, false),
+        (false, false, true, false, false, false),
+        (true, false, true, false, false, false),
+        (false, false, false, true, false, false),
+        (true, false, false, true, false, false),
+        (false, false, true, true, false, false),
+        (true, false, false, false, true, false),
+        (true, false, false, false, false, true),
+        (true, true, false, false, false, true),
+    ] {
+        recording_stop_timeout_handoff(cx, output, case, false);
+    }
+    #[cfg(target_os = "macos")]
+    recording_stop_timeout_handoff(cx, output, (false, true, false, false, false, false), true);
+    #[cfg(target_os = "macos")]
+    recording_project_failure_and_retry(cx, output);
     #[cfg(windows)]
     {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -736,7 +2564,89 @@ pub(super) fn recording_preference_handoffs(cx: &mut HeadlessAppContext, output:
     }
 }
 
+#[cfg(target_os = "macos")]
+fn screenshot_destination_failure_and_retry(
+    cx: &mut HeadlessAppContext,
+    output: &Path,
+    scratch: &Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let captures = scratch.join("read-only-screenshot-destination");
+    std::fs::create_dir_all(&captures).unwrap();
+    let permissions = std::fs::metadata(&captures).unwrap().permissions();
+    std::fs::set_permissions(&captures, std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::fs::write(
+        output.join("capture-fixture.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live", "rect": SELECTED_RECT, "windowId": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let service = cx.update(|cx| {
+        use crate::windows::registry::{self, WindowKind};
+
+        registry::close(WindowKind::CapturePreview, cx);
+        crate::state::state(cx)
+    });
+    let previous = service.config.get();
+    service.config.update(|config| {
+        config.storage.screenshots_path = captures.to_string_lossy().into_owned();
+        config.screenshot.freeze_screen = false;
+        config.screenshot.hide_desktop_icons = false;
+        config.screenshot.show_preview = true;
+        config.screenshot.capture_to_clipboard = false;
+        config.screenshot.auto_copy_to_clipboard = false;
+    });
+    take_notifications();
+    let before = super::daemon_fixture::calls(output).len();
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    std::fs::set_permissions(&captures, permissions).unwrap();
+
+    assert!(captures.read_dir().unwrap().next().is_none());
+    assert!(!super::daemon_fixture::calls(output)[before..]
+        .iter()
+        .any(|call| call["module"] == "screenshot" && call["method"] == "capture-area"));
+    assert!(
+        take_notifications().iter().any(|(title, body, _)| {
+            title == "Capture Failed" && body.contains(captures.to_str().unwrap())
+        }),
+        "capture failure must name the destination folder"
+    );
+
+    cx.update(crate::capture::start_area_capture);
+    cx.run_until_parked();
+    let picker = area_picker(cx);
+    select_area(cx, picker);
+    cx.run_until_parked();
+    verify_saved_capture(
+        cx,
+        scratch,
+        &captures,
+        (SELECTED_RECT, [240, 80, 64, 255]),
+        "workflow-screenshot-destination-retry",
+    );
+    service.config.update(|config| {
+        config.storage = previous.storage;
+        config.screenshot = previous.screenshot;
+    });
+}
+
 pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
+    #[cfg(target_os = "macos")]
+    let display = cx.update(|cx| {
+        let display = cx.primary_display().unwrap();
+        let bounds = crate::system::work_area::display_bounds(display.as_ref());
+        let scale = crate::capture::overlay::display_scale_factor(display.as_ref(), cx);
+        crate::capture::overlay::physical_rect(bounds, scale)
+    });
+    #[cfg(not(target_os = "macos"))]
     let display = CaptureRect {
         x: 0,
         y: 0,
@@ -775,6 +2685,8 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
                     "freeze": name,
                     "rect": rect,
                     "windowId": (kind == "window").then_some(43),
+                    "expectedExcludedWindowIds": (cfg!(target_os = "macos") && kind != "window")
+                        .then_some(crate::capture::overlay::PARITY_OVERLAY_WINDOW_IDS),
                 }))
                 .unwrap(),
             )
@@ -1589,6 +3501,7 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
     );
     std::fs::write(&existing, b"previous capture").unwrap();
     let clipboard_pixels = [70, 120, 180, 255].repeat(20 * 10);
+    let clipboard_path = captures.join("Collision (2).png");
     cx.update(|cx| {
         crate::system::clipboard::ClipboardService::write_rgba(
             cx,
@@ -1598,10 +3511,16 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
         )
         .unwrap();
         crate::editor::open_clipboard(cx);
+        assert!(
+            !cx.windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<EditorWindow>())
+                .any(|editor| Path::new(&editor.read(cx).unwrap().file_path) == clipboard_path),
+            "the clipboard editor must not open in the command's UI turn"
+        );
     });
     cx.run_until_parked();
     assert_eq!(std::fs::read(&existing).unwrap(), b"previous capture");
-    let clipboard_path = captures.join("Collision (2).png");
     assert_eq!(
         image::open(&clipboard_path).unwrap().to_rgba8().into_raw(),
         clipboard_pixels
@@ -1613,6 +3532,13 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             .find(|editor| Path::new(&editor.read(cx).unwrap().file_path) == clipboard_path)
             .unwrap()
     });
+    let editor_pixels = cx.update(|cx| {
+        image::load_from_memory(&editor.read(cx).unwrap().export_png().unwrap())
+            .unwrap()
+            .to_rgba8()
+            .into_raw()
+    });
+    assert_eq!(editor_pixels, clipboard_pixels);
     cx.update_window(editor.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
@@ -1760,6 +3686,8 @@ pub(super) fn selection_captures(cx: &mut HeadlessAppContext, output: &Path, scr
             config.screenshot.capture_to_clipboard = false;
         });
     });
+    #[cfg(target_os = "macos")]
+    screenshot_destination_failure_and_retry(cx, output, scratch);
     println!("selection capture clipboard modes and saved pixels passed");
 }
 
@@ -2050,14 +3978,68 @@ fn open_verified_capture_editor(
 }
 
 pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
-    let rect = SELECTED_RECT;
-    for name in ["completed", "cancelled", "timeout", "failed", "retry"] {
+    #[cfg(target_os = "macos")]
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    let work_area = cx.update(|cx| {
+        let display = cx.primary_display().expect("timer fixture display");
+        crate::capture::overlay::physical_rect(
+            crate::system::work_area::work_area(display.as_ref()),
+            1.0,
+        )
+    });
+    for name in [
+        "completed",
+        "cancelled",
+        "timeout",
+        "failed",
+        "empty-screenshot",
+        "retry",
+        "edge",
+    ] {
+        let rect = if name == "edge" {
+            CaptureRect {
+                x: 0,
+                y: 90,
+                width: 100,
+                height: 100,
+            }
+        } else {
+            SELECTED_RECT
+        };
+        #[cfg(target_os = "macos")]
+        let timer_position = {
+            use poratake_daemon_common::contract::{TIMER_CONTROL_TOP_MARGIN, TIMER_CONTROL_WIDTH};
+            let x = if name == "edge" { work_area.x } else { 330 };
+            let right = work_area.x + work_area.width - TIMER_CONTROL_WIDTH;
+            [
+                x.clamp(work_area.x, right),
+                work_area.y + TIMER_CONTROL_TOP_MARGIN,
+            ]
+        };
+        #[cfg(not(target_os = "macos"))]
+        let timer_position = [if name == "edge" { 0 } else { 260 }, 40];
         let captures = scratch.join(format!("timer-{name}"));
         std::fs::create_dir_all(&captures).unwrap();
+        #[cfg(target_os = "macos")]
+        let listener =
+            (name == "completed").then(|| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+        #[cfg(target_os = "macos")]
+        let barrier = listener
+            .as_ref()
+            .map(|listener| listener.local_addr().unwrap().to_string());
+        #[cfg(not(target_os = "macos"))]
+        let barrier: Option<String> = None;
         std::fs::write(
             output.join("capture-fixture.json"),
             serde_json::to_vec(&serde_json::json!({
-                "freeze": "frozen", "rect": rect, "windowId": null, "timer": name,
+                "freeze": "frozen", "rect": rect, "windowId": null, "timer": if name == "edge" { "completed" } else { name },
+                "timerPosition": timer_position,
+                "holdFreezeRelease": barrier.is_some(),
+                "barrier": barrier,
+                "expectedExcludedWindowIds": cfg!(target_os = "macos")
+                    .then_some(crate::capture::overlay::PARITY_OVERLAY_WINDOW_IDS),
             }))
             .unwrap(),
         )
@@ -2066,6 +4048,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
             .unwrap()
             .lines()
             .count();
+        take_notifications();
         cx.update(|cx| {
             crate::state::state(cx).config.update(|config| {
                 config.storage.screenshots_path = captures.to_string_lossy().into_owned();
@@ -2075,8 +4058,45 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
         });
         cx.run_until_parked();
         let picker = area_picker(cx);
-        select_area(cx, picker);
+        #[cfg(target_os = "macos")]
+        let release = listener.as_ref().map(accept_fixture_barrier);
+        select_area_rect(cx, picker, rect);
         cx.run_until_parked();
+        #[cfg(target_os = "macos")]
+        if let Some(release) = release {
+            let mut release = release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            assert!(cx.update(crate::capture::overlay::parity_is_active));
+            assert!(!crate::capture::timer::is_active());
+            assert!(!super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| { call["module"] == "timer-control" && call["method"] == "show" }));
+            release.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(release.peek(&mut [0]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "timer selection must keep processing events while Release is held"
+            );
+            release.write_all(&[0]).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let started = std::time::Instant::now();
+            loop {
+                cx.run_until_parked();
+                let active = crate::capture::timer::is_active();
+                let settled = if name == "timeout" {
+                    active
+                } else {
+                    !active && !cx.update(crate::capture::overlay::parity_is_active)
+                };
+                if settled {
+                    break;
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(10));
+                std::thread::yield_now();
+            }
+        }
         if name == "timeout" {
             assert!(crate::capture::timer::is_active());
             cx.advance_clock(std::time::Duration::from_secs(10));
@@ -2090,7 +4110,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
             !cx.update(crate::capture::overlay::parity_is_active),
             "{name}: timer selector must be cleared"
         );
-        let saved = matches!(name, "completed" | "retry");
+        let saved = matches!(name, "completed" | "retry" | "edge");
         if saved {
             verify_saved_capture(
                 cx,
@@ -2105,6 +4125,16 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
                 .iter()
                 .any(|item| Path::new(&item.original_path).parent() == Some(captures.as_path())));
         }
+        if name == "empty-screenshot" {
+            assert_eq!(
+                take_notifications(),
+                [(
+                    "Capture Failed".into(),
+                    "The screenshot produced no image".into(),
+                    false
+                )]
+            );
+        }
         let calls: Vec<serde_json::Value> =
             std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
                 .unwrap()
@@ -2117,7 +4147,7 @@ pub(super) fn timer_captures(cx: &mut HeadlessAppContext, output: &Path, scratch
                 .iter()
                 .filter(|call| call["module"] == "screenshot")
                 .count(),
-            usize::from(saved)
+            usize::from(saved || name == "empty-screenshot")
         );
         assert_eq!(
             calls
@@ -2270,6 +4300,22 @@ fn check_inset_reopen(
             (width, height),
             "{label} stage size at {effective_zoom}"
         );
+        if matches!(
+            label,
+            "rounded-inset-transparent" | "transparent-macos-dark-50"
+        ) && effective_zoom == 0.73
+        {
+            for (name, image, x, y) in [
+                ("preview", &preview, left, top),
+                ("reopened", &reopened, flat_left, flat_top),
+            ] {
+                image::imageops::crop_imm(image, x, y, width, height)
+                    .to_image()
+                    .save(scratch.join(format!("{label}-{name}-crop.png")))
+                    .unwrap();
+            }
+            eprintln!("{label} crop: {left},{top} {width}x{height}");
+        }
         let mismatched = (0..height)
             .flat_map(|y| (0..width).map(move |x| (x, y)))
             .filter(|&(x, y)| {
@@ -2290,10 +4336,465 @@ fn check_inset_reopen(
                 .unwrap();
         }
         assert_eq!(mismatched, 0, "{label} reopen at {effective_zoom}x");
+        if label == "rounded-inset-transparent" {
+            let margin = 8;
+            let mismatched = (0..height + margin * 2)
+                .flat_map(|y| (0..width + margin * 2).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    preview
+                        .get_pixel(left - margin + x, top - margin + y)
+                        .0
+                        .iter()
+                        .zip(
+                            reopened
+                                .get_pixel(flat_left - margin + x, flat_top - margin + y)
+                                .0,
+                        )
+                        .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+                })
+                .count();
+            if mismatched > 0 {
+                preview
+                    .save(scratch.join(format!("{label}-{effective_zoom}-outer-preview.png")))
+                    .unwrap();
+                reopened
+                    .save(scratch.join(format!("{label}-{effective_zoom}-outer-reopened.png")))
+                    .unwrap();
+            }
+            assert_eq!(mismatched, 0, "{label} outer pixels at {effective_zoom}x");
+        }
     }
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())
         .unwrap();
     cx.run_until_parked();
+}
+
+pub(super) fn fractional_annotation_draft(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let source = scratch.join("fractional-draft-source.png");
+    image::RgbaImage::from_pixel(80, 60, image::Rgba([40, 120, 180, 255]))
+        .save(&source)
+        .unwrap();
+    let editor = cx
+        .open_window(size(px(950.), px(780.)), |window, cx| {
+            window.set_scale_factor(2.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    let shape = crate::editor::annotations::Annotation::Rectangle {
+        id: "fractional-draft".into(),
+        x: 20.,
+        y: 15.,
+        width: 30.,
+        height: 20.,
+        stroke: "#ff0000".into(),
+        stroke_width: 1.,
+        fill: None,
+    };
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 2.;
+            editor.draft = Some(shape.clone());
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let draft = cx.capture_screenshot(editor.into()).unwrap();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.draft = None;
+            editor.history.push(vec![shape]);
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let committed = cx.capture_screenshot(editor.into()).unwrap();
+    let bounds = cx.update(|cx| editor.read(cx).unwrap().bounds.borrow().unwrap());
+    let left = (f32::from(bounds.left()) * 2.).round() as u32;
+    let top = (f32::from(bounds.top()) * 2.).round() as u32;
+    let mut differences = 0;
+    for y in 0..240 {
+        for x in 0..320 {
+            let before = draft.get_pixel(left + x, top + y).0;
+            let after = committed.get_pixel(left + x, top + y).0;
+            differences += usize::from(before.iter().zip(after).any(|(a, b)| a.abs_diff(b) > 2));
+        }
+    }
+    assert_eq!(
+        differences, 0,
+        "annotation changed between draft and commit"
+    );
+    cx.update_window(editor.into(), |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn ordered_redaction_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
+    use crate::editor::annotations::Annotation;
+
+    let source = scratch.join("ordered-redaction-source.png");
+    image::RgbaImage::from_pixel(200, 160, image::Rgba([255, 255, 255, 255]))
+        .save(&source)
+        .unwrap();
+    for scale in [1., 2.] {
+        for zoom in [0.73, 1., 1.37] {
+            for style in ["pixelate", "blur"] {
+                for shape_after in [false, true] {
+                    let editor = cx
+                        .open_window(size(px(1280.), px(738.)), |window, cx| {
+                            window.set_scale_factor(scale);
+                            cx.new(|cx| {
+                                EditorWindow::from_file(source.to_str().unwrap(), window, cx)
+                            })
+                        })
+                        .unwrap();
+                    let shape = Annotation::Rectangle {
+                        id: "stripe".into(),
+                        x: 50.,
+                        y: 40.,
+                        width: 2.,
+                        height: 40.,
+                        stroke: "#ff0000".into(),
+                        stroke_width: 1.,
+                        fill: Some("#ff0000".into()),
+                    };
+                    let redact = Annotation::Redact {
+                        id: style.into(),
+                        x: 40.,
+                        y: 30.,
+                        width: 50.,
+                        height: 60.,
+                        style: style.into(),
+                        intensity: 5.,
+                    };
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom;
+                            editor.history.push(if shape_after {
+                                vec![redact, shape]
+                            } else {
+                                vec![shape, redact]
+                            });
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, editor.into());
+                    let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+                    let saved = scratch.join("ordered-redaction-saved.png");
+                    std::fs::write(&saved, png).unwrap();
+                    let output = image::open(&saved).unwrap().to_rgba8();
+                    let stripe = output.get_pixel(51, 60).0;
+                    if shape_after {
+                        assert_eq!(stripe, [255, 0, 0, 255], "{style}, {scale}x");
+                    } else {
+                        assert!(stripe[1] > 0, "{style}, {scale}x: {stripe:?}");
+                    }
+                    let reopened = cx
+                        .open_window(size(px(1280.), px(738.)), |window, cx| {
+                            window.set_scale_factor(scale);
+                            cx.new(|cx| {
+                                EditorWindow::from_file(saved.to_str().unwrap(), window, cx)
+                            })
+                        })
+                        .unwrap();
+                    reopened
+                        .update(cx, |editor, _, cx| {
+                            editor.zoom = zoom;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, reopened.into());
+                    let (bounds, reopened_bounds) = cx.update(|cx| {
+                        (
+                            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                            reopened.read(cx).unwrap().bounds.borrow().unwrap(),
+                        )
+                    });
+                    assert_eq!(bounds, reopened_bounds);
+                    let preview = cx.capture_screenshot(editor.into()).unwrap();
+                    let reference = cx.capture_screenshot(reopened.into()).unwrap();
+                    let left = (f32::from(bounds.left()) * scale).round() as u32;
+                    let top = (f32::from(bounds.top()) * scale).round() as u32;
+                    let width = (f32::from(bounds.size.width) * scale).round() as u32;
+                    let height = (f32::from(bounds.size.height) * scale).round() as u32;
+                    let mut differences = 0;
+                    let mut worst = 0;
+                    for y in 0..height {
+                        for x in 0..width {
+                            let actual = preview.get_pixel(left + x, top + y).0;
+                            let expected = reference.get_pixel(left + x, top + y).0;
+                            let difference = actual
+                                .iter()
+                                .zip(expected)
+                                .map(|(a, b)| a.abs_diff(b))
+                                .max()
+                                .unwrap();
+                            differences += usize::from(difference > 2);
+                            worst = worst.max(difference);
+                        }
+                    }
+                    println!("{style}, scale {scale}, zoom {zoom}, shape after {shape_after}: stripe {stripe:?}, {differences} pixels above two, maximum {worst}");
+                    if let Some(output) = std::env::var_os("PORATAKE_PARITY_EVIDENCE") {
+                        if scale == 2. && zoom == 1. && !shape_after {
+                            let output = Path::new(&output);
+                            image::imageops::crop_imm(&preview, left, top, width, height)
+                                .to_image()
+                                .save(output.join(format!("ordered-{style}-preview.png")))
+                                .unwrap();
+                            image::imageops::crop_imm(&reference, left, top, width, height)
+                                .to_image()
+                                .save(output.join(format!("ordered-{style}-reopened.png")))
+                                .unwrap();
+                        }
+                    }
+                    assert_eq!(
+                        differences, 0,
+                        "{style}, {scale}x, zoom {zoom}, shape after {shape_after}"
+                    );
+                    for handle in [editor, reopened] {
+                        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn scaled_blackout_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
+    use crate::editor::annotations::Annotation;
+
+    let source = scratch.join("scaled-blackout-source.png");
+    image::RgbaImage::from_pixel(200, 160, image::Rgba([255, 255, 255, 255]))
+        .save(&source)
+        .unwrap();
+    let mut failed_cases = 0;
+    for scale in [1., 1.25, 2.] {
+        for zoom in [0.5, 0.73, 1., 1.37] {
+            let editor = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    editor.history.push(vec![
+                        Annotation::Rectangle {
+                            id: "under-blackout".into(),
+                            x: 20.,
+                            y: 12.,
+                            width: 16.,
+                            height: 16.,
+                            stroke: "#ff0000".into(),
+                            stroke_width: 2.,
+                            fill: Some("#ff0000".into()),
+                        },
+                        Annotation::Redact {
+                            id: "scaled-blackout".into(),
+                            x: 17.6,
+                            y: 7.6,
+                            width: 24.6,
+                            height: 24.6,
+                            style: "blackout".into(),
+                            intensity: 5.,
+                        },
+                    ]);
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+            let saved = scratch.join("scaled-blackout-saved.png");
+            std::fs::write(&saved, png).unwrap();
+            let reopened = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(saved.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            reopened
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, reopened.into());
+            let (bounds, reopened_bounds) = cx.update(|cx| {
+                (
+                    editor.read(cx).unwrap().bounds.borrow().unwrap(),
+                    reopened.read(cx).unwrap().bounds.borrow().unwrap(),
+                )
+            });
+            assert_eq!(bounds, reopened_bounds);
+            let preview = cx.capture_screenshot(editor.into()).unwrap();
+            let reference = cx.capture_screenshot(reopened.into()).unwrap();
+            let left = (f32::from(bounds.left()) * scale).round() as u32;
+            let top = (f32::from(bounds.top()) * scale).round() as u32;
+            let width = (f32::from(bounds.size.width) * scale).round() as u32;
+            let height = (f32::from(bounds.size.height) * scale).round() as u32;
+            let mut differences = 0;
+            let mut worst = 0;
+            let mut black_preview_lighter_reopen = 0;
+            let mut chromatic_preview = 0;
+            for y in 0..height {
+                for x in 0..width {
+                    let actual = preview.get_pixel(left + x, top + y).0;
+                    let expected = reference.get_pixel(left + x, top + y).0;
+                    let difference = actual
+                        .iter()
+                        .zip(expected)
+                        .map(|(a, b)| a.abs_diff(b))
+                        .max()
+                        .unwrap();
+                    differences += usize::from(difference > 2);
+                    worst = worst.max(difference);
+                    if actual[..3] == [0, 0, 0] && expected[..3] != [0, 0, 0] {
+                        black_preview_lighter_reopen += 1;
+                    }
+                    if actual[0] > actual[1].saturating_add(30)
+                        && actual[0] > actual[2].saturating_add(30)
+                    {
+                        chromatic_preview += 1;
+                    }
+                }
+            }
+            println!("blackout scale {scale}, zoom {zoom}: {differences} pixels above two, maximum {worst}, black preview lighter reopen {black_preview_lighter_reopen}, chromatic preview {chromatic_preview}");
+            if scale == 2. && zoom == 1.37 {
+                if let Some(output) = std::env::var_os("PORATAKE_PARITY_EVIDENCE") {
+                    let output = Path::new(&output);
+                    image::imageops::crop_imm(&preview, left, top, width, height)
+                        .to_image()
+                        .save(output.join("scaled-blackout-preview.png"))
+                        .unwrap();
+                    image::imageops::crop_imm(&reference, left, top, width, height)
+                        .to_image()
+                        .save(output.join("scaled-blackout-reopened.png"))
+                        .unwrap();
+                }
+            }
+            if differences > 0 {
+                failed_cases += 1;
+                let preview =
+                    image::imageops::crop_imm(&preview, left, top, width, height).to_image();
+                let reference =
+                    image::imageops::crop_imm(&reference, left, top, width, height).to_image();
+                preview
+                    .save(scratch.join(format!("blackout-{scale}-{zoom}-preview.png")))
+                    .unwrap();
+                reference
+                    .save(scratch.join(format!("blackout-{scale}-{zoom}-reopened.png")))
+                    .unwrap();
+            }
+            assert_eq!(
+                chromatic_preview, 0,
+                "underlying shape appeared at scale {scale}, zoom {zoom}"
+            );
+            let output = image::open(&saved).unwrap().to_rgba8();
+            for y in 8..33 {
+                for x in 18..43 {
+                    assert_eq!(
+                        output.get_pixel(x, y).0,
+                        [0, 0, 0, 255],
+                        "scale {scale}, zoom {zoom}, pixel {x},{y}"
+                    );
+                }
+            }
+            for handle in [editor, reopened] {
+                cx.update_window(handle.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+    assert_eq!(
+        failed_cases, 0,
+        "scaled blackout cases differ from reopened PNG"
+    );
+    println!("scaled blackout and underlying annotation match reopened PNG at four zooms and three scales");
+}
+
+pub(super) fn fractional_annotation_reopen(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let source = scratch.join("fractional-annotation-source.png");
+    image::RgbaImage::from_fn(800, 740, |_, y| {
+        if (y / 60) % 2 == 0 {
+            image::Rgba([130, 64, 164, 255])
+        } else {
+            image::Rgba([52, 90, 120, 255])
+        }
+    })
+    .save(&source)
+    .unwrap();
+    let editor = cx
+        .open_window(size(px(950.), px(780.)), |window, cx| {
+            window.set_scale_factor(2.);
+            cx.new(|cx| EditorWindow::from_file(source.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    editor
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.89;
+            editor
+                .history
+                .push(vec![crate::editor::annotations::Annotation::Rectangle {
+                    id: "fractional-rectangle".into(),
+                    x: 145.,
+                    y: 121.,
+                    width: 217.,
+                    height: 183.,
+                    stroke: "#ff0000".into(),
+                    stroke_width: 2.,
+                    fill: None,
+                }]);
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, editor.into());
+    let png = cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap());
+    let saved = scratch.join("fractional-annotation-saved.png");
+    std::fs::write(&saved, png).unwrap();
+    let reopened = cx
+        .open_window(size(px(950.), px(780.)), |window, cx| {
+            window.set_scale_factor(2.);
+            cx.new(|cx| EditorWindow::from_file(saved.to_str().unwrap(), window, cx))
+        })
+        .unwrap();
+    reopened
+        .update(cx, |editor, _, cx| {
+            editor.zoom = 0.89;
+            cx.notify();
+        })
+        .unwrap();
+    settle(cx, reopened.into());
+    let (original_bounds, reopened_bounds) = cx.update(|cx| {
+        (
+            editor.read(cx).unwrap().bounds.borrow().unwrap(),
+            reopened.read(cx).unwrap().bounds.borrow().unwrap(),
+        )
+    });
+    assert_eq!(original_bounds, reopened_bounds);
+    let original = cx.capture_screenshot(editor.into()).unwrap();
+    let reference = cx.capture_screenshot(reopened.into()).unwrap();
+    let left = (f32::from(original_bounds.left()) * 2.).round() as u32;
+    let top = (f32::from(original_bounds.top()) * 2.).round() as u32;
+    let width = (f32::from(original_bounds.size.width) * 2.).round() as u32;
+    let height = (f32::from(original_bounds.size.height) * 2.).round() as u32;
+    let mut differences = 0;
+    for y in 2..height - 2 {
+        for x in 2..width - 2 {
+            let actual = original.get_pixel(left + x, top + y).0;
+            let expected = reference.get_pixel(left + x, top + y).0;
+            differences += usize::from(actual.iter().zip(expected).any(|(a, b)| a.abs_diff(b) > 2));
+        }
+    }
+    assert_eq!(
+        differences, 0,
+        "fractional annotation differs from reopened export"
+    );
+    for handle in [editor, reopened] {
+        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+            .unwrap();
+    }
 }
 
 pub(super) fn simple_inset_preview(
@@ -2308,9 +4809,14 @@ pub(super) fn simple_inset_preview(
     let source = scratch.join(format!(
         "simple-inset-{scale}-{padding_setting}-{with_background}-{inset_setting}-{clipped_blur}.png"
     ));
+    let alpha = if std::env::var_os("PORATAKE_PARITY_OPAQUE_SOURCE").is_some() {
+        255
+    } else {
+        128
+    };
     image::RgbaImage::from_fn(100, 80, |x, y| {
         if (30..70).contains(&x) && (20..60).contains(&y) {
-            image::Rgba([220, 70, 90, 128])
+            image::Rgba([220, 70, 90, alpha])
         } else {
             image::Rgba([40, 120, 180, 255])
         }
@@ -2415,13 +4921,7 @@ pub(super) fn simple_inset_preview(
     let (bounds, png, matte) = cx.update(|cx| {
         let editor = editor.read(cx).unwrap();
         let theme = crate::theme::vars::active_theme(cx);
-        let theme = gpui::Rgba::from(
-            if inset_setting == 0. && padding_setting == 0. && !with_background {
-                theme.surface
-            } else {
-                theme.background
-            },
-        );
+        let theme = gpui::Rgba::from(theme.background);
         (
             editor.bounds.borrow().unwrap(),
             editor.export_png().unwrap(),
@@ -2479,7 +4979,7 @@ pub(super) fn simple_inset_preview(
             );
         }
     }
-    if [1.25, 2.].contains(&scale) && inset_setting == 8. {
+    if [1.25, 2., 1.3333333].contains(&scale) && inset_setting == 8. {
         for (name, corners, shadow) in [
             ("rounded", 24., 0.),
             ("shadow", 0., 50.),
@@ -2528,11 +5028,7 @@ pub(super) fn simple_inset_preview(
                 (100 + margin * 2, 80 + margin * 2),
                 "inset {name} must surround the image in the saved PNG"
             );
-            if scale == 1.25
-                && padding_setting == 20.
-                && with_background
-                && name == "rounded-shadow"
-            {
+            if scale == 1.25 && padding_setting == 20. && name == "rounded-shadow" {
                 saved
                     .save(scratch.join("rounded-inset-output.png"))
                     .unwrap();
@@ -2566,11 +5062,7 @@ pub(super) fn simple_inset_preview(
                     .unwrap();
             }
             assert_eq!(mismatched, 0, "inset {name} preview differs from export at {scale}x, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
-            if scale == 1.25
-                && padding_setting == 20.
-                && with_background
-                && name == "rounded-shadow"
-            {
+            if scale == 1.25 && padding_setting == 20. && name == "rounded-shadow" {
                 let path = scratch.join("rounded-inset-output.png");
                 check_inset_reopen(
                     cx,
@@ -2579,7 +5071,11 @@ pub(super) fn simple_inset_preview(
                     &path,
                     (offset_x, offset_y),
                     scratch,
-                    "rounded-inset",
+                    if with_background {
+                        "rounded-inset"
+                    } else {
+                        "rounded-inset-transparent"
+                    },
                     &[0.73, 1.0, 1.5],
                 );
             }
@@ -2664,6 +5160,28 @@ pub(super) fn simple_inset_preview(
                         .unwrap();
                 }
                 assert_eq!(mismatched, 0, "framed inset {scale}x, {style}, shadow {shadow}, padding {padding_setting}, background {with_background}, clipped blur {clipped_blur}");
+                if [1.25, 2.].contains(&scale)
+                    && padding_setting == 20.
+                    && !with_background
+                    && !clipped_blur
+                    && style.starts_with("macos-")
+                {
+                    if shadow == 0. {
+                        assert_eq!(saved.get_pixel(0, 0).0[3], 0);
+                    }
+                    let path = scratch.join(format!("transparent-{style}-{shadow}.png"));
+                    saved.save(&path).unwrap();
+                    check_inset_reopen(
+                        cx,
+                        editor,
+                        scale,
+                        &path,
+                        (margin, margin + title),
+                        scratch,
+                        &format!("transparent-{style}-{shadow}"),
+                        &[0.73, 1.0, 1.5],
+                    );
+                }
                 if scale == 1.25
                     && padding_setting == 20.
                     && with_background
@@ -3108,6 +5626,7 @@ pub(super) fn simple_inset_preview(
         for (restored, draft_check, selection, current) in [
             (false, false, None, without_redactions),
             (false, true, None, Vec::new()),
+            (false, false, None, Vec::new()),
             (
                 false,
                 false,
@@ -3125,7 +5644,21 @@ pub(super) fn simple_inset_preview(
             (
                 false,
                 false,
-                Some("ordered-shape"),
+                None,
+                vec![crate::editor::annotations::Annotation::Redact {
+                    id: "fractional-boundary-blackout".into(),
+                    x: 32.8,
+                    y: 22.8,
+                    width: 20.3,
+                    height: 20.3,
+                    style: "blackout".into(),
+                    intensity: 2.,
+                }],
+            ),
+            (
+                false,
+                false,
+                Some("ordered-blur"),
                 vec![shape.clone(), blur],
             ),
             (
@@ -3140,14 +5673,13 @@ pub(super) fn simple_inset_preview(
                 Some("ordered-shape"),
                 vec![blackout, shape.clone()],
             ),
-            (
-                false,
-                false,
-                Some("ordered-highlight"),
-                vec![highlight, shape],
-            ),
+            (false, false, Some("ordered-shape"), vec![highlight, shape]),
             (true, false, None, annotations),
         ] {
+            let unannotated_baseline = current.is_empty() && !draft_check;
+            let fractional_boundary = current
+                .iter()
+                .any(|item| item.id() == "fractional-boundary-blackout");
             let zoomed_blackout_order = current.iter().any(|item| item.id() == "ordered-blackout")
                 && current.iter().any(|item| item.id() == "ordered-shape");
             editor
@@ -3160,7 +5692,7 @@ pub(super) fn simple_inset_preview(
             settle(cx, editor.into());
             let (bounds, current_png) = cx.update(|cx| {
                 let editor = editor.read(cx).unwrap();
-                assert!(!editor.snapshot.borrow().backdrop_composite);
+                assert!(editor.snapshot.borrow().backdrop_composite);
                 (
                     editor.bounds.borrow().unwrap(),
                     editor.export_png().unwrap(),
@@ -3170,6 +5702,11 @@ pub(super) fn simple_inset_preview(
                 assert_eq!(current_png, png);
             }
             let saved = image::load_from_memory(&current_png).unwrap().to_rgba8();
+            if fractional_boundary {
+                assert_eq!(saved.get_pixel(margin + 32, margin + 32).0, [0, 0, 0, 255]);
+                assert_eq!(saved.get_pixel(margin + 53, margin + 32).0, [0, 0, 0, 255]);
+                assert_eq!(saved.get_pixel(margin + 40, margin + 43).0, [0, 0, 0, 255]);
+            }
             let mut expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
             let screenshot = cx.capture_screenshot(editor.into()).unwrap();
@@ -3185,8 +5722,12 @@ pub(super) fn simple_inset_preview(
                     );
                 }
             }
-            if zoomed_blackout_order {
-                let order_label = selection.expect("ordered annotation selection");
+            if zoomed_blackout_order || fractional_boundary || unannotated_baseline {
+                let order_label = if unannotated_baseline {
+                    "unannotated"
+                } else {
+                    selection.unwrap_or("fractional-boundary")
+                };
                 let flattened_path = scratch.join("ordered-blackout-flattened.png");
                 std::fs::write(&flattened_path, &current_png).unwrap();
                 let flattened = cx
@@ -3198,7 +5739,12 @@ pub(super) fn simple_inset_preview(
                     })
                     .unwrap();
                 settle(cx, flattened.into());
-                for zoom in [0.73_f32, 1.5] {
+                let zooms: &[f32] = if fractional_boundary {
+                    &[0.5, 0.73, 1.5]
+                } else {
+                    &[0.73, 1.5]
+                };
+                for &zoom in zooms {
                     for window in [editor, flattened] {
                         window
                             .update(cx, |editor, _, cx| {
@@ -3226,12 +5772,39 @@ pub(super) fn simple_inset_preview(
                         (flat_left, flat_top),
                         "ordered blackout {order_label} at {zoom}x"
                     );
-                    for y in ((margin + 19) as f32 * zoom).ceil() as u32
-                        ..((margin + 45) as f32 * zoom).floor() as u32
-                    {
-                        for x in ((margin + 29) as f32 * zoom).ceil() as u32
-                            ..((margin + 55) as f32 * zoom).floor() as u32
-                        {
+                    if unannotated_baseline && zoom == 0.73 {
+                        let width = ((100 + 2 * margin) as f32 * zoom).round() as u32;
+                        let height = ((80 + 2 * margin) as f32 * zoom).round() as u32;
+                        image::imageops::crop_imm(&preview, left, top, width, height)
+                            .to_image()
+                            .save(scratch.join("scaled-backdrop-preview.png"))
+                            .unwrap();
+                        image::imageops::crop_imm(
+                            &flattened_image,
+                            flat_left,
+                            flat_top,
+                            width,
+                            height,
+                        )
+                        .to_image()
+                        .save(scratch.join("scaled-backdrop-reopened.png"))
+                        .unwrap();
+                    }
+                    let (x_range, y_range) = if unannotated_baseline {
+                        (
+                            0..((100 + 2 * margin) as f32 * zoom).round() as u32,
+                            0..((80 + 2 * margin) as f32 * zoom).round() as u32,
+                        )
+                    } else {
+                        (
+                            ((margin + 29) as f32 * zoom).ceil() as u32
+                                ..((margin + 55) as f32 * zoom).floor() as u32,
+                            ((margin + 19) as f32 * zoom).ceil() as u32
+                                ..((margin + 45) as f32 * zoom).floor() as u32,
+                        )
+                    };
+                    for y in y_range {
+                        for x in x_range.clone() {
                             let actual = preview.get_pixel(left + x, top + y).0;
                             let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
                             if actual.iter().zip(expected).any(|(a, e)| a.abs_diff(e) > 2) {
@@ -3306,6 +5879,69 @@ pub(super) fn simple_inset_preview(
                     let top =
                         (f32::from(bounds.top()) * scale - margin as f32 * zoom).round() as u32;
                     let before = cx.capture_screenshot(editor.into()).unwrap();
+                    if zoom == 1.5 {
+                        let reference_path = scratch.join("draft-reference.png");
+                        std::fs::write(&reference_path, &current_png).unwrap();
+                        let reference = cx
+                            .open_window(size(px(1280.), px(738.)), |window, cx| {
+                                window.set_scale_factor(scale);
+                                cx.new(|cx| {
+                                    EditorWindow::from_file(
+                                        reference_path.to_str().unwrap(),
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            })
+                            .unwrap();
+                        reference
+                            .update(cx, |editor, _, cx| {
+                                editor.wallpaper.set_gradient(None);
+                                editor.wallpaper.padding = 0.;
+                                editor.zoom = zoom / scale;
+                                cx.notify();
+                            })
+                            .unwrap();
+                        settle(cx, reference.into());
+                        let reference_bounds =
+                            cx.update(|cx| reference.read(cx).unwrap().bounds.borrow().unwrap());
+                        let reference_image = cx.capture_screenshot(reference.into()).unwrap();
+                        let ref_left = (f32::from(reference_bounds.left()) * scale).round() as u32;
+                        let ref_top = (f32::from(reference_bounds.top()) * scale).round() as u32;
+                        let left_edge = (margin as f32 * zoom).round() as u32;
+                        let right_edge = ((margin + 100) as f32 * zoom).round() as u32 - 1;
+                        let bottom_edge = ((margin + 80) as f32 * zoom).round() as u32 - 1;
+                        let inner = ((margin + 10) as f32 * zoom).round() as u32;
+                        for (x, y) in [
+                            (left_edge, inner),
+                            (right_edge, inner),
+                            (inner, bottom_edge),
+                        ] {
+                            let actual = before.get_pixel(left + x, top + y).0;
+                            let expected = reference_image.get_pixel(ref_left + x, ref_top + y).0;
+                            assert!(
+                                actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                                "unannotated image edge differs from its reopened export at {x},{y}: {actual:?} vs {expected:?}"
+                            );
+                        }
+                        for y in ((margin + 10) as f32 * zoom).round() as u32
+                            ..((margin + 70) as f32 * zoom).round() as u32
+                        {
+                            for x in ((margin + 20) as f32 * zoom).round() as u32
+                                ..((margin + 80) as f32 * zoom).round() as u32
+                            {
+                                let actual = before.get_pixel(left + x, top + y).0;
+                                let expected =
+                                    reference_image.get_pixel(ref_left + x, ref_top + y).0;
+                                assert!(
+                                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                                    "translucent image differs from its reopened export at {x},{y}: {actual:?} vs {expected:?}"
+                                );
+                            }
+                        }
+                        cx.update_window(reference.into(), |_, window, _| window.remove_window())
+                            .unwrap();
+                    }
                     editor
                         .update(cx, |editor, _, cx| {
                             editor.draft =
@@ -3325,7 +5961,7 @@ pub(super) fn simple_inset_preview(
                     settle(cx, editor.into());
                     cx.update(|cx| {
                         assert!(
-                            !editor
+                            editor
                                 .read(cx)
                                 .unwrap()
                                 .snapshot
@@ -3361,6 +5997,14 @@ pub(super) fn simple_inset_preview(
                                 first.get_or_insert((x, y, actual, previous));
                             }
                         }
+                    }
+                    if changed > 0 {
+                        before
+                            .save(scratch.join(format!("draft-before-{zoom}.png")))
+                            .unwrap();
+                        screenshot
+                            .save(scratch.join(format!("draft-after-{zoom}.png")))
+                            .unwrap();
                     }
                     assert_eq!(
                         changed, 0,
@@ -4202,8 +6846,15 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         std::fs::remove_file(reference_right).unwrap();
     }
 
-    for balanced in [false, true] {
-        let name = format!("framed-attachments-{scale}-{balanced}");
+    for (balanced, frame_style, transparent) in [
+        (false, "windows-dark", false),
+        (true, "windows-dark", false),
+        (true, "macos-light", false),
+        (true, "macos-dark", false),
+        (false, "macos-light", true),
+        (false, "macos-dark", true),
+    ] {
+        let name = format!("framed-attachments-{scale}-{balanced}-{frame_style}-{transparent}");
         let source = scratch.join(format!("{name}-source.png"));
         let (source_width, source_height, crop_left, crop_top, primary_width, primary_height) =
             if balanced {
@@ -4220,6 +6871,8 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                 } else {
                     image::Rgba([255, 255, 255, 255])
                 }
+            } else if transparent && (70..130).contains(&x) && (70..100).contains(&y) {
+                image::Rgba([64, 112, 192, 128])
             } else {
                 image::Rgba([64, 112, 192, 255])
             }
@@ -4257,7 +6910,7 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                 editor_state: Some(serde_json::json!({
                     "wallpaper": {
                         "balance": balanced,
-                        "windowFrame": {"style": "windows-dark"}
+                        "windowFrame": {"style": frame_style}
                     },
                     "layers": [
                         {
@@ -4304,7 +6957,13 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             .unwrap();
         settle(cx, window);
 
-        let title_bar = crate::render::window_frame::title_bar_height("windows-dark", native_scale);
+        std::fs::write(
+            scratch.join(format!("gpui-{name}-unannotated-export.png")),
+            cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap()),
+        )
+        .unwrap();
+
+        let title_bar = crate::render::window_frame::title_bar_height(frame_style, native_scale);
         let primary_frame_height = f64::from(primary_height) + title_bar;
         let top_height = ((24.0 + title_bar) * f64::from(primary_width) / 80.0).round();
         let right_width = (30.0 * primary_frame_height / (60.0 + title_bar)).round();
@@ -4433,11 +7092,16 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
             [240, 80, 64, 255],
             "the top attachment content starts below its own title bar"
         );
+        let frame_color = match frame_style {
+            "macos-light" => [232, 232, 232, 255],
+            "macos-dark" => [58, 58, 60, 255],
+            _ => [32, 32, 32, 255],
+        };
         assert_eq!(
             saved
                 .get_pixel(primary_width / 2, top_height.round() as u32 + 2)
                 .0,
-            [32, 32, 32, 255],
+            frame_color,
             "the primary image has a separate title bar"
         );
         assert_eq!(
@@ -4447,9 +7111,12 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         );
         assert_eq!(
             saved
-                .get_pixel(right_content_x + 10, top_height.round() as u32 + 10)
+                .get_pixel(
+                    right_content_x + 10,
+                    top_height.round() as u32 + if transparent { 3 } else { 10 }
+                )
                 .0,
-            [32, 32, 32, 255],
+            frame_color,
             "the side attachment has its own title bar"
         );
         assert_eq!(
@@ -4459,6 +7126,18 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
         );
         if balanced {
             assert_eq!(saved.get_pixel(2, content_y).0, [230, 230, 230, 255]);
+        }
+        if transparent {
+            assert_eq!(
+                saved
+                    .get_pixel(
+                        80,
+                        top_height.round() as u32 + title_bar.round() as u32 + 80
+                    )
+                    .0[3],
+                128,
+                "the translucent primary image must stay translucent in the exported PNG"
+            );
         }
 
         let mut composited = image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
@@ -4488,6 +7167,144 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                     "{name} scale {scale} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
                 );
             }
+        }
+
+        #[cfg(target_os = "macos")]
+        if (balanced && frame_style == "macos-dark")
+            || (transparent && frame_style == "macos-light")
+        {
+            let original_wallpaper = cx.update(|cx| editor.read(cx).unwrap().wallpaper.clone());
+            for (with_inset, aspect_ratio) in [
+                (false, "auto"),
+                (true, "auto"),
+                (true, "1:1"),
+                (true, "9:16"),
+            ] {
+                let (variant, variant_png) = if with_inset {
+                    editor
+                        .update(cx, |editor, _, cx| {
+                            editor.wallpaper.inset = 6.;
+                            editor.wallpaper.spacing = 7.;
+                            editor.wallpaper.aspect_ratio = aspect_ratio.into();
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, window);
+                    let variant = if aspect_ratio == "auto" {
+                        format!("{name}-inset-spacing")
+                    } else {
+                        format!("{name}-aspect-{}", aspect_ratio.replace(':', "x"))
+                    };
+                    (
+                        variant,
+                        cx.update(|cx| editor.read(cx).unwrap().export_png().unwrap()),
+                    )
+                } else {
+                    (name.clone(), png.clone())
+                };
+                if balanced && scale == 1. && aspect_ratio == "1:1" {
+                    let saved = image::load_from_memory(&variant_png).unwrap().to_rgba8();
+                    let y = saved.height() * 3 / 4;
+                    let mut visible =
+                        (0..saved.width()).filter(|&x| saved.get_pixel(x, y).0[3] >= 128);
+                    let first = visible.next().unwrap();
+                    let last = visible.next_back().unwrap();
+                    assert_eq!(
+                        first,
+                        saved.width() - 1 - last,
+                        "{variant} horizontal margins"
+                    );
+                }
+                let flattened_path = scratch.join(format!("gpui-{variant}-flattened.png"));
+                std::fs::write(&flattened_path, &variant_png).unwrap();
+                let flattened = cx
+                    .open_window(size(px(1280.), px(738.)), |window, cx| {
+                        window.set_scale_factor(scale);
+                        cx.new(|cx| {
+                            EditorWindow::from_file(flattened_path.to_str().unwrap(), window, cx)
+                        })
+                    })
+                    .unwrap();
+                for effective_zoom in [0.73, 1.37] {
+                    let zoom = effective_zoom / scale;
+                    let mut crops = Vec::new();
+                    for (handle, is_flattened) in [(editor, false), (flattened, true)] {
+                        handle
+                            .update(cx, |editor, _, cx| {
+                                editor.zoom = zoom;
+                                cx.notify();
+                            })
+                            .unwrap();
+                        settle(cx, handle.into());
+                        let bounds = if is_flattened {
+                            cx.update(|cx| handle.read(cx).unwrap().bounds.borrow().unwrap())
+                        } else {
+                            super::measured("editor-stage", 0)
+                        };
+                        let screenshot = cx.capture_screenshot(handle.into()).unwrap();
+                        let snap = |value: gpui::Pixels| {
+                            let value = f32::from(value) * scale;
+                            (value.abs() - 0.5).ceil().copysign(value) as u32
+                        };
+                        let left = snap(bounds.left());
+                        let top = snap(bounds.top());
+                        crops.push(
+                            image::imageops::crop_imm(
+                                &screenshot,
+                                left,
+                                top,
+                                snap(bounds.right()) - left,
+                                snap(bounds.bottom()) - top,
+                            )
+                            .to_image(),
+                        );
+                    }
+                    let actual = &crops[0];
+                    let expected = &crops[1];
+                    actual
+                        .save(
+                            scratch
+                                .join(format!("gpui-{variant}-zoom-{effective_zoom}-preview.png")),
+                        )
+                        .unwrap();
+                    expected
+                        .save(scratch.join(format!(
+                            "gpui-{variant}-zoom-{effective_zoom}-flattened.png"
+                        )))
+                        .unwrap();
+                    assert_eq!(
+                        actual.dimensions(),
+                        expected.dimensions(),
+                        "{variant} at {effective_zoom}x"
+                    );
+                    let mut changed = 0;
+                    let mut worst = 0;
+                    for (a, e) in actual.pixels().zip(expected.pixels()) {
+                        let gap =
+                            a.0.iter()
+                                .zip(e.0)
+                                .map(|(a, e)| a.abs_diff(e))
+                                .max()
+                                .unwrap();
+                        changed += usize::from(gap > 2);
+                        worst = worst.max(gap);
+                    }
+                    assert_eq!(
+                        changed, 0,
+                        "{variant} at {effective_zoom}x, worst channel difference {worst}"
+                    );
+                }
+                cx.update_window(flattened.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper = original_wallpaper;
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, window);
         }
 
         cx.update_window(window, |_, window, _| window.remove_window())
@@ -4563,6 +7380,132 @@ pub(super) fn framed_attachment_layout(cx: &mut HeadlessAppContext, scratch: &Pa
                     actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
                     "reopened {name} scale {scale} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
                 );
+            }
+        }
+        if !balanced && frame_style.starts_with("macos") {
+            reopened
+                .update(cx, |editor, _, cx| {
+                    editor.history.replace_current(Vec::new());
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, reopened.into());
+            let baseline = cx.update(|cx| reopened.read(cx).unwrap().export_png().unwrap());
+            let baseline = image::load_from_memory(&baseline).unwrap().to_rgba8();
+            for style in ["blur", "pixelate"] {
+                let mut plain_stripe = None;
+                for shape_order in ["none", "before", "after"] {
+                    reopened
+                        .update(cx, |editor, _, cx| {
+                            let stripe = Annotation::Rectangle {
+                                id: "framed-seam-stripe".into(),
+                                x: 156.,
+                                y: 70.,
+                                width: 2.,
+                                height: 24.,
+                                stroke: "#ff0000".into(),
+                                stroke_width: 1.,
+                                fill: Some("#ff0000".into()),
+                            };
+                            let redact = Annotation::Redact {
+                                id: format!("framed-seam-{style}"),
+                                x: 145.,
+                                y: 70.,
+                                width: 40.,
+                                height: 24.,
+                                style: style.into(),
+                                intensity: 5.,
+                            };
+                            let annotations = match shape_order {
+                                "before" => vec![stripe, redact],
+                                "after" => vec![redact, stripe],
+                                _ => vec![redact],
+                            };
+                            editor.history.replace_current(annotations);
+                            cx.notify();
+                        })
+                        .unwrap();
+                    settle(cx, reopened.into());
+                    let (png, matte, stage) = cx.update(|cx| {
+                        let editor = reopened.read(cx).unwrap();
+                        let theme =
+                            gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
+                        (
+                            editor.export_png().unwrap(),
+                            image::Rgba([
+                                (theme.r * 255.).round() as u8,
+                                (theme.g * 255.).round() as u8,
+                                (theme.b * 255.).round() as u8,
+                                255,
+                            ]),
+                            super::measured("editor-stage", 0),
+                        )
+                    });
+                    let saved = image::load_from_memory(&png).unwrap().to_rgba8();
+                    let stripe = saved
+                        .get_pixel(
+                            157,
+                            top_height.round() as u32 + title_bar.round() as u32 + 80,
+                        )
+                        .0;
+                    if shape_order == "none" {
+                        plain_stripe = Some(stripe);
+                    }
+                    if shape_order == "before" {
+                        assert!(stripe[1] > 0, "{name} {style} filtered stripe: {stripe:?}");
+                        assert_ne!(
+                            Some(stripe),
+                            plain_stripe,
+                            "{name} {style} must filter the earlier stripe"
+                        );
+                    }
+                    if shape_order == "after" {
+                        assert_eq!(stripe, [255, 0, 0, 255], "{name} {style} upper stripe");
+                    }
+                    let mut modified = [false, false];
+                    for (x, y, pixel) in saved.enumerate_pixels() {
+                        if pixel != baseline.get_pixel(x, y) {
+                            modified[usize::from(x >= primary_width)] = true;
+                        }
+                    }
+                    assert_eq!(
+                        modified,
+                        [true, true],
+                        "{style} must affect both sides of the seam"
+                    );
+                    let mut expected =
+                        image::RgbaImage::from_pixel(saved.width(), saved.height(), matte);
+                    image::imageops::overlay(&mut expected, &saved, 0, 0);
+                    let screenshot = cx.capture_screenshot(reopened.into()).unwrap();
+                    let left = (f32::from(stage.left()) * scale).round() as u32;
+                    let top = (f32::from(stage.top()) * scale).round() as u32;
+                    let actual = image::imageops::crop_imm(
+                        &screenshot,
+                        left,
+                        top,
+                        saved.width(),
+                        saved.height(),
+                    )
+                    .to_image();
+                    actual
+                        .save(
+                            scratch.join(format!("gpui-{name}-{style}-{shape_order}-preview.png")),
+                        )
+                        .unwrap();
+                    expected
+                        .save(
+                            scratch.join(format!("gpui-{name}-{style}-{shape_order}-expected.png")),
+                        )
+                        .unwrap();
+                    for (x, y, actual) in actual.enumerate_pixels() {
+                        let expected = expected.get_pixel(x, y);
+                        assert!(
+                        actual.0.iter().zip(expected.0).all(|(a, b)| a.abs_diff(b) <= 2),
+                        "{name} {style} preview/export differs at {x},{y}: {actual:?} vs {expected:?}"
+                    );
+                    }
+                    println!("{name} {style} shape {shape_order}: stripe {stripe:?}, preview matches export within two levels");
+                }
             }
         }
         cx.update_window(reopened.into(), |_, window, _| window.remove_window())
@@ -4892,7 +7835,7 @@ pub(super) fn restored_pixelation(
     settle(cx, editor.into());
     let (bounds, png, matte) = cx.update(|cx| {
         let editor = editor.read(cx).unwrap();
-        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).surface);
+        let theme = gpui::Rgba::from(crate::theme::vars::active_theme(cx).background);
         (
             editor.bounds.borrow().unwrap(),
             editor.export_png().unwrap(),
@@ -4963,9 +7906,45 @@ pub(super) fn restored_pixelation(
         let top = snap(f32::from(preview_bounds.top()) * scale);
         let flat_left = snap(f32::from(flattened_bounds.left()) * scale);
         let flat_top = snap(f32::from(flattened_bounds.top()) * scale);
+        let width = snap(f32::from(preview_bounds.right()) * scale) - left;
+        let height = snap(f32::from(preview_bounds.bottom()) * scale) - top;
+        assert_eq!(
+            (width, height),
+            (
+                snap(f32::from(flattened_bounds.right()) * scale) - flat_left,
+                snap(f32::from(flattened_bounds.bottom()) * scale) - flat_top,
+            ),
+            "pixelation preview dimensions at zoom={effective_zoom}, DPI={scale}"
+        );
+        let mismatched = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                preview
+                    .get_pixel(left + x, top + y)
+                    .0
+                    .iter()
+                    .zip(flattened_image.get_pixel(flat_left + x, flat_top + y).0)
+                    .any(|(actual, expected)| actual.abs_diff(expected) > 2)
+            })
+            .count();
+        if mismatched > 0 {
+            for (name, image, x, y) in [
+                ("preview", &preview, left, top),
+                ("saved", &flattened_image, flat_left, flat_top),
+            ] {
+                image::imageops::crop_imm(image, x, y, width, height)
+                    .to_image()
+                    .save(scratch.join(format!(
+                        "pixelation-whole-{scale}-{effective_zoom}-{transparent}-{clipped}-{name}.png"
+                    )))
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            mismatched, 0,
+            "whole pixelation image at zoom={effective_zoom}, DPI={scale}, transparent={transparent}, clipped={clipped}"
+        );
         if scale == 1. {
-            let width = (saved.width() as f32 * effective_zoom).round() as u32;
-            let height = (saved.height() as f32 * effective_zoom).round() as u32;
             image::imageops::crop_imm(&preview, left, top, width, height)
                 .to_image()
                 .save(scratch.join(format!(
@@ -4978,18 +7957,6 @@ pub(super) fn restored_pixelation(
                     "pixelation-zoom-{effective_zoom}-{transparent}-{clipped}-saved.png"
                 )))
                 .unwrap();
-        }
-        for y in ((29. * effective_zoom).ceil() as u32)..((71. * effective_zoom).floor() as u32) {
-            for x in ((left_edge.saturating_sub(1) as f32 * effective_zoom).ceil() as u32)
-                ..(((right_edge + 1).min(200) as f32 * effective_zoom).floor() as u32)
-            {
-                let actual = preview.get_pixel(left + x, top + y).0;
-                let expected = flattened_image.get_pixel(flat_left + x, flat_top + y).0;
-                assert!(
-                        actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
-                        "pixelation at zoom={effective_zoom}, DPI={scale}, transparent={transparent}, clipped={clipped}, {x},{y}: {actual:?} vs {expected:?}"
-                    );
-            }
         }
     }
     cx.update_window(flattened.into(), |_, window, _| window.remove_window())
@@ -5900,6 +8867,17 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 96, 160, 128]))
         .save(&alpha_background)
         .unwrap();
+    let pattern_background = scratch.join("scaled-wallpaper-pattern-background.png");
+    image::RgbaImage::from_fn(64, 48, |x, y| {
+        image::Rgba([
+            ((x * 37 + y * 3) % 256) as u8,
+            ((y * 53 + x * 5) % 256) as u8,
+            ((x * 11 + y * 7) % 256) as u8,
+            ((x * 19 + y * 17) % 256) as u8,
+        ])
+    })
+    .save(&pattern_background)
+    .unwrap();
     for (scale, padding, background, blurred) in [
         (1.25_f32, 25_u32, "slate", false),
         (2., 40, "slate", false),
@@ -5909,6 +8887,10 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         (2., 40, "alpha-gradient", false),
         (1.25, 25, "alpha-image", false),
         (2., 40, "alpha-image", false),
+        (1.25, 25, "pattern-image", false),
+        (2., 40, "pattern-image", false),
+        (1.25, 25, "pattern-image", true),
+        (2., 40, "pattern-image", true),
         (1.25, 25, "slate", true),
         (2., 40, "slate", true),
     ] {
@@ -5928,6 +8910,9 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
                     )),
                     "alpha-image" => editor.wallpaper.set_background_image(Some(
                         alpha_background.to_string_lossy().into_owned(),
+                    )),
+                    "pattern-image" => editor.wallpaper.set_background_image(Some(
+                        pattern_background.to_string_lossy().into_owned(),
                     )),
                     _ => unreachable!(),
                 }
@@ -5961,12 +8946,19 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             )
         });
         assert_eq!(saved.dimensions(), (640 + 2 * padding, 360 + 2 * padding));
-        let mut expected = saved.clone();
-        if background != "slate" {
+        if background == "pattern-image" {
+            saved
+                .save(scratch.join(format!("scaled-wallpaper-pattern-{scale}-{blurred}.png")))
+                .unwrap();
+        }
+        if background != "slate" && background != "pattern-image" {
             assert_eq!(
                 saved.get_pixel(0, 0).0[3],
                 if background == "none" { 0 } else { 128 }
             );
+        }
+        let mut expected = saved.clone();
+        if saved.pixels().any(|pixel| pixel.0[3] != 255) {
             expected = image::RgbaImage::from_pixel(saved.width(), saved.height(), stage_matte);
             image::imageops::overlay(&mut expected, &saved, 0, 0);
         }
@@ -8310,12 +11302,13 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     );
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(super) fn video(
     cx: &mut HeadlessAppContext,
     output: &Path,
     scratch: &Path,
     width: f32,
+    height: f32,
     scale: f32,
 ) {
     use crate::windows::registry::{self, WindowKind};
@@ -8325,11 +11318,20 @@ pub(super) fn video(
     std::fs::create_dir_all(&project).unwrap();
     let recording = crate::video::project::recording_video_path(&project);
     std::fs::write(&recording, include_bytes!("fixtures/capture.mov")).unwrap();
+    std::fs::write(
+        crate::video::project::system_audio_path(&project),
+        include_bytes!("fixtures/mic-static-clock.m4a"),
+    )
+    .unwrap();
     let mut state = model::VideoEditorState {
         source_duration: Some(2.),
         segments: vec![model::Segment::spanning(2.)],
         ..Default::default()
     };
+    if (width, height) == (640., 440.) {
+        use crate::windows::video_editor::timeline::{pane_height, MAX_PANE_TRACKS};
+        state.ui.timeline_height = Some(f64::from(pane_height(MAX_PANE_TRACKS)));
+    }
     state.drawing_segments.push(model::DrawingSegment {
         id: "visual-drawing".into(),
         start_time: 0.,
@@ -8357,7 +11359,12 @@ pub(super) fn video(
     });
     let window = video.into();
     cx.update_window(window, |_, window, _| {
-        window.resize(size(px(width.max(1200.)), px(750.)));
+        let width = if cfg!(target_os = "macos") {
+            width
+        } else {
+            width.max(1200.)
+        };
+        window.resize(size(px(width), px(height)));
         window.set_scale_factor(scale);
     })
     .unwrap();
@@ -8397,6 +11404,253 @@ pub(super) fn video(
     });
     hover(cx, window, 300., 300.);
     capture(cx, window, output, "video-loaded-default");
+    #[cfg(target_os = "macos")]
+    {
+        let screenshot = image::open(output.join("gpui-video-loaded-default.png"))
+            .unwrap()
+            .to_rgba8();
+        let stage_right = ((width
+            - crate::ui::chrome::VIDEO_SIDEBAR_WIDTH
+            - crate::ui::chrome::VIDEO_TAB_RAIL_WIDTH)
+            * scale) as u32;
+        let preview_pixels = screenshot
+            .enumerate_pixels()
+            .filter(|(x, y, _)| *x < stage_right && *y < screenshot.height() * 2 / 3);
+        let (red, blue) = preview_pixels.fold((0, 0), |(red, blue), (_, _, pixel)| {
+            let [r, g, b, _] = pixel.0;
+            (
+                red + usize::from(r > 170 && g < 120 && b < 120),
+                blue + usize::from(b > 150 && u16::from(b) > u16::from(r) + 40),
+            )
+        });
+        assert!(
+            red > 100 && blue > 100,
+            "rendered preview lacks fixture colors: red={red}, blue={blue}"
+        );
+        for (group, label_index) in [
+            ("video-timeline-video-label", 0),
+            ("video-timeline-audio-label", 2),
+        ] {
+            let label = super::measured(group, label_index);
+            let pixel = |position: gpui::Pixels| (f32::from(position) * scale).round() as u32;
+            let padding_x = pixel(super::measured(group, 0).left() - px(3.));
+            let mut visible = false;
+            for y in pixel(label.top())..pixel(label.bottom()) {
+                let background = screenshot.get_pixel(padding_x, y);
+                for x in pixel(label.left())..pixel(label.right()) {
+                    let foreground = screenshot.get_pixel(x, y);
+                    if foreground.0[..3].iter().all(|channel| *channel >= 245) {
+                        visible = true;
+                        let contrast = super::pixel_contrast(foreground, background);
+                        assert!(contrast >= 4.5, "{group} contrast was {contrast:.2}");
+                    }
+                }
+            }
+            assert!(visible, "{group} did not paint its duration");
+        }
+    }
+    if cfg!(target_os = "macos") && width == 720. {
+        let stage_right = px(width
+            - crate::ui::chrome::VIDEO_SIDEBAR_WIDTH
+            - crate::ui::chrome::VIDEO_TAB_RAIL_WIDTH);
+        let before = super::measured("video-timeline-controls", 9);
+        assert!(before.right() > stage_right);
+        let play = super::measured("video-timeline-controls", 0);
+        event(
+            cx,
+            window,
+            PlatformInput::Scroll(gpui::ScrollEvent {
+                position: point(px(150.), play.center().y),
+                delta: gpui::ScrollDelta::Pixels(point(px(-1000.), px(0.))),
+                ..Default::default()
+            }),
+        );
+        settle(cx, window);
+        let scrub = super::measured("video-timeline-controls", 9);
+        assert!(
+            scrub.left() >= px(0.) && scrub.right() <= stage_right,
+            "scrub {before:?} -> {scrub:?}, stage right {stage_right:?}"
+        );
+        capture(cx, window, output, "video-loaded-controls-scrolled");
+        click(
+            cx,
+            window,
+            f32::from(scrub.right() - px(14.)),
+            f32::from(scrub.center().y),
+        );
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert!(model::load_state(&project).ui.scrub_audio_enabled);
+        click(
+            cx,
+            window,
+            f32::from(scrub.right() - px(14.)),
+            f32::from(scrub.center().y),
+        );
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert!(!model::load_state(&project).ui.scrub_audio_enabled);
+        let scrub_focus = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap()
+            .expect("Scrub Audio should receive focus");
+        event(
+            cx,
+            window,
+            PlatformInput::Scroll(gpui::ScrollEvent {
+                position: point(px(150.), play.center().y),
+                delta: gpui::ScrollDelta::Pixels(point(px(1000.), px(0.))),
+                ..Default::default()
+            }),
+        );
+        let restored = super::measured("video-timeline-controls", 0);
+        assert!(
+            restored.left() >= px(0.) && restored.right() <= stage_right,
+            "play control did not return into view: {restored:?}"
+        );
+        let play_focus = super::focus_measured(cx, window, "video-timeline-controls", 0);
+        assert_ne!(
+            play_focus, scrub_focus,
+            "Play and Scrub Audio must retain their own focus after pointer interaction"
+        );
+        assert!(cx
+            .update_window(window, |_, window, _| window
+                .context_stack()
+                .last()
+                .is_some_and(|context| context.contains("Button")))
+            .unwrap());
+        assert!(!cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+        super::key(cx, window, "c");
+        assert!(
+            cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()),
+            "C must activate Cut while Play has focus"
+        );
+        super::key(cx, window, "c");
+        assert!(!cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+        super::key(cx, window, "cmd-s");
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert_eq!(model::load_state(&project).ui.sidebar_tab, "export");
+        cx.update(|cx| {
+            video
+                .update(cx, |editor, _, cx| {
+                    editor.activate_tab(SidebarTab::Cursor, cx)
+                })
+                .unwrap();
+        });
+        settle(cx, window);
+        let cut_focus = super::focus_measured(cx, window, "video-timeline-controls", 2);
+        assert_ne!(cut_focus, play_focus);
+        super::key(cx, window, "space");
+        assert!(cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+        super::key(cx, window, "space");
+        assert!(!cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+        assert_eq!(
+            super::focus_measured(cx, window, "video-timeline-controls", 0),
+            play_focus
+        );
+        assert!(super::measured("video-timeline-controls", 9).right() > stage_right);
+        let mut reached_scrub = false;
+        let mut reached_slider = false;
+        for _ in 0..30 {
+            super::key(cx, window, "tab");
+            let slider_focused = cx
+                .update_window(window, |_, window, _| {
+                    window
+                        .context_stack()
+                        .last()
+                        .is_some_and(|context| context.contains("Slider"))
+                })
+                .unwrap();
+            if slider_focused && !reached_slider {
+                reached_slider = true;
+                super::key(cx, window, "c");
+                assert!(
+                    !cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()),
+                    "C must not activate Cut while the slider has focus"
+                );
+                let zoom_before = model::load_state(&project).timeline_zoom;
+                super::key(cx, window, "right");
+                cx.advance_clock(std::time::Duration::from_secs(1));
+                settle(cx, window);
+                assert_ne!(model::load_state(&project).timeline_zoom, zoom_before);
+            }
+            reached_scrub = cx
+                .update_window(window, |_, window, cx| {
+                    window.focused(cx).is_some_and(|focus| focus == scrub_focus)
+                })
+                .unwrap();
+            if reached_scrub {
+                break;
+            }
+        }
+        assert!(reached_slider, "Tab must reach the timeline zoom slider");
+        assert!(reached_scrub, "Tab must reach Scrub Audio");
+        assert!(!cx
+            .update_window(window, |_, window, _| window
+                .context_stack()
+                .last()
+                .is_some_and(|context| context.contains("Button")))
+            .unwrap());
+        super::key(cx, window, "c");
+        assert!(
+            !cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()),
+            "C must not activate Cut while the switch has focus"
+        );
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        let tab_before = model::load_state(&project).ui.sidebar_tab;
+        super::key(cx, window, "cmd-s");
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert_eq!(model::load_state(&project).ui.sidebar_tab, tab_before);
+        let scrub = super::measured("video-timeline-controls", 9);
+        assert!(
+            scrub.left() >= px(0.) && scrub.right() <= stage_right,
+            "keyboard-focused Scrub Audio is clipped: {scrub:?}, stage right {stage_right:?}"
+        );
+        capture(cx, window, output, "video-loaded-keyboard-scrub");
+        super::key(cx, window, "space");
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert!(model::load_state(&project).ui.scrub_audio_enabled);
+        super::key(cx, window, "space");
+        cx.advance_clock(std::time::Duration::from_secs(1));
+        settle(cx, window);
+        assert!(!model::load_state(&project).ui.scrub_audio_enabled);
+        assert!(super::measured("video-timeline-controls", 0).left() < px(0.));
+        let mut reached_play = false;
+        for _ in 0..30 {
+            super::key(cx, window, "shift-tab");
+            reached_play = cx
+                .update_window(window, |_, window, cx| {
+                    window.focused(cx).is_some_and(|focus| focus == play_focus)
+                })
+                .unwrap();
+            if reached_play {
+                break;
+            }
+        }
+        assert!(reached_play, "Shift-Tab must reach Play");
+        let play = super::measured("video-timeline-controls", 0);
+        assert!(
+            play.left() >= px(0.) && play.right() <= stage_right,
+            "keyboard-focused Play is clipped: {play:?}, stage right {stage_right:?}"
+        );
+        click(cx, window, 150., 100.);
+        assert!(cx
+            .update_window(window, |_, window, cx| window.focused(cx)
+                != Some(play_focus))
+            .unwrap());
+        assert!(!cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+        super::key(cx, window, "c");
+        assert!(
+            cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()),
+            "C must activate the cut control after a background click"
+        );
+        super::key(cx, window, "c");
+        assert!(!cx.update(|cx| video.read(cx).unwrap().parity_cut_tool_active()));
+    }
     for tab in SidebarTab::ALL {
         cx.update(|cx| {
             video
@@ -8411,6 +11665,56 @@ pub(super) fn video(
         assert_eq!(saved.ui.sidebar_tab, tab.id());
         capture(cx, window, output, &format!("video-loaded-{}", tab.id()));
     }
+    if cfg!(target_os = "macos") && height == 520. {
+        let bounds = |cx: &mut HeadlessAppContext, index| {
+            cx.update(|cx| {
+                video
+                    .read(cx)
+                    .unwrap()
+                    .parity_export_field_bounds(index)
+                    .unwrap()
+            })
+        };
+        let footer = super::measured("video-export-panel", 1);
+        let before = bounds(cx, 4);
+        assert!(
+            before.bottom() > footer.top(),
+            "frame rate should start below the fold"
+        );
+        let quality = bounds(cx, 3);
+        click(
+            cx,
+            window,
+            f32::from(quality.center().x),
+            f32::from(quality.bottom() - px(14.)),
+        );
+        super::key(cx, window, "escape");
+        let quality_focus = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap()
+            .expect("Compression should be focused");
+        super::key(cx, window, "tab");
+        settle(cx, window);
+        let rate_focus = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap()
+            .expect("Frame Rate should receive focus");
+        assert_ne!(rate_focus, quality_focus);
+        let after = bounds(cx, 4);
+        assert!(
+            after.bottom() <= footer.top(),
+            "tab left Frame Rate behind the footer: {after:?}"
+        );
+        assert_eq!(super::measured("video-export-panel", 1), footer);
+        capture(cx, window, output, "video-export-frame-rate-focused");
+    }
+    let button = super::measured("video-export-start", 0);
+    let viewport = cx
+        .update_window(window, |_, window, _| window.viewport_size())
+        .unwrap();
+    assert!(button.size.width > px(0.) && button.size.height > px(0.));
+    assert!(button.left() >= px(0.) && button.right() <= viewport.width);
+    assert!(button.top() >= px(0.) && button.bottom() <= viewport.height);
     cx.update(|cx| {
         video
             .update(cx, |editor, _, cx| {

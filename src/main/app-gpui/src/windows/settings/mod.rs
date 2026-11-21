@@ -745,16 +745,12 @@ fn sidebar(
         .is_focused(ui_window);
     let active = window.active;
     let categories = Category::supported();
-    let sidebar_percentage = if active_mode(cx) == ThemeMode::Dark {
-        if cfg!(windows) {
-            85.0
-        } else {
-            65.0
-        }
-    } else if cfg!(windows) {
-        65.0
+    let sidebar_percentage = if cfg!(target_os = "macos") {
+        90.0
+    } else if active_mode(cx) == ThemeMode::Dark {
+        85.0
     } else {
-        35.0
+        65.0
     };
 
     let entry = |category: Category, cx: &mut Context<SettingsWindow>| {
@@ -810,17 +806,24 @@ fn sidebar(
         footer = footer.child(entry(category, cx));
     }
 
+    let sidebar_bg = if crate::system::reduced_transparency::enabled() {
+        theme.sidebar_background
+    } else {
+        let base = if cfg!(target_os = "macos") {
+            theme.sidebar_background
+        } else {
+            theme.content_background
+        };
+        crate::theme::color::mix_hsla(base, sidebar_percentage, base.opacity(0.0))
+    };
+
     div()
         .flex()
         .flex_col()
         .w(px(SIDEBAR_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(crate::theme::color::mix_hsla(
-            theme.content_background,
-            sidebar_percentage,
-            theme.content_background.opacity(0.0),
-        ))
+        .bg(sidebar_bg)
         .border_r_1()
         .border_color(theme.hairline)
         .child(
@@ -1284,6 +1287,37 @@ mod render_tests {
             cx.refresh().expect("schedule a redraw");
             cx.run_until_parked();
         }
+    }
+
+    #[herogpui::test]
+    fn history_limit_slider_moves_by_one_setting_step(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        store.update(|config| {
+            config.history.enabled = true;
+            config.history.max_items = 100.;
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let (settings, cx) =
+            cx.add_window_view(|_, cx| SettingsWindow::new(store.clone(), Category::General, cx));
+        cx.update(|_, cx| {
+            settings.update(cx, |settings, cx| {
+                settings.search.update(cx, |search, cx| {
+                    search.set_value("Maximum items");
+                    cx.notify();
+                });
+            });
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        let track = cx.debug_bounds("general.historyMaxItems").unwrap();
+        cx.simulate_click(track.center(), gpui::Modifiers::none());
+        let start = store.get().history.max_items;
+
+        cx.simulate_keystrokes("right");
+        assert_eq!(store.get().history.max_items, start + 10.);
+        cx.simulate_keystrokes("left");
+        assert_eq!(store.get().history.max_items, start);
     }
 
     #[herogpui::test]

@@ -92,6 +92,7 @@ pub fn is_open(kind: WindowKind, cx: &mut App) -> bool {
     alive
 }
 
+#[cfg(not(windows))]
 pub fn toggle(
     kind: WindowKind,
     cx: &mut App,

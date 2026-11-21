@@ -19,6 +19,8 @@ export function renderNumber({
   offsetY,
   isSelected,
   isPreview,
+  decorationOnly = false,
+  hitOnly = false,
   onMouseDown,
 }: NumberRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
@@ -32,7 +34,7 @@ export function renderNumber({
       key={key}
       style={{
         cursor: isPreview ? 'default' : 'move',
-        pointerEvents: isPreview ? 'none' : 'auto',
+        pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >
@@ -46,24 +48,28 @@ export function renderNumber({
           strokeWidth={SELECTION_STROKE_WIDTH}
         />
       )}
-      <circle cx={cx} cy={cy} r={config.radius} fill={ann.fill} />
-      <text
-        x={cx}
-        y={cy}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontSize={config.fontSize}
-        fontWeight="bold"
-        fontFamily="system-ui, -apple-system, sans-serif"
-        fill={textColor}
-        style={{
-          cursor: 'move',
-          userSelect: 'none',
-          pointerEvents: 'none',
-        }}
-      >
-        {ann.displayValue}
-      </text>
+      {!decorationOnly && (
+        <>
+          <circle cx={cx} cy={cy} r={config.radius} fill={ann.fill} />
+          <text
+            x={cx}
+            y={cy}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={config.fontSize}
+            fontWeight="bold"
+            fontFamily="system-ui, -apple-system, sans-serif"
+            fill={textColor}
+            style={{
+              cursor: 'move',
+              userSelect: 'none',
+              pointerEvents: 'none',
+            }}
+          >
+            {ann.displayValue}
+          </text>
+        </>
+      )}
     </g>
   );
 }

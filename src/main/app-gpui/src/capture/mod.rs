@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use parking_lot::{Condvar, Mutex};
 use poratake_daemon_common::geometry::{CaptureAreaRequest, CaptureWindowRequest};
 
@@ -29,7 +29,16 @@ fn uuid_simple() -> String {
 
 pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
     let directory = output.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(directory)?;
+    let with_directory = |error: std::io::Error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "Could not prepare a screenshot in {}. {error}",
+                directory.display()
+            ),
+        )
+    };
+    std::fs::create_dir_all(directory).map_err(with_directory)?;
     loop {
         let temporary = directory.join(format!(".poratake-{}.tmp.png", uuid_simple()));
         match std::fs::OpenOptions::new()
@@ -39,9 +48,67 @@ pub(crate) fn prepare_screenshot(output: &Path) -> std::io::Result<PathBuf> {
         {
             Ok(_) => return Ok(temporary),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(with_directory(error)),
         }
     }
+}
+
+fn capture_screenshot_to_file(
+    output: &Path,
+    capture: impl FnOnce(&Path) -> Result<()>,
+) -> Result<PathBuf> {
+    let temporary = prepare_screenshot(output)?;
+    if let Err(error) = capture(&temporary) {
+        let completed = error
+            .downcast_ref::<crate::daemon::DaemonRpcError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.code.as_str(),
+                    "CAPTURE_FAILED" | "INVALID_PARAMS" | "METHOD_NOT_FOUND" | "DAEMON_UNAVAILABLE"
+                )
+            });
+        if completed
+            && std::fs::symlink_metadata(&temporary)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0)
+            && std::fs::remove_file(&temporary).is_ok()
+        {
+            return Err(error);
+        }
+        return Err(error.context(format!(
+            "Capture data may be available at {}",
+            temporary.display()
+        )));
+    }
+    publish_captured_screenshot(&temporary, output, "The screenshot produced no image")
+}
+
+fn publish_captured_screenshot(
+    temporary: &Path,
+    output: &Path,
+    no_image_message: &str,
+) -> Result<PathBuf> {
+    match std::fs::symlink_metadata(temporary) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {
+            return publish_screenshot(temporary, output)
+                .with_context(|| format!("Capture data is available at {}", temporary.display()));
+        }
+        Ok(metadata) if metadata.is_file() => {
+            std::fs::remove_file(temporary).with_context(|| {
+                format!(
+                    "{no_image_message}. Could not remove {}",
+                    temporary.display()
+                )
+            })?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Could not inspect the capture at {}", temporary.display())
+            });
+        }
+    }
+    anyhow::bail!("{no_image_message}")
 }
 
 pub(crate) fn publish_screenshot(temporary: &Path, output: &Path) -> std::io::Result<PathBuf> {
@@ -145,6 +212,8 @@ struct FreezeProgress {
     next_generation: u64,
     completed_generation: u64,
     frozen_generation: Option<u64>,
+    releasing_generation: Option<u64>,
+    released_through: u64,
 }
 
 pub(crate) struct CachedCaptureReservation {
@@ -170,7 +239,9 @@ impl Drop for CachedCaptureReservation {
 impl CachedCaptureReservation {
     pub(crate) fn wait_for_freeze(&self) -> bool {
         let mut state = self.freeze.state.lock();
-        while state.completed_generation < self.generation {
+        while state.completed_generation < self.generation
+            || state.releasing_generation == Some(self.generation)
+        {
             self.freeze.settled.wait(&mut state);
         }
         state.frozen_generation == Some(self.generation)
@@ -212,19 +283,7 @@ impl CaptureService {
         }
     }
 
-    /// Port of `getScreenshotsDir`.
-    pub fn screenshots_dir(&self) -> PathBuf {
-        let config = self.config.get();
-        let custom = config.storage.screenshots_path.clone();
-        if !custom.is_empty() && std::path::Path::new(&custom).is_dir() {
-            return PathBuf::from(custom);
-        }
-        let pictures = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
-        pictures.join("Poratake")
-    }
-
-    /// Port of `generateScreenshotPath`.
-    pub fn generate_screenshot_path(&self) -> PathBuf {
+    pub(crate) fn screenshot_destination(&self) -> impl FnOnce() -> PathBuf + Send + 'static {
         let config = self.config.get();
         let pattern = if config.storage.naming_pattern.is_empty() {
             "%type %Y-%m-%d at %H.%M.%S"
@@ -237,7 +296,16 @@ impl CaptureService {
             "png",
             chrono::Local::now(),
         );
-        self.screenshots_dir().join(filename)
+        let custom = PathBuf::from(config.storage.screenshots_path);
+        move || {
+            if !custom.as_os_str().is_empty() && custom.is_dir() {
+                return custom.join(filename);
+            }
+            dirs::picture_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Poratake")
+                .join(filename)
+        }
     }
 
     /// Same daemon contract as `captureRegionToFile`: screen-space rect in
@@ -247,12 +315,14 @@ impl CaptureService {
         capture: DisplayCapture,
         path: &std::path::Path,
         cached: bool,
+        excluded_window_ids: Vec<i64>,
     ) -> Result<()> {
         self.daemon.screenshot().capture_area(&CaptureAreaRequest {
             capture,
             path: path.to_path_buf(),
             cached,
             window_id: None,
+            excluded_window_ids,
         })
     }
 
@@ -333,11 +403,13 @@ impl CaptureService {
         path: &std::path::Path,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
+        excluded_window_ids: Vec<i64>,
     ) -> Result<()> {
         let cached = reservation
             .as_ref()
             .is_some_and(CachedCaptureReservation::wait_for_freeze);
-        let result = self.capture_area_to_file_with_options(capture, path, cached);
+        let result =
+            self.capture_area_to_file_with_options(capture, path, cached, excluded_window_ids);
         drop(reservation);
         if let Some(generation) = release_after {
             self.release_screen(generation);
@@ -347,6 +419,10 @@ impl CaptureService {
 
     /// `releaseScreen()`. Safe to call when nothing is frozen.
     pub fn release_screen(&self, generation: u64) -> bool {
+        self.release_screen_with(generation, || self.release_screen_started())
+    }
+
+    fn release_screen_with(&self, generation: u64, release: impl FnOnce() -> bool) -> bool {
         if generation == 0 {
             return true;
         }
@@ -362,16 +438,32 @@ impl CaptureService {
             if state.captures.range(..=generation).next().is_some() {
                 continue;
             }
-            drop(state);
-            let released = self.release_screen_started();
-            if released {
-                let mut state = self.freeze.state.lock();
-                if state.frozen_generation == Some(generation) {
-                    state.frozen_generation = None;
-                }
-            }
-            return released;
+            return self.release_generation(generation, state, release);
         }
+    }
+
+    fn release_generation(
+        &self,
+        generation: u64,
+        mut state: parking_lot::MutexGuard<'_, FreezeProgress>,
+        release: impl FnOnce() -> bool,
+    ) -> bool {
+        if state.released_through >= generation {
+            return true;
+        }
+        state.releasing_generation = Some(generation);
+        drop(state);
+        let released = release();
+        let mut state = self.freeze.state.lock();
+        if released {
+            state.released_through = generation;
+            if state.frozen_generation == Some(generation) {
+                state.frozen_generation = None;
+            }
+        }
+        state.releasing_generation = None;
+        self.freeze.settled.notify_all();
+        released
     }
 
     fn release_screen_started(&self) -> bool {
@@ -432,6 +524,7 @@ impl CaptureService {
                 path: path.to_path_buf(),
                 cached: true,
                 window_id: Some(window_id),
+                excluded_window_ids: Vec::new(),
             });
         }
         self.daemon
@@ -501,12 +594,20 @@ fn each_display(
 /// `prewarmFreezeScreen()`: warms the daemon's capture pipeline off the main
 /// thread at startup.
 pub fn prewarm_freeze_screen(cx: &mut gpui::App) {
-    if !crate::system::capabilities::is_supported(
-        crate::system::capabilities::Feature::FreezeScreen,
-    ) {
+    if desktop_icons::is_shutting_down()
+        || !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::FreezeScreen,
+        )
+    {
         return;
     }
     let service = crate::state::state(cx);
+    if !service
+        .config
+        .read(|config| config.screenshot.freeze_screen)
+    {
+        return;
+    }
     cx.background_executor()
         .spawn(async move { service.prewarm_freeze() })
         .detach();
@@ -642,16 +743,18 @@ fn with_frozen_screen(
             .spawn(async move {
                 freezer.wait_for_freeze_turn(generation);
                 let _operation = freezer.freeze.operation.lock();
-                let released = release_first
-                    .filter(|generation| *generation != 0)
-                    .is_none()
-                    || freezer.release_screen_started();
+                let release = |generation| {
+                    freezer.release_generation(generation, freezer.freeze.state.lock(), || {
+                        freezer.release_screen_started()
+                    })
+                };
+                let released = release_first.is_none_or(release);
                 let result = if released {
                     freezer.freeze_screen_started()
                 } else {
                     Err(anyhow::anyhow!("Could not release the frozen screen"))
                 };
-                let released = released && (result.is_ok() || freezer.release_screen_started());
+                let released = released && (result.is_ok() || release(generation));
                 (freezer.finish_freeze(generation, result), released)
             })
             .await;
@@ -1223,6 +1326,7 @@ fn capture_screen_target(target: ScreenTarget, owner: u64, cx: &mut gpui::App) {
         coordinator.capture_area_reserved(
             capture,
             intent::CaptureIntent::Screenshot,
+            Vec::new(),
             None,
             None,
             None,
@@ -1253,6 +1357,7 @@ fn fallback_screen_target(target: ScreenTarget, close_overlays: bool, cx: &mut g
             coordinator.capture_area_reserved(
                 capture,
                 intent::CaptureIntent::Screenshot,
+                Vec::new(),
                 reservation,
                 None,
                 None,
@@ -1463,6 +1568,60 @@ mod tests {
             std::fs::read_dir(output.parent().unwrap()).unwrap().count(),
             13
         );
+    }
+
+    #[test]
+    fn failed_screenshot_capture_only_removes_an_empty_stage_after_a_definite_reply() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        for (code, partial, retained) in [
+            (Some("CAPTURE_FAILED"), false, false),
+            (Some("CAPTURE_FAILED"), true, true),
+            (None, false, true),
+        ] {
+            let mut stage = None;
+            let error = super::capture_screenshot_to_file(&output, |path| {
+                stage = Some(path.to_owned());
+                if partial {
+                    std::fs::write(path, "partial capture")?;
+                }
+                Err(match code {
+                    Some(code) => anyhow::Error::new(crate::daemon::DaemonRpcError {
+                        code: code.into(),
+                        message: "Window no longer available".into(),
+                    })
+                    .context("capture-window failed: Window no longer available"),
+                    None => anyhow::anyhow!("Request timeout: screenshot.capture-window"),
+                })
+            })
+            .unwrap_err();
+            let stage = stage.unwrap();
+            assert_eq!(stage.exists(), retained);
+            assert_eq!(
+                error.to_string().contains("Capture data may be available"),
+                retained
+            );
+            assert!(!output.exists());
+            if partial {
+                assert_eq!(std::fs::read_to_string(stage).unwrap(), "partial capture");
+            }
+        }
+    }
+
+    #[test]
+    fn successful_reply_without_an_image_removes_the_stage_without_publishing() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("Capture.png");
+        std::fs::write(&output, "existing capture").unwrap();
+
+        let error = super::capture_screenshot_to_file(&output, |_| Ok(())).unwrap_err();
+
+        assert_eq!(error.to_string(), "The screenshot produced no image");
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "existing capture"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -2703,6 +2862,75 @@ mod tests {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(service.release_screen(generation));
         assert_eq!(service.freeze.state.lock().frozen_generation, None);
+    }
+
+    #[test]
+    fn only_an_acknowledged_release_can_suppress_another_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+        let service = CaptureService::new(DaemonHandle::new(), config);
+        let first = service.begin_freeze();
+        service.finish_freeze(first, Ok(())).unwrap();
+
+        assert!(!service.release_screen_with(first, || false));
+        let mut retried = false;
+        assert!(service.release_screen_with(first, || {
+            retried = true;
+            true
+        }));
+        assert!(retried);
+        assert!(service.release_screen_with(first, || panic!("release was already acknowledged")));
+
+        let second = service.begin_freeze();
+        service.finish_freeze(second, Ok(())).unwrap();
+        assert!(!service.release_screen_with(second, || false));
+        assert!(service.reserve_cached_capture().wait_for_freeze());
+    }
+
+    #[test]
+    fn a_reservation_during_release_waits_for_the_result_before_choosing_pixels() {
+        for released in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let config =
+                Arc::new(ConfigStore::load_at(directory.path().join("config.json")).unwrap());
+            let service = CaptureService::new(DaemonHandle::new(), config);
+            let generation = service.begin_freeze();
+            service.finish_freeze(generation, Ok(())).unwrap();
+
+            let (started, release_started) = std::sync::mpsc::sync_channel(1);
+            let (finish, finish_release) = std::sync::mpsc::sync_channel(1);
+            let releasing = service.clone();
+            let release = std::thread::spawn(move || {
+                releasing.release_screen_with(generation, || {
+                    started.send(()).unwrap();
+                    finish_release.recv().unwrap();
+                    released
+                })
+            });
+            release_started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+
+            let reservation = service.reserve_cached_capture();
+            let (started, capture_started) = std::sync::mpsc::sync_channel(1);
+            let (choice, result) = std::sync::mpsc::sync_channel(1);
+            let capture = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                choice.send(reservation.wait_for_freeze()).unwrap();
+            });
+            capture_started
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let early = result.recv_timeout(Duration::from_millis(50));
+            finish.send(()).unwrap();
+            assert_eq!(release.join().unwrap(), released);
+            capture.join().unwrap();
+            assert!(matches!(
+                early,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(result.recv().unwrap(), !released);
+        }
     }
 
     #[test]

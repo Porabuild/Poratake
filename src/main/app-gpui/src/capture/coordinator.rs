@@ -2,7 +2,6 @@
 //! so work started by short-lived windows (the area overlay) survives their
 //! removal and can still open follow-up UI on the main thread.
 
-use anyhow::Context as _;
 use gpui::{AnyWindowHandle, Context, Entity, WeakEntity};
 use herogpui::gpui;
 use poratake_daemon_common::contract::{ScrollCaptureStartRequest, ScrollSpeed};
@@ -11,13 +10,59 @@ use std::sync::Arc;
 use crate::capture::desktop_icons::CaptureHide;
 use crate::capture::intent::CaptureIntent;
 use crate::capture::{
-    prepare_screenshot, publish_screenshot, uuid_simple, CachedCaptureReservation, CaptureService,
-    DisplayCapture,
+    capture_screenshot_to_file, prepare_screenshot, publish_captured_screenshot, uuid_simple,
+    CachedCaptureReservation, CaptureService, DisplayCapture,
 };
 
 pub struct Coordinator {
     pub service: CaptureService,
     pending_attach: Option<PendingEditorAttach>,
+    analysis_generation: u64,
+    clipboard_generation: u64,
+    pending_capture_history: Option<smol::channel::Receiver<()>>,
+    #[cfg(feature = "parity")]
+    pending_analyses: usize,
+}
+
+pub(crate) struct CaptureHistoryWrite {
+    previous: Option<smol::channel::Receiver<()>>,
+    finished: smol::channel::Sender<()>,
+    max_items: usize,
+}
+
+impl CaptureHistoryWrite {
+    pub(crate) fn reserve(max_items: usize, cx: &mut gpui::App) -> Self {
+        let (finished, receiver) = smol::channel::bounded(1);
+        let previous = crate::state::coordinator(cx).update(cx, |coordinator, _| {
+            coordinator.pending_capture_history.replace(receiver)
+        });
+        Self {
+            previous,
+            finished,
+            max_items,
+        }
+    }
+
+    pub(crate) async fn persist(
+        self,
+        item: crate::history_store::HistoryItem,
+        cx: &mut gpui::AsyncApp,
+    ) -> crate::history_store::AddOutcome {
+        let Self {
+            previous,
+            finished,
+            max_items,
+        } = self;
+        if let Some(previous) = previous {
+            let _ = previous.recv().await;
+        }
+        let outcome = cx
+            .background_executor()
+            .spawn(async move { crate::history_store::add_item(item, max_items, true) })
+            .await;
+        drop(finished);
+        outcome
+    }
 }
 
 struct PendingEditorAttach {
@@ -29,7 +74,7 @@ struct PendingEditorAttach {
 enum ScrollFinishEvent {
     Prepared(std::path::PathBuf),
     RequestSent,
-    Completed(Result<std::path::PathBuf, anyhow::Error>),
+    Completed(anyhow::Result<()>),
     Cancelled(Result<(), String>),
 }
 
@@ -71,6 +116,11 @@ impl Coordinator {
         Self {
             service,
             pending_attach: None,
+            analysis_generation: 0,
+            clipboard_generation: 0,
+            pending_capture_history: None,
+            #[cfg(feature = "parity")]
+            pending_analyses: 0,
         }
     }
 
@@ -81,6 +131,7 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -113,6 +164,7 @@ impl Coordinator {
                         coordinator.capture_area_ready(
                             capture,
                             intent,
+                            excluded_window_ids,
                             reservation,
                             release_after,
                             hide,
@@ -158,6 +210,9 @@ impl Coordinator {
                     drop(transition);
                     let _ = entity.update(cx, |coordinator, cx| {
                         drop(reservation);
+                        if intent == CaptureIntent::ScrollCapture {
+                            crate::capture::overlay::release_scroll_selectors(owner, cx);
+                        }
                         if let Some(generation) = release_after {
                             crate::capture::overlay::release_frozen_screen(generation, cx);
                         }
@@ -185,6 +240,7 @@ impl Coordinator {
                     coordinator.capture_area_ready(
                         capture,
                         intent,
+                        excluded_window_ids,
                         reservation,
                         release_after,
                         hide,
@@ -196,13 +252,23 @@ impl Coordinator {
             .detach();
             return;
         }
-        self.capture_area_ready(capture, intent, reservation, release_after, hide, owner, cx);
+        self.capture_area_ready(
+            capture,
+            intent,
+            excluded_window_ids,
+            reservation,
+            release_after,
+            hide,
+            owner,
+            cx,
+        );
     }
 
     fn capture_area_ready(
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -214,6 +280,9 @@ impl Coordinator {
                 && owner.is_some_and(|owner| crate::capture::overlay::revision(cx) != owner))
         {
             drop(reservation);
+            if intent == CaptureIntent::ScrollCapture {
+                crate::capture::overlay::release_scroll_selectors(owner, cx);
+            }
             if let Some(generation) = release_after {
                 crate::capture::overlay::release_frozen_screen(generation, cx);
             }
@@ -221,39 +290,58 @@ impl Coordinator {
             return;
         }
         if intent == CaptureIntent::EditorAttach {
-            return self.attach_area(capture, reservation, release_after, hide, cx);
+            return self.attach_area(
+                capture,
+                excluded_window_ids,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         }
         if !intent.saves_to_library() {
-            return self.analyze_area(capture, intent, reservation, release_after, hide, cx);
+            return self.analyze_area(
+                capture,
+                intent,
+                excluded_window_ids,
+                reservation,
+                release_after,
+                hide,
+                cx,
+            );
         }
         if intent == CaptureIntent::Timer {
-            return self.run_countdown(capture, hide, owner.expect("timer selection owner"), cx);
+            return self.run_countdown(
+                capture,
+                excluded_window_ids,
+                hide,
+                owner.expect("timer selection owner"),
+                cx,
+            );
         }
         if intent == CaptureIntent::ScrollCapture {
-            return self.run_scroll_capture(capture, hide, cx);
+            return self.run_scroll_capture(capture, excluded_window_ids, owner, hide, cx);
         }
         let service = self.service.clone();
-        let path = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
 
         let task = cx.background_executor().spawn(async move {
-            let (result, released) = crate::capture::capture_then_release(
-                &service,
-                release_after,
-                || -> anyhow::Result<_> {
-                    let temporary = prepare_screenshot(&path)?;
-                    service
-                        .capture_area_cached(capture, &temporary, reservation, None)
-                        .with_context(|| {
-                            format!("Capture data may be available at {}", temporary.display())
-                        })?;
-                    publish_screenshot(&temporary, &path).with_context(|| {
-                        format!("Capture data is available at {}", temporary.display())
+            let path = resolve_destination();
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    capture_screenshot_to_file(&path, |temporary| {
+                        service.capture_area_cached(
+                            capture,
+                            temporary,
+                            reservation,
+                            None,
+                            excluded_window_ids,
+                        )
                     })
-                },
-            );
+                });
             drop(hide);
             drop(transition);
             (result, released)
@@ -276,12 +364,15 @@ impl Coordinator {
 /// Port of `capture/screenshot/finalize.ts`: record the capture in history,
 /// honour the clipboard settings, then open the preview or the editor.
 async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui::AsyncApp) {
-    let (history_enabled, max_items, play_sound, screenshot) = cx.update(|cx| {
+    let (history, play_sound, screenshot) = cx.update(|cx| {
         let service = &cx.global::<crate::state::AppState>().service;
         let config = service.config.get();
+        let history = config
+            .history
+            .enabled
+            .then(|| CaptureHistoryWrite::reserve(config.history.max_items as usize, cx));
         (
-            config.history.enabled,
-            config.history.max_items as usize,
+            history,
             config.general.play_sound_on_screenshot,
             config.screenshot.clone(),
         )
@@ -300,44 +391,87 @@ async fn finalize_capture(path: std::path::PathBuf, silent: bool, cx: &mut gpui:
     #[cfg(not(target_os = "macos"))]
     let _ = (play_sound, silent);
 
-    let history_outcome = crate::history_store::add_item(
-        crate::history_store::HistoryItem {
+    let copy = screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard;
+    let show_preview = screenshot.show_preview && !screenshot.capture_to_clipboard;
+    let (finalization, pending) = if show_preview && (history.is_some() || copy) {
+        let (sender, receiver) = smol::channel::bounded(1);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
+    if show_preview {
+        cx.update(|cx| {
+            crate::windows::capture_preview::CapturePreviewWindow::open_screenshot(
+                cx,
+                path.clone(),
+                pending,
+            );
+        });
+    }
+    let clipboard = copy.then(|| {
+        let generation = cx.update(|cx| {
+            crate::state::coordinator(cx).update(cx, |coordinator, _| {
+                coordinator.clipboard_generation = coordinator.clipboard_generation.wrapping_add(1);
+                coordinator.clipboard_generation
+            })
+        });
+        let path = path.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { std::fs::read(path) });
+        (generation, read)
+    });
+
+    let editor = (!show_preview && !screenshot.capture_to_clipboard).then(|| {
+        let path = path.to_string_lossy().into_owned();
+        let source = path.clone();
+        let image = cx.background_executor().spawn(async move {
+            let result = crate::editor::window::PreparedScreenshot::open(&source);
+            #[cfg(all(feature = "parity", target_os = "macos"))]
+            if std::env::var_os("PORATAKE_NATIVE_SMOKE_DIRECT_EDITOR").is_some() {
+                println!(
+                    "NATIVE_SMOKE direct editor image prepared {}",
+                    result.is_ok()
+                );
+            }
+            result
+        });
+        (path, image)
+    });
+
+    if let Some(write) = history {
+        let item = crate::history_store::HistoryItem {
             id: uuid_simple(),
             timestamp: chrono::Local::now().timestamp_millis(),
             original_path: path.to_string_lossy().to_string(),
             r#type: crate::history_store::HistoryItemType::Screenshot,
             editor_state: None,
             duration: None,
-        },
-        max_items,
-        history_enabled,
-    );
-    if let Some((title, message)) = history_outcome.warning("screenshot") {
-        cx.update(|cx| {
-            crate::windows::toast::Toast::show(cx, title, message);
-        });
-    }
-
-    if screenshot.capture_to_clipboard || screenshot.auto_copy_to_clipboard {
-        let clipboard_path = path.clone();
-        cx.update(|cx| {
-            if let Ok(bytes) = std::fs::read(&clipboard_path) {
-                crate::system::clipboard::ClipboardService::write_png(cx, bytes);
-            }
-        });
-    }
-    if screenshot.capture_to_clipboard {
-        return;
-    }
-
-    let open_preview = screenshot.show_preview;
-    cx.update(|cx| {
-        if open_preview {
-            crate::windows::capture_preview::CapturePreviewWindow::open(cx, path.clone());
-        } else {
-            crate::open_editor_for(cx, path.to_string_lossy().as_ref());
+        };
+        if let Some((title, message)) = write.persist(item, cx).await.warning("screenshot") {
+            cx.update(|cx| {
+                crate::windows::toast::Toast::show(cx, title, message);
+            });
         }
-    });
+    }
+
+    if let Some((generation, read)) = clipboard {
+        if let Ok(bytes) = read.await {
+            cx.update(|cx| {
+                let coordinator = crate::state::coordinator(cx);
+                if coordinator.read(cx).clipboard_generation == generation {
+                    crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                }
+            });
+        }
+    }
+    drop(finalization);
+    if let Some((path, image)) = editor {
+        let image = image.await;
+        cx.update(|cx| {
+            crate::open_editor_with_image(cx, &path, Some(Default::default()), image);
+        });
+    }
 }
 
 fn show_capture_error(cx: &mut gpui::AsyncApp, title: &'static str, body: &str) {
@@ -386,6 +520,7 @@ impl Coordinator {
     fn attach_area(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
@@ -411,7 +546,13 @@ impl Coordinator {
         let task = cx.background_executor().spawn(async move {
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
-                    service.capture_area_cached(capture, &path, reservation, None)
+                    service.capture_area_cached(
+                        capture,
+                        &path,
+                        reservation,
+                        None,
+                        excluded_window_ids,
+                    )
                 });
             if result.is_err() {
                 let _ = std::fs::remove_file(&path);
@@ -485,26 +626,18 @@ impl Coordinator {
         cx: &mut Context<Self>,
     ) {
         let service = self.service.clone();
-        let path = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         let task = cx.background_executor().spawn(async move {
-            let (result, released) = crate::capture::capture_then_release(
-                &service,
-                release_after,
-                || -> anyhow::Result<_> {
-                    let temporary = prepare_screenshot(&path)?;
-                    service
-                        .capture_window_to_file(window_id, capture, &temporary, reservation)
-                        .with_context(|| {
-                            format!("Capture data may be available at {}", temporary.display())
-                        })?;
-                    publish_screenshot(&temporary, &path).with_context(|| {
-                        format!("Capture data is available at {}", temporary.display())
+            let path = resolve_destination();
+            let (result, released) =
+                crate::capture::capture_then_release(&service, release_after, || {
+                    capture_screenshot_to_file(&path, |temporary| {
+                        service.capture_window_to_file(window_id, capture, temporary, reservation)
                     })
-                },
-            );
+                });
             drop(hide);
             drop(transition);
             (result, released)
@@ -530,6 +663,8 @@ impl Coordinator {
     fn run_scroll_capture(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
+        owner: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
@@ -545,7 +680,7 @@ impl Coordinator {
             boundary_only: cfg!(target_os = "macos").then_some(true),
         };
         let (tx, rx) = smol::channel::unbounded::<crate::capture::scroll::ScrollSessionSignal>();
-        let (progress_tx, progress_rx) = smol::channel::bounded(16);
+        let (progress_tx, progress_rx) = crate::capture::scroll::scroll_progress_channel();
         let (finish_tx, finish_rx) = smol::channel::unbounded::<ScrollFinishEvent>();
         let daemon = service.daemon.clone();
         let event_tx = tx.clone();
@@ -556,6 +691,7 @@ impl Coordinator {
             }
         }));
         if !crate::capture::scroll::begin() {
+            crate::capture::overlay::release_scroll_selectors(owner, cx);
             crate::capture::desktop_icons::release_for_capture(hide, cx);
             crate::windows::toast::Toast::show(
                 cx,
@@ -565,16 +701,20 @@ impl Coordinator {
             return;
         }
 
-        let output = service.generate_screenshot_path();
+        let resolve_destination = service.screenshot_destination();
         cx.spawn(async move |_entity, cx| {
             use crate::capture::scroll::ScrollSessionSignal as Signal;
             let daemon = service.daemon.clone();
-            let started = cx
+            let (started, output) = cx
                 .background_executor()
-                .spawn(async move { crate::capture::scroll::start_reserved(&daemon, &request) })
+                .spawn(async move {
+                    let output = resolve_destination();
+                    (crate::capture::scroll::start_reserved(&daemon, &request), output)
+                })
                 .await;
             if !started {
                 cx.update(|cx| {
+                    crate::capture::overlay::release_scroll_selectors(owner, cx);
                     crate::capture::desktop_icons::release_for_capture(hide, cx);
                     if !crate::capture::desktop_icons::is_shutting_down() {
                         crate::windows::toast::Toast::show(
@@ -587,6 +727,7 @@ impl Coordinator {
                 return;
             }
             if crate::capture::desktop_icons::is_shutting_down() {
+                cx.update(|cx| crate::capture::overlay::release_scroll_selectors(owner, cx));
                 cx.background_executor()
                     .spawn(async move {
                         crate::capture::scroll::cancel(&service.daemon);
@@ -597,13 +738,23 @@ impl Coordinator {
             }
             #[cfg(target_os = "macos")]
             let ui = cx.update(|cx| {
-                crate::windows::scroll_capture::ScrollCaptureSession::open(
+                let ui = crate::windows::scroll_capture::ScrollCaptureSession::open(
                     cx,
                     service.daemon.clone(),
                     area,
                     tx.clone(),
-                )
+                );
+                if owner.is_some() {
+                    crate::windows::scroll_capture::ScrollCaptureSession::include_selector_windows(
+                        &ui,
+                        excluded_window_ids,
+                        cx,
+                    );
+                }
+                ui
             });
+            #[cfg(not(target_os = "macos"))]
+            let _ = excluded_window_ids;
             let mut hide = hide;
             let mut transition = hide
                 .as_ref()
@@ -740,11 +891,8 @@ impl Coordinator {
                                         },
                                     )
                                     .and_then(|path| {
-                                        path.ok_or_else(|| {
-                                            anyhow::anyhow!(
-                                                "The scroll capture produced no image. Capture data may be available at {}",
-                                                temporary.display()
-                                            )
+                                        path.map(|_| ()).ok_or_else(|| {
+                                            anyhow::anyhow!("The scroll capture produced no image")
                                         })
                                     });
                                     let _ = events
@@ -851,7 +999,10 @@ impl Coordinator {
             drop(subscription);
             crate::capture::scroll::finish_session();
             #[cfg(target_os = "macos")]
-            cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+            cx.update(|cx| {
+                crate::windows::scroll_capture::ScrollCaptureSession::close(cx);
+                crate::capture::overlay::release_scroll_selectors(owner, cx);
+            });
 
             if let Some(Err(error)) = cancel_result {
                 eprintln!("[scroll-capture] cancel failed: {error}");
@@ -872,10 +1023,12 @@ impl Coordinator {
 
                     let result = finish_result?;
                     let path = match result {
-                        Ok(_) => match temporary.as_deref() {
-                            Some(temporary) => publish_screenshot(temporary, &output).with_context(|| {
-                                format!("Capture data is available at {}", temporary.display())
-                            }),
+                        Ok(()) => match temporary.as_deref() {
+                            Some(temporary) => publish_captured_screenshot(
+                                temporary,
+                                &output,
+                                "The scroll capture produced no image",
+                            ),
                             None => Err(anyhow::anyhow!(
                                 "The scroll capture produced no temporary image"
                             )),
@@ -922,6 +1075,7 @@ impl Coordinator {
     fn run_countdown(
         &mut self,
         capture: DisplayCapture,
+        excluded_window_ids: Vec<i64>,
         hide: Option<Arc<CaptureHide>>,
         owner: u64,
         cx: &mut Context<Self>,
@@ -957,29 +1111,44 @@ impl Coordinator {
                 _ => {}
             }));
         let theme = crate::theme::vars::active_theme(cx);
-        if !crate::capture::timer::show(
-            &daemon,
-            capture,
-            crate::capture::timer::TIMER_DURATION,
-            theme.accent,
-            theme.accent_foreground,
-        ) {
-            drop(subscription);
-            drop(session);
-            crate::capture::overlay::close_timer(owner, cx);
-            crate::capture::desktop_icons::release_for_capture(hide, cx);
-            crate::windows::toast::Toast::show(
-                cx,
-                "Timer Capture Failed",
-                "The countdown control could not be started",
-            );
-            return;
-        }
-
+        let placement_bounds = crate::capture::timer::placement_bounds(capture, cx);
+        let accent = theme.accent;
+        let accent_foreground = theme.accent_foreground;
         let transition = hide
             .as_ref()
             .map(|_| crate::capture::desktop_icons::track_transition());
         cx.spawn(async move |entity, cx| {
+            let start_daemon = daemon.clone();
+            let shown = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::capture::timer::show(
+                        &start_daemon,
+                        capture,
+                        placement_bounds,
+                        crate::capture::timer::TIMER_DURATION,
+                        accent,
+                        accent_foreground,
+                    )
+                })
+                .await;
+            if !shown {
+                drop(subscription);
+                drop(session);
+                cx.update(|cx| {
+                    if crate::capture::overlay::close_timer(owner, cx) {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Timer Capture Failed",
+                            "The countdown control could not be started",
+                        );
+                    }
+                    crate::capture::desktop_icons::release_for_capture(hide, cx);
+                });
+                drop(transition);
+                return;
+            }
+
             let timeout = cx
                 .background_executor()
                 .timer(std::time::Duration::from_secs(
@@ -1012,6 +1181,7 @@ impl Coordinator {
                         coordinator.capture_area_reserved(
                             capture,
                             CaptureIntent::Screenshot,
+                            excluded_window_ids,
                             None,
                             None,
                             hide,
@@ -1029,12 +1199,20 @@ impl Coordinator {
         &mut self,
         capture: DisplayCapture,
         intent: CaptureIntent,
+        excluded_window_ids: Vec<i64>,
         reservation: Option<CachedCaptureReservation>,
         release_after: Option<u64>,
         hide: Option<Arc<CaptureHide>>,
         cx: &mut Context<Self>,
     ) {
+        self.analysis_generation = self.analysis_generation.wrapping_add(1);
+        let generation = self.analysis_generation;
+        #[cfg(feature = "parity")]
+        {
+            self.pending_analyses += 1;
+        }
         let service = self.service.clone();
+        let daemon = service.daemon.clone();
         let path =
             std::env::temp_dir().join(format!("{}-{}.png", intent.temp_prefix(), uuid_simple()));
         let transition = hide
@@ -1044,7 +1222,13 @@ impl Coordinator {
         let task = cx.background_executor().spawn(async move {
             let (result, released) =
                 crate::capture::capture_then_release(&service, release_after, || {
-                    service.capture_area_cached(capture, &path, reservation, None)
+                    service.capture_area_cached(
+                        capture,
+                        &path,
+                        reservation,
+                        None,
+                        excluded_window_ids,
+                    )
                 });
             drop(hide);
             drop(transition);
@@ -1068,44 +1252,62 @@ impl Coordinator {
                         CaptureIntent::Ocr => "OCR Failed",
                         _ => "Scan Failed",
                     };
-                    show_capture_error(cx, title, "Failed to capture the selected area");
+                    let _ = entity.update(cx, |coordinator, cx| {
+                        if coordinator.complete_analysis(generation) {
+                            crate::windows::toast::Toast::show(
+                                cx,
+                                title,
+                                "Failed to capture the selected area",
+                            );
+                        }
+                    });
                     return;
                 }
             };
 
-            let daemon = entity
-                .read_with(cx, |coordinator, _| coordinator.service.daemon.clone())
-                .ok();
-            let Some(daemon) = daemon else {
-                return;
-            };
+            let outcome = smol::unblock(move || {
+                let outcome = match intent {
+                    CaptureIntent::Ocr => {
+                        crate::capture::analysis::recognize_text(&daemon, &captured)
+                    }
+                    _ => crate::capture::analysis::scan_qr_code(&daemon, &captured),
+                };
+                let _ = std::fs::remove_file(&captured);
+                outcome
+            })
+            .await;
 
-            let analysis = cx.background_executor().spawn({
-                let captured = captured.clone();
-                async move {
-                    let outcome = match intent {
-                        CaptureIntent::Ocr => {
-                            crate::capture::analysis::recognize_text(&daemon, &captured)
-                        }
-                        _ => crate::capture::analysis::scan_qr_code(&daemon, &captured),
-                    };
-                    let _ = std::fs::remove_file(&captured);
-                    outcome
+            let _ = entity.update(cx, |coordinator, cx| {
+                if !coordinator.complete_analysis(generation) {
+                    return;
                 }
-            });
-            let outcome = analysis.await;
-
-            cx.update(|cx| match outcome.clipboard {
-                Some(text) => {
-                    crate::system::clipboard::ClipboardService::write_text(cx, text);
-                    crate::windows::toast::Toast::show_transient(cx, outcome.title, outcome.body);
-                }
-                None => {
-                    crate::windows::toast::Toast::show(cx, outcome.title, outcome.body);
+                match outcome.clipboard {
+                    Some(text) => {
+                        crate::system::clipboard::ClipboardService::write_text(cx, text);
+                        crate::windows::toast::Toast::show_transient(
+                            cx,
+                            outcome.title,
+                            outcome.body,
+                        );
+                    }
+                    None => crate::windows::toast::Toast::show(cx, outcome.title, outcome.body),
                 }
             });
         })
         .detach();
+    }
+
+    fn complete_analysis(&mut self, generation: u64) -> bool {
+        #[cfg(feature = "parity")]
+        {
+            self.pending_analyses -= 1;
+        }
+        self.analysis_generation == generation
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn pending_analyses_for_parity(&self) -> usize {
+        self.pending_analyses
     }
 }
 
@@ -1185,6 +1387,7 @@ mod tests {
                         None,
                     ),
                     crate::capture::intent::CaptureIntent::ScrollCapture,
+                    Vec::new(),
                     None,
                     None,
                     None,

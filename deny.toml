@@ -45,6 +45,7 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained but only reachable on Linux through the D-Bus stack (zbus, atspi, accesskit_unix, ashpd, oo7, notify-rust) that gpui-pre-linux and rfd's desktop-portal backend pull in; no safe upgrade exists" },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained but only reachable on Linux through the D-Bus stack (zbus, atspi, accesskit_unix, ashpd, oo7, notify-rust) that gpui-pre-linux and rfd's desktop-portal backend pull in; no safe upgrade exists" },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained but only used at build time by zvariant on Linux (the D-Bus stack that gpui-pre-linux and rfd's desktop-portal backend pull in); no safe upgrade exists" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained but still required transitively by gpui-pre / gpui-pre-scheduler 0.3.11 (pinned by herogpui 0.15.2); newest gpui-pre 0.3.13 still depends on chrono" },
 ]
 
 [bans]

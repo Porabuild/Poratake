@@ -1,0 +1,211 @@
+name: Release GPUI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: true
+        type: string
+      skip_cache:
+        description: 'Build without any caches (fresh toolchain, deps, and native binaries)'
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: write
+
+concurrency:
+  group: release-gpui
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source_ref: ${{ steps.release.outputs.source_ref }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release
+        id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Error: Version must be in format X.Y.Z (e.g., 1.0.0)"
+            exit 1
+          fi
+          if git rev-parse --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Error: Tag v$VERSION already exists"
+            exit 1
+          fi
+          echo "source_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install macOS native build tools
+        run: |
+          brew untap aws/tap || true
+          brew install nasm pkg-config cmake
+
+      - name: Cache native binaries
+        if: ${{ !inputs.skip_cache }}
+        uses: actions/cache@v5
+        with:
+          path: |
+            src/main/binaries/ffmpeg
+            src/main/binaries/whisper
+            src/main/daemon/poratake-daemon
+          key: macos-native-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh', 'scripts/build-daemon.sh', 'src/main/daemon/**/*.swift') }}
+
+      - name: Setup macOS certificates
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" build.keychain
+          rm certificate.p12
+
+      - name: Build and package macOS GPUI app
+        env:
+          PORATAKE_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          bun run build:gpui:mac
+          bash scripts/package-gpui-mac.sh "${{ needs.prepare.outputs.version }}" "release/${{ needs.prepare.outputs.version }}"
+
+      - name: Upload macOS GPUI release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-gpui-macos
+          path: |
+            release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-universal.dmg
+            release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-universal-mac.zip
+            release/${{ needs.prepare.outputs.version }}/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update --error-on=any
+          sudo apt-get install -y libclang-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev libpipewire-0.3-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev libxcb-xfixes0-dev libasound2-dev
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Build and package Linux GPUI archive
+        run: |
+          bun run build:gpui:linux
+          bash scripts/package-gpui-linux.sh "${{ needs.prepare.outputs.version }}" "release/${{ needs.prepare.outputs.version }}"
+
+      - name: Upload Linux GPUI release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-gpui-linux
+          path: release/${{ needs.prepare.outputs.version }}/Poratake-${{ needs.prepare.outputs.version }}-linux-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    needs: prepare
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            triple: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            triple: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Build Windows GPUI binaries
+        run: |
+          bun run build-native-win
+          cargo build --release --locked --manifest-path src/main/Cargo.toml --target ${{ matrix.triple }} --package poratake-daemon --package poratake-gpui
+
+      - name: Stage Windows GPUI package
+        env:
+          PORATAKE_WIN_ARCH: ${{ matrix.arch }}
+        run: node scripts/package-gpui-win.mjs "${{ needs.prepare.outputs.version }}" "release/${{ needs.prepare.outputs.version }}/win-${{ matrix.arch }}"
+
+      - name: Upload Windows GPUI release stage
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-gpui-windows-${{ matrix.arch }}
+          path: release/${{ needs.prepare.outputs.version }}/win-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 7

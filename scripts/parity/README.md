@@ -1,5 +1,32 @@
 # UI comparison
 
+The macOS-only `--native-smoke-recording` entry point is available in a
+`--features parity` development build. It requires an existing isolated absolute
+`PORATAKE_CONFIG_DIR`, an existing absolute `PORATAKE_NATIVE_SMOKE_OUTPUT`, a
+`PORATAKE_NATIVE_SMOKE_RECT` in x,y,width,height points, and
+`PORATAKE_DAEMON_PATH`. Its stdin commands drive the recording handlers or
+`capture area`, `capture window`, and `capture timer`; `pointer down x y`,
+`pointer move x y`, and `pointer up x y` dispatch events inside the selector.
+`snapshot` captures the configured rectangle while the first selector is still
+visible, with that selector's native ID excluded, to `active-selector.png` in
+the configured output directory.
+Coordinates are local to its first overlay window. The target defaults to area;
+`PORATAKE_NATIVE_SMOKE_TARGET` can select `screen` or `window`, and the latter
+also requires `PORATAKE_NATIVE_SMOKE_WINDOW`.
+
+The macOS smoke in the audit used a temporary daemon that preflighted its own
+screen access and disabled ScreenCaptureKit audio and input tracking. An
+ordinary daemon may request other permissions even when the recording settings
+disable audio, so use this harness only with a suitable already-authorized test
+daemon and isolated synthetic windows. It does not establish physical-pointer,
+audio, camera or other-display coverage.
+
+Exit the reference capture daemon before starting GPUI, or collect the
+reference after GPUI and its daemon exit. On macOS 27.2, running two copies of
+the test daemon together stalled screenshots even before the GPUI selector
+started. Capture the generated target window for the reference and crop that
+image for area and timer comparisons so other desktop windows cannot cover it.
+
 On Windows, run the visual regression matrix:
 
 ```sh
@@ -95,12 +122,306 @@ The optional `parity` feature is excluded from normal builds. The command uses
 a fresh isolated profile and exits before normal app startup. It renders at
 1280×738 logical pixels by default and advances GPUI's clock for hover and press
 animations. `PORATAKE_PARITY_THEME`, `PORATAKE_PARITY_WIDTH` and
-`PORATAKE_PARITY_SCALE` select a matrix case.
+`PORATAKE_PARITY_SCALE` select a matrix case. Set
+`PORATAKE_PARITY_EDITOR_HEIGHT` to exercise a shorter screenshot editor; this
+also saves a full-window image for inspection. `PORATAKE_PARITY_VIDEO_HEIGHT`
+sets the height of the loaded video-editor workflow on macOS and Windows.
+
+On macOS, the recording thumbnail probe runs the video decoder and simulated
+hover/exit through the offscreen GPUI renderer. It expects a high-contrast
+checkerboard and verifies that edge detail disappears on hover and returns on
+exit. Generate the video and run the probe without accessing a screen:
+
+```sh
+probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/poratake-preview-video.XXXXXX")"
+ffmpeg -hide_banner -loglevel error -f lavfi \
+  -i "nullsrc=s=1280x720:r=5,geq=r='if(eq(mod(floor(X/80)+floor(Y/80),2),0),64,224)':g='if(eq(mod(floor(X/80)+floor(Y/80),2),0),112,232)':b='if(eq(mod(floor(X/80)+floor(Y/80),2),0),192,240)'" \
+  -t 2 -c:v h264_videotoolbox -pix_fmt yuv420p "$probe_dir/checker.mov"
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT="$probe_dir/gpui" \
+PORATAKE_PARITY_PREVIEW_VIDEO="$probe_dir/checker.mov" \
+PORATAKE_PARITY_SCALE=2 PORATAKE_PARITY_THEME=dark \
+  src/main/target/debug/poratake-gpui --parity
+```
+
+For an Electron reference, start the Vite fixture on port 5601 and then run:
+
+```sh
+./node_modules/.bin/vite --config scripts/parity/vite.renderer.mts --host 127.0.0.1 --port 5601
+```
+
+```sh
+fixture_url="http://127.0.0.1:5601/index.html?window=capture-preview&platform=darwin&contentType=video&traceMedia=1&theme=dark&image=/@fs${probe_dir}/checker.mov"
+env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron \
+  tests/native/electron-video-preview.cjs "$fixture_url" "$probe_dir/electron"
+```
+
+The Electron probe reports media events and whether its loading placeholder
+remains. Set `PORATAKE_PREVIEW_SYNTHETIC_READY=1` only to compare the decoded
+video after explicitly dispatching a `loadeddata` event; retain the unmodified
+result separately. These are hidden renderer captures, not screen captures.
+
+On macOS, the hidden native popup probe checks its frame, content geometry,
+click-through state and AppKit tooltip text replacement and clearing. It then
+checks the three hidden scroll windows against a full-display selection and
+verifies an off-screen selector's hide, lease and combined native exclusion IDs.
+It does not start a daemon or capture the screen:
+
+```sh
+cargo run --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity -- --native-popup-frame-probe
+```
+
+On macOS, `--native-ui-probe` opens an isolated recording control and a preview
+of a generated checkerboard without accessing capture devices. Tooltip hover can
+start the configured daemon. It checks the AppKit frames and the preview's bottom-right work-area
+margins. Set `PORATAKE_NATIVE_UI_THEME` to `light` or `dark`. Send `edit` to its
+stdin to dispatch a simulated double-click on the preview, and `draw` to dispatch
+a simulated drag in the editor after selecting an annotation tool. Send `quit`
+or an empty line to close it. Set `PORATAKE_NATIVE_UI_NORMAL_LEVEL=1` to lower only
+these probe windows to the normal AppKit window level for inspection by tools
+that cannot target floating windows. This does not check production window
+stacking, physical input delivery, saved capture pixels or native tooltip presentation.
+`hover`, `hover-close`, `hover-delete`, `hover-status`, `tooltip-status` and
+`hover-exit` exercise and report simulated preview pointer entry, requested tooltip
+text and exit without moving the physical pointer. The reported text does not
+establish that the daemon displayed the tooltip.
+`rectangle` selects the rectangle tool and `annotation-status` compares the
+editor's current PNG with its generated source. `reopen-saved` checks the one
+saved PNG in the probe directory and opens it in a second isolated editor.
+`preview-under-pointer` and `preview-away` reposition only the generated preview
+relative to the stationary pointer, allowing AppKit entry and exit delivery to be
+checked with `hover-status` without moving the pointer. `preview-close-under-pointer`
+places the Close control under it for `tooltip-status`.
+`record-hover`, `record-exit` and `record-tooltip-status` similarly check the
+recording toolbar's tooltip registration without starting a recording.
+With a fixture daemon configured, `record-open-camera-menu`,
+`record-open-mic-menu` and `record-open-ios-menu` dispatch synthetic menu clicks;
+`record-menu-status` reports the menu and native frame, and `record-dismiss-menu`
+closes the menu. Wait until the reported frame has returned to the fitted size
+before using `record-hit-test`. `record-scene-snapshot` writes the most recently
+rendered recording-control scene to the probe's temporary directory without
+capturing the screen. One way to run the probe with the existing fake
+daemon is:
+
+```sh
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+probe_dir=$(mktemp -d)
+cat > "$probe_dir/daemon" <<'SH'
+#!/bin/sh
+PORATAKE_PARITY_DAEMON=1 exec "$PORATAKE_NATIVE_FIXTURE_BINARY"
+SH
+chmod +x "$probe_dir/daemon"
+PORATAKE_NATIVE_FIXTURE_BINARY="$PWD/src/main/target/debug/poratake-gpui" \
+PORATAKE_PARITY_OUTPUT="$probe_dir" PORATAKE_DAEMON_PATH="$probe_dir/daemon" \
+PORATAKE_NATIVE_UI_FAKE_DAEMON=1 PORATAKE_NATIVE_UI_NORMAL_LEVEL=1 \
+  "$PWD/src/main/target/debug/poratake-gpui" --native-ui-probe
+```
+
+The fake daemon writes its requests to `daemon-fixture.jsonl` in that temporary
+directory. It must be used for these menu commands: opening real device menus can
+request macOS media permissions.
+`record-click-sound` and `record-audio-status` exercise the isolated pre-recording
+system-sound preference without starting capture.
+`timer-edge-position` reports countdown positions for narrow selections at the
+primary display's left and right edges. The hidden AppKit panel placement can be
+checked against those eight reported display and position values with:
+
+```sh
+swiftc src/main/daemon/UI/Theme.swift src/main/daemon/UI/FloatingPanel.swift \
+  src/main/daemon/UI/TimerButton.swift src/main/daemon/Core/DisplayCoordinates.swift \
+  tests/native/timer-control-placement.swift -o /tmp/poratake-timer-control-placement
+/tmp/poratake-timer-control-placement <display-x> <display-y> <width> <height> <left-x> <left-y> <right-x> <right-y>
+```
+
+The actual timer module's show, synthetic cancellation, completion and hide
+paths can be checked using the two reported positions:
+
+```sh
+swiftc src/main/daemon/UI/Theme.swift src/main/daemon/UI/FloatingPanel.swift \
+  src/main/daemon/UI/TimerButton.swift src/main/daemon/Core/DisplayCoordinates.swift \
+  src/main/daemon/Modules/TimerControlModule.swift tests/native/timer-control-lifecycle.swift \
+  -o /tmp/poratake-timer-control-lifecycle
+/tmp/poratake-timer-control-lifecycle <left-x> <left-y> <right-x> <right-y>
+```
+
+This fixture briefly shows panels and brings its process forward, then restores
+the previously frontmost app if the fixture is still frontmost. It mocks daemon
+transport and does not capture the screen or access media devices.
+
+`scroll-open`, `scroll-hover`, `scroll-exit` and `scroll-tooltip-status` open an
+isolated scroll control and check its tooltip without starting auto-scroll or capture.
+`display-open`, `display-hover`, `display-exit` and `display-status` open a small
+isolated display picker and report simulated pointer state without starting capture.
+Set `PORATAKE_NATIVE_UI_AUTO_DISMISS=1` to use a four-second preview dismissal
+timer in this isolated probe.
+
+Run `python3 tests/native/macos-save-panel-probe.py` on macOS to build the parity
+executable offline, annotate a generated image in an isolated editor, check the
+native save sheet's directory and suggested filename, and cancel the sheet. The
+probe then writes a PNG directly through the screenshot save backend, reopens it
+in a second editor and compares both editors' output with the saved pixels. Set
+`PORATAKE_NATIVE_SAVE_EVIDENCE` to an existing absolute directory to retain the
+generated source and saved PNG. It does not confirm the save sheet, start capture
+or access media devices.
+
+For manual foreground interaction with the isolated probe, verify that the
+frontmost application PID matches the probe PID before sending input. A window
+being visible, or an unverified activation result, does not establish focus.
+
+On macOS with development FFmpeg available, set `PORATAKE_TEST_NARROW_VIDEO=1`
+and run the ignored `drawing_tool_ui_edit_survives_reopen_and_matches_export`
+Rust test to draw, reopen and export at 720×520. Set
+`PORATAKE_TEST_VIDEO_EVIDENCE` to an existing absolute directory to retain the
+synthetic preview frames, decoded frames, MP4 and comparison measurements.
+For the retained narrow fixture, run
+`python3 scripts/parity/video-chroma-comparison.py tests/native/evidence/macos-ui/narrow-video-preview.png tests/native/evidence/macos-ui/narrow-video-export-frame.png --ffmpeg /absolute/path/to/ffmpeg`
+to compare its red drawing pixels with both the decoded frame and an uncompressed
+4:2:0 conversion. This isolates chroma-sampling effects for that fixture; it is
+not a general codec or playback test.
+On macOS, the 1280-point workflow uses generated media for area, screen and
+window recording handoffs. `PORATAKE_PARITY_AREA_RECORDING`,
+`PORATAKE_PARITY_SCREEN_RECORDING` and `PORATAKE_PARITY_WINDOW_RECORDING` can
+instead point to existing local videos longer than 1.5 seconds. The fake daemon
+copies those files; it does not start a capture or access audio or camera
+devices. The editor workflow draws a zoom on the timeline and a rectangle on the
+preview, reopens the project, and compares decoded export frames with its preview.
+The drawing tool is selected through the fixture API; the gestures are simulated.
+Set `PORATAKE_PARITY_RECORDING_ONLY=1` to run
+just those handoffs at 1280 points and 1× simulated scale.
+Set `PORATAKE_PARITY_VIDEO_REDACTION=1` as well to draw pixelation across the
+rectangle corner, reopen the project, and compare the reduced 640×360 scrubbing
+preview and the decoded export in the affected region. Supply a generated
+1280×720 source longer than 1.5 seconds through all three recording variables;
+the fixture requires the same canvas size for its comparison. For example:
+
+```sh
+mkdir -p /tmp/poratake-redaction-parity
+ffmpeg -hide_banner -loglevel error -y \
+  -i src/main/app-gpui/src/ui/parity/fixtures/capture.mov \
+  -vf scale=1280:720:flags=neighbor -c:v h264_videotoolbox -b:v 10M -an \
+  /tmp/poratake-redaction-parity/source.mov
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-redaction-parity \
+PORATAKE_PARITY_RECORDING_ONLY=1 PORATAKE_PARITY_VIDEO_REDACTION=1 \
+PORATAKE_PARITY_SCALE=1 \
+PORATAKE_PARITY_AREA_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+PORATAKE_PARITY_WINDOW_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+PORATAKE_PARITY_SCREEN_RECORDING=/tmp/poratake-redaction-parity/source.mov \
+cargo run --offline --locked --manifest-path src/main/Cargo.toml \
+  -p poratake-gpui --features parity -- --parity
+```
+
+Set `PORATAKE_FFMPEG_PATH` if development FFmpeg is not on the default search
+path. `PORATAKE_PARITY_THEME` and `PORATAKE_PARITY_VIDEO_DPI` select the editor
+appearance and simulated scale. This is a fake-daemon workflow, not live capture.
+The redaction run also saves the area fixture's full unencoded and decoded
+frames and its normalized region. Compare them with a conversion-only 4:2:0
+control using:
+
+```sh
+python3 scripts/parity/video-chroma-comparison.py \
+  /tmp/poratake-redaction-parity/recording-area-redaction-composed.png \
+  /tmp/poratake-redaction-parity/recording-area-redaction-decoded.png \
+  --region-json /tmp/poratake-redaction-parity/recording-area-redaction-region.json
+```
+
+The Electron WebCodecs fixture `tests/native/electron-video-chroma.cjs` accepts
+`--area-only --region <json>` for the same dimensions and normalized region.
+It expects `area.png` and a conversion-only `area-yuv.png` in its input
+directory and encodes one frame; it does not run the full Electron exporter.
+Set `PORATAKE_PARITY_SCROLL_ONLY=1` to run the isolated simulated scroll workflows
+at the same width and scale, including selector exclusion IDs and cleanup.
+Set `PORATAKE_PARITY_BLACKOUT_ONLY=1` to run the generated screenshot blackout
+preview/export checks at the same width and scale on macOS.
+Set `PORATAKE_PARITY_SCALED_BLACKOUT_ONLY=1` to compare a fractional blackout
+over a shape with its reopened PNG at four zooms and three simulated scales.
+Set `PORATAKE_PARITY_EVIDENCE` to an existing directory to retain the 2×,
+137% comparison images.
+Set `PORATAKE_PARITY_REDACTION_ORDER_ONLY=1` to compare blur and pixelation
+before and after a shape with their reopened PNGs at simulated 1× and 2× scale
+and 73%, 100% and 137% zoom.
+The fixture checks that the shape is filtered only when it precedes the effect.
+`PORATAKE_PARITY_EVIDENCE` retains the 2× filtered previews and reopened PNGs.
+Set `PORATAKE_PARITY_REDACTION_FRAME_ONLY=1` to check annotations before and
+after redactions that cross a framed attachment seam at simulated 1×, 1.25× and
+2× scale. Set `PORATAKE_PARITY_SCALE=1` for this entry point; it selects the
+individual simulated scales itself. It compares the full preview with the saved
+PNG over the editor matte.
+Set `PORATAKE_PARITY_OPAQUE_SOURCE=1` to repeat the screenshot checks with an
+opaque source instead of the partially translucent generated region.
+Set `PORATAKE_PARITY_ROUNDED_REOPEN_ONLY=1` to compare a transparent rounded,
+shadowed screenshot with its reopened PNG at 73%, 100% and 150% effective zoom,
+check macOS frames with and without shadows, and check redactions over a plain
+transparent image.
+Set `PORATAKE_PARITY_PIXELATION_ONLY=1` to check restored pixelation on opaque,
+transparent and clipped generated images across the simulated scale matrix;
+the displayed image is compared in full with the reopened PNG.
+With the Vite server above running, run
+`env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/transparent-editor-probe.cjs`
+to check a generated transparent PNG in an isolated offscreen Electron editor.
+Set `PORATAKE_THEME=light` to repeat the check in light appearance.
+With the same server, run
+`env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/blackout-editor-probe.cjs`
+to compare a generated 2× image's blackout preview with its saved and reopened
+PNG using the actual screenshot editor. The fixture hides the dashed editor
+guide for the comparison and intercepts the save through its fake preload.
+Set `PORATAKE_BLACKOUT_ORDER=1` to add a shape under the blackout and check that
+it stays hidden; `PORATAKE_SHAPE_AFTER=1` places the shape afterward. Set
+`PORATAKE_REDACT_STYLE` to `pixelate` or `blur` to check those effects instead.
+`PORATAKE_ZOOM_STEPS`, `PORATAKE_ASPECT_RATIO`, `PORATAKE_FRAME`,
+`PORATAKE_ATTACHMENT`, `PORATAKE_TRANSPARENT` and `PORATAKE_NOISE` vary the
+generated composition. `PORATAKE_INTERACTION=1` selects, drags and resizes the
+blackout before saving and comparing the reopened image. Set
+`PORATAKE_PARITY_EVIDENCE` to an existing directory to retain the preview, saved
+and reopened PNGs. The fixture checks generated pixels and does not capture a
+display. Its offscreen Electron load can time out under heavy system load.
+Run `env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron scripts/parity/shared-composition-probe.cjs`
+to compare the shared export canvas with the encoded PNG for generated framed,
+transparent and attached images in both appearances. The screenshot editor now
+uses this same composition for its preview. `PORATAKE_ANNOTATION_HITS=1` checks
+selection of nine annotation types, and `PORATAKE_COMPOSITION_CACHE=1` checks
+cached background invalidation. `PORATAKE_COMPOSITION_PERF=1` measures a
+synthetic 4K render; add `PORATAKE_COMPOSITION_PERF_NOISE=1` to include noise.
+Set `PORATAKE_PARITY_TIMER_ONLY=1` to run the timer selection, completion,
+cancellation, timeout, retry and display-edge fixture workflows.
+The balanced macOS frame reference runs the Electron export hook in a browser
+with synthetic images. With the Vite server above running and an isolated
+browser profile, open `/scripts/parity/balanced-frame-reference.html?scale=1`,
+then repeat for `1.25` and `2`, saving each rendered HTML document. Run
+`python3 scripts/parity/compare-balanced-frame.py <gpui-profile> <html-1> <html-1.25> <html-2> --references <output-directory>`
+against a GPUI parity profile produced at 1×. FFmpeg and FFprobe decode the
+images; the script checks the three image interiors and reports differences over
+a white matte. This is a browser execution of Electron's export hook, not a
+packaged Electron run. To include the simulated 133⅓% case, save a browser result
+at `scale=1.3333333` and add `--fractional-result <html>` to the comparison.
+Use `scale=1&layers=0&inset=8` on the reference page to render the single-image
+inset case, and pass its saved HTML as `--single-inset-result <html>` to include
+it alongside the default layered cases in the comparison.
+Use `scale=1&layers=0&alpha=1` and `--single-alpha-result <html>` for the
+single-image transparency case; use `scale=1&layers=0&inset=8&alpha=1` and
+`--single-alpha-inset-result <html>` for transparency with an inset.
+For a two-stop 50%-alpha wallpaper behind a transparent image, save the result
+at `scale=1&layers=0&alpha=1&wallpaperAlpha=1` and run
+`python3 scripts/parity/compare-balanced-frame.py <gpui-profile> --references <output-directory> --single-translucent-wallpaper-result <html>`.
+The comparison checks alpha in the wallpaper, translucent image and clear image
+regions, then reports the whole-image difference over white.
+Set `PORATAKE_PARITY_FRACTIONAL_FRAME_ONLY=1` with the normal 1× parity setting
+to run framed-attachment and single-image inset comparisons at simulated 133⅓%
+without the rest of the matrix. The same cases also run in the complete 1×
+workflow. `PORATAKE_PARITY_BALANCED_FRAME_ONLY=1` runs the balanced single-frame
+matrix at four simulated scales, with light and dark frames, shadows,
+opaque and 50%-alpha backgrounds, insets, transparent source pixels, crop-edge
+annotations and reopen. This matrix also runs in the
+complete 1× workflow. It allows at most one rounded-edge pixel to differ by
+three channel levels; all other pixels must stay within two.
 Captures include the editor header, held buttons, selected tools, open dropdowns,
 the color picker, recording controls and loaded video sidebars. The runner asserts selected
 tools and menu state so a failed interaction cannot silently produce mislabeled
 evidence. The held microphone button advances through its press animation and
 must differ visibly from hover within that button's measured bounds.
+At 950 points on macOS, the rectangle-tool case also checks vertical and
+horizontal toolbar scrolling, access to the rightmost action, Copy activation,
+and return to the contextual controls. A forced 720-point run can exercise the
+same layout below the normal screenshot-editor minimum.
 
 The built-in fixture additionally checks annotation save/history reopen/flattened
 PNG reopen at 1280px and 100% scale, comparing the preview with saved pixels.
@@ -135,6 +456,10 @@ checked at all three scales with padding and background variants, including an
 edge-crossing pixelated redaction and the reopened preview. The right attachment
 also checks clipping outside the canvas. Balanced frames, corners, shadows,
 arbitrary zoom and framed attachments remain outside these comparisons. In the
+separate framed workflow, balanced macOS light and dark frames with top and right
+attachments and a moved annotation are compared with export before and after
+reopening at all three simulated scales.
+In the
 unframed layered path, annotations and black, pixelated and blurred redactions
 crossing into attachments are compared with saved pixels at 125% and 200%;
 overlapping and clipped redactions, crop, undo and atlas retirement are also
@@ -180,11 +505,11 @@ in both themes. Local light/dark NVIDIA workflows at 1280px and 100% passed the
 updated checks and 191 exact baselines per theme; hosted verification is pending.
 A CPU case confirms the
 sampled backdrop matches export at a rounded fractional origin. Screenshot export
-and CPU preview patches now apply redactions before vectors and highlights, with
-an ordered rounded blackout pass. Eight Electron center samples are within two
-levels; one rounded corner differs by 22. Both blackout/shape orders match
-reopened PNG pixels at 73% and 150% zoom in those local workflows. The live editor
-case remains unverified.
+and CPU preview patches now apply redactions, vectors and highlights in annotation
+order, with a rounded blackout pass. Earlier Electron corner samples used the
+previous composition order. Both blackout/shape orders match reopened PNG pixels
+at 73% and 150% zoom in those local workflows. The live editor case remains
+unverified.
 Corner and shadow effects with zero padding are also compared without a
 background for single images and unframed attachments. A same-window theme
 change checks the transparent matte and replacement of the old backdrop. Plain
@@ -300,13 +625,18 @@ Recording controls use the production window and recorder commands with a
 same-executable JSON-RPC fixture. Device names are deterministic, including long
 labels. Assertions cover scoped device enumeration, countdown cancellation,
 pause/resume, live toggles, saved-preference preservation and project discard.
+The camera fixture also delivers a dragged-position event and checks that a
+disable/enable cycle restores that position while rejecting invalid or stale
+position events.
 These checks verify UI state and requests, not hardware media capture. A
 parity-only guard assumes granted permission while the daemon fixture is
 active, before reading host consent or opening permission dialogs. Normal app
 permission checks retain their platform behavior.
-The microphone icon's actual canvas bounds have a contrast assertion, so a
-white icon on a light toolbar cannot become an accepted baseline. Its dropdown
-chevron is excluded from the measured region.
+The camera, microphone, system-audio and iPhone/iPad icons' actual canvas bounds
+have contrast and clipping assertions. Dropdown chevrons are excluded from the
+measured regions. Run the isolated macOS recording-control fixture with
+`PORATAKE_PARITY_RECORDING_CONTROLS_ONLY=1` in the GPUI parity command above;
+the theme and scale variables select the appearance and simulated scale.
 
 Loaded-video baselines cover all ten panels using a real encoded project with a
 drawing. `src/main/app-gpui/src/ui/parity/fixtures/capture.mov` fixes the input

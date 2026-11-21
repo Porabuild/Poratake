@@ -100,6 +100,7 @@ enum DaemonContract {
 
         enum Method: String {
             case listIosDevices = "listIOSDevices"
+            case setTooltip = "setTooltip"
         }
     }
 

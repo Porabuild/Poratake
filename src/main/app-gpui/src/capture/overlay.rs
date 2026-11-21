@@ -44,13 +44,21 @@ pub struct OverlayLaunch {
 #[derive(Default)]
 struct OverlaySession {
     handles: Vec<TrackedOverlay>,
+    #[cfg(target_os = "macos")]
+    scroll_selectors: std::collections::HashMap<u64, Vec<TrackedOverlay>>,
     capture_hide: Option<std::sync::Arc<crate::capture::desktop_icons::CaptureHide>>,
     revision: u64,
     pending_freeze: Option<u64>,
     timer_cancel: Option<smol::channel::Sender<bool>>,
+    #[cfg(target_os = "macos")]
+    timer_release_owner: Option<u64>,
     #[cfg(windows)]
     pooled: Vec<PooledOverlay>,
     outlined_window_id: Option<i64>,
+    #[cfg(target_os = "macos")]
+    native_recording_overlay_requested: bool,
+    #[cfg(target_os = "macos")]
+    pending_recording_preparation: Option<smol::channel::Receiver<()>>,
 }
 
 #[derive(Clone)]
@@ -186,14 +194,24 @@ pub(crate) fn release_capture_hide(
     }
 }
 
+pub(crate) fn is_active(cx: &App) -> bool {
+    cx.try_global::<OverlaySession>()
+        .is_some_and(|session| !session.handles.is_empty())
+}
+
 #[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn parity_is_active(cx: &mut App) -> bool {
-    !session(cx).handles.is_empty()
+    is_active(cx)
 }
 
 #[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn parity_active_overlay(cx: &mut App) -> Option<AnyWindowHandle> {
     session(cx).handles.first().map(|overlay| overlay.handle)
+}
+
+#[cfg(all(target_os = "macos", feature = "parity", not(test)))]
+pub(crate) fn parity_has_pending_freeze(cx: &mut App) -> bool {
+    session(cx).pending_freeze.is_some()
 }
 
 #[cfg(feature = "parity")]
@@ -211,7 +229,7 @@ pub(crate) fn parity_active_overlays(cx: &mut App) -> Vec<AnyWindowHandle> {
         .collect()
 }
 
-#[cfg(all(windows, any(test, feature = "parity")))]
+#[cfg(any(all(test, windows), feature = "parity"))]
 pub(crate) fn active_intents_for_test(cx: &mut App) -> Vec<crate::capture::intent::CaptureIntent> {
     session(cx)
         .handles
@@ -236,68 +254,117 @@ pub fn close_all(cx: &mut App) {
     }
 }
 
-pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
-    let generation = session(cx)
+pub(crate) fn frozen_selection_generation(cx: &mut App) -> u64 {
+    session(cx)
         .handles
         .iter()
         .map(|tracked| tracked.generation)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+pub(crate) fn mark_frozen_selection_released(generation: u64, cx: &mut App) {
+    for tracked in &mut session(cx).handles {
+        if tracked.generation <= generation {
+            tracked.generation = 0;
+        }
+    }
+    finish_pending_freeze_release(generation, true, cx);
+}
+
+pub fn release_frozen_screen_in_place(cx: &mut App) -> bool {
+    let generation = frozen_selection_generation(cx);
     if !crate::state::state(cx).release_screen(generation) {
         return false;
     }
-    for tracked in &mut session(cx).handles {
-        tracked.generation = 0;
-    }
+    mark_frozen_selection_released(generation, cx);
     true
 }
 
-pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) -> bool {
+#[cfg(not(target_os = "macos"))]
+pub fn begin_recording_handoff(rect: ScreenRect, cx: &mut App) {
     if session(cx).outlined_window_id.is_some() {
-        return true;
+        return;
     }
-
-    #[cfg(target_os = "macos")]
-    {
-        let daemon = crate::state::state(cx).daemon;
-        if daemon.recording_overlay().show(rect).ok() != Some(true) {
-            return false;
-        }
-        close_all(cx);
-        true
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let handles = session(cx).handles.clone();
-        for tracked in handles {
-            let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
-                continue;
-            };
-            let _ = handle.update(cx, |overlay, window, cx| {
-                if overlay.intent != crate::capture::intent::CaptureIntent::Recording {
-                    return;
-                }
-                overlay.rect = local_recording_rect(rect, overlay.display_bounds, overlay.scale);
-                overlay.handed_off = true;
-                overlay.interaction = None;
-                overlay.pointer = None;
-                set_overlay_hole(window, overlay.rect);
-                cx.notify();
-            });
-        }
-        true
+    let handles = session(cx).handles.clone();
+    for tracked in handles {
+        let Some(handle) = tracked.handle.downcast::<AreaOverlay>() else {
+            continue;
+        };
+        let _ = handle.update(cx, |overlay, window, cx| {
+            if overlay.intent != crate::capture::intent::CaptureIntent::Recording {
+                return;
+            }
+            overlay.rect = local_recording_rect(rect, overlay.display_bounds, overlay.scale);
+            overlay.handed_off = true;
+            overlay.interaction = None;
+            overlay.pointer = None;
+            set_overlay_hole(window, overlay.rect);
+            cx.notify();
+        });
     }
 }
 
-pub fn end_recording_handoff(cx: &mut App) {
+#[cfg(target_os = "macos")]
+pub(crate) fn prepare_recording_overlay(cx: &mut App) -> Option<smol::channel::Sender<()>> {
+    let session = session(cx);
+    if session.outlined_window_id.is_some() {
+        return None;
+    }
+    session.native_recording_overlay_requested = true;
+    Some(begin_recording_preparation(cx))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn begin_recording_preparation(cx: &mut App) -> smol::channel::Sender<()> {
+    let (finished, pending) = smol::channel::bounded(1);
+    session(cx).pending_recording_preparation = Some(pending);
+    finished
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn pending_recording_preparation(cx: &App) -> Option<smol::channel::Receiver<()>> {
+    cx.try_global::<OverlaySession>()?
+        .pending_recording_preparation
+        .clone()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn finish_recording_preparation(cx: &mut App) {
+    session(cx).pending_recording_preparation = None;
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn recording_overlay_needs_hide(cx: &mut App) -> bool {
+    session(cx).native_recording_overlay_requested
+}
+
+pub(crate) fn clear_recording_handoff(cx: &mut App) {
     session(cx).outlined_window_id = None;
-    #[cfg(not(test))]
+    close_all(cx);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn mark_recording_overlay_hidden(cx: &mut App) {
+    session(cx).native_recording_overlay_requested = false;
+}
+
+pub fn end_recording_handoff(cx: &mut App) {
+    #[cfg(all(not(target_os = "macos"), not(test)))]
     {
         let daemon = crate::state::state(cx).daemon;
         let _ = daemon.recording_overlay().hide();
     }
-    close_all(cx);
+    clear_recording_handoff(cx);
+    #[cfg(target_os = "macos")]
+    crate::intents::hide_recording_outline(None, cx);
+}
+
+#[cfg(target_os = "macos")]
+pub fn rollback_recording_handoff(cx: &mut App) {
+    if session(cx).outlined_window_id.is_none() {
+        end_recording_handoff(cx);
+    }
 }
 
 pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> bool {
@@ -305,10 +372,22 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
         return true;
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        if pending_recording_preparation(cx).is_some()
+            || crate::intents::recording_cleanup_is_pending(cx)
+        {
+            return false;
+        }
+        session(cx).native_recording_overlay_requested = true;
+    }
     #[cfg(test)]
-    let visible = true;
+    {
+        session(cx).outlined_window_id = Some(window_id);
+        true
+    }
     #[cfg(not(test))]
-    let visible = {
+    {
         let service = crate::state::state(cx);
         let appearance = service.config.get().appearance;
         let preset = crate::theme::presets::get_theme_preset(&appearance.theme);
@@ -321,17 +400,43 @@ pub(crate) fn show_window_recording_outline(window_id: i64, cx: &mut App) -> boo
             color: Some(color.to_string()),
             below_window_id: recording_control_window_id(cx),
         };
-        service
-            .daemon
-            .recording_overlay()
-            .show_window(request)
-            .unwrap_or(false)
-    };
-
-    if visible {
-        session(cx).outlined_window_id = Some(window_id);
+        #[cfg(target_os = "macos")]
+        {
+            let owner = revision(cx);
+            let finished = begin_recording_preparation(cx);
+            cx.spawn(async move |cx| {
+                let visible = smol::unblock(move || service.daemon.recording_overlay().show_window(request))
+                    .await
+                    .unwrap_or(false);
+                cx.update(|cx| {
+                    finish_recording_preparation(cx);
+                    if revision(cx) != owner {
+                        crate::intents::hide_recording_outline(None, cx);
+                    } else if visible {
+                        session(cx).outlined_window_id = Some(window_id);
+                    } else {
+                        eprintln!("[recording-overlay] failed to outline window {window_id}");
+                    }
+                    crate::windows::recording_control::RecordingControl::refresh_after_outline_cleanup(cx);
+                });
+                drop(finished);
+            })
+            .detach();
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let visible = service
+                .daemon
+                .recording_overlay()
+                .show_window(request)
+                .unwrap_or(false);
+            if visible {
+                session(cx).outlined_window_id = Some(window_id);
+            }
+            visible
+        }
     }
-    visible
 }
 
 #[cfg(all(windows, not(test)))]
@@ -365,7 +470,21 @@ pub fn replace_all(cx: &mut App) -> Option<u64> {
 }
 
 fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
+    let (handles, generation) = take_all(cx);
+    if deferred {
+        App::defer(cx, move |cx| dispose_overlays(handles, cx));
+    } else {
+        dispose_overlays(handles, cx);
+    }
+    generation
+}
+
+fn take_all(cx: &mut App) -> (Vec<TrackedOverlay>, Option<u64>) {
     session(cx).revision = session(cx).revision.wrapping_add(1);
+    #[cfg(target_os = "macos")]
+    {
+        session(cx).timer_release_owner = None;
+    }
     if let Some(cancel) = session(cx).timer_cancel.take() {
         let _ = cancel.try_send(false);
     }
@@ -381,12 +500,7 @@ fn remove_all(cx: &mut App, deferred: bool) -> Option<u64> {
     if let Some(generation) = generation {
         set_pending_freeze(generation, cx);
     }
-    if deferred {
-        App::defer(cx, move |cx| dispose_overlays(handles, cx));
-    } else {
-        dispose_overlays(handles, cx);
-    }
-    generation
+    (handles, generation)
 }
 
 fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
@@ -401,6 +515,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                     overlay.picking_color = false;
                     overlay.color_frame = None;
                     overlay.rect = None;
+                    overlay.handed_off = false;
                     overlay.interaction = None;
                     overlay.pointer = None;
                     park_overlay(window);
@@ -415,9 +530,11 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                 continue;
             }
         }
-        let _ = tracked
-            .handle
-            .update(cx, |_, window, _| window.remove_window());
+        let _ = tracked.handle.update(cx, |_, window, _| {
+            #[cfg(target_os = "macos")]
+            crate::system::window_visibility::hide(window);
+            window.remove_window();
+        });
     }
 }
 
@@ -469,6 +586,192 @@ fn conceal_for_capture(window: &mut Window, cx: &mut App) -> Option<u64> {
         window.remove_window();
     }
     generation
+}
+
+#[cfg(target_os = "macos")]
+fn conceal_for_scroll(window: &mut Window, owner: u64, cx: &mut App) -> Option<u64> {
+    let (mut handles, generation) = take_all(cx);
+    let current = window.window_handle();
+    if !handles.iter().any(|tracked| tracked.handle == current) {
+        handles.push(TrackedOverlay {
+            handle: current,
+            generation: 0,
+        });
+    }
+    crate::system::window_visibility::hide(window);
+    for tracked in &handles {
+        if tracked.handle == current {
+            continue;
+        }
+        let _ = tracked.handle.update(cx, |_, window, _| {
+            crate::system::window_visibility::hide(window);
+        });
+    }
+    session(cx).scroll_selectors.insert(owner, handles);
+    generation
+}
+
+pub(crate) fn release_scroll_selectors(owner: Option<u64>, cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    if let Some(handles) = owner.and_then(|owner| session(cx).scroll_selectors.remove(&owner)) {
+        dispose_overlays(handles, cx);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (owner, cx);
+}
+
+#[cfg(all(target_os = "macos", feature = "parity"))]
+pub(crate) fn retained_scroll_selector_count(cx: &mut App) -> usize {
+    session(cx).scroll_selectors.values().map(Vec::len).sum()
+}
+
+fn conceal_for_intent(
+    window: &mut Window,
+    intent: crate::capture::intent::CaptureIntent,
+    owner: Option<u64>,
+    cx: &mut App,
+) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    if intent == crate::capture::intent::CaptureIntent::ScrollCapture {
+        return conceal_for_scroll(window, owner.expect("scroll selector owner"), cx);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (intent, owner);
+    conceal_for_capture(window, cx)
+}
+
+fn selection_owner(intent: crate::capture::intent::CaptureIntent, cx: &mut App) -> Option<u64> {
+    (intent == crate::capture::intent::CaptureIntent::Timer
+        || (cfg!(target_os = "macos")
+            && intent == crate::capture::intent::CaptureIntent::ScrollCapture))
+        .then(|| revision(cx))
+}
+
+#[cfg(all(target_os = "macos", feature = "parity", not(test)))]
+pub(crate) fn native_scroll_selector_probe(cx: &mut App) {
+    use cocoa::base::{id, BOOL, YES};
+    use cocoa::foundation::NSPoint;
+    use gpui::AppContext;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    struct Probe;
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    let display_id = cx.primary_display().expect("primary display").id();
+    let open = |cx: &mut App| {
+        let bounds = Bounds::new(
+            gpui::point(px(100.), px(100.)),
+            gpui::size(px(32.), px(32.)),
+        );
+        let options = crate::windows::popup_window_options(
+            bounds,
+            crate::windows::PopupWindowConfig {
+                show: false,
+                focus: false,
+                ..Default::default()
+            },
+        );
+        let handle = cx.open_window(options, |_, cx| cx.new(|_| Probe)).unwrap();
+        track_overlay(handle.into(), display_id, 0, false, cx);
+        handle
+    };
+    let first = open(cx);
+    let owner = revision(cx);
+    let first_id = first
+        .update(cx, |_, window, _| {
+            crate::windows::macos_window_id(window).unwrap()
+        })
+        .unwrap();
+    first
+        .update(cx, |_, window, cx| {
+            let RawWindowHandle::AppKit(handle) =
+                HasWindowHandle::window_handle(window).unwrap().as_raw()
+            else {
+                panic!("expected AppKit handle");
+            };
+            let view = handle.ns_view.as_ptr() as id;
+            let native: id = unsafe { msg_send![view, window] };
+            unsafe {
+                let _: () = msg_send![native, setFrameOrigin: NSPoint::new(-50000., -50000.)];
+                let _: () = msg_send![native, orderFrontRegardless];
+            }
+            let visible_before: BOOL = unsafe { msg_send![native, isVisible] };
+            let key: BOOL = unsafe { msg_send![native, isKeyWindow] };
+            assert_eq!(visible_before, YES);
+            assert_ne!(key, YES);
+            conceal_for_scroll(window, owner, cx);
+            assert_eq!(crate::windows::macos_window_id(window), Some(first_id));
+            let visible: BOOL = unsafe { msg_send![native, isVisible] };
+            assert_ne!(visible, YES);
+        })
+        .unwrap();
+    crate::windows::scroll_capture::native_window_probe(cx, Some(first_id));
+    assert_eq!(
+        first
+            .update(cx, |_, window, _| crate::windows::macos_window_id(window))
+            .unwrap(),
+        Some(first_id)
+    );
+    let second = open(cx);
+    let second_id = second
+        .update(cx, |_, window, _| {
+            crate::windows::macos_window_id(window).unwrap()
+        })
+        .unwrap();
+    assert_ne!(first_id, second_id);
+    release_scroll_selectors(Some(owner), cx);
+    assert!(!session(cx).scroll_selectors.contains_key(&owner));
+    assert_eq!(
+        second
+            .update(cx, |_, window, _| crate::windows::macos_window_id(window))
+            .unwrap(),
+        Some(second_id)
+    );
+    remove_all(cx, false);
+    println!("scroll selector lease: off-screen ordered window hidden without changing ID; releasing lease leaves newer selector intact");
+}
+
+#[cfg(feature = "parity")]
+pub(crate) const PARITY_OVERLAY_WINDOW_IDS: [i64; 2] = [7101, 7102];
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn capture_overlay_window_ids(window: &Window, cx: &mut App) -> Option<Vec<i64>> {
+    use gpui::AppContext;
+
+    #[cfg(feature = "parity")]
+    if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+        return Some(PARITY_OVERLAY_WINDOW_IDS.to_vec());
+    }
+    let current = window.window_handle();
+    let mut ids = vec![crate::windows::macos_window_id(window)?];
+    let handles: Vec<_> = session(cx)
+        .handles
+        .iter()
+        .map(|tracked| tracked.handle)
+        .collect();
+    for handle in handles {
+        if handle == current {
+            continue;
+        }
+        let id = cx
+            .update_window(handle, |_, window, _| {
+                crate::windows::macos_window_id(window)
+            })
+            .ok()
+            .flatten()?;
+        ids.push(id);
+    }
+    Some(ids)
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn capture_overlay_window_ids(_window: &Window, _cx: &mut App) -> Option<Vec<i64>> {
+    Some(Vec::new())
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -578,6 +881,16 @@ pub fn physical_rect(bounds: Bounds<Pixels>, scale: f32) -> ScreenRect {
         width: (f32::from(bounds.size.width) * scale).round() as i32,
         height: (f32::from(bounds.size.height) * scale).round() as i32,
     }
+}
+
+fn physical_selection_rect(bounds: Bounds<Pixels>, scale: f32) -> ScreenRect {
+    let mut rect = physical_rect(bounds, scale);
+    let scale = capture_coordinate_scale(scale);
+    let right = (f32::from(bounds.right()) * scale).round() as i32;
+    let bottom = (f32::from(bounds.bottom()) * scale).round() as i32;
+    rect.width = right.saturating_sub(rect.x);
+    rect.height = bottom.saturating_sub(rect.y);
+    rect
 }
 
 pub fn display_capture(
@@ -777,6 +1090,9 @@ fn take_pooled_overlay(
 
 fn prepare_overlay_window(window: &mut Window, display_bounds: Bounds<Pixels>) {
     window.set_window_title("Poratake capture overlay");
+    crate::windows::remove_popup_frame(window);
+    #[cfg(all(target_os = "macos", not(test)))]
+    crate::system::window_visibility::disable_macos_transitions(window);
     #[cfg(all(windows, not(test)))]
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         crate::system::window_composition::configure_transparent_surface(hwnd);
@@ -817,7 +1133,7 @@ fn open_overlay_window(
             let updated = handle.update(cx, |overlay, window, cx| {
                 prepare_overlay_window(window, display_bounds);
                 let scale = window.scale_factor();
-                let focus_handle = cx.focus_handle();
+                let focus_handle = overlay.focus_handle.clone();
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
                 let mut replacement = build(scale, focus_handle);
@@ -885,6 +1201,40 @@ fn open_overlay_window(
     );
     match opened {
         Ok(handle) => {
+            #[cfg(all(target_os = "macos", not(test)))]
+            let positioned = handle
+                .update(cx, |overlay, window, cx| {
+                    crate::windows::remove_popup_frame(window);
+                    if crate::windows::set_macos_window_bounds(window, display_bounds) {
+                        window.bounds_changed(cx);
+                        let position = window.mouse_position();
+                        overlay.pointer_inside =
+                            Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                                .contains(&position);
+                        if overlay.pointer_inside {
+                            overlay.pointer = Some(position);
+                            overlay.hovered_window = overlay.window_at(position);
+                        }
+                        cx.notify();
+                        return true;
+                    }
+                    #[cfg(feature = "parity")]
+                    if std::env::var_os(crate::ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
+                        let scale = window.scale_factor();
+                        window.resize(display_bounds.size);
+                        window.bounds_changed(cx);
+                        window.set_scale_factor(scale);
+                        return true;
+                    }
+                    false
+                })
+                .unwrap_or(false);
+            #[cfg(all(target_os = "macos", not(test)))]
+            if !positioned {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                eprintln!("[overlay] failed to position {error}");
+                return None;
+            }
             if active {
                 track_overlay(
                     handle.into(),
@@ -1088,6 +1438,8 @@ pub struct AreaOverlay {
     hovered_window: Option<usize>,
     /// Last pointer position in client coordinates, for `CrosshairGuides`.
     pointer: Option<Point<Pixels>>,
+    #[cfg(target_os = "macos")]
+    pointer_inside: bool,
     /// The live selection, which stays editable after it is drawn — the
     /// renderer keeps a box the user can move, resize and re-capture.
     rect: Option<selection::Rect>,
@@ -1123,6 +1475,8 @@ impl AreaOverlay {
             display_bounds,
             scale,
             pointer: None,
+            #[cfg(target_os = "macos")]
+            pointer_inside: false,
             rect: None,
             interaction: None,
             cursor: gpui::CursorStyle::Crosshair,
@@ -1170,6 +1524,10 @@ impl AreaOverlay {
         }
         self.windows = windows;
         self.hovered_window = None;
+        #[cfg(target_os = "macos")]
+        if self.pointer_inside {
+            self.hovered_window = self.pointer.and_then(|pointer| self.window_at(pointer));
+        }
         cx.notify();
         true
     }
@@ -1228,6 +1586,11 @@ impl AreaOverlay {
         self
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_pointer_inside(&self) -> bool {
+        self.pointer_inside
+    }
+
     fn is_picking_windows(&self) -> bool {
         self.picking_windows
     }
@@ -1280,15 +1643,15 @@ impl AreaOverlay {
             return;
         };
         if self.intent == crate::capture::intent::CaptureIntent::Recording {
-            let all_in_one = self.all_in_one.is_some();
-            let rect = ScreenRect {
-                x: picked.bounds.x as i32,
-                y: picked.bounds.y as i32,
-                width: picked.bounds.width as i32,
-                height: picked.bounds.height as i32,
-            };
-            let label = picked.label();
-            let window_id = picked.window_id;
+            #[cfg(target_os = "macos")]
+            {
+                let frozen = frozen_selection_generation(cx);
+                if frozen != 0 {
+                    self.release_before_window_recording(frozen, picked, window, cx);
+                    return;
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
             if !release_frozen_screen_in_place(cx) {
                 crate::windows::toast::Toast::show(
                     cx,
@@ -1297,39 +1660,7 @@ impl AreaOverlay {
                 );
                 return;
             }
-            self.all_in_one = None;
-            self.picking_windows = false;
-            self.hovered_window = None;
-            self.interaction = None;
-            self.pointer = None;
-            self.handed_off = true;
-            conceal_recording_selector(window);
-            sync_window_recording_handoff(cx);
-            begin_recording_after_icon_restore(
-                cx,
-                all_in_one,
-                crate::video::recorder::RecordingTarget::Window,
-                rect,
-                self.display_id,
-                Some(window_id),
-                Some(label),
-                self.recording_preference_scope,
-                move |cx| {
-                    for window_handle in cx.windows() {
-                        let Some(handle) = window_handle
-                            .downcast::<crate::windows::recording_control::RecordingControl>(
-                        ) else {
-                            continue;
-                        };
-                        let _ = handle.update(cx, |_, window, _| window.activate_window());
-                        break;
-                    }
-                    if !show_window_recording_outline(window_id, cx) {
-                        eprintln!("[recording-overlay] failed to outline window {window_id}");
-                    }
-                },
-            );
-            cx.notify();
+            self.handoff_window_recording(picked, window, cx);
             return;
         }
         let mut capture = display_capture(self.display_bounds, self.scale, self.display_id);
@@ -1359,6 +1690,112 @@ impl AreaOverlay {
                 cx,
             );
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_before_window_recording(
+        &self,
+        frozen: u64,
+        picked: crate::capture::windows_list::WindowListItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = revision(cx);
+        let list_generation = self.window_list_generation;
+        let handle = window
+            .window_handle()
+            .downcast::<Self>()
+            .expect("area overlay");
+        let finished = begin_recording_preparation(cx);
+        let service = self.service.clone();
+        cx.spawn(async move |_, cx| {
+            #[cfg(not(test))]
+            let released = smol::unblock(move || service.release_screen(frozen)).await;
+            #[cfg(test)]
+            let released = cx
+                .background_executor()
+                .spawn(async move { service.release_screen(frozen) })
+                .await;
+            cx.update(|cx| {
+                finish_recording_preparation(cx);
+                if revision(cx) != owner {
+                    crate::windows::recording_control::RecordingControl::refresh_after_outline_cleanup(cx);
+                    return;
+                }
+                if released {
+                    mark_frozen_selection_released(frozen, cx);
+                }
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    if overlay.window_list_generation != list_generation
+                        || overlay.intent != crate::capture::intent::CaptureIntent::Recording
+                        || !overlay.is_picking_windows()
+                    {
+                        return;
+                    }
+                    if released {
+                        overlay.handoff_window_recording(picked, window, cx);
+                    } else {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Recording failed",
+                            "Could not release the frozen screen",
+                        );
+                    }
+                });
+            });
+            drop(finished);
+        })
+        .detach();
+    }
+
+    fn handoff_window_recording(
+        &mut self,
+        picked: crate::capture::windows_list::WindowListItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let all_in_one = self.all_in_one.is_some();
+        let rect = ScreenRect {
+            x: picked.bounds.x as i32,
+            y: picked.bounds.y as i32,
+            width: picked.bounds.width as i32,
+            height: picked.bounds.height as i32,
+        };
+        let label = picked.label();
+        let window_id = picked.window_id;
+        self.all_in_one = None;
+        self.picking_windows = false;
+        self.hovered_window = None;
+        self.interaction = None;
+        self.pointer = None;
+        self.handed_off = true;
+        conceal_recording_selector(window);
+        sync_window_recording_handoff(cx);
+        begin_recording_after_icon_restore(
+            cx,
+            all_in_one,
+            crate::video::recorder::RecordingTarget::Window,
+            rect,
+            self.display_id,
+            Some(window_id),
+            Some(label),
+            self.recording_preference_scope,
+            move |cx| {
+                for window_handle in cx.windows() {
+                    let Some(handle) = window_handle
+                        .downcast::<crate::windows::recording_control::RecordingControl>(
+                    ) else {
+                        continue;
+                    };
+                    let _ = handle.update(cx, |_, window, _| window.activate_window());
+                    break;
+                }
+                if !show_window_recording_outline(window_id, cx) {
+                    eprintln!("[recording-overlay] failed to outline window {window_id}");
+                }
+            },
+        );
+        cx.notify();
     }
 
     /// Opens the overlay covering one display.
@@ -1560,8 +1997,16 @@ impl AreaOverlay {
     pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu.close(window, cx);
         window.focus(&self.focus_handle, cx);
-        self.activate_color_picker(cx);
-        sync_color_picker(true, cx);
+        let Some(excluded_window_ids) = capture_overlay_window_ids(window, cx) else {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Pick failed",
+                "Could not exclude the capture selector",
+            );
+            return;
+        };
+        self.activate_color_picker(excluded_window_ids.clone(), cx);
+        sync_color_picker(true, excluded_window_ids, cx);
     }
 
     fn stop_color_picker(&mut self, cx: &mut Context<Self>) {
@@ -1570,11 +2015,11 @@ impl AreaOverlay {
         }
         self.picking_color = false;
         self.color_frame = None;
-        sync_color_picker(false, cx);
+        sync_color_picker(false, Vec::new(), cx);
         cx.notify();
     }
 
-    fn activate_color_picker(&mut self, cx: &mut Context<Self>) {
+    fn activate_color_picker(&mut self, excluded_window_ids: Vec<i64>, cx: &mut Context<Self>) {
         self.picking_color = true;
         self.color_frame = None;
         self.color_frame_generation = self.color_frame_generation.wrapping_add(1);
@@ -1592,9 +2037,6 @@ impl AreaOverlay {
                 let frame = cx
                     .background_executor()
                     .spawn(async move {
-                        if let Some(reservation) = reservation.as_ref() {
-                            reservation.wait_for_freeze();
-                        }
                         let path = std::env::temp_dir().join(format!(
                             "poratake-color-frame-{}-{}-{}-{}.png",
                             std::process::id(),
@@ -1603,10 +2045,16 @@ impl AreaOverlay {
                             generation
                         ));
                         let frame = service
-                            .capture_area_to_file_with_options(capture, &path, freeze)
+                            .capture_area_cached(
+                                capture,
+                                &path,
+                                reservation,
+                                None,
+                                excluded_window_ids,
+                            )
                             .ok()
-                            .and_then(|_| image::open(&path).ok())
-                            .map(|image| std::sync::Arc::new(image.to_rgba8()));
+                            .and_then(|_| crate::render::images::open(&path).ok())
+                            .map(|image| std::sync::Arc::new(image.into_rgba8()));
                         let _ = std::fs::remove_file(&path);
                         frame
                     })
@@ -1630,6 +2078,8 @@ impl AreaOverlay {
             })
             .detach();
         }
+        #[cfg(test)]
+        let _ = excluded_window_ids;
         cx.notify();
     }
 
@@ -1749,6 +2199,70 @@ impl AreaOverlay {
         cx.notify();
     }
 
+    #[cfg(target_os = "macos")]
+    fn release_before_timer(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        confirm: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> bool {
+        use crate::capture::intent::CaptureIntent;
+
+        if self.intent != CaptureIntent::Timer {
+            return false;
+        }
+        let owner = revision(cx);
+        if session(cx).timer_release_owner == Some(owner) {
+            return true;
+        }
+        let frozen = frozen_selection_generation(cx);
+        if frozen == 0 {
+            return false;
+        }
+
+        session(cx).timer_release_owner = Some(owner);
+        let service = self.service.clone();
+        let handle = window
+            .window_handle()
+            .downcast::<Self>()
+            .expect("area overlay");
+        cx.spawn(async move |_, cx| {
+            #[cfg(not(test))]
+            let released = smol::unblock(move || service.release_screen(frozen)).await;
+            #[cfg(test)]
+            let released = cx
+                .background_executor()
+                .spawn(async move { service.release_screen(frozen) })
+                .await;
+            cx.update(|cx| {
+                if revision(cx) != owner || session(cx).timer_release_owner != Some(owner) {
+                    return;
+                }
+                session(cx).timer_release_owner = None;
+                if released {
+                    mark_frozen_selection_released(frozen, cx);
+                }
+                let _ = handle.update(cx, |overlay, window, cx| {
+                    if overlay.intent != CaptureIntent::Timer {
+                        return;
+                    }
+                    if released {
+                        confirm(overlay, window, cx);
+                    } else {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Timer Capture Failed",
+                            "Could not release the frozen screen",
+                        );
+                        dismiss(window, cx);
+                    }
+                });
+            });
+        })
+        .detach();
+        true
+    }
+
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((origin, size)) = self.selection() else {
             return;
@@ -1756,13 +2270,25 @@ impl AreaOverlay {
         if size.width < px(4.0) || size.height < px(4.0) {
             return;
         }
+        #[cfg(target_os = "macos")]
+        if self.release_before_timer(window, cx, Self::confirm) {
+            return;
+        }
 
         let coordinate_scale = capture_coordinate_scale(self.scale);
-        let x =
-            (f32::from(self.display_bounds.left() + origin.x) * coordinate_scale).round() as i32;
-        let y = (f32::from(self.display_bounds.top() + origin.y) * coordinate_scale).round() as i32;
-        let width = (f32::from(size.width) * coordinate_scale).round() as i32;
-        let height = (f32::from(size.height) * coordinate_scale).round() as i32;
+        let rect = physical_selection_rect(
+            Bounds {
+                origin: self.display_bounds.origin + origin,
+                size,
+            },
+            self.scale,
+        );
+        let ScreenRect {
+            x,
+            y,
+            width,
+            height,
+        } = rect;
 
         let intent = self.intent;
         let scale = self.scale;
@@ -1794,7 +2320,18 @@ impl AreaOverlay {
 
         let hide = take_capture_hide(cx);
 
-        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
+        let Some(excluded_window_ids) = capture_overlay_window_ids(window, cx) else {
+            dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Capture Failed",
+                "Could not exclude the capture selector",
+            );
+            return;
+        };
+
+        let owner = selection_owner(intent, cx);
         let coordinator = crate::state::coordinator(cx);
         let display_origin = (
             (f32::from(self.display_bounds.left()) * coordinate_scale).round() as i32,
@@ -1805,7 +2342,7 @@ impl AreaOverlay {
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
         let release_after = if !retained {
-            conceal_for_capture(window, cx)
+            conceal_for_intent(window, intent, owner, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -1836,6 +2373,7 @@ impl AreaOverlay {
                         display_id,
                     ),
                     intent,
+                    excluded_window_ids,
                     reservation,
                     release_after,
                     hide,
@@ -2039,13 +2577,13 @@ fn sync_all_in_one(
     });
 }
 
-fn sync_color_picker(active: bool, cx: &mut Context<AreaOverlay>) {
+fn sync_color_picker(active: bool, excluded_window_ids: Vec<i64>, cx: &mut Context<AreaOverlay>) {
     for_each_area_overlay(cx, move |overlay, cx| {
         if overlay.all_in_one.is_none() || overlay.picking_color == active {
             return;
         }
         if active {
-            overlay.activate_color_picker(cx);
+            overlay.activate_color_picker(excluded_window_ids.clone(), cx);
             return;
         }
         overlay.picking_color = false;
@@ -2119,12 +2657,47 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.surface(window.is_window_hovered(), window, cx);
+        #[cfg(target_os = "macos")]
+        let window_hovered = self.pointer_inside;
+        #[cfg(not(target_os = "macos"))]
+        let window_hovered = window.is_window_hovered();
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
+        let content = self.surface(window_hovered, window, cx);
         crate::ui::window_root::focus_root(content, window, cx)
+            .key_context("AreaOverlay")
+            .on_action(cx.listener(Self::on_cancel))
     }
 }
 
 impl AreaOverlay {
+    fn on_cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
+        if self.menu.is_open(cx) {
+            self.menu.close(window, cx);
+            self.focus_all_in_one_menu_trigger(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.picking_color {
+            self.stop_color_picker(cx);
+            return;
+        }
+        if self.intent == crate::capture::intent::CaptureIntent::Recording {
+            crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
+        }
+        if self.intent == crate::capture::intent::CaptureIntent::EditorAttach {
+            let coordinator = crate::state::coordinator(cx);
+            coordinator.update(cx, |coordinator, cx| {
+                coordinator.cancel_editor_attach(cx);
+            });
+        }
+        dismiss(window, cx);
+    }
+
     pub(crate) fn surface(
         &mut self,
         window_hovered: bool,
@@ -2210,31 +2783,17 @@ impl AreaOverlay {
                     this.focus_all_in_one_menu_trigger(window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
-                if this.menu.is_open(cx) {
-                    this.menu.close(window, cx);
-                    this.focus_all_in_one_menu_trigger(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if this.picking_color {
-                    this.stop_color_picker(cx);
-                    return;
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::Recording {
-                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::EditorAttach {
-                    let coordinator = crate::state::coordinator(cx);
-                    coordinator.update(cx, |coordinator, cx| {
-                        coordinator.cancel_editor_attach(cx);
-                    });
-                }
-                dismiss(window, cx);
-            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up));
+
+        #[cfg(target_os = "macos")]
+        let root = root.on_mouse_exit(cx.listener(|this, _, _, cx| {
+            if this.pointer_inside {
+                this.pointer_inside = false;
+                cx.notify();
+            }
+        }));
 
         let toolbar = self.all_in_one.map(|choices| {
             crate::capture::all_in_one_toolbar::render(choices, &self.menu, &theme, cx)
@@ -2260,7 +2819,13 @@ impl AreaOverlay {
             };
             picking = match hovered_frame {
                 Some((origin, frame)) => picking.children(scrim_around(origin, frame, window, dim)),
-                None => picking.child(div().absolute().inset_0().bg(dim)),
+                None => picking.child(
+                    div()
+                        .debug_selector(|| "window-picker-dim".to_string())
+                        .absolute()
+                        .inset_0()
+                        .bg(dim),
+                ),
             };
             if let Some(toolbar) = toolbar {
                 picking = picking.child(toolbar);
@@ -2275,7 +2840,13 @@ impl AreaOverlay {
 
         if let Some(dimmed) = self.screen_picker_dimmed(window_hovered) {
             let mut picking = if dimmed {
-                root.child(div().absolute().inset_0().bg(dim))
+                root.child(
+                    div()
+                        .debug_selector(|| "display-picker-dim".to_string())
+                        .absolute()
+                        .inset_0()
+                        .bg(dim),
+                )
             } else {
                 root
             };
@@ -2433,6 +3004,11 @@ impl AreaOverlay {
     /// `startDrag`: a press on a handle resizes, inside the box moves, and
     /// anywhere else starts a new box.
     fn on_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if pending_recording_preparation(cx).is_some() || session(cx).timer_release_owner.is_some()
+        {
+            return;
+        }
         if self.handed_off {
             return;
         }
@@ -2478,6 +3054,10 @@ impl AreaOverlay {
     }
 
     fn confirm_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if self.release_before_timer(window, cx, Self::confirm_screen) {
+            return;
+        }
         let scale = self.scale;
         let capture = display_capture(self.display_bounds, scale, self.display_id);
         let rect = capture.rect;
@@ -2512,13 +3092,23 @@ impl AreaOverlay {
             return;
         }
         let hide = take_capture_hide(cx);
-        let owner = (intent == crate::capture::intent::CaptureIntent::Timer).then(|| revision(cx));
+        let Some(excluded_window_ids) = capture_overlay_window_ids(window, cx) else {
+            dismiss(window, cx);
+            crate::capture::desktop_icons::release_for_capture(hide, cx);
+            crate::windows::toast::Toast::show(
+                cx,
+                "Capture Failed",
+                "Could not exclude the capture selector",
+            );
+            return;
+        };
+        let owner = selection_owner(intent, cx);
         let coordinator = crate::state::coordinator(cx);
         let retained = retains_overlay_after_selection(intent);
         let reservation = (!retained && self.service.config.get().screenshot.freeze_screen)
             .then(|| self.service.reserve_cached_capture());
         let release_after = if !retained {
-            conceal_for_capture(window, cx)
+            conceal_for_intent(window, intent, owner, cx)
         } else if !hand_off_for_timer(cx) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -2536,6 +3126,7 @@ impl AreaOverlay {
                 coordinator.capture_area_reserved(
                     capture,
                     intent,
+                    excluded_window_ids,
                     reservation,
                     release_after,
                     hide,
@@ -2547,6 +3138,11 @@ impl AreaOverlay {
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if !self.pointer_inside {
+            self.pointer_inside = true;
+            cx.notify();
+        }
         if self.pointer != Some(event.position) {
             self.pointer = Some(event.position);
             if !self.is_picking_windows() && !self.is_picking_screen() && self.selection().is_none()
@@ -2698,6 +3294,32 @@ mod tests {
     }
 
     #[test]
+    fn fractional_selection_stays_inside_display_edges() {
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.5), px(0.5)),
+            size: size(px(1727.5), px(1116.5)),
+        };
+        let rect = super::physical_selection_rect(bounds, 1.0);
+        assert_eq!(rect.x, 1);
+        assert_eq!(rect.y, 1);
+        assert_eq!(rect.x + rect.width, 1728);
+        assert_eq!(rect.y + rect.height, 1117);
+        let layout = super::physical_rect(bounds, 1.0);
+        assert_eq!(layout.width, 1728);
+        assert_eq!(layout.height, 1117);
+
+        let negative = gpui::Bounds {
+            origin: gpui::point(px(-1599.5), px(-899.5)),
+            size: size(px(1599.5), px(899.5)),
+        };
+        let rect = super::physical_selection_rect(negative, 1.0);
+        assert_eq!(rect.x, -1600);
+        assert_eq!(rect.y, -900);
+        assert_eq!(rect.x + rect.width, 0);
+        assert_eq!(rect.y + rect.height, 0);
+    }
+
+    #[test]
     fn display_capture_keeps_target_display_geometry_scale_and_id_together() {
         let bounds = gpui::Bounds {
             origin: gpui::point(px(-1600.0), px(120.0)),
@@ -2748,6 +3370,61 @@ mod tests {
                 .expect("read display id"),
             Some(u64::from(display_id) as u32)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn scroll_selector_leases_are_independent_and_leave_new_selections_open(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let (display_id, bounds) = cx.read(|cx| {
+            let display = cx.primary_display().unwrap();
+            (display.id(), display.bounds())
+        });
+        let open = |cx: &mut gpui::App| {
+            super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                bounds,
+                crate::capture::intent::CaptureIntent::ScrollCapture,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: false,
+                    generation: 0,
+                },
+                cx,
+            )
+            .unwrap()
+        };
+        let first = cx.update(open);
+        let first_owner = cx.update(super::revision);
+        first
+            .update(cx, |_, window, cx| {
+                super::conceal_for_scroll(window, first_owner, cx)
+            })
+            .unwrap();
+        let second = cx.update(open);
+        let second_owner = cx.update(super::revision);
+        second
+            .update(cx, |_, window, cx| {
+                super::conceal_for_scroll(window, second_owner, cx)
+            })
+            .unwrap();
+        let active = cx.update(open);
+        assert_ne!(first_owner, second_owner);
+        assert!(first.update(cx, |_, _, _| ()).is_ok());
+        assert!(second.update(cx, |_, _, _| ()).is_ok());
+        cx.update(|cx| super::release_scroll_selectors(Some(first_owner), cx));
+        assert!(first.update(cx, |_, _, _| ()).is_err());
+        assert!(second.update(cx, |_, _, _| ()).is_ok());
+        assert!(active.update(cx, |_, _, _| ()).is_ok());
+        cx.update(|cx| super::release_scroll_selectors(Some(second_owner), cx));
+        assert!(second.update(cx, |_, _, _| ()).is_err());
+        assert!(active.update(cx, |_, _, _| ()).is_ok());
+        cx.update(super::replace_all);
     }
 
     #[herogpui::test]
@@ -3651,7 +4328,22 @@ mod tests {
             assert!(cx.windows().into_iter().any(|window| window
                 .downcast::<crate::windows::recording_control::RecordingControl>()
                 .is_some()));
+            #[cfg(target_os = "macos")]
+            {
+                assert!(super::session(cx).native_recording_overlay_requested);
+                assert!(
+                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx)
+                );
+                assert_eq!(super::session(cx).outlined_window_id, None);
+            }
         });
+        #[cfg(target_os = "macos")]
+        {
+            cx.run_until_parked();
+            cx.update(|cx| {
+                assert!(!super::session(cx).native_recording_overlay_requested);
+            });
+        }
     }
 
     #[herogpui::test]
@@ -3759,6 +4451,122 @@ mod tests {
             overlay.read_with(cx, |overlay, _| overlay.cursor),
             gpui::CursorStyle::default()
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn unfocused_display_picker_highlights_pointer_entry_and_exit(cx: &mut TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+        });
+        let service = cx.read(crate::state::state);
+        let (_, visual) = herogpui::test::open_window(cx, move |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(800.), px(600.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+            .with_screen_picker()
+        });
+        visual.simulate_resize(size(px(800.), px(600.)));
+        visual.settle();
+        assert!(!visual.update(|window, _| window.is_window_hovered()));
+        assert!(visual.debug_bounds("display-picker-dim").is_some());
+
+        for inside in [true, false, true] {
+            if inside {
+                visual.simulate_mouse_move(
+                    gpui::point(px(100.), px(100.)),
+                    None,
+                    gpui::Modifiers::none(),
+                );
+            } else {
+                visual.simulate_event(gpui::MouseExitEvent {
+                    position: gpui::point(px(801.), px(100.)),
+                    pressed_button: None,
+                    modifiers: gpui::Modifiers::none(),
+                });
+            }
+            visual.settle();
+            assert_eq!(visual.debug_bounds("display-picker-dim").is_none(), inside);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn unfocused_window_picker_highlights_target_after_list_arrives(cx: &mut TestAppContext) {
+        use crate::capture::windows_list::{Rect, WindowListItem};
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = Arc::new(ConfigStore::load_at(dir.path().join("config.json")).unwrap());
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+        });
+        let service = cx.read(crate::state::state);
+        let (overlay, visual) = herogpui::test::open_window(cx, move |_, cx| {
+            super::AreaOverlay::with_focus(
+                gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(800.), px(600.))),
+                1.,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                cx.focus_handle(),
+            )
+            .with_windows(Vec::new())
+        });
+        visual.simulate_resize(size(px(800.), px(600.)));
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(100.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        assert!(visual.debug_bounds("window-picker-dim").is_some());
+        visual.update(|_, cx| {
+            overlay.update(cx, |overlay, cx| {
+                assert!(overlay.apply_window_list(
+                    overlay.window_list_generation(),
+                    vec![WindowListItem {
+                        window_id: 42,
+                        title: "Target".into(),
+                        owner_name: "App".into(),
+                        owner_pid: 1,
+                        bounds: Rect {
+                            x: 50.,
+                            y: 50.,
+                            width: 200.,
+                            height: 200.,
+                        },
+                    }],
+                    cx,
+                ));
+            });
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("window-picker-dim").is_none());
+        visual.simulate_event(gpui::MouseExitEvent {
+            position: gpui::point(px(801.), px(100.)),
+            pressed_button: None,
+            modifiers: gpui::Modifiers::none(),
+        });
+        visual.settle();
+        assert!(visual.debug_bounds("window-picker-dim").is_some());
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(100.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        assert!(visual.debug_bounds("window-picker-dim").is_none());
     }
 
     #[herogpui::test]

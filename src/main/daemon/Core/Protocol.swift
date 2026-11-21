@@ -112,7 +112,7 @@ struct AnyCodable: Codable {
     
     func int() -> Int? {
         if let i = value as? Int { return i }
-        if let d = value as? Double { return Int(d) }
+        if let d = value as? Double { return Int(exactly: d.rounded(.towardZero)) }
         return nil
     }
     

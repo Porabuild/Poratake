@@ -1,0 +1,34 @@
+macOS recording toolbar window fit, 2026-11-16
+
+The isolated GPUI native UI probe used a temporary configuration and generated
+preview image. It did not start capture, access real devices, change privacy
+settings or touch the existing editor. AppKit's windowNumberAtPoint identified
+the native window under the sampled point; no physical mouse movement occurred.
+
+Before the change, the measured toolbar was 276 points wide in a 332-point
+window. The center and a point halfway into the 28-point side margin both hit
+the recording window.
+
+Afterward, in both light and dark appearance, the recording window settled at
+276x44 points with a 276-point toolbar and zero side margin. Its center matched
+the display work-area center; a point four points outside the window hit a
+different window. The initial size estimate was 284x44 before measurement.
+
+A simulated pointer opened the microphone menu with a fixture daemon. The
+fixture received only media-devices.list for microphone and returned generated
+device entries. The menu was open in a 332x300-point window centered on the
+same display. After dismissal, it returned to 276x44; the outside hit target
+again reached the underlying window. A separate dark probe checked synthetic
+hover/exit tooltip registration and toggled the isolated system-sound preference
+off/on/off without starting a recording.
+
+Headless GPUI control fixtures passed in light and dark at simulated 1x and 2x.
+They exercise the device menu, countdown, keyboard-focus tooltip and return to
+the fitted width after pointer input. A broader light 1x GPUI parity run also
+completed its recording, capture, scroll and editor fixture workflows after the
+change. The native probe uses simulated events;
+real pointer behavior, physical mixed-display placement and recorded pixels are
+not established. While a menu, countdown or keyboard tooltip is shown, the
+expanded window still has transparent areas that can intercept clicks. The
+fitted window clips the toolbar's outer shadow, which needs a native visual
+comparison with Electron.

@@ -3,7 +3,8 @@
 //! screenshot or a recording.
 
 use tiny_skia::{
-    FillRule, GradientStop, LinearGradient, Pixmap, PixmapRef, Point, Rect, SpreadMode, Transform,
+    FillRule, FilterQuality, GradientStop, LinearGradient, Pixmap, PixmapRef, Point, Rect,
+    SpreadMode, Transform,
 };
 
 use crate::render::canvas::Canvas;
@@ -90,6 +91,20 @@ pub fn fill(canvas: &mut Canvas, gradient: &GradientOption, width: f32, height: 
 /// Covers the surface with `image`, cropping the overflowing axis — the
 /// `object-fit: cover` behaviour of `renderBackgroundImageToCanvas`.
 pub fn fill_image(canvas: &mut Canvas, image: PixmapRef<'_>, width: f32, height: f32) {
+    fill_image_with_quality(canvas, image, width, height, FilterQuality::Bilinear);
+}
+
+pub fn fill_image_high_quality(canvas: &mut Canvas, image: PixmapRef<'_>, width: f32, height: f32) {
+    fill_image_with_quality(canvas, image, width, height, FilterQuality::Bicubic);
+}
+
+fn fill_image_with_quality(
+    canvas: &mut Canvas,
+    image: PixmapRef<'_>,
+    width: f32,
+    height: f32,
+    quality: FilterQuality,
+) {
     if image.width() == 0 || image.height() == 0 || width <= 0.0 || height <= 0.0 {
         return;
     }
@@ -103,7 +118,7 @@ pub fn fill_image(canvas: &mut Canvas, image: PixmapRef<'_>, width: f32, height:
     };
     let x = (width - draw_width) / 2.0;
     let y = (height - draw_height) / 2.0;
-    canvas.draw_pixmap(image, x, y, draw_width, draw_height);
+    canvas.draw_pixmap_with_quality(image, x, y, draw_width, draw_height, quality);
 }
 
 /// Port of `renderNoise` in `renderer/utils/noise.ts` — a grain overlay over
@@ -150,19 +165,7 @@ pub fn overlay_noise(canvas: &mut Canvas, width: f32, height: f32, noise: f64, s
 /// Decodes a `data:` URL or a file path into a pixmap, which is how both the
 /// wallpaper background and the first-frame image arrive from `state.json`.
 pub fn load_image(source: &str) -> Option<Pixmap> {
-    let bytes = if let Some(encoded) = source.split_once("base64,").map(|(_, tail)| tail) {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded.trim())
-            .ok()?
-    } else {
-        std::fs::read(source).ok()?
-    };
-    decode_image(&bytes)
-}
-
-pub fn decode_image(bytes: &[u8]) -> Option<Pixmap> {
-    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let decoded = super::images::load_source(source)?.into_rgba8();
     let mut pixmap = Pixmap::new(decoded.width(), decoded.height())?;
     let target = pixmap.data_mut();
     for (index, pixel) in decoded.pixels().enumerate() {

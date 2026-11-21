@@ -2,6 +2,8 @@ import { ipcMain } from 'electron';
 import type { WebContents } from 'electron';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import { getWindowData, setWindowExporting } from '../window-manager';
+import type { MusicRetentionSession } from '../music-retention';
 
 interface ExportSession {
   id: string;
@@ -9,6 +11,7 @@ interface ExportSession {
   sender: WebContents;
   handleDestroyed: () => void;
   outputPaths: Set<string>;
+  musicSession: MusicRetentionSession | null;
 }
 
 interface PendingExportAuthorization {
@@ -54,19 +57,28 @@ function finishExportSession(senderId: number, sessionId: string): void {
 
   session.sender.removeListener('destroyed', session.handleDestroyed);
   exportSessions.delete(senderId);
+  session.musicSession?.close();
+  setWindowExporting(senderId, false);
 }
 
 function beginExportSession(sender: WebContents): string {
   const existing = exportSessions.get(sender.id);
   if (existing) {
     existing.controller.abort();
-    finishExportSession(sender.id, existing.id);
+    existing.sender.removeListener('destroyed', existing.handleDestroyed);
+    exportSessions.delete(sender.id);
+    existing.musicSession?.abandon();
   }
+
+  const windowData = getWindowData(sender.id);
+  if (!windowData) throw new Error('Video editor window is no longer open');
+  const musicSession = windowData.musicSession?.lease() ?? null;
 
   const controller = new AbortController();
   const id = randomUUID();
   const handleDestroyed = () => {
     controller.abort();
+    setWindowExporting(sender.id, false);
     if (exportSessions.get(sender.id)?.id === id) {
       exportSessions.delete(sender.id);
     }
@@ -85,7 +97,9 @@ function beginExportSession(sender: WebContents): string {
     sender,
     handleDestroyed,
     outputPaths,
+    musicSession,
   });
+  setWindowExporting(sender.id, true);
   sender.once('destroyed', handleDestroyed);
   return id;
 }

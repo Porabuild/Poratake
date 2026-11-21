@@ -1,0 +1,28 @@
+2026-11-18 macOS overlapping GPUI scroll windows and screenshot exclusion
+
+Apple Silicon, built-in Retina display. 1728×1084 points captured at 2×.
+GPUI parity development flag: --native-ui-probe --scroll-exclusion.
+The fixture opened the real preview, prompt and control windows and painted
+generated content. It sent no scroll input. WindowServer listed all three
+windows during capture. Captures used the previously authorized screen-only
+Swift daemon and its screenshot capture-area exclusion path.
+
+The reference was captured with the same ScreenCaptureKit configuration after
+the GPUI windows closed. Each positive control included one of the three
+windows. Decoded RGB comparisons identified strong positive changes above ten
+8-bit levels. With all windows excluded, the entire bounding rectangle of
+those changes matched the reference exactly in each case.
+
+Strong positive changes by window in light and dark
+Preview 198340 pixels (x 0–479, y 0–436)
+Prompt 36956 pixels (x 1488–1967, y 1045–1121)
+Control 19528 pixels (x 1616–1839, y 8–95)
+
+Light: 7492608 of 7492608 pixels matched exactly across the full image.
+Dark: 7490246 of 7492608 pixels matched exactly across the full image.
+The 2362 differences were outside the three positive-control rectangles.
+Their maximum channel difference was one 8-bit level.
+
+This verifies the shared filter with the native GPUI windows and IDs on one
+display. The overlapping auto-scroll workflow and multiple displays remain
+unverified. Temporary processes and raw captures were removed.

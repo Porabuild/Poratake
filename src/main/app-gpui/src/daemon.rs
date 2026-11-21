@@ -65,6 +65,23 @@ impl std::fmt::Display for DaemonRpcError {
 
 impl std::error::Error for DaemonRpcError {}
 
+enum DaemonStartup {
+    Ready,
+    Exited,
+    Cancelled,
+}
+
+#[derive(Debug)]
+struct DaemonExitedBeforeReady;
+
+impl std::fmt::Display for DaemonExitedBeforeReady {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Daemon exited before ready")
+    }
+}
+
+impl std::error::Error for DaemonExitedBeforeReady {}
+
 #[derive(Clone)]
 pub struct DaemonHandle {
     inner: Arc<DaemonInner>,
@@ -72,6 +89,7 @@ pub struct DaemonHandle {
 
 struct DaemonInner {
     lifecycle: Mutex<()>,
+    startup: Mutex<Option<SyncSender<DaemonStartup>>>,
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     pending: Mutex<HashMap<String, Pending>>,
@@ -148,6 +166,30 @@ fn find_daemon_binary() -> PathBuf {
     PathBuf::from(format!("src/main/daemon/{BINARY}"))
 }
 
+#[cfg(target_os = "macos")]
+fn wait_for_child_exit(pid: u32) -> std::io::Result<bool> {
+    let mut status = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+    loop {
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                status.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ECHILD) => return Ok(false),
+            _ => return Err(error),
+        }
+    }
+}
+
 impl DaemonHandle {
     pub fn new() -> Self {
         Self::with_binary(find_daemon_binary())
@@ -157,6 +199,7 @@ impl DaemonHandle {
         Self {
             inner: Arc::new(DaemonInner {
                 lifecycle: Mutex::new(()),
+                startup: Mutex::new(None),
                 child: Mutex::new(None),
                 stdin: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
@@ -184,6 +227,11 @@ impl DaemonHandle {
     #[cfg(all(test, windows))]
     pub(crate) fn emit_for_test(&self, event: &str) {
         self.inner.dispatch_event(event, &Value::Null);
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn emit_parity_event(&self, event: &str, data: &Value) {
+        self.inner.dispatch_event(event, data);
     }
 
     fn insert_event_handler(&self, handler: EventHandler) -> u64 {
@@ -240,47 +288,53 @@ impl DaemonHandle {
             .spawn()
             .map_err(|error| anyhow!("failed to spawn daemon: {error}"))?;
 
+        let pid = child.id();
         let stdin = child.stdin.take().expect("daemon stdin");
         let stdout = child.stdout.take().expect("daemon stdout");
 
         *self.inner.child.lock() = Some(child);
         *self.inner.stdin.lock() = Some(stdin);
 
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<()>(8);
-        let ready_subscription = self.subscribe(Arc::new(move |event, _| {
-            if event == "system:ready" {
-                ready_tx.send(()).ok();
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
+        let cancelled = {
+            let mut startup = self.inner.startup.lock();
+            let cancelled = self.inner.shutting_down.load(Ordering::SeqCst);
+            if !cancelled {
+                *startup = Some(startup_tx.clone());
             }
-        }));
+            cancelled
+        };
+        let outcome = if cancelled {
+            Ok(DaemonStartup::Cancelled)
+        } else {
+            self.spawn_reader(stdout, startup_tx.clone());
+            self.watch_child_by_pid(pid, startup_tx);
+            startup_rx.recv_timeout(Duration::from_secs(10))
+        };
+        *self.inner.startup.lock() = None;
 
-        self.spawn_reader(stdout);
-        self.watch_child_by_pid(Self::pid_of_current(&self.inner));
-
-        let ready = ready_rx.recv_timeout(Duration::from_secs(10));
-        drop(ready_subscription);
-        match ready {
-            Ok(()) => {
+        let failure = match outcome {
+            Ok(DaemonStartup::Ready) => {
                 self.inner.restart_attempts.store(0, Ordering::SeqCst);
-                Ok(())
+                return Ok(());
             }
-            Err(_) => {
-                let mut child = self.inner.child.lock().take();
-                *self.inner.stdin.lock() = None;
-                if let Some(child) = child.as_mut() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                self.inner.reject_all_pending("Daemon ready timeout");
-                Err(anyhow!("Daemon ready timeout"))
-            }
+            Ok(DaemonStartup::Exited) => return Err(DaemonExitedBeforeReady.into()),
+            Ok(DaemonStartup::Cancelled) => "Daemon is shutting down",
+            Err(_) => "Daemon ready timeout",
+        };
+        let child = self.inner.child.lock().take();
+        if let Some(mut child) = child {
+            *self.inner.stdin.lock() = None;
+            let _ = child.kill();
+            let _ = child.wait();
+        } else if !self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(DaemonExitedBeforeReady.into());
         }
+        self.inner.reject_all_pending(failure);
+        Err(anyhow!(failure))
     }
 
-    fn pid_of_current(inner: &Arc<DaemonInner>) -> Option<u32> {
-        inner.child.lock().as_ref().map(|child| child.id())
-    }
-
-    fn spawn_reader(&self, stdout: std::process::ChildStdout) {
+    fn spawn_reader(&self, stdout: std::process::ChildStdout, startup: SyncSender<DaemonStartup>) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-reader".into())
@@ -289,7 +343,7 @@ impl DaemonHandle {
                 for line in reader.lines() {
                     match line {
                         Ok(line) if !line.trim().is_empty() => {
-                            inner.handle_line(&line);
+                            inner.handle_line(&line, Some(&startup));
                         }
                         Ok(_) => {}
                         Err(_) => break,
@@ -299,16 +353,20 @@ impl DaemonHandle {
             .ok();
     }
 
-    fn watch_child_by_pid(&self, pid: Option<u32>) {
-        let Some(pid) = pid else {
-            return;
-        };
+    fn watch_child_by_pid(&self, pid: u32, startup: SyncSender<DaemonStartup>) {
         let inner = self.inner.clone();
         thread::Builder::new()
             .name("daemon-watchdog".into())
             .spawn(move || {
-                // Poll for exit; std has no async wait without blocking a
-                // dedicated thread, which is exactly what this is.
+                #[cfg(target_os = "macos")]
+                match wait_for_child_exit(pid) {
+                    Ok(true) => {
+                        inner.handle_exit(pid, &startup);
+                        return;
+                    }
+                    Ok(false) => return,
+                    Err(error) => eprintln!("[daemon] failed to watch child exit: {error}"),
+                }
                 loop {
                     thread::sleep(Duration::from_millis(250));
                     let status = {
@@ -324,7 +382,7 @@ impl DaemonHandle {
                         break;
                     };
                     if exited {
-                        inner.handle_exit();
+                        inner.handle_exit(pid, &startup);
                         break;
                     }
                 }
@@ -333,18 +391,26 @@ impl DaemonHandle {
     }
 
     pub fn stop(&self) {
-        let _lifecycle = self.inner.lifecycle.lock();
         self.inner.shutting_down.store(true, Ordering::SeqCst);
-        self.send_raw(&json!({
+        if let Some(startup) = self.inner.startup.lock().take() {
+            let _ = startup.try_send(DaemonStartup::Cancelled);
+        }
+        let _lifecycle = self.inner.lifecycle.lock();
+        if self.send_raw(&json!({
             "id": "quit",
             "module": "system",
             "method": "quit"
-        }));
-        thread::sleep(Duration::from_millis(500));
+        })) {
+            thread::sleep(Duration::from_millis(500));
+        }
 
         let mut guard = self.inner.child.lock();
         if let Some(child) = guard.as_mut() {
-            let _ = child.kill();
+            if child.kill().is_ok() {
+                let _ = child.wait();
+            } else {
+                let _ = child.try_wait();
+            }
         }
         *guard = None;
         *self.inner.stdin.lock() = None;
@@ -429,7 +495,17 @@ impl DaemonHandle {
         timeout: Duration,
     ) -> Result<Value> {
         let (id, rx) = self.begin_call(module, method, params)?;
+        self.wait_for_call(module, method, id, rx, timeout)
+    }
 
+    fn wait_for_call(
+        &self,
+        module: &str,
+        method: &str,
+        id: String,
+        rx: Receiver<std::result::Result<Value, DaemonRpcError>>,
+        timeout: Duration,
+    ) -> Result<Value> {
         match rx.recv_timeout(timeout) {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(error)) => Err(anyhow::Error::new(error)),
@@ -456,6 +532,26 @@ impl DaemonHandle {
             Ok(Err(error)) => Err(anyhow::Error::new(error)),
             Err(_) => Err(anyhow!("Request dropped: {module}.{method}")),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn begin_timed_call(
+        &self,
+        module: &'static str,
+        method: &'static str,
+        params: Option<Value>,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        let (id, response) = self.begin_call(module, method, params)?;
+        let daemon = self.clone();
+        Ok(move || {
+            daemon.wait_for_call(
+                module,
+                method,
+                id,
+                response,
+                Duration::from_millis(REQUEST_TIMEOUT_MS),
+            )
+        })
     }
 
     fn begin_call(
@@ -558,6 +654,48 @@ impl CameraPreviewClient<'_> {
         self.call(CameraPreviewMethod::Hide, None)
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn begin_show(
+        &self,
+        request: &CameraPreviewRequest,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let wait = self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Show.id(),
+            Some(serde_json::to_value(request)?),
+        )?;
+        Ok(move || {
+            if wait()?["visible"].as_bool() == Some(true) {
+                Ok(())
+            } else {
+                Err(anyhow!("Camera preview did not open"))
+            }
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_hide(&self) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let wait = self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Hide.id(),
+            None,
+        )?;
+        Ok(move || wait().map(|_| ()))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_update(
+        &self,
+        request: &CameraPreviewUpdateRequest,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::Update.id(),
+            Some(serde_json::to_value(request)?),
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn update(&self, request: &CameraPreviewUpdateRequest) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(
@@ -566,10 +704,23 @@ impl CameraPreviewClient<'_> {
         )
     }
 
+    #[cfg(any(not(target_os = "macos"), feature = "parity"))]
     pub fn set_content_protection(&self, enabled: bool) -> Result<()> {
         self.daemon.ensure_running()?;
         self.call(
             CameraPreviewMethod::SetContentProtection,
+            Some(serde_json::to_value(ContentProtectionRequest { enabled })?),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_content_protection(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        self.daemon.begin_timed_call(
+            CAMERA_PREVIEW_MODULE,
+            CameraPreviewMethod::SetContentProtection.id(),
             Some(serde_json::to_value(ContentProtectionRequest { enabled })?),
         )
     }
@@ -665,6 +816,15 @@ pub struct RecordingControlClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+pub struct TooltipOwnerFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 pub struct RecordingOverlayClient<'a> {
     daemon: &'a DaemonHandle,
 }
@@ -709,10 +869,62 @@ pub struct ScreenRecorderClient<'a> {
     daemon: &'a DaemonHandle,
 }
 
+pub enum ScreenRecordingStart {
+    Started,
+    #[cfg(target_os = "macos")]
+    Pending(Receiver<std::result::Result<Value, DaemonRpcError>>),
+}
+
+pub enum ScreenRecordingStop {
+    Stopped(ScreenRecordingStopInfo),
+    #[cfg(target_os = "macos")]
+    Pending(Receiver<std::result::Result<Value, DaemonRpcError>>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScreenRecordingStopInfo {
+    pub duration: Option<f64>,
+    pub camera_track_missing: bool,
+}
+
+pub(crate) fn recording_stop_info(response: &Value) -> ScreenRecordingStopInfo {
+    ScreenRecordingStopInfo {
+        duration: recording_stop_duration(response),
+        camera_track_missing: response.get("cameraTrackMissing").and_then(Value::as_bool)
+            == Some(true),
+    }
+}
+
+pub(crate) fn recording_stop_duration(response: &Value) -> Option<f64> {
+    response
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
 impl ScreenRecorderClient<'_> {
-    pub fn start(&self, request: &ScreenRecorderStartRequest) -> Result<()> {
+    pub fn start(&self, request: &ScreenRecorderStartRequest) -> Result<ScreenRecordingStart> {
         request.validate().map_err(anyhow::Error::msg)?;
         self.daemon.ensure_running()?;
+        #[cfg(target_os = "macos")]
+        {
+            let (_, response) = self.daemon.begin_call(
+                SCREEN_RECORDER_MODULE,
+                ScreenRecorderMethod::Start.id(),
+                Some(serde_json::to_value(request)?),
+            )?;
+            match response.try_recv() {
+                Ok(Ok(_)) => Ok(ScreenRecordingStart::Started),
+                Ok(Err(error)) => Err(anyhow::Error::new(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    Ok(ScreenRecordingStart::Pending(response))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow!("Request dropped: {SCREEN_RECORDER_MODULE}.start"))
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         self.daemon
             .call_with_timeout(
                 SCREEN_RECORDER_MODULE,
@@ -720,18 +932,39 @@ impl ScreenRecorderClient<'_> {
                 Some(serde_json::to_value(request)?),
                 Duration::from_secs(60),
             )
-            .map(|_| ())
+            .map(|_| ScreenRecordingStart::Started)
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn pause(&self) -> Result<()> {
         self.call(ScreenRecorderMethod::Pause, None)
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn resume(&self) -> Result<()> {
         self.call(ScreenRecorderMethod::Resume, None)
     }
 
-    pub fn stop(&self) -> Result<()> {
+    pub fn stop(&self) -> Result<ScreenRecordingStop> {
+        #[cfg(target_os = "macos")]
+        {
+            let (_, response) = self.daemon.begin_call(
+                SCREEN_RECORDER_MODULE,
+                ScreenRecorderMethod::Stop.id(),
+                None,
+            )?;
+            match response.try_recv() {
+                Ok(Ok(value)) => Ok(ScreenRecordingStop::Stopped(recording_stop_info(&value))),
+                Ok(Err(error)) => Err(anyhow::Error::new(error)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    Ok(ScreenRecordingStop::Pending(response))
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow!("Request dropped: {SCREEN_RECORDER_MODULE}.stop"))
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         self.daemon
             .call_with_timeout(
                 SCREEN_RECORDER_MODULE,
@@ -739,9 +972,10 @@ impl ScreenRecorderClient<'_> {
                 None,
                 Duration::from_secs(60),
             )
-            .map(|_| ())
+            .map(|response| ScreenRecordingStop::Stopped(recording_stop_info(&response)))
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn set_microphone(&self, request: ScreenRecorderMicrophoneRequest) -> Result<()> {
         self.call(
             ScreenRecorderMethod::SetMicrophone,
@@ -749,14 +983,79 @@ impl ScreenRecorderClient<'_> {
         )
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn set_system_audio(&self, enabled: bool) -> Result<()> {
         self.toggle(ScreenRecorderMethod::SetSystemAudio, enabled)
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn begin_pause_change(
+        &self,
+        paused: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let method = if paused {
+            ScreenRecorderMethod::Pause
+        } else {
+            ScreenRecorderMethod::Resume
+        };
+        self.begin_setting(method, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_system_audio(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        self.begin_setting(
+            ScreenRecorderMethod::SetSystemAudio,
+            Some(serde_json::to_value(ScreenRecorderToggleRequest {
+                enabled,
+            })?),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_microphone(
+        &self,
+        request: ScreenRecorderMicrophoneRequest,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        self.begin_setting(
+            ScreenRecorderMethod::SetMicrophone,
+            Some(serde_json::to_value(request)?),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn begin_setting(
+        &self,
+        method: ScreenRecorderMethod,
+        params: Option<Value>,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        let wait = self
+            .daemon
+            .begin_timed_call(SCREEN_RECORDER_MODULE, method.id(), params)?;
+        Ok(move || wait().map(|_| ()))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn begin_camera(
+        &self,
+        enabled: bool,
+    ) -> Result<impl FnOnce() -> Result<()> + Send + 'static> {
+        self.begin_setting(
+            ScreenRecorderMethod::SetCamera,
+            Some(serde_json::to_value(ScreenRecorderToggleRequest {
+                enabled,
+            })?),
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn set_camera(&self, enabled: bool) -> Result<()> {
         self.toggle(ScreenRecorderMethod::SetCamera, enabled)
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn toggle(&self, method: ScreenRecorderMethod, enabled: bool) -> Result<()> {
         self.call(
             method,
@@ -766,6 +1065,7 @@ impl ScreenRecorderClient<'_> {
         )
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn call(&self, method: ScreenRecorderMethod, params: Option<Value>) -> Result<()> {
         self.daemon
             .call(SCREEN_RECORDER_MODULE, method.id(), params)
@@ -779,23 +1079,23 @@ pub struct ScrollCaptureClient<'a> {
 
 #[cfg(test)]
 thread_local! {
-    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<ScrollCaptureMethod>>>> = std::cell::RefCell::default();
+    static TEST_AUTO_SCROLL_CALLS: std::cell::RefCell<std::rc::Weak<std::cell::RefCell<Vec<(ScrollCaptureMethod, Vec<i64>)>>>> = std::cell::RefCell::default();
 }
 
 #[cfg(test)]
 pub(crate) fn capture_auto_scroll_for_test(
-) -> std::rc::Rc<std::cell::RefCell<Vec<ScrollCaptureMethod>>> {
+) -> std::rc::Rc<std::cell::RefCell<Vec<(ScrollCaptureMethod, Vec<i64>)>>> {
     let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     TEST_AUTO_SCROLL_CALLS.with_borrow_mut(|capture| *capture = std::rc::Rc::downgrade(&calls));
     calls
 }
 
 #[cfg(test)]
-fn record_auto_scroll_for_test(method: ScrollCaptureMethod) -> bool {
+fn record_auto_scroll_for_test(method: ScrollCaptureMethod, ids: &[i64]) -> bool {
     let Some(calls) = TEST_AUTO_SCROLL_CALLS.with_borrow(|capture| capture.upgrade()) else {
         return false;
     };
-    calls.borrow_mut().push(method);
+    calls.borrow_mut().push((method, ids.to_vec()));
     true
 }
 
@@ -846,26 +1146,44 @@ impl ScrollCaptureClient<'_> {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
-    pub fn start_auto_scroll(&self) -> Result<()> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    pub fn begin_auto_scroll_change(
+        &self,
+        excluded_window_ids: Option<&[i64]>,
+    ) -> Result<impl FnOnce() -> Result<Value> + Send + 'static> {
+        let (method, params) = match excluded_window_ids {
+            Some(ids) => (
+                ScrollCaptureMethod::StartAutoScroll,
+                (!ids.is_empty()).then(|| json!({"excludedWindowIds": ids})),
+            ),
+            None => (ScrollCaptureMethod::StopAutoScroll, None),
+        };
+        self.daemon
+            .begin_timed_call(SCROLL_CAPTURE_MODULE, method.id(), params)
+    }
+
+    #[cfg(any(test, all(windows, feature = "parity")))]
+    pub fn start_auto_scroll(&self, excluded_window_ids: &[i64]) -> Result<()> {
         #[cfg(test)]
-        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll) {
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StartAutoScroll, excluded_window_ids) {
             return Ok(());
         }
         self.daemon.ensure_running()?;
+        let params = (!excluded_window_ids.is_empty())
+            .then(|| serde_json::json!({ "excludedWindowIds": excluded_window_ids }));
         self.daemon
             .call(
                 SCROLL_CAPTURE_MODULE,
                 ScrollCaptureMethod::StartAutoScroll.id(),
-                None,
+                params,
             )
             .map(|_| ())
     }
 
-    #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
+    #[cfg(any(test, all(windows, feature = "parity")))]
     pub fn stop_auto_scroll(&self) -> Result<()> {
         #[cfg(test)]
-        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll) {
+        if record_auto_scroll_for_test(ScrollCaptureMethod::StopAutoScroll, &[]) {
             return Ok(());
         }
         self.daemon.ensure_running()?;
@@ -880,6 +1198,44 @@ impl ScrollCaptureClient<'_> {
 }
 
 impl RecordingControlClient<'_> {
+    #[cfg(target_os = "macos")]
+    pub fn set_tooltip(
+        &self,
+        owner: u32,
+        sequence: u64,
+        text: Option<&str>,
+        dark: bool,
+        owner_frame: Option<TooltipOwnerFrame>,
+        is_current: impl Fn() -> bool,
+    ) -> Result<()> {
+        let superseded = || text.is_some() && !is_current();
+        if superseded() || (text.is_none() && !self.daemon.is_running()) {
+            return Ok(());
+        }
+        self.daemon.ensure_running()?;
+        if superseded() {
+            return Ok(());
+        }
+        self.daemon
+            .call(
+                RECORDING_CONTROL_MODULE,
+                RecordingControlMethod::SetTooltip.id(),
+                Some(json!({
+                    "ownerId": owner,
+                    "sequence": sequence,
+                    "text": text,
+                    "dark": dark,
+                    "ownerFrame": owner_frame.map(|frame| json!({
+                        "x": frame.x,
+                        "y": frame.y,
+                        "width": frame.width,
+                        "height": frame.height,
+                    })),
+                })),
+            )
+            .map(|_| ())
+    }
+
     pub fn list_ios_devices(&self) -> Result<Vec<MediaDevice>> {
         self.daemon.ensure_running()?;
         let response = self.daemon.call(
@@ -1025,7 +1381,10 @@ impl ScreenshotClient<'_> {
             ScreenshotMethod::CaptureArea.id(),
             Some(params),
         );
-        result.map_err(|error| anyhow!("capture-area failed: {error}"))?;
+        result.map_err(|error| {
+            let message = format!("capture-area failed: {error}");
+            error.context(message)
+        })?;
         Ok(())
     }
 
@@ -1038,7 +1397,10 @@ impl ScreenshotClient<'_> {
                 ScreenshotMethod::CaptureWindow.id(),
                 Some(params),
             )
-            .map_err(|error| anyhow!("capture-window failed: {error}"))?;
+            .map_err(|error| {
+                let message = format!("capture-window failed: {error}");
+                error.context(message)
+            })?;
         Ok(())
     }
 
@@ -1063,7 +1425,7 @@ impl DaemonInner {
         }
     }
 
-    fn handle_line(self: &Arc<Self>, line: &str) {
+    fn handle_line(self: &Arc<Self>, line: &str, startup: Option<&SyncSender<DaemonStartup>>) {
         let message: Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(_) => {
@@ -1073,6 +1435,9 @@ impl DaemonInner {
         };
 
         if let Some(event) = message.get("event").and_then(Value::as_str) {
+            if let Some(startup) = startup.filter(|_| event == "system:ready") {
+                let _ = startup.try_send(DaemonStartup::Ready);
+            }
             let data = message.get("data").cloned().unwrap_or(Value::Null);
             self.dispatch_event(event, &data);
             return;
@@ -1111,10 +1476,20 @@ impl DaemonInner {
         }
     }
 
-    fn handle_exit(self: &Arc<Self>) {
-        *self.child.lock() = None;
-        *self.stdin.lock() = None;
-        self.reject_all_pending("Daemon exited");
+    fn handle_exit(self: &Arc<Self>, pid: u32, startup: &SyncSender<DaemonStartup>) {
+        {
+            let mut child = self.child.lock();
+            let Some(exited) = child.as_mut().filter(|child| child.id() == pid) else {
+                return;
+            };
+            if !matches!(exited.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            *self.stdin.lock() = None;
+            self.reject_all_pending("Daemon exited");
+            *child = None;
+        }
+        let _ = startup.try_send(DaemonStartup::Exited);
         self.dispatch_event(
             poratake_daemon_common::contract::SYSTEM_EXIT_EVENT,
             &Value::Null,
@@ -1128,6 +1503,9 @@ impl DaemonInner {
     }
 
     fn schedule_restart(self: &Arc<Self>) {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let attempts = self.restart_attempts.fetch_add(1, Ordering::SeqCst);
         if attempts >= MAX_RESTART_ATTEMPTS {
             eprintln!("[daemon] Max restart attempts reached");
@@ -1150,7 +1528,9 @@ impl DaemonInner {
         };
         if let Err(error) = handle.start() {
             eprintln!("[daemon] restart failed: {error}");
-            self.schedule_restart();
+            if !error.is::<DaemonExitedBeforeReady>() {
+                self.schedule_restart();
+            }
         } else {
             self.restart_attempts.store(0, Ordering::SeqCst);
         }
@@ -1172,6 +1552,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recording_stop_duration_accepts_only_positive_media_durations() {
+        assert_eq!(
+            recording_stop_duration(&serde_json::json!({"duration": 2.0})),
+            Some(2.0)
+        );
+        for response in [
+            serde_json::json!({}),
+            serde_json::json!({"duration": null}),
+            serde_json::json!({"duration": 0}),
+            serde_json::json!({"duration": -1}),
+            serde_json::json!({"duration": "2"}),
+        ] {
+            assert_eq!(recording_stop_duration(&response), None);
+        }
+    }
+
+    #[test]
+    fn recording_stop_info_preserves_camera_track_warning() {
+        assert_eq!(
+            recording_stop_info(&serde_json::json!({"duration": 2.0, "cameraTrackMissing": true})),
+            ScreenRecordingStopInfo {
+                duration: Some(2.0),
+                camera_track_missing: true
+            }
+        );
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"cameraTrackMissing": false}),
+            serde_json::json!({"cameraTrackMissing": "true"}),
+        ] {
+            assert!(!recording_stop_info(&value).camera_track_missing);
+        }
+    }
+
+    #[test]
     fn scoped_event_subscriptions_are_removed_when_dropped() {
         let daemon = DaemonHandle::with_binary(PathBuf::from("unused"));
         let events = Arc::new(AtomicU32::new(0));
@@ -1184,12 +1599,12 @@ mod tests {
 
         daemon
             .inner
-            .handle_line(r#"{"event":"timer-control:cancel"}"#);
+            .handle_line(r#"{"event":"timer-control:cancel"}"#, None);
         assert_eq!(events.load(Ordering::Relaxed), 1);
         drop(subscription);
         daemon
             .inner
-            .handle_line(r#"{"event":"timer-control:cancel"}"#);
+            .handle_line(r#"{"event":"timer-control:cancel"}"#, None);
         assert_eq!(events.load(Ordering::Relaxed), 1);
         assert!(daemon.inner.event_handlers.lock().is_empty());
     }
@@ -1209,6 +1624,217 @@ mod tests {
             &Value::Null,
         );
         assert!(rx.try_recv().is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_before_ready_releases_startup_and_retries() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::Instant;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf x >> "$0.starts"
+if [ "$(wc -c < "$0.starts")" -lt 3 ]; then
+    exit 42
+fi
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"quit"'*) exit 0 ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = DaemonHandle::with_binary(fixture);
+        let (events, received) = std::sync::mpsc::channel();
+        let _subscription = daemon.subscribe(Arc::new(move |event, _| {
+            let _ = events.send(event.to_owned());
+        }));
+
+        let started = Instant::now();
+        assert!(daemon.start().unwrap_err().is::<DaemonExitedBeforeReady>());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(!daemon.is_running());
+
+        let timeout = Duration::from_secs(6);
+        for _ in 0..2 {
+            assert_eq!(
+                received.recv_timeout(timeout).unwrap(),
+                poratake_daemon_common::contract::SYSTEM_EXIT_EVENT
+            );
+        }
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        assert!(daemon.is_running());
+        assert_eq!(
+            std::fs::read(directory.path().join("daemon.starts")).unwrap(),
+            b"xxx"
+        );
+        daemon.stop();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_crash_rejects_pending_request_and_restarts() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"crash"'*) exit 42 ;;
+        *'"method":"quit"'*) exit 0 ;;
+    esac
+    id=${request#*'"id":"'}
+    id=${id%%'"'*}
+    printf '{"id":"%s","success":true,"result":"pong"}\n' "$id"
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let daemon = DaemonHandle::with_binary(fixture);
+        let (events, received) = std::sync::mpsc::channel();
+        let _subscription = daemon.subscribe(Arc::new(move |event, _| {
+            let _ = events.send(event.to_owned());
+        }));
+        let timeout = Duration::from_secs(5);
+
+        daemon.start().unwrap();
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        let old_pid = daemon.inner.child.lock().as_ref().unwrap().id();
+        let (_, pending) = daemon.begin_call("fixture", "crash", None).unwrap();
+        let error = pending.recv_timeout(timeout).unwrap().unwrap_err();
+        assert_eq!(error.code, "DAEMON_UNAVAILABLE");
+        assert_eq!(
+            received.recv_timeout(timeout).unwrap(),
+            poratake_daemon_common::contract::SYSTEM_EXIT_EVENT
+        );
+        assert!(!wait_for_child_exit(old_pid).unwrap());
+
+        assert_eq!(received.recv_timeout(timeout).unwrap(), "system:ready");
+        let restarted = daemon.inner.child.lock().as_ref().unwrap().id();
+        assert_ne!(old_pid, restarted);
+        assert_eq!(
+            daemon
+                .call_with_timeout("fixture", "ping", None, timeout)
+                .unwrap(),
+            json!("pong")
+        );
+        daemon.stop();
+        assert!(!daemon.is_running());
+        assert!(!wait_for_child_exit(restarted).unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn superseded_tooltip_show_is_dropped_after_daemon_startup() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            r#"#!/bin/sh
+printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"quit"'*) exit 0 ;;
+        *'"method":"setTooltip"'*) printf '%s\n' "$request" >> "$0.tooltips"; exit 42 ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let daemon = DaemonHandle::with_binary(fixture);
+        let latest = Arc::new(AtomicU64::new(1));
+        let (checked, checked_rx) = std::sync::mpsc::sync_channel(1);
+        let (start, start_rx) = std::sync::mpsc::sync_channel(1);
+        let show_daemon = daemon.clone();
+        let show_latest = latest.clone();
+        let show = thread::spawn(move || {
+            let first = std::cell::Cell::new(true);
+            show_daemon.recording_control().set_tooltip(
+                19,
+                1,
+                Some("Close preview"),
+                false,
+                None,
+                || {
+                    let is_current = show_latest.load(Ordering::Relaxed) == 1;
+                    if first.replace(false) {
+                        checked.send(()).unwrap();
+                        start_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                    }
+                    is_current
+                },
+            )
+        });
+        checked_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!daemon.is_running());
+        latest.store(2, Ordering::Relaxed);
+        daemon
+            .recording_control()
+            .set_tooltip(19, 2, None, false, None, || true)
+            .unwrap();
+        start.send(()).unwrap();
+        let result = show.join().unwrap();
+        let sent_show = dir.path().join("daemon.tooltips").is_file();
+        daemon.stop();
+        assert!(
+            !sent_show,
+            "a tooltip cancelled before startup was sent to the new daemon"
+        );
+        result.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_daemon_during_startup_does_not_wait_for_ready() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::time::Instant;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = directory.path().join("daemon");
+        std::fs::write(
+            &fixture,
+            "#!/bin/sh\nprintf x > \"$0.started\"\nwhile IFS= read -r line; do :; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let daemon = DaemonHandle::with_binary(fixture);
+        let starting = daemon.clone();
+        let launch = thread::spawn(move || starting.start());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !directory.path().join("daemon.started").is_file() || !daemon.is_running() {
+            assert!(Instant::now() < deadline, "fixture daemon did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+        let pid = daemon.inner.child.lock().as_ref().unwrap().id();
+        let started = Instant::now();
+        daemon.stop();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            launch.join().unwrap().unwrap_err().to_string(),
+            "Daemon is shutting down"
+        );
+        assert!(!daemon.is_running());
+        #[cfg(target_os = "macos")]
+        assert!(!wait_for_child_exit(pid).unwrap());
+        #[cfg(not(target_os = "macos"))]
+        let _ = pid;
     }
 
     #[test]
@@ -1239,6 +1865,7 @@ mod tests {
 
         daemon.inner.handle_line(
             r#"{"id":"retryable-finish","success":false,"error":{"code":"STITCH_RETRYABLE","message":"could not start worker"}}"#,
+            None,
         );
 
         let error = rx.recv().unwrap().unwrap_err();

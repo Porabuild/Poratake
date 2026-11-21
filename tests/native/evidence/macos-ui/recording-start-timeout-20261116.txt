@@ -1,0 +1,26 @@
+macOS GPUI recording startup timeout, isolated fake-daemon fixture
+
+The fixture holds the start response until explicitly released. It checks that
+the Start action returns within five seconds while the response is still held.
+The control remains open in Starting state, Stop remains available, and
+camera-preview protection is retained while the result is unresolved.
+
+Light and dark runs cover late start success and failure, each released before
+Stop and during Stop; a second failure case holds Start until after the failed
+Stop response. Successful takes finalize; definite failures before Stop return
+to pre-recording controls, retain the generated movie, report its project path,
+and release preview protection. Failures after Stop retain the project and close
+the recording controls. A target-close event during startup triggers finalization
+after success. When a discard request fails before startup resolves, a queued
+target-close retry preserves discard. The fixture checks generated file bytes and
+daemon requests; it does not access screen or camera devices.
+
+The broader light 1280-pixel, 1x GPUI parity harness also completed with the
+same startup changes. Its fixture workflows included recording controls,
+capture errors and retries, scroll handoffs, annotation, save and reopen, and
+editor preview/export comparisons. These are synthetic surfaces and media.
+
+The separate Stop timeout is covered by recording-stop-timeout-20261116.txt.
+This fixture does not prove actual ScreenCaptureKit timing or physical controls.
+Preparing the overlay, protecting the camera preview, and sending the request
+still use synchronous daemon calls.

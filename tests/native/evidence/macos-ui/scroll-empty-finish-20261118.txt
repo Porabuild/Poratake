@@ -1,0 +1,24 @@
+macOS GPUI scroll capture with an empty successful Finish, 2026-11-18
+
+The offscreen GPUI scroll workflow ran with the daemon fixture. The
+finish-empty-success case returned success:true, positive dimensions
+and a frame count while leaving the exclusively reserved PNG empty.
+The capture used the GPUI selector, scroll controls, and coordinator.
+
+Baseline a010b375 plus the fixture failed at the wait-for-result gate.
+The output directory contained one published Screenshot PNG of zero bytes
+and history referenced that PNG.
+The revised build shows "The scroll capture produced no image", leaves
+no staged or published file, adds no history item, and preserves the
+clipboard sentinel. The selector and retained native selector handles
+are released. The case passes in light and dark.
+
+The same fixture suite exercises valid decoded output, a normal no-image
+reply, partial output kept after STITCH_ERROR, starting and cancellation
+failure paths, retry and cancellation during an in-flight Finish. The
+dark suite also holds a valid reply beyond 30 seconds and verifies it
+still saves. The empty-success case injects a daemon reply for regression
+coverage. It does not claim a healthy ScreenCaptureKit writer returned
+that reply during live capture.
+
+All 1,172 runnable GPUI tests and 50 Electron scroll reference tests passed.

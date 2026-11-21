@@ -1,0 +1,38 @@
+macOS generated static-screen microphone clock probe, 2026-11-16
+
+No microphone or screen capture was started. The fixture creates generated PCM
+buffers and an AAC writer, injects a screen clock, and decodes the resulting AAC.
+
+Build:
+find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 | xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings tests/native/recording-timeline.swift -o /tmp/poratake-mic-static-complete
+
+PORATAKE_TEST_MIC_STATIC_CLOCK=/tmp/poratake-mic-clock.m4a /tmp/poratake-mic-static-complete
+
+After the first screen frame at clock 100, no more screen frames arrive. The
+microphone is enabled at clock 120. The previous path used its last video
+timestamp and placed the first generated audio end at 1.01 seconds. The updated
+path reports the first end at 20.01 seconds and the 51st at 20.51 seconds.
+Native decoding verifies silence at 19.5 seconds and audible PCM at 20.1 and
+20.45 seconds in static-microphone-clock-fixed-20261116.m4a.
+
+PORATAKE_TEST_MIC_STATIC_CLOCK=/tmp/poratake-mic-paused.m4a PORATAKE_TEST_MIC_PAUSED_TOGGLE=1 /tmp/poratake-mic-static-complete
+
+Pausing at clock 120, enabling at 125 and resuming at 130 yields the same
+20.01–20.51-second audible section in
+static-microphone-paused-fixed-20261116.m4a.
+
+PORATAKE_TEST_MIC_STATIC_CLOCK=/tmp/poratake-mic-first.m4a PORATAKE_TEST_MIC_FIRST_PENDING=1 /tmp/poratake-mic-static-complete
+
+When the screen timeline is anchored but no video frame has yet been accepted
+by the writer, the generated audio also starts at 20 seconds. The fixture sets
+that internal state; it does not exercise actual encoder backpressure.
+
+cargo test --offline --manifest-path src/main/app-gpui/Cargo.toml static_screen_microphone_toggle_matches_preview_after_trim -- --ignored --nocapture
+
+The generated AAC track was placed in a GPUI recording project and trimmed to
+source 19.5–20.75 seconds. The test passed: preview and decoded export were
+silent before the toggle and audible after it, with sampled mean levels within
+1500 signed 16-bit units.
+
+Real microphone capture, differences between hardware clocks, capture startup
+latency, and live microphone toggle behavior remain unverified.

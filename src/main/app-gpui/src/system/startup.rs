@@ -134,12 +134,76 @@ fn quote_path(path: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-pub fn set_open_at_login(enabled: bool) {
-    let Some(path) = dirs::home_dir().map(|home| {
+fn legacy_launch_agent_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| {
         home.join("Library")
             .join("LaunchAgents")
             .join("com.porabuild.poratake-gpui.plist")
-    }) else {
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn packaged_app_bundle() -> bool {
+    std::env::current_exe().is_ok_and(|exe| crate::update::path_is_packaged(&exe))
+}
+
+#[cfg(target_os = "macos")]
+mod sm_app_service {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    #[link(name = "ServiceManagement", kind = "framework")]
+    unsafe extern "C" {}
+
+    const STATUS_ENABLED: isize = 1;
+
+    fn main_app_service() -> *mut AnyObject {
+        unsafe { msg_send![class!(SMAppService), mainAppService] }
+    }
+
+    pub fn is_enabled() -> Option<bool> {
+        let service = main_app_service();
+        if service.is_null() {
+            return None;
+        }
+        let status: isize = unsafe { msg_send![service, status] };
+        Some(status == STATUS_ENABLED)
+    }
+
+    pub fn set_enabled(enabled: bool) -> bool {
+        let service = main_app_service();
+        if service.is_null() {
+            return false;
+        }
+        let mut error: *mut AnyObject = std::ptr::null_mut();
+        let ok: objc2::runtime::Bool = if enabled {
+            unsafe { msg_send![service, registerAndReturnError: &mut error] }
+        } else {
+            unsafe { msg_send![service, unregisterAndReturnError: &mut error] }
+        };
+        if !ok.as_bool() && !error.is_null() {
+            let desc: *const AnyObject = unsafe { msg_send![error, localizedDescription] };
+            if !desc.is_null() {
+                let utf8: *const std::ffi::c_char = unsafe { msg_send![desc, UTF8String] };
+                if !utf8.is_null() {
+                    let message = unsafe { std::ffi::CStr::from_ptr(utf8) }.to_string_lossy();
+                    eprintln!("[startup] SMAppService failed: {message}");
+                }
+            }
+        }
+        ok.as_bool()
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_open_at_login(enabled: bool) {
+    if packaged_app_bundle() && sm_app_service::set_enabled(enabled) {
+        if let Some(legacy) = legacy_launch_agent_path() {
+            let _ = std::fs::remove_file(legacy);
+        }
+        return;
+    }
+    let Some(path) = legacy_launch_agent_path() else {
         return;
     };
     if !enabled {
@@ -166,12 +230,12 @@ pub fn set_open_at_login(enabled: bool) {
 
 #[cfg(target_os = "macos")]
 pub fn is_open_at_login() -> bool {
-    dirs::home_dir().is_some_and(|home| {
-        home.join("Library")
-            .join("LaunchAgents")
-            .join("com.porabuild.poratake-gpui.plist")
-            .is_file()
-    })
+    if packaged_app_bundle() {
+        if let Some(enabled) = sm_app_service::is_enabled() {
+            return enabled;
+        }
+    }
+    legacy_launch_agent_path().is_some_and(|path| path.is_file())
 }
 
 #[cfg(target_os = "linux")]

@@ -1,0 +1,17 @@
+recording control: visible, borderless, native shadow=false; frame 722,1016 284x44
+capture preview: bottom and right AppKit work-area margins 20,20 points
+capture preview: visible, borderless, native shadow=false; frame 1500,20 208x148
+isolated preview repositioned: preview-close-under-pointer
+preview at pointer: window=750, top=750
+preview hover status: card=true, pointer=true, window=false
+tooltip-status: Close preview
+isolated preview repositioned: preview-away
+preview at pointer: window=750, top=209
+preview hover status: card=false, pointer=false, window=false
+tooltip-status: none
+isolated preview repositioned: preview-close-under-pointer
+preview at pointer: window=750, top=750
+preview hover status: card=true, pointer=true, window=false
+tooltip-status: Close preview
+
+A separate Core Graphics listing found the preview and control windows owned by the probe; it did not establish tooltip presentation. The pointer was stationary and the generated preview was moved under it. No capture or device access was started.

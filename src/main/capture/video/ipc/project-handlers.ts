@@ -38,6 +38,15 @@ export function registerProjectHandlers(): void {
           error: 'No active project',
         };
       }
+      if (data.isExporting) {
+        return {
+          success: false,
+          newProjectPath: data.filePath,
+          newVideoPath: data.filePath,
+          error:
+            'Wait for the video export to finish before renaming the recording',
+        };
+      }
 
       const projectPath = getProjectFolder(data.filePath);
       if (!projectPath) {

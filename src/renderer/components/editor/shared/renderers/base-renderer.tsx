@@ -18,6 +18,8 @@ export function createShapeRenderer<T extends Annotation>(
     offsetY,
     isSelected,
     isPreview,
+    decorationOnly = false,
+    hitOnly = false,
     onMouseDown,
   }: ShapeRenderProps<T>): JSX.Element {
     const key = isPreview ? `preview-${ann.id}` : ann.id;
@@ -28,7 +30,7 @@ export function createShapeRenderer<T extends Annotation>(
         key={key}
         style={{
           cursor: isPreview ? 'default' : 'move',
-          pointerEvents: isPreview ? 'none' : 'auto',
+          pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
         }}
         onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
       >
@@ -41,7 +43,7 @@ export function createShapeRenderer<T extends Annotation>(
             SELECTION_STROKE,
             SELECTION_STROKE_WIDTH
           )}
-        {config.renderShape(ann, geometry, offsetX, offsetY)}
+        {!decorationOnly && config.renderShape(ann, geometry, offsetX, offsetY)}
       </g>
     );
   }

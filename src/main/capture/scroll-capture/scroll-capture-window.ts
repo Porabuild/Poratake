@@ -222,6 +222,27 @@ export function updateScrollCaptureState(
   }
 }
 
+export function getScrollCaptureExclusionWindowIds(): number[] | null {
+  if (!visible || !captureOverlayWindow || !controlWindow) return null;
+  const windows = [captureOverlayWindow, controlWindow];
+  const ids: number[] = [];
+  for (const window of windows) {
+    if (window.isDestroyed()) return null;
+    let sourceId: string;
+    try {
+      sourceId = window.getMediaSourceId();
+    } catch {
+      return null;
+    }
+    const match = /^window:(\d+):\d+$/.exec(sourceId);
+    if (!match) return null;
+    const id = Number(match[1]);
+    if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) return null;
+    ids.push(id);
+  }
+  return ids;
+}
+
 export function hideScrollCaptureOverlay(): void {
   setControlShortcutsEnabled(false);
   visible = false;

@@ -18,27 +18,57 @@ pub struct ContentBounds {
 
 pub type BalanceCrop = ContentBounds;
 
-fn pixel_at(image: PixmapRef<'_>, x: u32, y: u32) -> Option<[u8; 4]> {
-    if x >= image.width() || y >= image.height() {
-        return None;
+#[derive(Clone, Copy)]
+struct Samples<'a> {
+    bytes: &'a [u8],
+    width: u32,
+    height: u32,
+    straight_alpha: bool,
+}
+
+impl<'a> Samples<'a> {
+    fn rgba(image: &'a image::RgbaImage) -> Self {
+        Self {
+            bytes: image.as_raw(),
+            width: image.width(),
+            height: image.height(),
+            straight_alpha: true,
+        }
     }
-    let index = ((y * image.width() + x) * 4) as usize;
-    let data = image.data();
-    let alpha = data[index + 3];
-    if alpha == 0 {
-        return Some([0, 0, 0, 0]);
+
+    fn pixmap(image: PixmapRef<'a>) -> Self {
+        Self {
+            bytes: image.data(),
+            width: image.width(),
+            height: image.height(),
+            straight_alpha: false,
+        }
     }
-    // Pixmap data is premultiplied; the sampled colours are compared as
-    // straight alpha, the way `getImageData` returns them.
-    let unpremultiply = |value: u8| -> u8 {
-        ((value as u32 * 255 + alpha as u32 / 2) / alpha as u32).min(255) as u8
-    };
-    Some([
-        unpremultiply(data[index]),
-        unpremultiply(data[index + 1]),
-        unpremultiply(data[index + 2]),
-        alpha,
-    ])
+
+    fn pixel_at(self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let index = (y as usize * self.width as usize + x as usize) * 4;
+        let [r, g, b, a] = self.bytes[index..index + 4].try_into().ok()?;
+        match a {
+            0 => Some([0, 0, 0, 0]),
+            255 => Some([r, g, b, 255]),
+            _ => {
+                let alpha = u32::from(a);
+                let sample = |value: u8| {
+                    let value = u32::from(value);
+                    let premultiplied = if self.straight_alpha {
+                        value * alpha / 255
+                    } else {
+                        value
+                    };
+                    ((premultiplied * 255 + alpha / 2) / alpha).min(255) as u8
+                };
+                Some([sample(r), sample(g), sample(b), a])
+            }
+        }
+    }
 }
 
 fn colors_are_similar(a: [u8; 4], b: (u8, u8, u8)) -> bool {
@@ -53,7 +83,7 @@ fn to_hex(pixel: [u8; 4]) -> String {
 
 /// Counts the colours along a span, skipping fully transparent pixels.
 fn tally(
-    image: PixmapRef<'_>,
+    image: Samples<'_>,
     x: u32,
     y: u32,
     width: u32,
@@ -62,7 +92,7 @@ fn tally(
 ) {
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
-            let Some(pixel) = pixel_at(image, column, row) else {
+            let Some(pixel) = image.pixel_at(column, row) else {
                 continue;
             };
             if pixel[3] == 0 {
@@ -82,8 +112,8 @@ fn dominant(counts: std::collections::HashMap<String, (u32, usize)>) -> Option<S
 }
 
 /// `detectDominantEdgeColor` — the most common colour around the border.
-pub fn dominant_edge_color(image: PixmapRef<'_>) -> Option<String> {
-    let (width, height) = (image.width(), image.height());
+fn dominant_edge_color(image: Samples<'_>) -> Option<String> {
+    let (width, height) = (image.width, image.height);
     if width == 0 || height == 0 {
         return None;
     }
@@ -99,8 +129,8 @@ pub fn dominant_edge_color(image: PixmapRef<'_>) -> Option<String> {
 
 /// `detectContentBounds` — how much uniform background sits around the
 /// content, which the balance option crops away.
-pub fn content_bounds(image: PixmapRef<'_>, background: &str) -> Option<ContentBounds> {
-    let (width, height) = (image.width(), image.height());
+fn content_bounds(image: Samples<'_>, background: &str) -> Option<ContentBounds> {
+    let (width, height) = (image.width, image.height);
     if width == 0 || height == 0 {
         return None;
     }
@@ -108,7 +138,7 @@ pub fn content_bounds(image: PixmapRef<'_>, background: &str) -> Option<ContentB
     let background = (parsed.red(), parsed.green(), parsed.blue());
 
     let differs = |x: u32, y: u32| -> bool {
-        let Some(pixel) = pixel_at(image, x, y) else {
+        let Some(pixel) = image.pixel_at(x, y) else {
             return false;
         };
         if pixel[3] < 128 {
@@ -144,11 +174,33 @@ pub fn content_bounds(image: PixmapRef<'_>, background: &str) -> Option<ContentB
     })
 }
 
+pub fn balance_rgba(image: &image::RgbaImage) -> Option<ContentBounds> {
+    balance_bounds(Samples::rgba(image))
+}
+
+pub fn balance_pixmap(image: PixmapRef<'_>) -> Option<ContentBounds> {
+    balance_bounds(Samples::pixmap(image))
+}
+
+fn balance_bounds(image: Samples<'_>) -> Option<ContentBounds> {
+    let edge = dominant_edge_color(image)?;
+    let bounds = content_bounds(image, &edge)?;
+    (bounds != ContentBounds::default()).then_some(bounds)
+}
+
 /// `sampleDominantInsetColor` — the colour the inset band is filled with,
 /// sampled from the (possibly cropped) image's own border.
 pub fn dominant_inset_color(image: PixmapRef<'_>, crop: BalanceCrop) -> Option<String> {
-    let width = image.width().checked_sub(crop.left + crop.right)?;
-    let height = image.height().checked_sub(crop.top + crop.bottom)?;
+    inset_color(Samples::pixmap(image), crop)
+}
+
+pub fn dominant_inset_color_rgba(image: &image::RgbaImage, crop: BalanceCrop) -> Option<String> {
+    inset_color(Samples::rgba(image), crop)
+}
+
+fn inset_color(image: Samples<'_>, crop: BalanceCrop) -> Option<String> {
+    let width = image.width.checked_sub(crop.left + crop.right)?;
+    let height = image.height.checked_sub(crop.top + crop.bottom)?;
     if width == 0 || height == 0 {
         return None;
     }
@@ -200,7 +252,7 @@ mod tests {
     fn the_dominant_edge_colour_is_the_border() {
         let pixmap = image_with_content();
         assert_eq!(
-            dominant_edge_color(pixmap.as_ref()).as_deref(),
+            dominant_edge_color(Samples::pixmap(pixmap.as_ref())).as_deref(),
             Some("#141414")
         );
     }
@@ -213,7 +265,7 @@ mod tests {
         ]);
         for _ in 0..128 {
             assert_eq!(
-                dominant_edge_color(pixmap.as_ref()).as_deref(),
+                dominant_edge_color(Samples::pixmap(pixmap.as_ref())).as_deref(),
                 Some("#f05040")
             );
             assert_eq!(
@@ -226,7 +278,7 @@ mod tests {
     #[test]
     fn content_bounds_report_the_uniform_margin() {
         let pixmap = image_with_content();
-        let bounds = content_bounds(pixmap.as_ref(), "#141414").expect("bounds");
+        let bounds = content_bounds(Samples::pixmap(pixmap.as_ref()), "#141414").expect("bounds");
         // The content sits at 30..50 x 40..60; the buffer relaxes each edge.
         assert_eq!(bounds.left, 20);
         assert_eq!(bounds.top, 30);
@@ -239,7 +291,7 @@ mod tests {
         let mut pixmap = Pixmap::new(20, 20).expect("pixmap");
         pixmap.fill(Color::from_rgba8(5, 5, 5, 255));
         assert_eq!(
-            content_bounds(pixmap.as_ref(), "#050505"),
+            content_bounds(Samples::pixmap(pixmap.as_ref()), "#050505"),
             Some(ContentBounds::default())
         );
     }

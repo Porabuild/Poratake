@@ -19,16 +19,6 @@ pub fn list(daemon: &DaemonHandle, kinds: &[DeviceKind]) -> MediaDeviceLists {
     }
 }
 
-pub fn list_ios(daemon: &DaemonHandle) -> Vec<MediaDevice> {
-    match daemon.recording_control().list_ios_devices() {
-        Ok(response) => response,
-        Err(error) => {
-            eprintln!("[devices] iOS device list failed: {error}");
-            Vec::new()
-        }
-    }
-}
-
 pub fn options(devices: &[MediaDevice]) -> Vec<(String, String)> {
     devices
         .iter()

@@ -4,6 +4,9 @@ class TimerButton: NSView {
     var remainingSeconds: Int = 5 {
         didSet {
             updateDisplay()
+            if remainingSeconds != oldValue, window?.isVisible == true {
+                NSAccessibility.post(element: self, notification: .valueChanged)
+            }
         }
     }
     
@@ -24,6 +27,10 @@ class TimerButton: NSView {
         self.foregroundColor = foregroundColor
         super.init(frame: .zero)
         setupView()
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Cancel screenshot countdown")
+        setAccessibilityChildren([])
         remainingSeconds = seconds
         updateDisplay()
     }
@@ -31,6 +38,17 @@ class TimerButton: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError()
+    }
+
+    override func accessibilityValue() -> Any? {
+        let unit = remainingSeconds == 1 ? "second" : "seconds"
+        return "\(remainingSeconds) \(unit) remaining"
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onCancel else { return false }
+        onCancel()
+        return true
     }
     
     private func setupView() {
@@ -91,7 +109,7 @@ class TimerButton: NSView {
     func applyTheme() {
         let darkShade = accentColor.blended(withFraction: 0.12, of: .black) ?? accentColor
         
-        if isPressed {
+        if isPressed && isHovered {
             let pressedAccent = accentColor.blended(withFraction: 0.1, of: .black) ?? accentColor
             let pressedDark = accentColor.blended(withFraction: 0.2, of: .black) ?? accentColor
             gradientLayer.colors = [pressedAccent.cgColor, pressedDark.cgColor, pressedAccent.cgColor]
@@ -113,6 +131,21 @@ class TimerButton: NSView {
         applyTheme()
     }
     
+    func resetInteraction() {
+        isPressed = false
+        updateHover(window.map { containsWindowPoint($0.mouseLocationOutsideOfEventStream) } ?? false)
+    }
+
+    private func containsWindowPoint(_ point: NSPoint) -> Bool {
+        bounds.contains(convert(point, from: nil))
+    }
+
+    private func updateHover(_ hovered: Bool) {
+        isHovered = hovered
+        applyTheme()
+        updateDisplay()
+    }
+
     private func updateDisplay() {
         if isHovered {
             label.stringValue = "Cancel"
@@ -139,32 +172,43 @@ class TimerButton: NSView {
         addTrackingArea(trackingArea!)
     }
     
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        isHovered = true
-        NSCursor.arrow.push()
-        updateDisplay()
+        updateHover(true)
     }
     
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        isHovered = false
-        isPressed = false
-        NSCursor.pop()
-        applyTheme()
-        updateDisplay()
+        updateHover(false)
     }
     
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
     override func mouseDown(with event: NSEvent) {
         isPressed = true
-        applyTheme()
+        updateHover(true)
     }
     
+    override func mouseDragged(with event: NSEvent) {
+        guard isPressed else { return }
+        let hovered = containsWindowPoint(event.locationInWindow)
+        if hovered != isHovered {
+            updateHover(hovered)
+        }
+    }
+
     override func mouseUp(with event: NSEvent) {
+        guard isPressed else { return }
         isPressed = false
-        applyTheme()
-        let point = convert(event.locationInWindow, from: nil)
-        if bounds.contains(point) {
+        updateHover(containsWindowPoint(event.locationInWindow))
+        if isHovered {
             onCancel?()
         }
     }

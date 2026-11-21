@@ -1,0 +1,67 @@
+macOS GPUI Metal generated large-output and transparent redaction comparisons.
+Scratch profiles and fixture daemon; no physical display capture.
+Source: 4096x2160; editor window: 4600x2600 points; zoom and simulated display scale: 1x.
+Each comparison covers a visible region of 8,575,200 pixels; tolerance counts maximum per-pixel channel differences greater than 2.
+Transparent source uses a varying 0–255 alpha pattern. RGB in fully transparent pixels can change during PNG composition.
+
+[before: opaque large output]
+large 4096x2160 none at 1x, display 1x: 0 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 8277799 of 8575200 displayed pixels above two; max 126; mean max-channel 24.3141
+
+[before: transparent source in a normal-size window]
+large 4096x2160 none at 1x, display 1x: 978 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 2; mean max-channel 0.8315
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 29904 of 318500 displayed pixels above two; max 11; mean max-channel 1.6463
+
+[after: dark, opaque source]
+large 4096x2160 none at 1x, display 1x: 0 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+
+[after: dark, transparent source]
+large 4096x2160 none at 1x, display 1x: 978 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 2; mean max-channel 0.8313
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 1; mean max-channel 0.0003
+large 4096x2160 blur at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 1; mean max-channel 0.0001
+
+[after: light, opaque source]
+large 4096x2160 none at 1x, display 1x: 0 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 0; mean max-channel 0.0000
+
+[after: light, transparent source]
+large 4096x2160 none at 1x, display 1x: 978 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 2; mean max-channel 0.8354
+large 4096x2160 pixelate at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 1; mean max-channel 0.0002
+large 4096x2160 blur at 1x, display 1x: 1024 of 1024 source samples changed; 0 of 8575200 displayed pixels above two; max 1; mean max-channel 0.0002
+
+Transparent-source fitted editor: zoom 25%; 1280x738-point window.
+
+[dark, 1x display]
+large 4096x2160 none at 0.25x, display 1x: 978 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.8574
+large 4096x2160 pixelate at 0.25x, display 1x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 0.25x, display 1x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.0183
+
+[dark, 1.25x display]
+large 4096x2160 none at 0.25x, display 1.25x: 978 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 2; mean max-channel 0.8572
+large 4096x2160 pixelate at 0.25x, display 1.25x: 1024 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 1; mean max-channel 0.0502
+large 4096x2160 blur at 0.25x, display 1.25x: 1024 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 1; mean max-channel 0.0029
+
+[dark, 2x display]
+large 4096x2160 none at 0.25x, display 2x: 978 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 1; mean max-channel 0.8407
+large 4096x2160 pixelate at 0.25x, display 2x: 1024 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 0.25x, display 2x: 1024 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 1; mean max-channel 0.0112
+
+[light, 1x display]
+large 4096x2160 none at 0.25x, display 1x: 978 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.8537
+large 4096x2160 pixelate at 0.25x, display 1x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 0.25x, display 1x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.0116
+
+[light, 1.25x display]
+large 4096x2160 none at 0.25x, display 1.25x: 978 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 1; mean max-channel 0.8556
+large 4096x2160 pixelate at 0.25x, display 1.25x: 1024 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 1; mean max-channel 0.0560
+large 4096x2160 blur at 0.25x, display 1.25x: 1024 of 1024 source samples changed; 0 of 864000 displayed pixels above two; max 1; mean max-channel 0.0028
+
+[light, 2x display]
+large 4096x2160 none at 0.25x, display 2x: 978 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 1; mean max-channel 0.8644
+large 4096x2160 pixelate at 0.25x, display 2x: 1024 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 1; mean max-channel 0.0013
+large 4096x2160 blur at 0.25x, display 2x: 1024 of 1024 source samples changed; 0 of 2211840 displayed pixels above two; max 1; mean max-channel 0.0190
+
+The scaled blackout, ordered redaction, framed attachment, clipped/transparent pixelation and balanced seam Metal regressions also passed in both appearances after these changes.

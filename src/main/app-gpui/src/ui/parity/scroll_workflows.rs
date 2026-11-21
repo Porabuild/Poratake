@@ -15,7 +15,7 @@ impl Drop for ScrollThreadSpawnFailureGuard {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
     use base64::Engine;
 
@@ -27,7 +27,7 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
     ))
     .write_to(&mut encoded, image::ImageFormat::Png)
     .unwrap();
-    let preview = cx.update(|cx| {
+    let (preview, controls, _ui) = cx.update(|cx| {
         crate::windows::scroll_capture::preview_for_parity(
             cx,
             base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
@@ -57,7 +57,51 @@ pub(super) fn preview_corners(cx: &mut HeadlessAppContext, output: &Path, scale:
             "square preview corner at {x}, {y}: {corner:?}"
         );
     }
-    cx.update(crate::windows::scroll_capture::ScrollCaptureSession::close);
+    #[cfg(target_os = "macos")]
+    {
+        use crate::capture::scroll::ScrollSessionSignal;
+        use crate::windows::scroll_capture::{apply_progress, native_control_for_probe};
+
+        let control = cx.update(native_control_for_probe).unwrap();
+        cx.update_window(control, |_, window, _| window.set_scale_factor(scale))
+            .unwrap();
+        let physical = |points: f32| (points * scale).round() as u32;
+        for (name, auto_scrolling) in [("stop", true), ("start", false)] {
+            cx.update(|cx| {
+                apply_progress(&_ui, ScrollSessionSignal::AutoScrolling(auto_scrolling), cx)
+            });
+            super::capture(
+                cx,
+                control,
+                output,
+                &format!("scroll-control-{name}-auto-scroll"),
+            );
+            let image = cx.capture_screenshot(control).unwrap();
+            let glyph = image.get_pixel(physical(50.), physical(26.));
+            let background = image.get_pixel(physical(61.), physical(26.));
+            let contrast = super::pixel_contrast(glyph, background);
+            println!("{name} auto-scroll icon contrast: {contrast:.2}:1");
+            assert!(
+                contrast >= 3.,
+                "{name} auto-scroll icon contrast: {contrast:.2}:1, {glyph:?} on {background:?}"
+            );
+        }
+    }
+    cx.update(|cx| {
+        use crate::capture::scroll::ScrollSessionSignal;
+        use crate::windows::scroll_capture::ScrollCaptureSession;
+        ScrollCaptureSession::finish_requested(cx);
+        ScrollCaptureSession::cancel_requested(cx);
+        assert!(matches!(
+            controls.try_recv(),
+            Ok(ScrollSessionSignal::Finish)
+        ));
+        assert!(matches!(
+            controls.try_recv(),
+            Ok(ScrollSessionSignal::Cancel)
+        ));
+        ScrollCaptureSession::close(cx);
+    });
 }
 
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
@@ -84,6 +128,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         "start-failed",
         "finish-failed",
         "finish-partial-failed",
+        "finish-empty-success",
         "empty",
         "finish-held",
         "cancel-finishing-held",
@@ -116,7 +161,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 let active = crate::capture::scroll::is_active();
                 let icons_hidden = crate::capture::desktop_icons::are_hidden();
                 tx.send((active, icons_hidden)).unwrap();
-                if name == "cancel-finishing-held" {
+                if name == "cancel-finishing-held"
+                    || cfg!(target_os = "macos") && matches!(name, "finish-held" | "cancel-held")
+                {
                     release_rx
                         .recv_timeout(std::time::Duration::from_secs(10))
                         .unwrap();
@@ -236,6 +283,41 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                 active,
                 "{name}: scroll capture must remain active until the daemon responds"
             );
+            #[cfg(target_os = "macos")]
+            if name == "finish-held" {
+                let ids = cx.update(crate::windows::scroll_capture::excluded_window_ids_for_parity);
+                assert_eq!(ids, Some(vec![7201, 7202, 7203, 7101, 7102]));
+            }
+            #[cfg(target_os = "macos")]
+            if matches!(name, "finish-held" | "cancel-held") {
+                let control = cx
+                    .update(crate::windows::scroll_capture::native_control_for_probe)
+                    .expect("scroll controls while finishing or canceling");
+                super::capture(cx, control, output, &format!("scroll-control-{name}"));
+                let before = cx.capture_screenshot(control).unwrap();
+                cx.advance_clock(std::time::Duration::from_millis(250));
+                super::capture(
+                    cx,
+                    control,
+                    output,
+                    &format!("scroll-control-{name}-next-frame"),
+                );
+                let after = cx.capture_screenshot(control).unwrap();
+                assert_eq!(before.dimensions(), after.dimensions());
+                release.send(()).unwrap();
+                let scale = cx
+                    .update_window(control, |_, window, _| window.scale_factor())
+                    .unwrap();
+                let physical = |points: f32| (points * scale).round() as u32;
+                let left = if name == "finish-held" { 76. } else { 110. };
+                assert!(
+                    (physical(18.)..physical(34.)).any(|y| {
+                        (physical(left)..physical(left + 16.))
+                            .any(|x| before.get_pixel(x, y) != after.get_pixel(x, y))
+                    }),
+                    "{name}: the active control must show progress while the daemon is held"
+                );
+            }
             if cfg!(windows) && matches!(name, "finish-held" | "cancel-held") {
                 assert!(
                     !icons_hidden,
@@ -379,6 +461,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             !cx.update(crate::capture::overlay::parity_is_active),
             "{name}: selector must close"
         );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            cx.update(crate::capture::overlay::retained_scroll_selector_count),
+            0,
+            "{name}: hidden selector windows must be released"
+        );
         assert_eq!(
             cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some(sentinel)
@@ -429,7 +517,9 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
         }
         let body = match name {
             "start-failed" => Some("The scroll capture could not be started"),
-            "finish-failed" | "empty" => Some("The scroll capture produced no image"),
+            "finish-failed" | "finish-empty-success" | "empty" => {
+                Some("The scroll capture produced no image")
+            }
             "finish-spawn-failed" => Some("parity-injected scroll finish thread creation failure"),
             _ => None,
         };
@@ -464,6 +554,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
             ]
         } else if name == "interrupted" {
             [
+                "Auto Scroll could not send input.",
                 "The latest frame could not be aligned. You can save the captured portion.",
                 "A frame could not be captured. You can save the captured portion.",
                 "Scrolling could not be continued. You can save the captured portion.",
@@ -532,6 +623,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path) {
                         "early-finish"
                             | "finish-failed"
                             | "finish-partial-failed"
+                            | "finish-empty-success"
                             | "empty"
                             | "finish-held"
                             | "cancel-finishing-held"
@@ -610,11 +702,12 @@ fn wait_for_scroll_result(
     saved: bool,
 ) -> Vec<(String, String, bool)> {
     let expected_notification_count = match name {
-        "interrupted" => 3,
+        "interrupted" => 4,
         "burst-finish" | "burst-cancel" => 20,
         "start-failed"
         | "finish-failed"
         | "finish-partial-failed"
+        | "finish-empty-success"
         | "empty"
         | "finish-spawn-failed" => 1,
         _ => 0,
@@ -739,6 +832,7 @@ fn scroll_start_returns_before_daemon_reply(
             coordinator.capture_area_reserved(
                 capture,
                 CaptureIntent::ScrollCapture,
+                Vec::new(),
                 None,
                 None,
                 None,

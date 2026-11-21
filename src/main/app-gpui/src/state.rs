@@ -14,6 +14,10 @@ use crate::system::native::NativeBridge;
 
 pub struct AppState {
     pub service: CaptureService,
+    #[cfg(target_os = "macos")]
+    _recording_target_close: crate::daemon::EventSubscription,
+    #[cfg(all(target_os = "macos", not(test)))]
+    _tooltip_window_close: gpui::Subscription,
 }
 
 impl gpui::Global for AppState {}
@@ -36,7 +40,17 @@ struct NativeShell(Arc<NativeBridge>);
 
 impl gpui::Global for NativeShell {}
 
-pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
+fn start_native_daemon(daemon: &DaemonHandle) -> bool {
+    match daemon.start() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[daemon] failed to start: {error}");
+            false
+        }
+    }
+}
+
+pub fn init(cx: &mut gpui::App, defer_daemon: bool) -> Arc<ConfigStore> {
     let config = match ConfigStore::load() {
         Ok(store) => Arc::new(store),
         Err(error) => {
@@ -48,16 +62,41 @@ pub fn init(cx: &mut gpui::App) -> Arc<ConfigStore> {
     let service = CaptureService::new(DaemonHandle::new(), config.clone());
 
     if crate::system::capabilities::has_native_daemon() {
-        if let Err(error) = service.daemon.start() {
-            // Capture features degrade gracefully; the editor still works for
-            // files opened from disk.
-            eprintln!("[daemon] failed to start: {error}");
+        if defer_daemon {
+            let daemon = service.daemon.clone();
+            cx.spawn(async move |cx| {
+                let started = cx
+                    .background_executor()
+                    .spawn(async move { start_native_daemon(&daemon) })
+                    .await;
+                if started {
+                    cx.update(crate::capture::prewarm_freeze_screen);
+                }
+            })
+            .detach();
+        } else {
+            start_native_daemon(&service.daemon);
         }
     }
 
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
-    cx.set_global(AppState { service });
+    #[cfg(all(target_os = "macos", not(test)))]
+    let tooltip_window_close =
+        crate::system::macos_tooltip::init(cx, service.daemon.clone(), config.clone());
+    #[cfg(target_os = "macos")]
+    let recording_target_close =
+        crate::windows::recording_control::RecordingControl::watch_window_target_closure(
+            &service.daemon,
+            cx,
+        );
+    cx.set_global(AppState {
+        service,
+        #[cfg(target_os = "macos")]
+        _recording_target_close: recording_target_close,
+        #[cfg(all(target_os = "macos", not(test)))]
+        _tooltip_window_close: tooltip_window_close,
+    });
     cx.set_global(UpdateState::default());
     config
 }
@@ -79,10 +118,25 @@ pub fn set_test_state(cx: &mut gpui::App, config: Arc<ConfigStore>) {
     let daemon = DaemonHandle::with_binary(std::path::PathBuf::new());
     #[cfg(not(test))]
     let daemon = DaemonHandle::new();
-    let service = CaptureService::new(daemon, config);
+    let service = CaptureService::new(daemon, config.clone());
     let coordinator = cx.new(|_| Coordinator::new(service.clone()));
     cx.set_global(CoordinatorHandle(coordinator));
-    cx.set_global(AppState { service });
+    #[cfg(all(target_os = "macos", not(test)))]
+    let tooltip_window_close =
+        crate::system::macos_tooltip::init(cx, service.daemon.clone(), config);
+    #[cfg(target_os = "macos")]
+    let recording_target_close =
+        crate::windows::recording_control::RecordingControl::watch_window_target_closure(
+            &service.daemon,
+            cx,
+        );
+    cx.set_global(AppState {
+        service,
+        #[cfg(target_os = "macos")]
+        _recording_target_close: recording_target_close,
+        #[cfg(all(target_os = "macos", not(test)))]
+        _tooltip_window_close: tooltip_window_close,
+    });
     cx.set_global(UpdateState::default());
 }
 

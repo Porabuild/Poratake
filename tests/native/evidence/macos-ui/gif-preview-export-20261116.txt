@@ -1,0 +1,28 @@
+running 1 test
+50 fps frame 12: mean error 1.788, channels differing by more than 32: 149/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+50 fps frame 37: mean error 1.432, channels differing by more than 32: 148/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+50 fps frame 75: mean error 1.431, channels differing by more than 32: 148/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+50 fps: elapsed 2000.0 ms, maximum timing error 0.0 ms
+30 fps frame 7: mean error 1.908, channels differing by more than 32: 149/83904, padding at alpha 1: [208, 213, 211] versus [255, 255, 255]
+30 fps frame 22: mean error 1.215, channels differing by more than 32: 151/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+30 fps frame 45: mean error 1.215, channels differing by more than 32: 151/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+30 fps: elapsed 2000.0 ms, maximum timing error 3.3 ms
+25 fps frame 6: mean error 1.792, channels differing by more than 32: 149/83904, padding at alpha 1: [208, 213, 211] versus [255, 255, 255]
+25 fps frame 18: mean error 1.099, channels differing by more than 32: 219/83904, padding at alpha 1: [208, 213, 211] versus [255, 255, 255]
+25 fps frame 37: mean error 1.098, channels differing by more than 32: 218/83904, padding at alpha 1: [209, 213, 211] versus [255, 255, 255]
+25 fps: elapsed 2000.0 ms, maximum timing error 0.0 ms
+24 fps frame 6: mean error 1.793, channels differing by more than 32: 149/83904, padding at alpha 1: [208, 212, 211] versus [255, 255, 255]
+24 fps frame 18: mean error 1.312, channels differing by more than 32: 150/83904, padding at alpha 1: [208, 213, 211] versus [255, 255, 255]
+24 fps frame 36: mean error 1.311, channels differing by more than 32: 150/83904, padding at alpha 1: [208, 212, 210] versus [255, 255, 255]
+24 fps: elapsed 2000.0 ms, maximum timing error 5.0 ms
+20 fps frame 5: mean error 1.795, channels differing by more than 32: 149/83904, padding at alpha 1: [208, 212, 211] versus [255, 255, 255]
+20 fps frame 15: mean error 1.098, channels differing by more than 32: 149/83904, padding at alpha 1: [208, 213, 211] versus [255, 255, 255]
+20 fps frame 30: mean error 1.102, channels differing by more than 32: 149/83904, padding at alpha 1: [210, 212, 210] versus [255, 255, 255]
+20 fps: elapsed 2000.0 ms, maximum timing error 0.0 ms
+10 fps frame 2: mean error 1.773, channels differing by more than 32: 149/83904, padding at alpha 1: [209, 212, 210] versus [255, 255, 255]
+10 fps frame 7: mean error 1.657, channels differing by more than 32: 150/83904, padding at alpha 1: [209, 212, 211] versus [255, 255, 255]
+10 fps frame 15: mean error 1.658, channels differing by more than 32: 150/83904, padding at alpha 1: [209, 212, 211] versus [255, 255, 255]
+10 fps: elapsed 2000.0 ms, maximum timing error 0.0 ms
+test video::export::tests::edited_gif_exports_match_the_preview_and_timeline_at_each_frame_rate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1061 filtered out; finished in 8.73s

@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8" />
+<pre id="result">pending</pre>
+<script>
+  (async () => {
+    const results = [];
+    for (const scale of [1, 1.25, 2])
+      for (const offset of [0, 0.25, 0.5]) {
+        for (const order of ['shape-blackout', 'blackout-shape']) {
+          const width = Math.round(100 * scale),
+            height = Math.round(80 * scale);
+          const x = (32 + offset) * scale,
+            y = (22 + offset) * scale;
+          const shape = `<rect x="${(30 + offset) * scale}" y="${(20 + offset) * scale}" width="${24 * scale}" height="${24 * scale}" fill="#ff00ff" stroke="#ff00ff" stroke-width="${scale}" rx="1"/>`;
+          const blackout = `<rect x="${x}" y="${y}" width="${20 * scale}" height="${20 * scale}" fill="#000000" rx="2"/>`;
+          const layers =
+            order === 'shape-blackout' ? shape + blackout : blackout + shape;
+          const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${layers}</svg>`;
+          const image = new Image();
+          const url = URL.createObjectURL(
+            new Blob([svg], { type: 'image/svg+xml' })
+          );
+          await new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = reject;
+            image.src = url;
+          });
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#4080c0';
+          ctx.fillRect(0, 0, width, height);
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(
+            Math.floor(x),
+            Math.floor(y),
+            Math.ceil(20 * scale),
+            Math.ceil(20 * scale)
+          );
+          ctx.drawImage(image, 0, 0);
+          URL.revokeObjectURL(url);
+          const pixels = ctx.getImageData(
+            Math.floor(x),
+            Math.floor(y),
+            4,
+            4
+          ).data;
+          const rgba = Array.from({ length: 4 }, (_, row) =>
+            Array.from({ length: 4 }, (_, col) =>
+              Array.from(
+                pixels.slice((row * 4 + col) * 4, (row * 4 + col + 1) * 4)
+              )
+            )
+          );
+          results.push({ scale, offset, order, x, y, rgba });
+        }
+      }
+    document.querySelector('#result').textContent = JSON.stringify(results);
+  })().catch(error => {
+    document.querySelector('#result').textContent = String(error);
+  });
+</script>

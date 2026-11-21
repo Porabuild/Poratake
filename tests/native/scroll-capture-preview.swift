@@ -98,7 +98,7 @@ private enum CaptureFrameError: Error {
 
 @main
 struct ScrollCapturePreviewTest {
-    static func frame(start: Int, width: Int, height: Int) -> CGImage {
+    static func frame(start: Int, width: Int, height: Int, colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()) -> CGImage {
         var pixels = [UInt8]()
         pixels.reserveCapacity(width * height * 4)
         for y in start..<(start + height) {
@@ -116,7 +116,7 @@ struct ScrollCapturePreviewTest {
             bitsPerComponent: 8,
             bitsPerPixel: 32,
             bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
             provider: provider,
             decode: nil,
@@ -125,13 +125,16 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
-    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false) -> CGImage {
+    static func fixedFooterFrame(index: Int, periodic: Bool, width: Int, height: Int, footerHeight: Int, step: Int, blankTail: Bool = false, changingTail: Bool = false, bodyNoise: Int = 0, changingFooter: Bool = false, headerHeight: Int = 0, bodyRow: ((Int, Int) -> Int)? = nil) -> CGImage {
         var pixels = [UInt8]()
         pixels.reserveCapacity(width * height * 4)
         for y in 0..<height {
             for x in 0..<width {
                 var pixel: [UInt8]
-                if y >= height - footerHeight {
+                if y < headerHeight {
+                    let noise = x == 0 ? index * bodyNoise : 0
+                    pixel = [255, UInt8(truncatingIfNeeded: y + noise), UInt8(truncatingIfNeeded: x), 255]
+                } else if y >= height - footerHeight {
                     let offset = changingFooter ? 10 + index : 0
                     pixel = blankTail
                         ? [0, 0, 0, 255]
@@ -155,7 +158,8 @@ struct ScrollCapturePreviewTest {
                         pixel = [UInt8((absoluteY % 8) * 30), 0, 0, 255]
                     }
                 } else {
-                    let absoluteY = UInt32(truncatingIfNeeded: y + index * step)
+                    let row = y + index * step
+                    let absoluteY = UInt32(truncatingIfNeeded: bodyRow?(x, row) ?? row)
                     let value = absoluteY &* 0x45d9f3b &+ UInt32(x) &* 0x119de1f3
                     pixel = [
                         UInt8(value % 200) + UInt8(index * bodyNoise),
@@ -164,7 +168,7 @@ struct ScrollCapturePreviewTest {
                         255
                     ]
                 }
-                if periodic && (1..<11).contains(x) && (32..<42).contains(y) {
+                if periodic && y >= headerHeight && (1..<11).contains(x) && (32..<42).contains(y) {
                     pixel[0] ^= UInt8(truncatingIfNeeded: 51 * index)
                 }
                 if changingTail && footerHeight == 0 && y >= height - 20 && x == width - 1 {
@@ -291,14 +295,14 @@ struct ScrollCapturePreviewTest {
         )!
     }
 
-    static func pixels(_ image: CGImage) -> Data {
+    static func pixels(_ image: CGImage, colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()) -> Data {
         let context = CGContext(
             data: nil,
             width: image.width,
             height: image.height,
             bitsPerComponent: 8,
             bytesPerRow: image.width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
@@ -314,24 +318,880 @@ struct ScrollCapturePreviewTest {
         }
     }
 
+    @MainActor
+    static func verifyTallTooltipPlacement() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 640 else {
+            print("SKIP tall tooltip placement: no suitable AppKit display")
+            return
+        }
+        func visibleBounds(_ number: CGWindowID) -> CGRect? {
+            let entries = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]] ?? []
+            guard let entry = entries.first,
+                  entry[kCGWindowIsOnscreen as String] as? Bool == true,
+                  entry[kCGWindowAlpha as String] as? Double == 1,
+                  let bounds = entry[kCGWindowBounds as String] as? [String: Any] else { return nil }
+            return CGRect(dictionaryRepresentation: bounds as CFDictionary)
+        }
+
+        let work = screen.visibleFrame
+        for rightEdge in [false, true] {
+            let x = rightEdge ? work.maxX - 240 : work.minX
+            let ownerFrame = NSRect(x: x, y: work.minY + 2, width: 240, height: work.height - 4)
+            let owner = NSPanel(
+                contentRect: ownerFrame, styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered, defer: false
+            )
+            owner.animationBehavior = .none
+            owner.backgroundColor = .windowBackgroundColor
+            owner.ignoresMouseEvents = true
+            owner.orderFrontRegardless()
+            defer { owner.orderOut(nil) }
+            let ownerID = CGWindowID(owner.windowNumber)
+            await waitUntil("The tall fixture owner was not visible") { visibleBounds(ownerID) != nil }
+
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            let point = NSPoint(x: ownerFrame.midX, y: ownerFrame.midY)
+            let text = rightEdge ? String(repeating: "Preview action ", count: 14) : "Close preview"
+            precondition(tooltip.accept(sequence: 1, owner: ownerID, text: text))
+            let shown = try await tooltip.show(
+                sequence: 1, owner: ownerID, text: text, dark: rightEdge,
+                at: point, ownerFrame: ownerFrame
+            )
+            guard shown, let panel = tooltip.testPanel else { preconditionFailure("The tall tooltip was not shown") }
+            let tooltipID = CGWindowID(panel.windowNumber)
+            await waitUntil("The tall tooltip was not visible") { visibleBounds(tooltipID) != nil }
+            let parent = visibleBounds(ownerID)!
+            let tip = visibleBounds(tooltipID)!
+            let gap = rightEdge ? parent.minX - tip.maxX : tip.minX - parent.maxX
+            precondition(registry.currentWindowIDs() == [tooltipID])
+            precondition(panel.ignoresMouseEvents)
+            precondition(work.contains(panel.frame), "Tooltip must fit the visible frame")
+            precondition(!parent.intersects(tip) && gap == 4, "The visible tooltip must stay four points beside its owner")
+            precondition(!tooltip.accept(sequence: 2, owner: ownerID, text: nil))
+            await waitUntil("The tall tooltip was not dismissed") {
+                visibleBounds(tooltipID) == nil && registry.currentWindowIDs().isEmpty
+            }
+            print("visible tall tooltip: \(rightEdge ? "dark" : "light"), \(gap)-point side gap, dismissed")
+        }
+    }
+
+    @MainActor
+    static func verifyTooltipFallbackClearsPointer() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 340,
+              screen.visibleFrame.height >= 250 else {
+            print("SKIP tooltip pointer clearance: no suitable AppKit display")
+            return
+        }
+        let work = NSRect(x: screen.visibleFrame.midX - 170, y: screen.visibleFrame.midY - 125,
+                          width: 340, height: 250)
+        let ownerFrame = work.insetBy(dx: 8, dy: 2)
+        let owner = NSPanel(contentRect: ownerFrame, styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        owner.animationBehavior = .none
+        owner.ignoresMouseEvents = true
+        owner.orderFrontRegardless()
+        defer { owner.orderOut(nil) }
+        let ownerID = CGWindowID(owner.windowNumber)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+            work.contains(point) ? .init(frame: work, visibleFrame: work) : nil
+        })
+        let title = "Copy with a long preset name and settings that wrap inside a narrow work area"
+        var sequence: UInt64 = 0
+        for dark in [false, true] {
+            for nearBottom in [true, false] {
+                sequence += 1
+                let point = NSPoint(x: work.maxX - 32, y: nearBottom ? work.minY + 6 : work.maxY - 6)
+                precondition(tooltip.accept(sequence: sequence, owner: ownerID, text: title))
+                let shown = try await tooltip.show(
+                    sequence: sequence, owner: ownerID, text: title, dark: dark,
+                    at: point, ownerFrame: ownerFrame
+                )
+                guard shown, let panel = tooltip.testPanel else {
+                    preconditionFailure("The fallback tooltip was not shown")
+                }
+                precondition(panel.isVisible && work.contains(panel.frame))
+                precondition(panel.frame.minX <= point.x && panel.frame.maxX >= point.x)
+                precondition(panel.frame.intersects(ownerFrame), "This fixture must exercise the pointer fallback")
+                let gap = nearBottom ? panel.frame.minY - point.y : point.y - panel.frame.maxY
+                precondition(gap >= 18, "Tooltip fallback must clear the pointer: gap \(gap)")
+                precondition(panel.ignoresMouseEvents && registry.currentWindowIDs() == [CGWindowID(panel.windowNumber)])
+                sequence += 1
+                precondition(!tooltip.accept(sequence: sequence, owner: ownerID, text: nil))
+                await waitUntil("The fallback tooltip was not dismissed") {
+                    !panel.isVisible && registry.currentWindowIDs().isEmpty
+                }
+                print("visible fallback tooltip: \(dark ? "dark" : "light"), \(nearBottom ? "bottom" : "top"), gap \(gap)")
+            }
+        }
+    }
+
+    @MainActor
+    static func verifyNarrowTooltipEllipsis() async throws {
+        guard let frame = NSScreen.screens.first?.visibleFrame, frame.width >= 104,
+              frame.height >= 180 else {
+            print("SKIP tooltip ellipsis: no suitable AppKit display")
+            return
+        }
+        let work = NSRect(x: frame.midX - 52, y: frame.midY - 90, width: 104, height: 180)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+            work.contains(point) ? .init(frame: work, visibleFrame: work) : nil
+        })
+        let labels = [(String(repeating: "A", count: 200), false), (String(repeating: "חדשות וכותרת", count: 20), true)]
+        var sequence: UInt64 = 0
+        for dark in [false, true] {
+            for (text, rightToLeft) in labels {
+                sequence += 1
+                precondition(tooltip.accept(sequence: sequence, owner: 1, text: text))
+                let shown = try await tooltip.show(
+                    sequence: sequence, owner: 1, text: text, dark: dark,
+                    at: NSPoint(x: work.midX, y: work.midY)
+                )
+                guard shown, let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let font = label.font else {
+                    preconditionFailure("The narrow tooltip label was not available")
+                }
+                precondition(panel.isVisible && work.contains(panel.frame))
+                precondition(label.bounds.width <= 80)
+                func paintsEllipsis() -> Bool {
+                    let bitmap = NSBitmapImageRep(
+                        bitmapDataPlanes: nil, pixelsWide: Int(label.bounds.width * 2),
+                        pixelsHigh: Int(label.bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4,
+                        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                        bytesPerRow: 0, bitsPerPixel: 0
+                    )!
+                    bitmap.size = label.bounds.size
+                    label.cacheDisplay(in: label.bounds, to: bitmap)
+                    let lastLine = 3 * bitmap.pixelsHigh / 4..<bitmap.pixelsHigh
+                    var spans: [(width: Int, height: Int)] = []
+                    var previousInk = -2
+                    for x in 0..<bitmap.pixelsWide {
+                        let count = lastLine.filter { (bitmap.colorAt(x: x, y: $0)?.alphaComponent ?? 0) > 0.15 }.count
+                        guard count > 0 else { continue }
+                        if previousInk == x - 1 {
+                            spans[spans.count - 1].width += 1
+                            spans[spans.count - 1].height = max(spans[spans.count - 1].height, count)
+                        } else {
+                            spans.append((width: 1, height: count))
+                        }
+                        previousInk = x
+                    }
+                    let trailing = rightToLeft ? Array(spans.reversed()) : spans
+                    let dots = trailing.suffix(3)
+                    let dotLimit = Int(ceil(font.pointSize / 2))
+                    return trailing.count > 3
+                        && dots.allSatisfy { $0.width <= dotLimit && $0.height <= dotLimit }
+                        && trailing[trailing.count - 4].height > dotLimit
+                }
+                precondition(paintsEllipsis(), "The final visible line must paint an ellipsis at the reading end")
+                label.cell?.truncatesLastVisibleLine = false
+                precondition(!paintsEllipsis(), "The pixel check must detect a missing ellipsis")
+                sequence += 1
+                precondition(!tooltip.accept(sequence: sequence, owner: 1, text: nil))
+                await waitUntil("The narrow tooltip was not dismissed") { registry.currentWindowIDs().isEmpty }
+                print("visible narrow tooltip: \(dark ? "dark" : "light"), ellipsis on the \(rightToLeft ? "left" : "right")")
+            }
+        }
+    }
+
+    @MainActor
+    static func captureStrictScrollFrame(_ args: [String]) async {
+        guard CGPreflightScreenCaptureAccess() else {
+            print("SKIP strict scroll frame: Screen Recording permission was not already granted")
+            return
+        }
+        precondition(args.count == 8 || args.count == 9)
+        let numbers = args.prefix(7).compactMap(Int.init)
+        precondition(numbers.count == 7)
+        let frameCount = args.count == 9 ? Int(args[8]) : 1
+        guard let frameCount, frameCount > 0 else { preconditionFailure("Invalid scroll frame count") }
+        let module = ScrollCaptureModule()
+        var started = false
+        module.testSetCaptureStartResult { started = $0 }
+        var captured = 0
+        module.testSetScheduleAutoScroll { captured += 1 }
+        module.handle(method: DaemonContract.ScrollCapture.Method.start.rawValue, params: [
+            "x": AnyCodable(numbers[0]), "y": AnyCodable(numbers[1]),
+            "width": AnyCodable(numbers[2]), "height": AnyCodable(numbers[3]),
+            "boundaryOnly": AnyCodable(true),
+        ], requestId: "strict-frame-start")
+        await waitUntil("The scroll capture region did not start") { started }
+        module.handle(method: DaemonContract.ScrollCapture.Method.startAutoScroll.rawValue, params: [
+            "excludedWindowIds": AnyCodable(Array(numbers[4...])),
+        ], requestId: "strict-frame-capture")
+        await waitUntil("Scroll capture did not accept its first filtered frame") { captured == 1 }
+        let generation = module.testCaptureGeneration()
+        for index in 1..<frameCount {
+            print("strict scroll frame \(index) ready")
+            fflush(stdout)
+            let command = await withCheckedContinuation { continuation in
+                DispatchQueue.global().async { continuation.resume(returning: readLine()) }
+            }
+            precondition(command == "advance")
+            module.testCaptureAfterScroll(generation: generation)
+            await waitUntil("Scroll capture did not accept the next filtered frame") { captured == index + 1 }
+        }
+        var finished: [String: Any]?
+        module.testSetFinishResponder { _, result in finished = result }
+        module.handle(method: DaemonContract.ScrollCapture.Method.finish.rawValue, params: [
+            "outputPath": AnyCodable(args[7]),
+        ], requestId: "strict-frame-save")
+        await waitUntil("Scroll capture did not save its first filtered frame") { finished != nil }
+        precondition(finished?["success"] as? Bool == true && finished?["frameCount"] as? Int == frameCount, "Unexpected result: \(String(describing: finished))")
+        print("strict scroll capture saved \(frameCount) filtered frames without posting pointer input")
+    }
+
+    @MainActor
+    static func verifyTooltipControlReplacement() async throws {
+        guard let screen = NSScreen.screens.first else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let startPoint = NSPoint(x: owner.minX + 24, y: owner.midY)
+        let cameraPoint = NSPoint(x: owner.minX + 68, y: owner.midY)
+        let microphonePoint = NSPoint(x: owner.minX + 112, y: owner.midY)
+        for dark in [false, true] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: "Start recording"))
+            let shown = try await tooltip.show(
+                sequence: 1, owner: 1, text: "Start recording", dark: dark, at: startPoint, ownerFrame: owner
+            )
+            precondition(shown)
+            guard let startPanel = tooltip.testPanel else { preconditionFailure("Start panel missing") }
+
+            _ = registry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 2, owner: 1, text: "Select camera"))
+            precondition(startPanel.alphaValue == 0)
+            let camera = Task { @MainActor in
+                try await tooltip.show(
+                    sequence: 2, owner: 1, text: "Select camera", dark: dark, at: cameraPoint, ownerFrame: owner
+                )
+            }
+            await waitUntil("Camera tooltip did not wait for the screenshot") { tooltip.testPanel != nil }
+            guard let cameraPanel = tooltip.testPanel else { preconditionFailure("Camera panel missing") }
+            precondition(cameraPanel.alphaValue == 0)
+
+            precondition(tooltip.accept(sequence: 4, owner: 1, text: "Select microphone"))
+            precondition(!tooltip.accept(sequence: 3, owner: 1, text: nil))
+            let microphone = Task { @MainActor in
+                try await tooltip.show(
+                    sequence: 4, owner: 1, text: "Select microphone", dark: dark, at: microphonePoint, ownerFrame: owner
+                )
+            }
+            await waitUntil("Replacement tooltip did not wait for the screenshot") { tooltip.testPanel != nil }
+            guard let newest = tooltip.testPanel else { preconditionFailure("Microphone panel missing") }
+            precondition(newest !== cameraPanel && newest.alphaValue == 0)
+            precondition(startPanel.alphaValue == 0 && cameraPanel.alphaValue == 0)
+            precondition(registry.currentWindowIDs().count == 3)
+            if work.width >= 640 {
+                precondition(newest.frame.minX > cameraPanel.frame.minX)
+            }
+
+            registry.finishScreenshot()
+            let cameraShown = try await camera.value
+            let microphoneShown = try await microphone.value
+            precondition(!cameraShown && microphoneShown && newest.alphaValue == 1)
+            let label = newest.contentView?.subviews.compactMap { $0 as? NSTextField }.first
+            precondition(label?.stringValue == "Select microphone")
+            precondition(newest.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == (dark ? .darkAqua : .aqua))
+            precondition(work.contains(newest.frame) && !owner.intersects(newest.frame))
+            await waitUntil("Superseded tooltip panels were not retired") { registry.currentWindowIDs().count == 1 }
+            precondition(!tooltip.accept(sequence: 5, owner: 1, text: nil))
+            await waitUntil("Replacement tooltip was not retired on exit") { registry.currentWindowIDs().isEmpty }
+        }
+        print("tooltip control replacement: only the newest label appeared in light and dark")
+    }
+
+    @MainActor
+    static func verifyTooltipReplacesUnresolvedFilter() async throws {
+        guard let screen = NSScreen.screens.first else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let pointer = NSPoint(x: owner.midX, y: owner.midY)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var snapshots: [[CGWindowID]] = []
+        var releaseOld: CheckedContinuation<Void, Never>?
+        var releaseLatest: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            snapshots.append(ids)
+            if snapshots.count == 1 {
+                await withCheckedContinuation { releaseOld = $0 }
+                throw RecordingCaptureFilterError.unavailableWindows(ids)
+            }
+            if !ids.isEmpty {
+                await withCheckedContinuation { releaseLatest = $0 }
+            }
+        }
+
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Select camera"))
+        let first = Task { @MainActor in
+            try await tooltip.show(sequence: 1, owner: 1, text: "Select camera", dark: false,
+                                   at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The first tooltip filter was not held") { releaseOld != nil }
+        precondition(snapshots.count == 1 && snapshots[0].count == 1)
+        precondition(tooltip.testPanel?.alphaValue == 0)
+
+        precondition(tooltip.accept(sequence: 2, owner: 1, text: "Select microphone"))
+        let latest = Task { @MainActor in
+            try await tooltip.show(sequence: 2, owner: 1, text: "Select microphone", dark: false,
+                                   at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The filter did not queue the replacement tooltip") {
+            guard let panel = tooltip.testPanel else { return false }
+            let latestID = CGWindowID(panel.windowNumber)
+            return registry.currentWindowIDs() == [latestID] && snapshots[0] != [latestID]
+                && registry.testPendingRefreshWaiterCount == 3
+        }
+        let panel = tooltip.testPanel!
+        let latestID = CGWindowID(panel.windowNumber)
+        precondition(panel.alphaValue == 0)
+        releaseOld?.resume()
+        await waitUntil("The replacement filter update was not retried") { releaseLatest != nil }
+        precondition(snapshots.count == 2 && snapshots[1] == [latestID])
+        precondition(tooltip.testPanel === panel && panel.alphaValue == 0)
+        releaseLatest?.resume()
+
+        let visible = (try? await latest.value) == true
+        print("tooltip superseded filter failure: replacement visible=\(visible)")
+        fflush(stdout)
+        precondition(visible && tooltip.testPanel === panel && panel.alphaValue == 1)
+        let previousVisible = try await first.value
+        precondition(!previousVisible)
+        precondition(registry.currentWindowIDs() == [latestID])
+        precondition(!tooltip.accept(sequence: 3, owner: 1, text: nil))
+        await waitUntil("The replacement exclusion did not clear") {
+            registry.currentWindowIDs().isEmpty && snapshots.last == []
+        }
+    }
+
+    @MainActor
+    static func verifyTooltipWaitsForRestart() async throws {
+        guard let work = NSScreen.main?.visibleFrame else { return }
+        let owner = NSRect(x: work.midX - 80, y: work.midY, width: 160, height: 48)
+        let pointer = NSPoint(x: owner.midX, y: owner.midY)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var releaseOld: CheckedContinuation<Void, Never>?
+        var oldFinished = false
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            await withCheckedContinuation { releaseOld = $0 }
+            oldFinished = true
+            throw RecordingCaptureFilterError.unavailableWindows(ids)
+        }
+
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Start recording"))
+        var visible: Bool?
+        let pending = Task { @MainActor in
+            visible = try await tooltip.show(sequence: 1, owner: 1, text: "Start recording", dark: true,
+                                             at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The old tooltip filter was not held") {
+            releaseOld != nil && registry.testPendingRefreshWaiterCount == 1
+        }
+        let panel = tooltip.testPanel!
+        let id = CGWindowID(panel.windowNumber)
+        precondition(panel.alphaValue == 0)
+        registry.beginCaptureStart()
+        await waitUntil("The invalidated tooltip did not resume") {
+            visible != nil || registry.testPendingCaptureStartWaiterCount == 1
+        }
+        print("tooltip filter restart: visible during startup=\(panel.alphaValue != 0)")
+        fflush(stdout)
+        precondition(visible == nil && panel.alphaValue == 0)
+
+        registry.finishCaptureStart()
+        registry.beginCaptureStart()
+        await waitUntil("The tooltip did not check the new startup barrier") {
+            visible != nil || registry.testPendingCaptureStartWaiterCount == 1
+        }
+        precondition(visible == nil && panel.alphaValue == 0)
+
+        var applied: [[CGWindowID]] = []
+        var releaseNew: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            applied.append(ids)
+            if !ids.isEmpty {
+                await withCheckedContinuation { releaseNew = $0 }
+            }
+        }
+        registry.finishCaptureStart()
+        await waitUntil("The replacement filter was not held") { releaseNew != nil }
+        precondition(applied == [[id]])
+        releaseOld?.resume()
+        await waitUntil("The previous filter did not finish") { oldFinished }
+        precondition(visible == nil && panel.alphaValue == 0 && registry.testPendingRefreshWaiterCount == 1)
+        releaseNew?.resume()
+        try await pending.value
+        precondition(visible == true && tooltip.testPanel === panel && panel.alphaValue == 1)
+        print("tooltip filter restart: visible after new filter=true")
+
+        precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+        await waitUntil("The restarted filter did not clear the tooltip exclusion") {
+            registry.currentWindowIDs().isEmpty && applied.last == []
+        }
+    }
+
+    @MainActor
+    static func verifyTooltipWaitsForOverlappingCaptures() async throws {
+        guard let work = NSScreen.main?.visibleFrame else { return }
+        let owner = NSRect(x: work.midX - 80, y: work.midY, width: 160, height: 48)
+        let pointer = NSPoint(x: owner.midX, y: owner.midY)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Start recording"))
+        var visible: Bool?
+        let pending = Task { @MainActor in
+            visible = try await tooltip.show(sequence: 1, owner: 1, text: "Start recording", dark: false,
+                                             at: pointer, ownerFrame: owner)
+        }
+        await waitUntil("The tooltip did not wait for the first screenshot") {
+            registry.testPendingScreenshotWaiterCount == 1
+        }
+        let panel = tooltip.testPanel!
+        let id = CGWindowID(panel.windowNumber)
+        registry.beginCaptureStart()
+        registry.finishScreenshot()
+        await waitUntil("The tooltip did not resume after the screenshot") {
+            visible != nil || registry.testPendingCaptureStartWaiterCount == 1
+        }
+        print("tooltip after overlapping screenshot: visible during startup=\(panel.alphaValue != 0)")
+        fflush(stdout)
+        precondition(visible == nil && panel.alphaValue == 0)
+
+        var releaseFilter: CheckedContinuation<Void, Never>?
+        registry.setFilterUpdater(initiallyExcluding: []) { ids in
+            if !ids.isEmpty {
+                precondition(ids == [id])
+                await withCheckedContinuation { releaseFilter = $0 }
+            }
+        }
+        registry.finishCaptureStart()
+        await waitUntil("The tooltip did not wait for the restarted filter") { releaseFilter != nil }
+        precondition(visible == nil && panel.alphaValue == 0)
+        precondition(registry.beginScreenshot() == [id])
+        releaseFilter?.resume()
+        await waitUntil("The tooltip did not wait for the second screenshot") {
+            registry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(visible == nil && panel.alphaValue == 0)
+        registry.finishScreenshot()
+        try await pending.value
+        precondition(visible == true && tooltip.testPanel === panel && panel.alphaValue == 1)
+        precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+        await waitUntil("The tooltip exclusion did not clear") { registry.currentWindowIDs().isEmpty }
+        print("tooltip after overlapping screenshot: visible after both barriers=true")
+    }
+
+    @MainActor
+    static func verifyTooltipPointerExit() async throws {
+        guard let screen = NSScreen.screens.first else {
+            print("SKIP tooltip pointer exit: no AppKit display")
+            return
+        }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        for captureStart in [true, false] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry)
+            var pointer = NSPoint(x: owner.midX, y: owner.midY)
+            if captureStart {
+                registry.beginCaptureStart()
+            } else {
+                _ = registry.beginScreenshot()
+            }
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: "Copy"))
+            let pending = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 1, text: "Copy", dark: false, at: pointer, ownerFrame: owner)
+            }
+            await waitUntil("The tooltip did not reach the capture barrier") {
+                captureStart ? registry.testPendingCaptureStartWaiterCount == 1
+                    : registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            precondition(captureStart ? tooltip.testPanel == nil : tooltip.testPanel?.alphaValue == 0)
+            pointer.x = owner.maxX + 8
+            if captureStart {
+                registry.finishCaptureStart()
+            } else {
+                registry.finishScreenshot()
+            }
+            let visible = try await pending.value
+            precondition(!visible, "The tooltip appeared after the pointer left its owner")
+            precondition(tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
+        }
+        print("tooltip pointer exit: no reveal after either capture barrier")
+    }
+
+    @MainActor
+    static func verifyTooltipPointerMove() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 400 else { return }
+        let work = screen.visibleFrame
+        let owner = NSRect(x: work.midX - 120, y: work.midY, width: 240, height: 48)
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var pointer = NSPoint(x: owner.midX - 10, y: owner.midY)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: 1, text: "Copy"))
+        let pending = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 1, owner: 1, text: "Copy", dark: false,
+                at: pointer, ownerFrame: owner
+            )
+        }
+        await waitUntil("The tooltip did not reach the screenshot barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        let panel = tooltip.testPanel!
+        let number = CGWindowID(panel.windowNumber)
+        let initialX = panel.frame.minX
+        precondition(panel.alphaValue == 0)
+        pointer.x += 18
+        registry.finishScreenshot()
+        let visible = try await pending.value
+        precondition(visible && tooltip.testPanel === panel)
+        precondition(registry.currentWindowIDs() == [number])
+        print("tooltip pointer move: horizontal change \(panel.frame.minX - initialX) points")
+        fflush(stdout)
+        precondition(panel.frame.minX == pointer.x + 12, "The tooltip must use the current pointer at reveal")
+        precondition(panel.frame.maxY == owner.minY - 4, "The tooltip must keep the owner gap")
+        precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+        await waitUntil("The moved tooltip was not unregistered") {
+            registry.currentWindowIDs().isEmpty
+        }
+    }
+
+    @MainActor
+    static func verifyTooltipOwnerMove() async throws {
+        guard let screen = NSScreen.screens.first, screen.visibleFrame.width >= 600 else { return }
+        let work = screen.visibleFrame
+        let initial = NSRect(x: work.midX - 160, y: work.midY, width: 100, height: 48)
+        let owner = NSWindow(contentRect: initial, styleMask: [.borderless], backing: .buffered, defer: false)
+        owner.animationBehavior = .none
+        owner.hasShadow = false
+        owner.ignoresMouseEvents = true
+        owner.orderFrontRegardless()
+        defer { owner.orderOut(nil) }
+        let ownerID = CGWindowID(owner.windowNumber)
+        await waitUntil("The tooltip owner was not visible") {
+            let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, ownerID) as? [[String: Any]]
+            return rows?.first?[kCGWindowIsOnscreen as String] as? Bool == true
+        }
+        let anchor = TooltipOwner(windowID: ownerID, fallbackFrame: nil)
+
+        let registry = RecordingCaptureWindowRegistry()
+        let tooltip = ProtectedTooltip(registry: registry)
+        var pointer = NSPoint(x: initial.midX, y: initial.midY)
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 1, owner: ownerID, text: "Close preview"))
+        let pending = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 1, owner: ownerID, text: "Close preview", dark: false,
+                at: pointer, ownerFrame: anchor.frame
+            )
+        }
+        await waitUntil("The tooltip did not reach the owner-move barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        let panel = tooltip.testPanel!
+        let number = CGWindowID(panel.windowNumber)
+        precondition(panel.alphaValue == 0)
+        owner.setFrameOrigin(NSPoint(x: initial.minX + 140, y: initial.minY + 32))
+        let moved = owner.frame
+        pointer = NSPoint(x: moved.midX, y: moved.midY)
+        precondition(!initial.contains(pointer) && moved.contains(pointer))
+        await waitUntil("WindowServer did not report the moved owner bounds") { anchor.frame == moved }
+        registry.finishScreenshot()
+        let visible = try await pending.value
+        print("tooltip owner move: visible=\(visible)")
+        fflush(stdout)
+        precondition(visible && tooltip.testPanel === panel, "The tooltip must follow the moved owner")
+        precondition(registry.currentWindowIDs() == [number])
+        precondition(panel.frame.minX == pointer.x + 12)
+        precondition(panel.frame.maxY == moved.minY - 4)
+        precondition(!tooltip.accept(sequence: 2, owner: ownerID, text: nil))
+        await waitUntil("The moved owner tooltip was not unregistered") { registry.currentWindowIDs().isEmpty }
+
+        _ = registry.beginScreenshot()
+        precondition(tooltip.accept(sequence: 3, owner: ownerID, text: "Close preview"))
+        let pendingHide = Task { @MainActor in
+            try await tooltip.show(
+                sequence: 3, owner: ownerID, text: "Close preview", dark: true,
+                at: pointer, ownerFrame: anchor.frame
+            )
+        }
+        await waitUntil("The tooltip did not reach the hidden-owner barrier") {
+            registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+        }
+        owner.orderOut(nil)
+        await waitUntil("WindowServer still reported the hidden owner") { anchor.frame.isNull }
+        registry.finishScreenshot()
+        let visibleAfterHide = try await pendingHide.value
+        precondition(!visibleAfterHide && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
+        print("tooltip owner hide: no reveal after screenshot barrier")
+
+        let hiddenAnchor = TooltipOwner(windowID: ownerID, fallbackFrame: moved)
+        precondition(tooltip.accept(sequence: 4, owner: ownerID, text: "Close preview"))
+        let visibleForHiddenOwner = try await tooltip.show(
+            sequence: 4, owner: ownerID, text: "Close preview", dark: true,
+            at: pointer, ownerFrame: hiddenAnchor.frame
+        )
+        print("tooltip owner already hidden: visible=\(visibleForHiddenOwner)")
+        fflush(stdout)
+        precondition(!visibleForHiddenOwner && tooltip.testPanel == nil && registry.currentWindowIDs().isEmpty)
+    }
+
+    @MainActor
+    static func verifyTooltipDisplayTransition() async throws {
+        guard let work = NSScreen.main?.visibleFrame, work.width >= 700 else {
+            print("SKIP tooltip display transition: no suitable AppKit display")
+            return
+        }
+        let seam = work.maxX - 220
+        let wide = NSRect(x: work.minX, y: work.minY, width: seam - work.minX, height: work.height)
+        let narrow = NSRect(x: seam, y: work.minY, width: 220, height: work.height)
+        let screens = [wide, narrow].map { ProtectedTooltip.Screen(frame: $0, visibleFrame: $0) }
+        for ownerMoves in [false, true] {
+            let registry = RecordingCaptureWindowRegistry()
+            let tooltip = ProtectedTooltip(registry: registry, screenAt: { point in
+                screens.first { $0.frame.contains(point) }
+            })
+            var ownerFrame = NSRect(x: seam - 50, y: work.midY, width: 100, height: 40)
+            var pointer = NSPoint(x: seam - 25, y: ownerFrame.midY)
+            let text = String(repeating: "Preview action ", count: 9)
+            _ = registry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 1, owner: 1, text: text))
+            let pending = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 1, text: text, dark: ownerMoves,
+                                       at: pointer, ownerFrame: ownerFrame)
+            }
+            await waitUntil("The tooltip did not reach the display transition barrier") {
+                registry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            let panel = tooltip.testPanel!
+            let id = CGWindowID(panel.windowNumber)
+            let originalFrame = panel.frame
+            precondition(panel.alphaValue == 0 && wide.contains(originalFrame))
+            precondition(originalFrame.width > narrow.width)
+            if ownerMoves {
+                ownerFrame.origin.x += 90
+            }
+            pointer.x = seam + (ownerMoves ? 65 : 25)
+            precondition(ownerFrame.contains(pointer) && narrow.contains(pointer))
+            registry.finishScreenshot()
+            let visible = try await pending.value
+            let fits = narrow.contains(panel.frame)
+            print("tooltip display transition: movedOwner=\(ownerMoves), visible=\(visible), destinationFit=\(fits)")
+            fflush(stdout)
+            precondition(visible && tooltip.testPanel === panel && fits, "Tooltip must reveal on the pointer's display")
+            precondition(panel.frame.height > originalFrame.height)
+            precondition(panel.frame.maxY == ownerFrame.minY - 4)
+            precondition(panel.contentView?.frame.size == panel.frame.size)
+            precondition(registry.currentWindowIDs() == [id] && CGWindowID(panel.windowNumber) == id)
+            precondition(!tooltip.accept(sequence: 2, owner: 1, text: nil))
+            await waitUntil("The moved tooltip stayed registered") { registry.currentWindowIDs().isEmpty }
+        }
+    }
+
+    static func verifyWideFixedHeaderSeam() {
+        let wideWidth = 1280
+        let wideViewport = 160
+        let cases = [(86, false, false), (86, true, false), (86, true, true), (88, false, true)]
+        for (wideShift, perturbed, noisyOverlap) in cases {
+            let duplicateStart = 80 + wideShift
+            let repeatedCenter: (Int, Int) -> Int = { x, row in
+                guard (240..<1040).contains(x), (duplicateStart..<(duplicateStart + 40)).contains(row) else { return row }
+                let originalRow = row - duplicateStart + wideViewport - 40
+                return x == 640 && row == 172 && perturbed ? originalRow + 1 : originalRow
+            }
+            let wideFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: wideWidth, height: wideViewport,
+                    footerHeight: 0, step: wideShift, headerHeight: 24,
+                    bodyRow: { x, row in
+                        if index == 1 && noisyOverlap && x == 0 && row == 140 { return row + 1 }
+                        return repeatedCenter(x, row)
+                    }
+                )
+            }
+            let wideOverlap = ScrollCaptureModule().testFindOverlap(
+                topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: wideViewport - wideShift
+            )
+            print("wide fixed-header overlap (shift: \(wideShift), perturbed center: \(perturbed), noisy overlap: \(noisyOverlap)):", wideOverlap as Any)
+            fflush(stdout)
+            precondition(wideOverlap == wideViewport - wideShift, "The outer columns disambiguate the wide fixed-header seam: \(wideOverlap as Any)")
+            if wideShift == 88 {
+                precondition(ScrollCaptureModule().testFindOverlap(
+                    topFrame: wideFrames[0], bottomFrame: wideFrames[1], expectedOverlap: 120
+                ) == 72, "The expected scroll step must not choose between tied center matches")
+            }
+            let wideOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-wide-fixed-header-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: wideOutput) }
+            let (widePreview, wideSaved, _, wideOverlaps, wideCount, wideHeight) = ScrollCaptureModule().testPreviewAndSave(
+                frames: wideFrames, step: wideShift, outputPath: wideOutput.path
+            )
+            let wideDocument = fixedFooterFrame(
+                index: 0, periodic: false, width: wideWidth, height: wideViewport + wideShift,
+                footerHeight: 0, step: wideShift, headerHeight: 24, bodyRow: repeatedCenter
+            )
+            precondition(wideCount == 2 && wideHeight == wideViewport + wideShift)
+            precondition(wideOverlaps == [wideViewport - wideShift])
+            precondition(pixels(widePreview) == pixels(wideDocument) && pixels(wideSaved) == pixels(wideDocument))
+        }
+
+        let tiedFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: false, width: wideWidth, height: wideViewport,
+                footerHeight: 0, step: 88, headerHeight: 24,
+                bodyRow: { x, row in
+                    if index == 1 && x == 0 && row == 140 { return row + 1 }
+                    return (168..<208).contains(row) ? row - 48 : row
+                }
+            )
+        }
+        precondition(ScrollCaptureModule().testFindOverlap(
+            topFrame: tiedFrames[0], bottomFrame: tiedFrames[1], expectedOverlap: 72
+        ) == nil, "A center tie must still stop when the full-width scores tie")
+
+        let ambiguousFrames = (0..<2).map { index in
+            fixedFooterFrame(
+                index: index, periodic: false, width: wideWidth, height: 240,
+                footerHeight: 0, step: 166, headerHeight: 24,
+                bodyRow: { x, row in
+                    if (300..<340).contains(row) { return row - 100 }
+                    if (240..<1040).contains(x), (250..<290).contains(row) { return row - 50 }
+                    if index == 1 && x == 0 && row == 220 { return row + 1 }
+                    return row
+                }
+            )
+        }
+        precondition(ScrollCaptureModule().testFindOverlap(
+            topFrame: ambiguousFrames[0], bottomFrame: ambiguousFrames[1], expectedOverlap: 74
+        ) == nil, "A full-width retry must preserve the prefix when two overlaps fit almost equally")
+    }
+
+    @MainActor
     static func main() {
-        FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
-        runExistingScrollChecks()
-        FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        if CommandLine.arguments.contains("--wide-fixed-header-seam") {
+            verifyWideFixedHeaderSeam()
+            return
+        }
+        if CommandLine.arguments.contains("--scroll-color-profile") {
+            verifyScrollColorProfiles()
+            return
+        }
+        let strictFrame = CommandLine.arguments.dropFirst().first == "--strict-scroll-frame"
+        let tooltipPointerExit = CommandLine.arguments.contains("--tooltip-pointer-exit")
+        let tooltipPlacement = CommandLine.arguments.contains("--tooltip-placement")
+        if !strictFrame && !tooltipPointerExit && !tooltipPlacement {
+            FileHandle.standardError.write(Data("existing scroll checks: start\n".utf8))
+            runExistingScrollChecks()
+            verifyScrollColorProfiles()
+            verifyDirectPreviewBands()
+            FileHandle.standardError.write(Data("existing scroll checks: complete\n".utf8))
+        }
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
         Task { @MainActor in
             do {
-                try await runRecordingCoordinationChecks()
+                if strictFrame {
+                    await captureStrictScrollFrame(Array(CommandLine.arguments.dropFirst(2)))
+                } else if tooltipPointerExit {
+                    try await verifyTooltipPointerExit()
+                    try await verifyTooltipPointerMove()
+                    try await verifyTooltipOwnerMove()
+                    try await verifyTooltipDisplayTransition()
+                    try await verifyTooltipReplacesUnresolvedFilter()
+                    try await verifyTooltipWaitsForRestart()
+                    try await verifyTooltipWaitsForOverlappingCaptures()
+                } else if tooltipPlacement {
+                    try await verifyTallTooltipPlacement()
+                    try await verifyTooltipFallbackClearsPointer()
+                    try await verifyNarrowTooltipEllipsis()
+                } else {
+                    await verifyAsyncScrollComparison()
+                    try await runRecordingCoordinationChecks()
+                }
                 exit(EXIT_SUCCESS)
             } catch {
                 FileHandle.standardError.write(Data("Recording coordination checks failed: \(error)\n".utf8))
                 exit(EXIT_FAILURE)
             }
         }
-        dispatchMain()
+        application.run()
+    }
+
+    static func verifyScrollColorProfiles() {
+        let width = 480
+        let height = 160
+        let step = 112
+        for name in [CGColorSpace.displayP3, CGColorSpace.sRGB] {
+            let space = CGColorSpace(name: name)!
+            let frames = [0, step].map { frame(start: $0, width: width, height: height, colorSpace: space) }
+            let expected = frame(start: 0, width: width, height: height + step, colorSpace: space)
+            let output = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-color-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let (preview, saved, encoded, overlaps, count, _) = ScrollCaptureModule()
+                .testPreviewAndSave(frames: frames, step: step, outputPath: output.path)
+            let source = CGImageSourceCreateWithData(Data(base64Encoded: encoded)! as CFData, nil)!
+            let emitted = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+            precondition(count == 2 && overlaps == [height - step])
+            precondition(saved.width == width && saved.height == height + step)
+            precondition(emitted.width < width)
+            precondition(saved.colorSpace?.name == name,
+                         "Stitched PNG changed profile from \(name) to \(String(describing: saved.colorSpace?.name))")
+            precondition(preview.colorSpace?.name == name && emitted.colorSpace?.name == name)
+            precondition(pixels(saved, colorSpace: space) == pixels(expected, colorSpace: space))
+            precondition(pixels(preview, colorSpace: space) == pixels(expected, colorSpace: space))
+            print("scroll profile \(name): stitched and scaled preview profiles preserved")
+        }
+    }
+
+    static func verifyDirectPreviewBands() {
+        let width = 480
+        let height = 161
+        let step = 113
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let frames = [[CGFloat(1), 0, 0, 1], [0, 0, 1, 1]].map { color in
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            context.setFillColor(CGColor(colorSpace: space, components: color)!)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            return context.makeImage()!
+        }
+        let module = ScrollCaptureModule()
+        module.testSetPreviewAlignment { _, _, expected, _ in expected }
+        let output = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-preview-bands-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let (_, saved, encoded, _, count, estimatedHeight) = module
+            .testPreviewAndSave(frames: frames, step: step, outputPath: output.path)
+        let source = CGImageSourceCreateWithData(Data(base64Encoded: encoded)! as CFData, nil)!
+        let preview = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+        precondition(count == 2 && estimatedHeight == 274)
+        precondition(saved.width == 480 && saved.height == 274)
+        precondition(preview.width == 240 && preview.height == 137)
+        let rgba = Array(pixels(preview, colorSpace: space))
+        for row in 0..<preview.height {
+            let expected: [UInt8] = row < 80 ? [255, 0, 0, 255] : [0, 0, 255, 255]
+            for column in 0..<preview.width {
+                let offset = (row * preview.width + column) * 4
+                precondition(rgba[offset..<(offset + 4)].elementsEqual(expected), "Unexpected preview pixel in row \(row)")
+            }
+        }
     }
 
     @MainActor
     static func runRecordingCoordinationChecks() async throws {
+        await runLegacyScrollCoordinationCheck()
         try await runScreenCaptureExclusionCheck()
         let screenExclusions = recordingExclusionWindowIDs(
             requested: [31, 41, 31, -1, Int64.max],
@@ -436,6 +1296,7 @@ struct ScrollCapturePreviewTest {
             outputPath: "/tmp/recording-stop-test.poratake",
             cursorPath: nil,
             cameraPath: nil,
+            cameraTrackMissing: false,
             keysPath: nil,
             systemAudioPath: nil,
             micAudioPath: nil,
@@ -491,14 +1352,104 @@ struct ScrollCapturePreviewTest {
         precondition(failedStopReported)
         let retryAfterFailure = try await stopCoordinator.stop(sessionID: 203) { stopResult }
         precondition(retryAfterFailure.outputPath == stopResult.outputPath, "A failed stop must release coordinator ownership")
+
+        var startingLifecycle = RecorderModuleLifecycle()
+        let startingSession = startingLifecycle.beginStart(.screen)!
+        var releaseStart: CheckedContinuation<Void, Never>?
+        let startup = Task { @MainActor in
+            await withCheckedContinuation { releaseStart = $0 }
+            precondition(startingLifecycle.finishStart(startingSession, success: true))
+        }
+        let waitingCoordinator = RecorderStopCoordinator()
+        var delayedStopCount = 0
+        let waitingStop = Task { @MainActor in
+            try await waitingCoordinator.stop(sessionID: startingSession, startup: startup) {
+                precondition(startingLifecycle.beginStop(startingSession) == .screen)
+                delayedStopCount += 1
+                startingLifecycle.finishStop(startingSession)
+                return stopResult
+            }
+        }
+        await waitUntil("Stop did not wait for startup") {
+            waitingCoordinator.testWaitingForStart && releaseStart != nil
+        }
+        let joiningStop = Task { @MainActor in
+            try await waitingCoordinator.stop(sessionID: startingSession, startup: startup) {
+                delayedStopCount += 1
+                return stopResult
+            }
+        }
+        await waitUntil("The second stop did not join startup finalization") {
+            waitingCoordinator.testWaiterCount == 1
+        }
+        precondition(delayedStopCount == 0)
+        releaseStart?.resume()
+        let waitingResult = try await waitingStop.value
+        let joiningResult = try await joiningStop.value
+        precondition(waitingResult.outputPath == stopResult.outputPath)
+        precondition(joiningResult.outputPath == stopResult.outputPath)
+        precondition(delayedStopCount == 1)
+        precondition(startingLifecycle.phase == .idle)
+
+        let failedStartingSession = startingLifecycle.beginStart(.ios)!
+        let failedStartup = Task { @MainActor in
+            precondition(startingLifecycle.finishStart(failedStartingSession, success: false))
+        }
+        var failedStartupStopRejected = false
+        do {
+            _ = try await waitingCoordinator.stop(sessionID: failedStartingSession, startup: failedStartup) {
+                guard startingLifecycle.beginStop(failedStartingSession) != nil else {
+                    throw RecordingCaptureFilterError.unavailableWindows([203])
+                }
+                return stopResult
+            }
+        } catch is RecordingCaptureFilterError {
+            failedStartupStopRejected = true
+        }
+        precondition(failedStartupStopRejected)
+        precondition(startingLifecycle.phase == .idle)
+
+        let staleSession = startingLifecycle.beginStart(.screen)!
+        var replacementSession: RecorderSessionID?
+        let replacedStartup = Task { @MainActor in
+            precondition(startingLifecycle.finishStart(staleSession, success: false))
+            replacementSession = startingLifecycle.beginStart(.ios)!
+            precondition(startingLifecycle.finishStart(replacementSession!, success: true))
+        }
+        var staleStopRejected = false
+        do {
+            _ = try await waitingCoordinator.stop(sessionID: staleSession, startup: replacedStartup) {
+                guard startingLifecycle.beginStop(staleSession) != nil else {
+                    throw RecordingCaptureFilterError.unavailableWindows([204])
+                }
+                return stopResult
+            }
+        } catch is RecordingCaptureFilterError {
+            staleStopRejected = true
+        }
+        precondition(staleStopRejected)
+        precondition(startingLifecycle.isCurrent(replacementSession!))
+        precondition(startingLifecycle.currentBackend == .ios)
         FileHandle.standardError.write(Data("recording stop coordinator: complete\n".utf8))
 
         FileHandle.standardError.write(Data("capture filter startup: start\n".utf8))
         let startupRegistry = RecordingCaptureWindowRegistry()
         startupRegistry.beginCaptureStart()
-        startupRegistry.register(windowID: 61)
+        startupRegistry.register(windowID: 60)
         var startupRefreshes: [[CGWindowID]] = []
-        startupRegistry.setFilterUpdater { ids in startupRefreshes.append(ids) }
+        startupRegistry.setFilterUpdater(initiallyExcluding: startupRegistry.currentWindowIDs()) { ids in
+            startupRefreshes.append(ids)
+        }
+        startupRegistry.finishCaptureStart()
+        try await startupRegistry.updateFilterIfNeeded()
+        precondition(startupRefreshes.isEmpty, "Startup must reuse the current exclusion filter")
+
+        startupRegistry.beginCaptureStart()
+        startupRegistry.setFilterUpdater(initiallyExcluding: startupRegistry.currentWindowIDs()) { ids in
+            startupRefreshes.append(ids)
+        }
+        startupRegistry.unregister(windowID: 60)
+        startupRegistry.register(windowID: 61)
         let startupRefresh = Task { @MainActor in
             try await startupRegistry.updateFilterIfNeeded()
         }
@@ -511,6 +1462,398 @@ struct ScrollCapturePreviewTest {
         try await startupRefresh.value
         precondition(startupRefreshes == [[61]], "Startup must refresh registrations made after the initial snapshot")
         FileHandle.standardError.write(Data("capture filter startup: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("capture screenshot barrier: start\n".utf8))
+        let screenshotRegistry = RecordingCaptureWindowRegistry()
+        screenshotRegistry.register(windowID: 61)
+        let firstSnapshot = screenshotRegistry.beginScreenshot()
+        screenshotRegistry.register(windowID: 62)
+        let secondSnapshot = screenshotRegistry.beginScreenshot()
+        precondition(firstSnapshot == [61])
+        precondition(secondSnapshot == [61, 62])
+        var mayShow = false
+        let barrierPresentation = Task { @MainActor in
+            await screenshotRegistry.waitForScreenshots()
+            mayShow = true
+        }
+        await waitUntil("The panel did not wait for existing screenshots") {
+            screenshotRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        screenshotRegistry.finishScreenshot()
+        precondition(!mayShow)
+        screenshotRegistry.finishScreenshot()
+        let thirdSnapshot = screenshotRegistry.beginScreenshot()
+        precondition(thirdSnapshot == [61, 62])
+        await waitUntil("The panel did not wait for a newly started screenshot") {
+            screenshotRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(!mayShow)
+        screenshotRegistry.finishScreenshot()
+        await barrierPresentation.value
+        precondition(mayShow)
+        FileHandle.standardError.write(Data("capture screenshot barrier: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("direct screenshot coordination: start\n".utf8))
+        let directRegistry = RecordingCaptureWindowRegistry()
+        var directStarted = false
+        var releaseDirect: CheckedContinuation<Void, Never>?
+        let directCapture = Task { @MainActor in
+            await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: {
+                    directStarted = true
+                    await withCheckedContinuation { releaseDirect = $0 }
+                    return "direct"
+                },
+                filtered: { _ in "unexpected" }
+            )
+        }
+        await waitUntil("The direct screenshot did not start") { directStarted }
+        directRegistry.register(windowID: 73)
+        var directMayShow = false
+        let directPresentation = Task { @MainActor in
+            await directRegistry.waitForScreenshots()
+            directMayShow = true
+        }
+        await waitUntil("The panel did not wait for the direct screenshot") {
+            directRegistry.testPendingScreenshotWaiterCount == 1
+        }
+        precondition(!directMayShow)
+        releaseDirect?.resume()
+        let directResult = await directCapture.value
+        await directPresentation.value
+        precondition(directResult == "direct" && directMayShow)
+        let filteredIDs = await coordinateAreaCapture(
+            registry: directRegistry,
+            excludedWindowIDs: [74],
+            unfiltered: { Set<CGWindowID>() },
+            filtered: { $0 }
+        )
+        precondition(filteredIDs == [73, 74])
+        var filteredFailed = false
+        do {
+            _ = try await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: { 0 },
+                filtered: { _ in throw RecordingCaptureFilterError.unavailableWindows([73]) }
+            )
+        } catch is RecordingCaptureFilterError {
+            filteredFailed = true
+        }
+        precondition(filteredFailed)
+        await directRegistry.waitForScreenshots()
+        FileHandle.standardError.write(Data("direct screenshot coordination: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("screenshot frame deadline: start\n".utf8))
+        var lateFrame: (@Sendable (Int?, Error?) -> Void)?
+        do {
+            let unexpectedFrame: Int = try await coordinateAreaCapture(
+                registry: directRegistry,
+                excludedWindowIDs: [],
+                unfiltered: { () async throws -> Int in
+                    preconditionFailure("The registered window must stay excluded")
+                },
+                filtered: { _ in
+                    try await awaitScreenshotFrame(timeout: .zero) { lateFrame = $0 }
+                }
+            )
+            preconditionFailure("A screenshot without a frame returned \(unexpectedFrame)")
+        } catch ScreenshotFrameError.timedOut {}
+        guard let lateFrame else { preconditionFailure("The screenshot must have requested a frame") }
+        lateFrame(41, nil)
+        await directRegistry.waitForScreenshots()
+        let nextFrame: Int = try await awaitScreenshotFrame { $0(42, nil) }
+        precondition(nextFrame == 42)
+        FileHandle.standardError.write(Data("screenshot frame deadline: complete\n".utf8))
+
+        FileHandle.standardError.write(Data("protected tooltip lifecycle: start\n".utf8))
+        try await verifyTooltipPointerExit()
+        try await verifyTooltipPointerMove()
+        try await verifyTooltipOwnerMove()
+        try await verifyTooltipDisplayTransition()
+        try await verifyTooltipControlReplacement()
+        try await verifyTooltipReplacesUnresolvedFilter()
+        try await verifyTooltipWaitsForRestart()
+        try await verifyTooltipWaitsForOverlappingCaptures()
+        try await verifyTallTooltipPlacement()
+        try await verifyTooltipFallbackClearsPointer()
+        try await verifyNarrowTooltipEllipsis()
+        _ = NSApplication.shared
+        if let screen = NSScreen.screens.first {
+            let point = NSPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10)
+            let tooltipRegistry = RecordingCaptureWindowRegistry()
+            var updates: [[CGWindowID]] = []
+            tooltipRegistry.setFilterUpdater { updates.append($0) }
+            let tooltip = ProtectedTooltip(registry: tooltipRegistry)
+            _ = tooltipRegistry.beginScreenshot()
+            precondition(tooltip.accept(sequence: 1, owner: 101, text: "Copy"))
+            let pendingTooltip = Task { @MainActor in
+                try await tooltip.show(sequence: 1, owner: 101, text: "Copy", dark: false, at: point)
+            }
+            await waitUntil("The tooltip did not wait for the screenshot") {
+                tooltipRegistry.testPendingScreenshotWaiterCount == 1 && tooltip.testPanel != nil
+            }
+            precondition(tooltip.testPanel?.alphaValue == 0)
+            precondition(tooltip.testPanel?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua)
+            precondition(tooltipRegistry.currentWindowIDs().count == 1)
+            precondition(!updates.isEmpty && updates.last == tooltipRegistry.currentWindowIDs())
+            precondition(!tooltip.accept(sequence: 2, owner: 101, text: nil))
+            tooltipRegistry.finishScreenshot()
+            let cancelledTooltipVisible = try await pendingTooltip.value
+            precondition(!cancelledTooltipVisible)
+            await waitUntil("The cancelled tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 3, owner: 102, text: "Stop auto-scroll · Esc"))
+            let shownTooltip = try await tooltip.show(sequence: 3, owner: 102, text: "Stop auto-scroll · Esc", dark: true, at: point)
+            precondition(shownTooltip)
+            precondition(tooltip.testPanel?.alphaValue == 1)
+            precondition(tooltip.testPanel?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+            precondition(tooltipRegistry.currentWindowIDs().count == 1)
+            precondition(!tooltip.accept(sequence: 2, owner: 102, text: nil))
+            precondition(tooltip.testPanel?.alphaValue == 1)
+            precondition(!tooltip.accept(sequence: 5, owner: 102, text: nil))
+            await waitUntil("The hidden tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 6, owner: 101, text: "First"))
+            let firstVisible = try await tooltip.show(sequence: 6, owner: 101, text: "First", dark: false, at: point)
+            precondition(firstVisible)
+            let firstPanel = tooltip.testPanel
+            precondition(!tooltip.accept(sequence: 8, owner: 102, text: nil))
+            precondition(firstPanel?.alphaValue == 0)
+            precondition(!tooltip.accept(sequence: 7, owner: 102, text: "Second"))
+            await waitUntil("The superseded owner's tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            precondition(tooltip.accept(sequence: 9, owner: 102, text: "Second"))
+            precondition(!tooltip.accept(sequence: 8, owner: 102, text: nil))
+            let secondVisible = try await tooltip.show(sequence: 9, owner: 102, text: "Second", dark: true, at: point)
+            precondition(secondVisible)
+            precondition(!tooltip.accept(sequence: 10, owner: 102, text: nil))
+            await waitUntil("The replacement tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+            let longTooltipTexts = [
+                "Copy with a very long preset name that should wrap across multiple lines and remain readable for the user",
+                "Copy with 日本語の長いプリセット名と多言語の注釈を保存する設定日本語の長いプリセット名と多言語の注釈を保存する設定"
+            ]
+            for (index, item) in longTooltipTexts.flatMap({ text in [(text, false), (text, true)] }).enumerated() {
+                let (longText, dark) = item
+                let sequence = UInt64(11 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 104, text: longText))
+                let visible = try await tooltip.show(sequence: sequence, owner: 104, text: longText, dark: dark, at: point)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let bitmap = label.bitmapImageRepForCachingDisplay(in: label.bounds) else {
+                    preconditionFailure("The tooltip label could not be rendered")
+                }
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let midpoint = bitmap.pixelsHigh / 2
+                func hasInk(_ rows: Range<Int>) -> Bool {
+                    for y in rows {
+                        for x in 0..<bitmap.pixelsWide {
+                            if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 { return true }
+                        }
+                    }
+                    return false
+                }
+                precondition(hasInk(0..<midpoint) && hasInk(midpoint..<bitmap.pixelsHigh),
+                             "Long tooltip text must paint on both lines")
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 104, text: nil))
+                await waitUntil("The wrapped tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
+            let edgeText = "FIRST LINE\nSECOND LINE\nTHIRD LINE\nFOURTH LINE\nFIFTH LINE\nSIXTH LINE"
+            let visibleFrame = screen.visibleFrame
+            let edgePoints = [
+                NSPoint(x: visibleFrame.minX + 1, y: visibleFrame.minY + 1),
+                NSPoint(x: visibleFrame.maxX - 1, y: visibleFrame.minY + 1),
+                NSPoint(x: visibleFrame.minX + 1, y: visibleFrame.maxY - 1),
+                NSPoint(x: visibleFrame.maxX - 1, y: visibleFrame.maxY - 1)
+            ]
+            for (index, edgePoint) in edgePoints.enumerated() {
+                let sequence = UInt64(19 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 105, text: edgeText))
+                let visible = try await tooltip.show(sequence: sequence, owner: 105, text: edgeText, dark: index % 2 == 1, at: edgePoint)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let label = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let font = label.font,
+                      let bitmap = label.bitmapImageRepForCachingDisplay(in: label.bounds) else {
+                    preconditionFailure("The edge tooltip could not be rendered")
+                }
+                precondition(panel.frame.minX >= visibleFrame.minX && panel.frame.maxX <= visibleFrame.maxX)
+                precondition(panel.frame.minY >= visibleFrame.minY && panel.frame.maxY <= visibleFrame.maxY)
+                let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+                precondition(panel.frame.height <= ceil(lineHeight * 4) + 12)
+                precondition(label.cell?.truncatesLastVisibleLine == true)
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let quarter = bitmap.pixelsHigh / 4
+                for line in 0..<4 {
+                    let rows = (line * quarter)..<(line == 3 ? bitmap.pixelsHigh : (line + 1) * quarter)
+                    let ink = rows.contains { y in
+                        (0..<bitmap.pixelsWide).contains { x in
+                            (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+                        }
+                    }
+                    precondition(ink, "Every visible tooltip line must be painted")
+                }
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 105, text: nil))
+                await waitUntil("The edge tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
+            let recordingFrame = NSRect(
+                x: visibleFrame.midX - 130,
+                y: visibleFrame.minY + 100,
+                width: 260,
+                height: 44
+            )
+            let recordingPoint = NSPoint(x: recordingFrame.minX + 22, y: recordingFrame.midY)
+            precondition(tooltip.accept(sequence: 27, owner: 106, text: "Start recording"))
+            let recordingTooltipVisible = try await tooltip.show(
+                sequence: 27,
+                owner: 106,
+                text: "Start recording",
+                dark: true,
+                at: recordingPoint,
+                ownerFrame: recordingFrame
+            )
+            precondition(recordingTooltipVisible)
+            guard let recordingTooltipPanel = tooltip.testPanel else {
+                preconditionFailure("The recording tooltip panel was not created")
+            }
+            precondition(!recordingTooltipPanel.frame.intersects(recordingFrame))
+            precondition(recordingTooltipPanel.frame.maxY <= recordingFrame.minY - 4)
+            precondition(!tooltip.accept(sequence: 28, owner: 106, text: nil))
+            await waitUntil("The recording tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+
+            let bottomFrame = NSRect(
+                x: visibleFrame.midX - 130,
+                y: visibleFrame.minY + 2,
+                width: 260,
+                height: 44
+            )
+            let bottomPoint = NSPoint(x: bottomFrame.minX + 22, y: bottomFrame.midY)
+            precondition(tooltip.accept(sequence: 29, owner: 107, text: "Close preview"))
+            let bottomTooltipVisible = try await tooltip.show(
+                sequence: 29,
+                owner: 107,
+                text: "Close preview",
+                dark: false,
+                at: bottomPoint,
+                ownerFrame: bottomFrame
+            )
+            precondition(bottomTooltipVisible)
+            guard let bottomTooltipPanel = tooltip.testPanel else {
+                preconditionFailure("The bottom-edge tooltip panel was not created")
+            }
+            precondition(!bottomTooltipPanel.frame.intersects(bottomFrame))
+            precondition(bottomTooltipPanel.frame.minY >= bottomFrame.maxY + 4)
+            precondition(!tooltip.accept(sequence: 30, owner: 107, text: nil))
+            await waitUntil("The bottom-edge tooltip was not unregistered") {
+                tooltipRegistry.currentWindowIDs().isEmpty
+            }
+
+            let centeredTexts = ["Start recording", longTooltipTexts[0]]
+            for (index, item) in centeredTexts.flatMap({ text in [(text, false), (text, true)] }).enumerated() {
+                let (text, dark) = item
+                let sequence = UInt64(31 + index * 2)
+                precondition(tooltip.accept(sequence: sequence, owner: 108, text: text))
+                let visible = try await tooltip.show(sequence: sequence, owner: 108, text: text, dark: dark, at: point)
+                precondition(visible)
+                guard let panel = tooltip.testPanel,
+                      let content = panel.contentView,
+                      let label = content.subviews.compactMap({ $0 as? NSTextField }).first,
+                      let bitmap = NSBitmapImageRep(
+                        bitmapDataPlanes: nil,
+                        pixelsWide: Int(label.bounds.width * 2),
+                        pixelsHigh: Int(label.bounds.height * 2),
+                        bitsPerSample: 8,
+                        samplesPerPixel: 4,
+                        hasAlpha: true,
+                        isPlanar: false,
+                        colorSpaceName: .deviceRGB,
+                        bytesPerRow: 0,
+                        bitsPerPixel: 0
+                      ) else {
+                    preconditionFailure("The tooltip label could not be rendered at 2x")
+                }
+                bitmap.size = label.bounds.size
+                panel.displayIfNeeded()
+                label.cacheDisplay(in: label.bounds, to: bitmap)
+                let inkRows = (0..<bitmap.pixelsHigh).filter { y in
+                    (0..<bitmap.pixelsWide).contains { x in
+                        (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+                    }
+                }
+                guard let first = inkRows.first, let last = inkRows.last else {
+                    preconditionFailure("The tooltip label did not paint")
+                }
+                let top = Int((content.bounds.height - label.frame.maxY) * 2) + first
+                let bottom = Int(label.frame.minY * 2) + bitmap.pixelsHigh - 1 - last
+                precondition(abs(top - bottom) <= 3, "Tooltip label ink is not vertically centered: top \(top), bottom \(bottom)")
+                precondition(!tooltip.accept(sequence: sequence + 1, owner: 108, text: nil))
+                await waitUntil("The centered tooltip was not unregistered") {
+                    tooltipRegistry.currentWindowIDs().isEmpty
+                }
+            }
+
+            let failureRegistry = RecordingCaptureWindowRegistry()
+            failureRegistry.setFilterUpdater { _ in throw RecordingCaptureFilterError.unavailableWindows([1]) }
+            let failedTooltip = ProtectedTooltip(registry: failureRegistry)
+            precondition(failedTooltip.accept(sequence: 1, owner: 103, text: "Copy"))
+            var tooltipFailed = false
+            do {
+                _ = try await failedTooltip.show(sequence: 1, owner: 103, text: "Copy", dark: false, at: point)
+            } catch is RecordingCaptureFilterError {
+                tooltipFailed = true
+            }
+            precondition(tooltipFailed && failedTooltip.testPanel == nil && failureRegistry.currentWindowIDs().isEmpty)
+            FileHandle.standardError.write(Data("protected tooltip lifecycle: complete\n".utf8))
+        } else {
+            FileHandle.standardError.write(Data("SKIP protected tooltip lifecycle: no AppKit display\n".utf8))
+        }
+
+        FileHandle.standardError.write(Data("scroll capture UI cleanup: start\n".utf8))
+        if let screen = NSScreen.screens.first {
+            let module = ScrollCaptureModule()
+            let frame = screen.visibleFrame
+            let windows = module.testShowCaptureUI(rect: NSRect(x: frame.minX + 100, y: frame.minY + 100,
+                                                                 width: 80, height: 100))
+            let ids = windows.map { CGWindowID($0.windowNumber) }
+            func onScreenAlphas() -> [CGWindowID: Double] {
+                let entries = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+                var alphas: [CGWindowID: Double] = [:]
+                for entry in entries {
+                    if let id = entry[kCGWindowNumber as String] as? UInt32,
+                       let alpha = entry[kCGWindowAlpha as String] as? Double, ids.contains(id) {
+                        alphas[id] = alpha
+                    }
+                }
+                return alphas
+            }
+            await waitUntil("Scroll controls were not visible to the window server") {
+                let alphas = onScreenAlphas()
+                return ids.allSatisfy { alphas[$0] == 1 }
+            }
+            module.testHideCaptureUI()
+            let alphas = onScreenAlphas()
+            precondition(ids.allSatisfy { alphas[$0].map { $0 == 0 } ?? true },
+                         "Scroll controls remained opaque after cleanup")
+            FileHandle.standardError.write(Data("scroll capture UI cleanup: complete\n".utf8))
+        } else {
+            FileHandle.standardError.write(Data("SKIP scroll capture UI cleanup: no AppKit display\n".utf8))
+        }
 
         FileHandle.standardError.write(Data("capture filter serial refresh: start\n".utf8))
         let serialRegistry = RecordingCaptureWindowRegistry()
@@ -638,6 +1981,127 @@ struct ScrollCapturePreviewTest {
         }
         precondition(refreshFailureReported, "Filter update errors must reach the window show operation")
         FileHandle.standardError.write(Data("capture filter failure: complete\n".utf8))
+    }
+
+    @MainActor
+    static func runLegacyScrollCoordinationCheck() async {
+        FileHandle.standardError.write(Data("legacy scroll capture coordination: start\n".utf8))
+        let availableIDs = Set(NSScreen.screens.compactMap {
+            $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        })
+        guard let availableID = availableIDs.first else { preconditionFailure("The fixture needs a display") }
+        let unavailableID = availableIDs.contains(CGDirectDisplayID.max) ? CGDirectDisplayID(0) : CGDirectDisplayID.max
+        precondition(!availableIDs.contains(unavailableID))
+        let selectionModule = ScrollCaptureModule()
+        func startSelection(_ extra: [String: AnyCodable], id: String) {
+            var params: [String: AnyCodable] = [
+                "x": AnyCodable(0), "y": AnyCodable(0), "width": AnyCodable(80), "height": AnyCodable(160)
+            ]
+            params.merge(extra) { _, new in new }
+            selectionModule.handle(method: DaemonContract.ScrollCapture.Method.start.rawValue, params: params, requestId: id)
+        }
+        startSelection(["displayId": AnyCodable(Int(unavailableID))], id: "unavailable-display")
+        precondition(!selectionModule.testIsCapturing(), "An unavailable display must not start capture")
+        startSelection(["displayOriginX": AnyCodable(Int(Int32.max)), "displayOriginY": AnyCodable(Int(Int32.max))], id: "unavailable-origin")
+        precondition(!selectionModule.testIsCapturing(), "An unavailable origin must not start capture")
+        startSelection(["displayId": AnyCodable(Int(availableID))], id: "available-display")
+        precondition(selectionModule.testIsCapturing(), "An available display must start capture")
+        selectionModule.testCancelCapture()
+        await Task.yield()
+        precondition(!selectionModule.testIsCapturing())
+        guard let selectedScreen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == availableID
+        }), let primaryScreen = NSScreen.screens.first(where: {
+            $0.frame.minX.rounded() == 0 && $0.frame.minY.rounded() == 0
+        }) else { preconditionFailure("The fixture needs screen geometry") }
+        let originX = Int(selectedScreen.frame.minX.rounded())
+        let originY = Int((primaryScreen.frame.height - selectedScreen.frame.maxY).rounded())
+        startSelection(["displayOriginX": AnyCodable(originX), "displayOriginY": AnyCodable(originY)], id: "available-origin")
+        precondition(selectionModule.testIsCapturing(), "An available display origin must start capture")
+        startSelection(["displayId": AnyCodable(Int(unavailableID))], id: "unavailable-during-capture")
+        precondition(selectionModule.testIsCapturing(), "A rejected request must preserve the active capture")
+        selectionModule.testCancelCapture()
+        await Task.yield()
+        precondition(!selectionModule.testIsCapturing())
+
+        let footerWidth = 80
+        let footerHeight = 160
+        let footerStep = 32
+        let generatedFrame = frame(start: 0, width: footerWidth, height: footerHeight)
+        let coordinatedModule = ScrollCaptureModule()
+        coordinatedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        coordinatedModule.testSetPreviewEncoder { _ in "preview" }
+        var coordinatedRequests: [Set<CGWindowID>?] = []
+        var coordinatedCallbacks: [(CGImage?) -> Void] = []
+        var coordinatedSchedules = 0
+        var coordinatedEvents: [[String: Any]] = []
+        coordinatedModule.testSetCoordinatedCaptureProvider { ids, callback in
+            coordinatedRequests.append(ids)
+            coordinatedCallbacks.append(callback)
+        }
+        coordinatedModule.testSetScheduleAutoScroll { coordinatedSchedules += 1 }
+        coordinatedModule.testSetScrollEndedResponder { coordinatedEvents.append($0) }
+        var coordinatedGeneration = coordinatedModule.testCaptureGeneration()
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The direct scroll frame did not start") { coordinatedRequests.count == 1 }
+        precondition(coordinatedRequests[0] == nil)
+        let scrollRegistry = RecordingCaptureWindowRegistry.shared
+        let protectedID: CGWindowID = 812345678
+        scrollRegistry.register(windowID: protectedID)
+        var overlayMayShow = false
+        let overlayPresentation = Task { @MainActor in
+            await scrollRegistry.waitForScreenshots()
+            overlayMayShow = true
+        }
+        await waitUntil("The overlay did not wait for the scroll frame") {
+            scrollRegistry.testPendingScreenshotWaiterCount > 0
+        }
+        precondition(!overlayMayShow)
+        coordinatedCallbacks[0](generatedFrame)
+        await waitUntil("The direct frame did not finish") { coordinatedSchedules == 1 }
+        await overlayPresentation.value
+        precondition(overlayMayShow)
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        coordinatedModule.testStopAutoScroll()
+        coordinatedModule.testResumeAutoScroll()
+        await Task.yield()
+        precondition(coordinatedRequests.count == 1, "A stale scroll task must not start a capture")
+        coordinatedGeneration = coordinatedModule.testCaptureGeneration()
+        let scrollWindows = coordinatedModule.testShowCaptureUI(rect: NSRect(x: 10, y: 10, width: footerWidth, height: footerHeight))
+        let scrollWindowIDs = Set(scrollWindows.compactMap { CGWindowID(exactly: $0.windowNumber) })
+        precondition(scrollWindowIDs.count == scrollWindows.count)
+        let expectedExclusions = scrollWindowIDs.union([protectedID])
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The filtered scroll frame did not start") { coordinatedRequests.count == 2 }
+        precondition(coordinatedRequests[1] == expectedExclusions)
+        coordinatedCallbacks[1](frame(start: footerStep, width: footerWidth, height: footerHeight))
+        await waitUntil("The filtered frame did not finish") { coordinatedSchedules == 2 }
+        coordinatedModule.testCaptureAfterScroll(generation: coordinatedGeneration)
+        await waitUntil("The next filtered frame did not start") { coordinatedRequests.count == 3 }
+        precondition(coordinatedRequests[2] == expectedExclusions)
+        coordinatedCallbacks[2](nil)
+        await waitUntil("The failed filtered frame did not stop capture") { !coordinatedModule.testIsAutoScrolling() }
+        precondition((coordinatedEvents.first?["reason"] as? String) == "capture-error")
+        let coordinatedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-coordinated-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: coordinatedOutput) }
+        var coordinatedResult: [String: Any]?
+        coordinatedModule.testSetFinishResponder { _, result in coordinatedResult = result }
+        coordinatedModule.handle(
+            method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+            params: ["outputPath": AnyCodable(coordinatedOutput.path)],
+            requestId: "coordinated-scroll-finish"
+        )
+        await waitUntil("The coordinated scroll capture did not finish") { coordinatedResult != nil }
+        precondition((coordinatedResult?["frameCount"] as? Int) == 2)
+        let coordinatedSource = CGImageSourceCreateWithURL(coordinatedOutput as CFURL, nil)!
+        let coordinatedSaved = CGImageSourceCreateImageAtIndex(coordinatedSource, 0, nil)!
+        let expectedCapture = frame(start: 0, width: footerWidth, height: footerHeight + footerStep)
+        precondition(pixels(coordinatedSaved) == pixels(expectedCapture))
+        coordinatedModule.testHideCaptureUI()
+        scrollRegistry.unregister(windowID: protectedID)
+        await scrollRegistry.waitForScreenshots()
+        FileHandle.standardError.write(Data("legacy scroll capture coordination: complete\n".utf8))
     }
 
     @MainActor
@@ -869,6 +2333,7 @@ struct ScrollCapturePreviewTest {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.isOpaque = true
         window.hasShadow = false
         window.ignoresMouseEvents = true
@@ -905,6 +2370,357 @@ struct ScrollCapturePreviewTest {
     static func isFixtureBlue(_ color: (UInt8, UInt8, UInt8)?) -> Bool {
         guard let (red, green, blue) = color else { return false }
         return blue > 150 && Int(blue) > Int(red) * 2 && Int(blue) > Int(green) * 2
+    }
+
+    @MainActor
+    static func verifyAsyncScrollComparison() async {
+        let footerWidth = 640
+        let footerHeight = 160
+        let footerStep = 96
+        let frames = [0, footerStep].map { frame(start: $0, width: footerWidth, height: footerHeight) }
+
+        func finish(_ module: ScrollCaptureModule, output: URL) async -> [String: Any]? {
+            var result: [String: Any]?
+            module.testSetFinishResponder { _, value in result = value }
+            module.handle(
+                method: DaemonContract.ScrollCapture.Method.finish.rawValue,
+                params: ["outputPath": AnyCodable(output.path)],
+                requestId: "async-frame-finish"
+            )
+            await waitUntil("The verified prefix did not save") { result != nil }
+            return result
+        }
+
+        let resumedModule = ScrollCaptureModule()
+        resumedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        resumedModule.testSetPreviewEncoder { _ in "preview" }
+        var resumedEnds: [[String: Any]] = []
+        var resumedSteps = 0
+        var resumedCaptures: [(CGImage?) -> Void] = []
+        resumedModule.testSetScrollEndedResponder { resumedEnds.append($0) }
+        resumedModule.testSetScheduleAutoScroll { resumedSteps += 1 }
+        resumedModule.testSetCaptureProvider { resumedCaptures.append($0) }
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(!resumedModule.testConsumeCaptureImage(frames[0]))
+        precondition(resumedEnds.count == 1 && !resumedModule.testIsAutoScrolling())
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Restart did not request a baseline image") { resumedCaptures.count == 1 }
+        resumedCaptures[0](frames[0])
+        await waitUntil("Restart baseline did not complete") { resumedSteps == 1 || resumedEnds.count == 2 }
+        print("scroll restart after duplicates: scheduled=\(resumedSteps), ended=\(resumedEnds.count)")
+        fflush(stdout)
+        precondition(resumedSteps == 1 && resumedEnds.count == 1 && resumedModule.testIsAutoScrolling())
+        var cursorTransitions: [Bool] = []
+        var postedSteps: [CGPoint] = []
+        resumedModule.testSetCursorResponder { cursorTransitions.append($0) }
+        resumedModule.testCheckCursor(inside: true)
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: -1, y: 48)) {
+            postedSteps.append($0)
+            return true
+        }
+        print("scroll step with pointer outside: posts=\(postedSteps.count)")
+        fflush(stdout)
+        precondition(postedSteps.isEmpty && cursorTransitions == [true])
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) {
+            postedSteps.append($0)
+            return true
+        }
+        precondition(postedSteps.count == 1 && postedSteps[0].x == 64 && cursorTransitions == [true, false])
+        print("scroll step after pointer returns: posts=\(postedSteps.count), prompt cleared")
+        let resumedGeneration = resumedModule.testCaptureGeneration()
+        for index in 1...3 {
+            resumedModule.testCaptureAfterScroll(generation: resumedGeneration)
+            precondition(resumedCaptures.count == index + 1)
+            resumedCaptures[index](frames[0])
+            await waitUntil("A post-scroll image did not complete") {
+                resumedSteps == index + 1 || resumedEnds.count == 2
+            }
+            precondition(resumedModule.testIsAutoScrolling() == (index < 3))
+        }
+        precondition(resumedSteps == 3 && resumedEnds.count == 2)
+        precondition(resumedEnds.last?["reason"] as? String == "duplicate")
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Input failure test did not request a baseline") { resumedCaptures.count == 5 }
+        resumedCaptures[4](frames[0])
+        await waitUntil("Input failure test did not schedule a scroll") { resumedSteps == 4 }
+        var rejectedPosts = 0
+        resumedModule.testPerformAutoScrollStep(at: NSPoint(x: 64, y: 48)) { _ in
+            rejectedPosts += 1
+            return false
+        }
+        print("scroll input failure: still scrolling=\(resumedModule.testIsAutoScrolling())")
+        fflush(stdout)
+        precondition(rejectedPosts == 1 && !resumedModule.testIsAutoScrolling())
+        precondition(resumedEnds.count == 3 && resumedEnds.last?["reason"] as? String == "input-error")
+        precondition(resumedEnds.last?["frameCount"] as? Int == 1 && resumedCaptures.count == 5)
+        resumedModule.testSetAutoScrollInputAllowed(false)
+        resumedModule.testEnqueueAutoScrollStart()
+        await waitUntil("Missing input access did not report a stop") { resumedEnds.count == 4 }
+        precondition(!resumedModule.testIsAutoScrolling() && resumedCaptures.count == 5)
+        precondition(resumedEnds.last?["reason"] as? String == "input-error")
+        precondition(resumedEnds.last?["frameCount"] as? Int == 1)
+        print("scroll input preflight denial: no new capture requested")
+        let resumedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-resume-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: resumedOutput) }
+        let resumedResult = await finish(resumedModule, output: resumedOutput)
+        precondition(resumedResult?["frameCount"] as? Int == 1)
+        let resumedSource = CGImageSourceCreateWithURL(resumedOutput as CFURL, nil)!
+        let resumedImage = CGImageSourceCreateImageAtIndex(resumedSource, 0, nil)!
+        precondition(pixels(resumedImage) == pixels(frames[0]))
+        print("scroll restart: three post-scroll duplicates stop without changing saved pixels")
+
+        let retryModule = ScrollCaptureModule()
+        retryModule.testPrepareAutoScrollPreview(width: footerWidth / 2, height: footerHeight / 2, step: footerStep / 2)
+        let rejected = frame(start: 60_000, width: footerWidth, height: footerHeight)
+        let recovered = frame(start: footerStep * 2, width: footerWidth, height: footerHeight)
+        let encoderEntered = DispatchSemaphore(value: 0)
+        let releaseEncoder = DispatchSemaphore(value: 0)
+        var retryPreviews: [Int] = []
+        var retryEnds: [[String: Any]] = []
+        var retryCaptures: [(CGImage?) -> Void] = []
+        var retrySteps = 0
+        retryModule.testSetPreviewEncoder { image in
+            if image.height == 96 {
+                encoderEntered.signal()
+                releaseEncoder.wait()
+            }
+            return "preview"
+        }
+        retryModule.testSetPreviewResponder { count, _ in retryPreviews.append(count) }
+        retryModule.testSetScrollEndedResponder { retryEnds.append($0) }
+        retryModule.testSetScheduleAutoScroll { retrySteps += 1 }
+        retryModule.testSetCaptureProvider { retryCaptures.append($0) }
+        precondition(retryModule.testConsumeCaptureImage(frames[0]))
+        await waitUntil("The first retry fixture preview did not appear") { retryPreviews == [1] }
+        precondition(retryModule.testConsumeCaptureImage(frames[1]))
+        precondition(encoderEntered.wait(timeout: .now() + 5) == .success)
+        precondition(retryModule.testConsumeCaptureImage(rejected))
+        await waitUntil("The rejected frame did not stop scrolling") { retryEnds.count == 1 }
+        precondition(retryEnds[0]["frameCount"] as? Int == 2)
+        releaseEncoder.signal()
+        retryModule.testWaitForPreviewWork()
+        var retryPreviewDrained = false
+        DispatchQueue.main.async { retryPreviewDrained = true }
+        await waitUntil("The verified preview work did not drain") { retryPreviewDrained }
+        print("scroll rejected seam: verified previews=\(retryPreviews)")
+        fflush(stdout)
+        precondition(retryPreviews == [1, 2])
+
+        retryModule.testEnqueueAutoScrollStart()
+        await waitUntil("The alignment retry did not request its baseline") { retryCaptures.count == 1 }
+        retryCaptures[0](frames[1])
+        await waitUntil("The alignment retry did not schedule a step") { retrySteps == 1 }
+        retryModule.testCaptureAfterScroll(generation: retryModule.testCaptureGeneration())
+        precondition(retryCaptures.count == 2)
+        retryCaptures[1](recovered)
+        await waitUntil("The aligned recovery frame did not appear") { retryPreviews.last == 3 }
+        let retryOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-seam-retry-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: retryOutput) }
+        let retryResult = await finish(retryModule, output: retryOutput)
+        precondition(retryResult?["frameCount"] as? Int == 3 && retryEnds.count == 1)
+        let retrySource = CGImageSourceCreateWithURL(retryOutput as CFURL, nil)!
+        let retryImage = CGImageSourceCreateImageAtIndex(retrySource, 0, nil)!
+        let expectedRetry = frame(start: 0, width: footerWidth, height: footerHeight + footerStep * 2)
+        precondition(pixels(retryImage) == pixels(expectedRetry))
+        print("scroll seam retry: recovered third frame, saved pixels match")
+
+        let gatedModule = ScrollCaptureModule()
+        gatedModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        gatedModule.testStopAutoScroll()
+        var gatedCaptures: [(CGImage?) -> Void] = []
+        var gatedSteps = 0
+        var gatedEnds: [[String: Any]] = []
+        let alignmentEntered = DispatchSemaphore(value: 0)
+        let releaseAlignment = DispatchSemaphore(value: 0)
+        let previewEntered = DispatchSemaphore(value: 0)
+        let releasePreview = DispatchSemaphore(value: 0)
+        let outsidePage = frame(start: 60_000, width: footerWidth, height: footerHeight)
+        gatedModule.testSetCaptureProvider { gatedCaptures.append($0) }
+        gatedModule.testSetScheduleAutoScroll { gatedSteps += 1 }
+        gatedModule.testSetScrollEndedResponder { gatedEnds.append($0) }
+        gatedModule.testSetPreviewAlignment { _, bottom, _, _ in
+            if bottom === outsidePage { return nil }
+            alignmentEntered.signal()
+            releaseAlignment.wait()
+            return footerHeight - footerStep
+        }
+        gatedModule.testSetPreviewEncoder { image in
+            if image.height == 96 {
+                previewEntered.signal()
+                releasePreview.wait()
+            }
+            return "preview"
+        }
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("The gated scroll did not request a baseline") { gatedCaptures.count == 1 }
+        gatedCaptures[0](frames[0])
+        await waitUntil("The gated scroll did not schedule its first step") { gatedSteps == 1 }
+        let gatedGeneration = gatedModule.testCaptureGeneration()
+        gatedModule.testCaptureAfterScroll(generation: gatedGeneration)
+        precondition(gatedCaptures.count == 2)
+        gatedCaptures[1](frames[1])
+        await waitUntil("The alignment worker did not reach its gate") {
+            alignmentEntered.wait(timeout: .now()) == .success
+        }
+        print("scroll step while alignment is held: scheduled=\(gatedSteps)")
+        fflush(stdout)
+        precondition(gatedSteps == 1 && gatedEnds.isEmpty)
+        releaseAlignment.signal()
+        await waitUntil("The verified preview did not reach its encoder") {
+            previewEntered.wait(timeout: .now()) == .success
+        }
+        await waitUntil("The verified frame did not resume scrolling") { gatedSteps == 2 }
+        gatedModule.testCaptureAfterScroll(generation: gatedGeneration)
+        precondition(gatedCaptures.count == 3)
+        gatedCaptures[2](outsidePage)
+        await waitUntil("A rejected alignment did not stop scrolling") { gatedEnds.count == 1 }
+        precondition(gatedEnds[0]["reason"] as? String == "no-overlap")
+        precondition(gatedEnds[0]["frameCount"] as? Int == 2)
+        precondition(!gatedModule.testIsAutoScrolling() && gatedSteps == 2)
+        releasePreview.signal()
+        gatedModule.testWaitForPreviewWork()
+        print("scroll alignment gate: verified step resumes during encoding, rejected frame schedules no step")
+
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("A retry did not request the accepted baseline") { gatedCaptures.count == 4 }
+        gatedCaptures[3](frames[1])
+        await waitUntil("The accepted baseline did not schedule a step") { gatedSteps == 3 }
+        let interruptedGeneration = gatedModule.testCaptureGeneration()
+        gatedModule.testCaptureAfterScroll(generation: interruptedGeneration)
+        precondition(gatedCaptures.count == 5)
+        let interrupted = frame(start: footerStep * 2, width: footerWidth, height: footerHeight)
+        gatedCaptures[4](interrupted)
+        await waitUntil("The interrupted run did not reach alignment") {
+            alignmentEntered.wait(timeout: .now()) == .success
+        }
+        gatedModule.testEnqueueAutoScrollStop()
+        precondition(!gatedModule.testIsAutoScrolling())
+        gatedModule.testEnqueueAutoScrollStart()
+        await waitUntil("The restarted run did not request its baseline") { gatedCaptures.count == 6 }
+        gatedCaptures[5](interrupted)
+        gatedModule.testWaitForFrameComparison()
+        var restartedComparisonDrained = false
+        DispatchQueue.main.async { restartedComparisonDrained = true }
+        await waitUntil("The restart baseline comparison did not drain") { restartedComparisonDrained }
+        print("scroll restart while prior alignment is held: scheduled=\(gatedSteps)")
+        fflush(stdout)
+        precondition(gatedSteps == 3)
+        releaseAlignment.signal()
+        await waitUntil("The restarted run did not schedule after alignment") { gatedSteps == 4 }
+        let gatedOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-gated-restart-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: gatedOutput) }
+        let gatedResult = await finish(gatedModule, output: gatedOutput)
+        precondition(gatedResult?["frameCount"] as? Int == 3 && gatedSteps == 4 && gatedEnds.count == 1)
+        let gatedSource = CGImageSourceCreateWithURL(gatedOutput as CFURL, nil)!
+        let gatedImage = CGImageSourceCreateImageAtIndex(gatedSource, 0, nil)!
+        let expectedGated = frame(start: 0, width: footerWidth, height: footerHeight + footerStep * 2)
+        precondition(pixels(gatedImage) == pixels(expectedGated))
+        print("scroll restart after alignment: one current step, saved pixels match")
+
+        let asyncCaptureModule = ScrollCaptureModule()
+        asyncCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        asyncCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        let staleCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        asyncCaptureModule.testStopAutoScroll()
+        asyncCaptureModule.testResumeAutoScroll()
+        let currentCaptureGeneration = asyncCaptureModule.testCaptureGeneration()
+        precondition(staleCaptureGeneration != currentCaptureGeneration)
+        let stale = await asyncCaptureModule.testCompleteExcludedCapture(frames[1], generation: staleCaptureGeneration)
+        precondition(stale == nil)
+        let current = await asyncCaptureModule.testCompleteExcludedCapture(frames[0], generation: currentCaptureGeneration)
+        precondition(current == true)
+        let asyncCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-async-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: asyncCaptureOutput) }
+        let asyncCaptureResult = await finish(asyncCaptureModule, output: asyncCaptureOutput)
+        precondition((asyncCaptureResult?["success"] as? Bool) == true)
+        precondition((asyncCaptureResult?["frameCount"] as? Int) == 1)
+        let finished = await asyncCaptureModule.testCompleteExcludedCapture(frames[1], generation: currentCaptureGeneration)
+        precondition(finished == nil)
+        let asyncCaptureSource = CGImageSourceCreateWithURL(asyncCaptureOutput as CFURL, nil)!
+        let asyncCaptureSaved = CGImageSourceCreateImageAtIndex(asyncCaptureSource, 0, nil)!
+        precondition(pixels(asyncCaptureSaved) == pixels(frames[0]))
+
+        let delayedCaptureModule = ScrollCaptureModule()
+        delayedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        delayedCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        var pendingCaptures: [(CGImage?) -> Void] = []
+        var scheduledScrollSteps = 0
+        var delayedCaptureEvents: [[String: Any]] = []
+        delayedCaptureModule.testSetCaptureProvider { pendingCaptures.append($0) }
+        delayedCaptureModule.testSetScheduleAutoScroll { scheduledScrollSteps += 1 }
+        delayedCaptureModule.testSetScrollEndedResponder { delayedCaptureEvents.append($0) }
+        let delayedOldGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        let delayedCurrentGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedOldGeneration)
+        precondition(pendingCaptures.isEmpty, "A delayed request from a stopped run must not capture after restart")
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedCurrentGeneration)
+        precondition(pendingCaptures.count == 1)
+        delayedCaptureModule.testStopAutoScroll()
+        delayedCaptureModule.testResumeAutoScroll()
+        pendingCaptures[0](frames[1])
+        precondition(scheduledScrollSteps == 0, "A stale frame must not schedule a scroll timer")
+        let delayedNewGeneration = delayedCaptureModule.testCaptureGeneration()
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 2)
+        pendingCaptures[1](frames[0])
+        await waitUntil("The compared frame did not resume scrolling") { scheduledScrollSteps == 1 }
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        pendingCaptures[2](nil)
+        precondition(!delayedCaptureModule.testIsAutoScrolling())
+        precondition(scheduledScrollSteps == 1)
+        precondition((delayedCaptureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((delayedCaptureEvents.first?["frameCount"] as? Int) == 1)
+        let delayedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-delayed-capture-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: delayedCaptureOutput) }
+        let delayedCaptureResult = await finish(delayedCaptureModule, output: delayedCaptureOutput)
+        precondition((delayedCaptureResult?["success"] as? Bool) == true)
+        precondition((delayedCaptureResult?["frameCount"] as? Int) == 1)
+        delayedCaptureModule.testCaptureAfterScroll(generation: delayedNewGeneration)
+        precondition(pendingCaptures.count == 3)
+        let delayedCaptureSource = CGImageSourceCreateWithURL(delayedCaptureOutput as CFURL, nil)!
+        let delayedCaptureSaved = CGImageSourceCreateImageAtIndex(delayedCaptureSource, 0, nil)!
+        precondition(pixels(delayedCaptureSaved) == pixels(frames[0]))
+
+        let comparingModule = ScrollCaptureModule()
+        comparingModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        comparingModule.testSetPreviewEncoder { _ in "preview" }
+        precondition(comparingModule.testConsumeCaptureImage(frames[0]))
+        let comparisonGate = DispatchSemaphore(value: 0)
+        var comparisonStarted = false
+        comparingModule.testSetBeforeFrameComparison {
+            precondition(!Thread.isMainThread, "Scroll frame comparison must run off the AppKit thread")
+            DispatchQueue.main.async { comparisonStarted = true }
+            precondition(comparisonGate.wait(timeout: .now() + 10) == .success)
+        }
+        let comparingGeneration = comparingModule.testCaptureGeneration()
+        let pendingComparison = Task { @MainActor in
+            await comparingModule.testCompleteExcludedCapture(frames[1], generation: comparingGeneration)
+        }
+        await waitUntil("The main thread could not respond while a comparison was in flight") { comparisonStarted }
+        comparingModule.testStopAutoScroll()
+        comparingModule.testResumeAutoScroll()
+        comparisonGate.signal()
+        let discarded = await pendingComparison.value
+        precondition(discarded == nil, "A comparison from a stopped run must not publish after restart")
+        let comparisonOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-compare-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: comparisonOutput) }
+        let comparisonResult = await finish(comparingModule, output: comparisonOutput)
+        precondition((comparisonResult?["frameCount"] as? Int) == 1)
+        let comparisonSource = CGImageSourceCreateWithURL(comparisonOutput as CFURL, nil)!
+        let comparisonSaved = CGImageSourceCreateImageAtIndex(comparisonSource, 0, nil)!
+        precondition(pixels(comparisonSaved) == pixels(frames[0]))
+
     }
 
     static func runExistingScrollChecks() {
@@ -961,12 +2777,41 @@ struct ScrollCapturePreviewTest {
         )!
         black.setFillColor(NSColor.black.cgColor)
         black.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        let (hash, results, count, restarted, cleared) = ScrollCaptureModule().testRepeatedFrame(black.makeImage()!)
+        let blackFrame = black.makeImage()!
+        let (hash, results, count, restarted, cleared) = ScrollCaptureModule()
+            .testFrameSequence(Array(repeating: blackFrame, count: 4))
         precondition(hash == 0)
         precondition(results.count == 4 && results[0] == 0 && results[1] == 0 && results[2] == 0 && results[3] == nil)
         precondition(count == 1, "The first frame must be captured even when its hash is zero")
         precondition(restarted == 0, "A new session must not reuse the previous frame hash")
         precondition(cleared, "Cleanup must clear the previous frame hash")
+
+        func frameBelowFixedHeader(green: CGFloat) -> CGImage {
+            let context = CGContext(
+                data: nil,
+                width: 80,
+                height: 240,
+                bitsPerComponent: 8,
+                bytesPerRow: 80 * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            context.setFillColor(red: 0.25, green: 0.5, blue: 0.5, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 240))
+            context.setFillColor(red: 0.25, green: green, blue: 0.5, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 140))
+            return context.makeImage()!
+        }
+        let (_, headerResults, headerCount, _, _) = ScrollCaptureModule().testFrameSequence(
+            [0.2, 0.3, 0.4, 0.6, 0.6, 0.6, 0.6].map { frameBelowFixedHeader(green: $0) }
+        )
+        precondition(headerResults == [0, 1, 2, 3, 3, 3, nil] && headerCount == 4,
+                     "Changed body pixels below a fixed header must survive duplicate detection")
+        black.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        let (_, alphaResults, alphaCount, _, _) = ScrollCaptureModule()
+            .testFrameSequence([blackFrame, black.makeImage()!])
+        precondition(alphaResults == [0, 1] && alphaCount == 2,
+                     "An RGB fingerprint collision must not discard changed alpha")
 
         let cancelWins = ScrollCaptureModule().testFinishRace(cancelBeforeCompletion: true)
         precondition(cancelWins.0 && cancelWins.1 && cancelWins.2 && cancelWins.3)
@@ -1043,7 +2888,7 @@ struct ScrollCapturePreviewTest {
             return expected
         }
         alignmentModule.testSetPreviewEncoder { _ in "preview" }
-        alignmentModule.testSetPreviewResponder { _, frameCount, _ in
+        alignmentModule.testSetPreviewResponder { frameCount, _ in
             alignmentPublications.append(frameCount)
         }
         alignmentModule.testSetFinishAlignmentWaitStarted(finishWaitingForAlignment)
@@ -1136,6 +2981,87 @@ struct ScrollCapturePreviewTest {
         precondition(drainSaved.height == height + 224)
         precondition(pixels(drainSaved) == pixels(frame(start: 0, width: width, height: height + 224)))
 
+        let retentionModule = ScrollCaptureModule()
+        weak var composedPreview: CGImage?
+        var encodedComposedPreview = false
+        retentionModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        retentionModule.testSetPreviewEncoder { image in
+            if image.height > allFrames[0].height {
+                encodedComposedPreview = true
+                composedPreview = image
+            }
+            return "preview"
+        }
+        retentionModule.testPreparePreview(step: step)
+        retentionModule.testAppendPreviewFrame(allFrames[0])
+        retentionModule.testAppendPreviewFrame(allFrames[1])
+        retentionModule.testWaitForPreviewWork()
+        precondition(encodedComposedPreview, "The encoder must receive the stitched bitmap")
+        precondition(composedPreview == nil, "The published scroll preview must release its full-size bitmap")
+
+        let finishMemoryModule = ScrollCaptureModule()
+        finishMemoryModule.testPreparePreview(step: step, width: width, height: height)
+        finishMemoryModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        let finishMemoryEncoderStarted = DispatchSemaphore(value: 0)
+        let resumeFinishMemoryEncoder = DispatchSemaphore(value: 0)
+        finishMemoryModule.testSetPreviewEncoder { image in
+            if image.height > height {
+                finishMemoryEncoderStarted.signal()
+                precondition(resumeFinishMemoryEncoder.wait(timeout: .now() + 10) == .success)
+            }
+            return "preview"
+        }
+        weak var inputFrame: CGImage?
+        autoreleasepool {
+            let first = frame(start: 0, width: width, height: height)
+            inputFrame = first
+            finishMemoryModule.testAppendPreviewFrame(first)
+            finishMemoryModule.testAppendPreviewFrame(frame(start: step, width: width, height: height))
+        }
+        precondition(finishMemoryEncoderStarted.wait(timeout: .now() + 5) == .success)
+        precondition(inputFrame != nil, "The source must stay available until stitching")
+        let finishMemoryOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-finish-memory-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: finishMemoryOutput) }
+        let finishedMemory = finishMemoryModule.testFinishCurrentCapture(outputPath: finishMemoryOutput.path)
+        precondition(finishedMemory?["frameCount"] as? Int == 2)
+        precondition(inputFrame == nil, "The finish worker must release captured images while a preview is encoding")
+        resumeFinishMemoryEncoder.signal()
+        finishMemoryModule.testWaitForRetiredPreviewWork()
+
+        let drawingModule = ScrollCaptureModule()
+        let thirdStripStarted = DispatchSemaphore(value: 0)
+        let resumeDrawing = DispatchSemaphore(value: 0)
+        var drawingPublications: [Int] = []
+        drawingModule.testPreparePreview(step: step, width: width, height: height)
+        drawingModule.testSetPreviewAlignment { _, _, expected, _ in expected }
+        drawingModule.testSetPreviewEncoder { _ in "preview" }
+        drawingModule.testSetPreviewResponder { count, _ in drawingPublications.append(count) }
+        drawingModule.testSetBeforePreviewStrip { index in
+            if index == 2 {
+                thirdStripStarted.signal()
+                precondition(resumeDrawing.wait(timeout: .now() + 10) == .success)
+            }
+        }
+        weak var drawnFrame: CGImage?
+        autoreleasepool {
+            drawingModule.testAppendPreviewFrame(frame(start: 0, width: width, height: height))
+            let second = frame(start: step, width: width, height: height)
+            drawnFrame = second
+            drawingModule.testAppendPreviewFrame(second)
+            drawingModule.testAppendPreviewFrame(frame(start: 2 * step, width: width, height: height))
+        }
+        precondition(thirdStripStarted.wait(timeout: .now() + 5) == .success)
+        let drawingOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-finish-drawing-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: drawingOutput) }
+        let drawingFinish = drawingModule.testFinishCurrentCapture(outputPath: drawingOutput.path)
+        precondition(drawingFinish?["frameCount"] as? Int == 3)
+        precondition(drawnFrame == nil, "A held preview must release the strips it has drawn")
+        resumeDrawing.signal()
+        drawingModule.testWaitForRetiredPreviewWork()
+        precondition(!drawingPublications.contains(3), "A preview must not publish after Finish")
+
         let backlogModule = ScrollCaptureModule()
         let firstEncodeStarted = DispatchSemaphore(value: 0)
         let releaseFirstEncode = DispatchSemaphore(value: 0)
@@ -1159,7 +3085,7 @@ struct ScrollCapturePreviewTest {
             }
             return "preview-\(count)"
         }
-        backlogModule.testSetPreviewResponder { _, frameCount, _ in
+        backlogModule.testSetPreviewResponder { frameCount, _ in
             backlogPublications.append(frameCount)
         }
         backlogModule.testPreparePreview(step: step)
@@ -1204,7 +3130,7 @@ struct ScrollCapturePreviewTest {
             }
             return "preview-\(count)"
         }
-        staleModule.testSetPreviewResponder { _, frameCount, _ in
+        staleModule.testSetPreviewResponder { frameCount, _ in
             stalePublications.append(frameCount)
         }
         staleModule.testPreparePreview(step: step)
@@ -1439,6 +3365,60 @@ struct ScrollCapturePreviewTest {
         precondition((noOverlapResult?["success"] as? Bool) == true)
         precondition((noOverlapResult?["frameCount"] as? Int) == 1, "A poor unique score must not discard rows when the frames have no true overlap")
 
+        let headerRows = 46
+        let bodyShift = 86
+        for footerRows in [0, 12] {
+            let viewportHeight = 160
+            let frameCount = 3
+            let frames = (0..<frameCount).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: width, height: viewportHeight,
+                    footerHeight: footerRows, step: bodyShift, headerHeight: headerRows
+                )
+            }
+            let expectedOverlap = viewportHeight - footerRows - bodyShift
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: frames[0], bottomFrame: frames[1], expectedOverlap: viewportHeight - bodyShift + 11
+            ) == expectedOverlap, "An exact body match below the fixed header must align the whole viewport")
+            let output = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("poratake-scroll-fixed-header-seam-\(UUID().uuidString).png")
+            defer { try? FileManager.default.removeItem(at: output) }
+            let (preview, saved, _, overlaps, count, estimatedHeight) = ScrollCaptureModule().testPreviewAndSave(
+                frames: frames, step: bodyShift - 11, outputPath: output.path
+            )
+            let expectedHeight = viewportHeight + (frameCount - 1) * bodyShift
+            let document = fixedFooterFrame(
+                index: 0, periodic: false, width: width, height: expectedHeight,
+                footerHeight: footerRows, step: bodyShift, headerHeight: headerRows
+            )
+            precondition(overlaps == Array(repeating: expectedOverlap, count: frameCount - 1))
+            precondition(count == frameCount && estimatedHeight == expectedHeight)
+            precondition(pixels(preview) == pixels(saved))
+            precondition(pixels(saved) == pixels(document), "The saved scroll capture must contain all body rows and one header")
+
+            let noisyFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: false, width: width, height: viewportHeight,
+                    footerHeight: footerRows, step: bodyShift, bodyNoise: 1, headerHeight: headerRows
+                )
+            }
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: noisyFrames[0], bottomFrame: noisyFrames[1], expectedOverlap: viewportHeight - bodyShift + 11
+            ) == expectedOverlap, "A short visible seam with capture noise must align below the header")
+        }
+        verifyWideFixedHeaderSeam()
+        for shift in [84, 85] {
+            let repeatedBodyFrames = (0..<2).map { index in
+                fixedFooterFrame(
+                    index: index, periodic: true, width: width, height: 160,
+                    footerHeight: 0, step: shift, headerHeight: headerRows
+                )
+            }
+            precondition(ScrollCaptureModule().testFindOverlap(
+                topFrame: repeatedBodyFrames[0], bottomFrame: repeatedBodyFrames[1], expectedOverlap: 160 - shift
+            ) == nil, "A fixed header must not make multiple equally valid body overlaps acceptable")
+        }
+
         let footerWidth = 640
         let footerHeight = 160
         let footerSize = 20
@@ -1469,12 +3449,130 @@ struct ScrollCapturePreviewTest {
         let periodicFooterSaved = CGImageSourceCreateImageAtIndex(periodicFooterSource, 0, nil)!
         precondition(pixels(periodicFooterSaved) == pixels(periodicFooterFrames[0]), "Ambiguous alignment must save the previous accepted frame")
 
+        let staleStartModule = ScrollCaptureModule()
+        staleStartModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStartModule.testStopAutoScroll()
+        var staleStartCaptures = 0
+        staleStartModule.testSetCaptureProvider { _ in staleStartCaptures += 1 }
+        staleStartModule.testEnqueueAutoScrollStart()
+        staleStartModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStartModule.testStopAutoScroll()
+        var staleStartDrained = false
+        DispatchQueue.main.async { staleStartDrained = true }
+        let staleStartDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleStartDrained && Date() < staleStartDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleStartDeadline)
+        }
+        precondition(staleStartDrained)
+        precondition(!staleStartModule.testIsAutoScrolling(), "An old start request must not start a new capture session")
+        precondition(staleStartCaptures == 0)
+
+        let staleStopModule = ScrollCaptureModule()
+        staleStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        staleStopModule.testEnqueueAutoScrollStop()
+        staleStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        var staleStopDrained = false
+        DispatchQueue.main.async { staleStopDrained = true }
+        let staleStopDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleStopDrained && Date() < staleStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleStopDeadline)
+        }
+        precondition(staleStopDrained)
+        precondition(staleStopModule.testIsAutoScrolling(), "An old stop request must not stop a new capture session")
+
+        let rapidStopModule = ScrollCaptureModule()
+        rapidStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        rapidStopModule.testStopAutoScroll()
+        var rapidStopCaptures = 0
+        rapidStopModule.testSetCaptureProvider { _ in rapidStopCaptures += 1 }
+        rapidStopModule.testEnqueueAutoScrollStart()
+        rapidStopModule.testEnqueueAutoScrollStop()
+        var rapidStopDrained = false
+        DispatchQueue.main.async { rapidStopDrained = true }
+        let rapidStopDeadline = Date(timeIntervalSinceNow: 5)
+        while !rapidStopDrained && Date() < rapidStopDeadline {
+            _ = RunLoop.current.run(mode: .default, before: rapidStopDeadline)
+        }
+        precondition(rapidStopDrained)
+        precondition(!rapidStopModule.testIsAutoScrolling(), "A stop must cancel a queued auto-scroll start")
+        precondition(rapidStopCaptures == 0)
+
+        let staleSessionModule = ScrollCaptureModule()
+        var staleSessionStarts: [Bool] = []
+        staleSessionModule.testSetCaptureStartResult { staleSessionStarts.append($0) }
+        staleSessionModule.testEnqueueCaptureStart(width: footerWidth, height: footerHeight)
+        staleSessionModule.testCancelCapture()
+        staleSessionModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        var staleSessionDrained = false
+        DispatchQueue.main.async { staleSessionDrained = true }
+        let staleSessionDeadline = Date(timeIntervalSinceNow: 5)
+        while !staleSessionDrained && Date() < staleSessionDeadline {
+            _ = RunLoop.current.run(mode: .default, before: staleSessionDeadline)
+        }
+        precondition(staleSessionDrained)
+        precondition(staleSessionStarts == [false], "A cancelled session must not finish setup in a later session")
+
+        let firstFrameFailureModule = ScrollCaptureModule()
+        var firstFrameFailureEvents: [[String: Any]] = []
+        firstFrameFailureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        firstFrameFailureModule.testSetScrollEndedResponder { firstFrameFailureEvents.append($0) }
+        precondition(!firstFrameFailureModule.testConsumeCaptureImage(nil))
+        precondition(!firstFrameFailureModule.testIsAutoScrolling())
+        precondition((firstFrameFailureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((firstFrameFailureEvents.first?["frameCount"] as? Int) == 0)
+
+        let failedCaptureModule = ScrollCaptureModule()
+        var failedCaptureEvents: [[String: Any]] = []
+        failedCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        failedCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        failedCaptureModule.testSetScrollEndedResponder { failedCaptureEvents.append($0) }
+        precondition(failedCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!failedCaptureModule.testConsumeCaptureImage(nil))
+        precondition(!failedCaptureModule.testIsAutoScrolling())
+        precondition((failedCaptureEvents.first?["reason"] as? String) == "capture-error")
+        precondition((failedCaptureEvents.first?["frameCount"] as? Int) == 1)
+        let failedCaptureOutput = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("poratake-scroll-capture-error-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: failedCaptureOutput) }
+        let failedCaptureResult = failedCaptureModule.testFinishCurrentCapture(outputPath: failedCaptureOutput.path)
+        precondition((failedCaptureResult?["success"] as? Bool) == true)
+        precondition((failedCaptureResult?["frameCount"] as? Int) == 1)
+        let failedCaptureSource = CGImageSourceCreateWithURL(failedCaptureOutput as CFURL, nil)!
+        let failedCaptureSaved = CGImageSourceCreateImageAtIndex(failedCaptureSource, 0, nil)!
+        precondition(pixels(failedCaptureSaved) == pixels(periodicFooterFrames[0]))
+        precondition(failedCaptureEvents.count == 1)
+
+        let duplicateCaptureModule = ScrollCaptureModule()
+        var duplicateCaptureEvents: [[String: Any]] = []
+        duplicateCaptureModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        duplicateCaptureModule.testSetPreviewEncoder { _ in "preview" }
+        duplicateCaptureModule.testSetScrollEndedResponder { duplicateCaptureEvents.append($0) }
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!duplicateCaptureModule.testConsumeCaptureImage(periodicFooterFrames[0]))
+        precondition(!duplicateCaptureModule.testIsAutoScrolling())
+        precondition((duplicateCaptureEvents.first?["reason"] as? String) == "duplicate")
+        precondition((duplicateCaptureEvents.first?["frameCount"] as? Int) == 1)
+
         let autoStopModule = ScrollCaptureModule()
         var autoStopPreviewCounts: [Int] = []
         var noOverlapEvents: [[String: Any]] = []
+        var autoStopCursorEvents: [Bool] = []
         autoStopModule.testPrepareAutoScrollPreview(width: footerWidth, height: footerHeight, step: footerStep)
+        let boundary = NSScreen.screens.first.map { _ -> NSWindow in
+            _ = NSApplication.shared
+            let window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+            window.backgroundColor = .systemBlue
+            autoStopModule.testInstallBoundary(window)
+            return window
+        }
+        autoStopModule.testSetCursorResponder { autoStopCursorEvents.append($0) }
+        autoStopModule.testCheckCursor(inside: false)
+        precondition(autoStopCursorEvents == [true])
+        precondition(boundary.map { $0.backgroundColor != .systemBlue } ?? true)
         autoStopModule.testSetPreviewEncoder { _ in "preview" }
-        autoStopModule.testSetPreviewResponder { _, frameCount, _ in
+        autoStopModule.testSetPreviewResponder { frameCount, _ in
             autoStopPreviewCounts.append(frameCount)
         }
         autoStopModule.testSetScrollEndedResponder { data in noOverlapEvents.append(data) }
@@ -1494,6 +3592,8 @@ struct ScrollCapturePreviewTest {
         precondition(!autoStopModule.testIsAutoScrolling(), "Ambiguous alignment must stop auto-scroll")
         precondition((noOverlapEvents.first?["reason"] as? String) == "no-overlap")
         precondition((noOverlapEvents.first?["frameCount"] as? Int) == 1)
+        precondition(autoStopCursorEvents == [true, false], "Stopping must dismiss the resume-scrolling prompt")
+        precondition(boundary.map { $0.backgroundColor == .systemBlue } ?? true, "Stopping must restore the normal boundary")
         precondition(autoStopPreviewCounts == [1], "The ambiguous frame must not replace the last accepted preview")
         let autoStopOutput = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("poratake-scroll-auto-stop-\(UUID().uuidString).png")
@@ -1522,7 +3622,7 @@ struct ScrollCapturePreviewTest {
         var manualNoOverlapEvents: [[String: Any]] = []
         manualStopModule.testPreparePreview(step: footerStep, width: footerWidth, height: footerHeight)
         manualStopModule.testSetPreviewEncoder { _ in "preview" }
-        manualStopModule.testSetPreviewResponder { _, frameCount, _ in
+        manualStopModule.testSetPreviewResponder { frameCount, _ in
             manualStopPreviewCounts.append(frameCount)
         }
         manualStopModule.testSetScrollEndedResponder { data in manualNoOverlapEvents.append(data) }

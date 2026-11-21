@@ -1,0 +1,20 @@
+macOS GPUI recording Stop timeout, isolated fake-daemon fixture
+
+Light and dark recording-only parity runs use a fake daemon that holds the Stop
+response. The fixture checks that the Stop action returns within five seconds
+without releasing the response, the control shows Stopping, the project bytes
+remain intact, and another Stop does not send a duplicate request.
+
+Late success finalizes the project, and discard removes it only after success.
+Late retryable failures retain the project and restore recording or paused state
+for a successful retry, including discard. Terminal errors retain the project
+and report its path whether the held Stop succeeds or fails. The fixture also
+checks late success and retryable failure while startup is still resolving.
+A target-close event during a failed Stop triggers a retry, preserving whether
+the user chose to save or discard.
+
+These runs use generated video and a fake daemon, not capture devices. They do
+not verify real ScreenCaptureKit timing, permissions or recorded pixels. An
+indefinitely held response keeps Stopping active until the daemon responds or
+disconnects. Sending the request and clearing camera-preview protection remain
+synchronous daemon operations.

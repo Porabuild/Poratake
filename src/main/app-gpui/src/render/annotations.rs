@@ -20,6 +20,7 @@ const HIT_TEST_OUTLINE_VERTEX_BUDGET: usize = 65_536;
 const HIT_TEST_CURVE_STEP_BUDGET: usize = 262_144;
 const HIT_TEST_CURVE_FLATNESS_SCREEN_PX: f64 = 0.25;
 const HIT_TEST_CURVE_MAX_DEPTH: u8 = 16;
+pub const RECTANGLE_CORNER_RADIUS: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ScreenshotPaint<'a> {
@@ -36,26 +37,13 @@ impl<'a> ScreenshotPaint<'a> {
 }
 
 pub fn screenshot_paints<'a>(
-    annotations: impl Iterator<Item = &'a Annotation> + Clone,
+    annotations: impl Iterator<Item = &'a Annotation>,
 ) -> Vec<ScreenshotPaint<'a>> {
     let mut paints = Vec::with_capacity(annotations.size_hint().1.unwrap_or(0));
-    for annotation in annotations.clone() {
-        if matches!(annotation, Annotation::Redact { .. }) {
-            paints.push(ScreenshotPaint::Annotation(annotation));
-        }
-    }
-    for annotation in annotations.clone() {
-        match annotation {
-            Annotation::Redact { style, .. } if style == "blackout" => {
-                paints.push(ScreenshotPaint::BlackoutOverlay(annotation));
-            }
-            Annotation::Redact { .. } | Annotation::Highlight { .. } => {}
-            _ => paints.push(ScreenshotPaint::Annotation(annotation)),
-        }
-    }
     for annotation in annotations {
-        if matches!(annotation, Annotation::Highlight { .. }) {
-            paints.push(ScreenshotPaint::Annotation(annotation));
+        paints.push(ScreenshotPaint::Annotation(annotation));
+        if matches!(annotation, Annotation::Redact { style, .. } if style == "blackout") {
+            paints.push(ScreenshotPaint::BlackoutOverlay(annotation));
         }
     }
     paints
@@ -793,6 +781,25 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
             width,
             height,
             style,
+            ..
+        } if style == "blackout" => {
+            let (left, top, width, height) =
+                screenshot_blackout_rect(*x, *y, *width, *height, canvas.pixel_grid_origin());
+            if let Some(rect) =
+                Rect::from_xywh(left as f32, top as f32, width as f32, height as f32)
+            {
+                canvas.save();
+                canvas.set_shadow(None);
+                canvas.fill_rect(rect, Color::BLACK);
+                canvas.restore();
+            }
+        }
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
             intensity,
             ..
         } if style == "pixelate" => {
@@ -819,6 +826,24 @@ pub fn draw_screenshot(canvas: &mut Canvas, annotation: &Annotation, native_scal
         }
         _ => draw(canvas, annotation),
     }
+}
+
+pub fn screenshot_blackout_rect(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    origin: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    let (x, y, width, height) = normalize_rect(x, y, width, height);
+    let left = (x + origin.0).floor();
+    let top = (y + origin.1).floor();
+    if width <= 0. || height <= 0. {
+        return (left - origin.0, top - origin.1, 0., 0.);
+    }
+    let right = (x + origin.0 + width).ceil();
+    let bottom = (y + origin.1 + height).ceil();
+    (left - origin.0, top - origin.1, right - left, bottom - top)
 }
 
 pub fn draw(canvas: &mut Canvas, annotation: &Annotation) {
@@ -1057,8 +1082,13 @@ fn draw_rectangle(
 ) {
     let (left, top, width, height) = normalize_rect(x, y, width, height);
     // The renderer draws rectangles with a 1px corner radius.
-    let Some(path) = rounded_rect_path(left as f32, top as f32, width as f32, height as f32, 1.0)
-    else {
+    let Some(path) = rounded_rect_path(
+        left as f32,
+        top as f32,
+        width as f32,
+        height as f32,
+        RECTANGLE_CORNER_RADIUS,
+    ) else {
         return;
     };
     canvas.save();
@@ -1323,6 +1353,27 @@ struct Region {
 }
 
 fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Option<Region> {
+    clamp_region_to_bounds(
+        canvas,
+        x,
+        y,
+        width,
+        height,
+        (0, 0, canvas.width() as i32, canvas.height() as i32),
+    )
+}
+
+fn clamp_region_to_bounds(
+    canvas: &Canvas,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    bounds: (i32, i32, i32, i32),
+) -> Option<Region> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
     let transform = canvas.transform();
     let scale_x = if transform.sx == 0.0 {
         1.0
@@ -1339,12 +1390,16 @@ fn clamp_region(canvas: &Canvas, x: f64, y: f64, width: f64, height: f64) -> Opt
 
     let floored_x = origin_x.floor();
     let floored_y = origin_y.floor();
-    let clamped_x = floored_x.max(0.0);
-    let clamped_y = floored_y.max(0.0);
-    let clamped_width = ((width as f32 * scale_x).ceil() - (clamped_x - floored_x))
-        .min(canvas.width() as f32 - clamped_x);
-    let clamped_height = ((height as f32 * scale_y).ceil() - (clamped_y - floored_y))
-        .min(canvas.height() as f32 - clamped_y);
+    let clamped_x = floored_x.max(bounds.0 as f32);
+    let clamped_y = floored_y.max(bounds.1 as f32);
+    let clamped_width = (origin_x + width as f32 * scale_x)
+        .ceil()
+        .min(bounds.2 as f32)
+        - clamped_x;
+    let clamped_height = (origin_y + height as f32 * scale_y)
+        .ceil()
+        .min(bounds.3 as f32)
+        - clamped_y;
     if clamped_width <= 0.0 || clamped_height <= 0.0 {
         return None;
     }
@@ -1421,9 +1476,18 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     };
     let source_width = source.width() as u64;
     let source_height = source.height() as u64;
-    let columns: Vec<usize> = (0..source_width)
-        .map(|x| ((((x * 2 + 1) * u64::from(small_width)) - 1) / (source_width * 2)) as usize)
-        .collect();
+    let mut columns: Vec<(usize, usize, usize)> = Vec::new();
+    for x in 0..source_width {
+        let sample = ((((x * 2 + 1) * u64::from(small_width)) - 1) / (source_width * 2)) as usize;
+        if let Some((_, end, _)) = columns
+            .last_mut()
+            .filter(|(_, _, column)| *column == sample)
+        {
+            *end = x as usize + 1;
+            continue;
+        }
+        columns.push((x as usize, x as usize + 1, sample));
+    }
     let small_pixels = small.data();
     for (y, row) in source
         .data_mut()
@@ -1432,9 +1496,11 @@ fn pixelate_region(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: f64,
     {
         let sample_y =
             ((((y as u64 * 2 + 1) * u64::from(small_height)) - 1) / (source_height * 2)) as usize;
-        for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let sample = (sample_y * small_width as usize + columns[x]) * 4;
-            pixel.copy_from_slice(&small_pixels[sample..sample + 4]);
+        let row = row.as_chunks_mut::<4>().0;
+        for &(start, end, column) in &columns {
+            let sample = (sample_y * small_width as usize + column) * 4;
+            let color = small_pixels[sample..sample + 4].try_into().unwrap();
+            row[start..end].fill(color);
         }
     }
 
@@ -1455,6 +1521,16 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     let Some(region) = clamp_region(canvas, x, y, width, height) else {
         return;
     };
+    let Some(full_region) =
+        clamp_region_to_bounds(canvas, x, y, width, height, canvas.screenshot_surface())
+    else {
+        return;
+    };
+    let origin = (full_region.device_x, full_region.device_y);
+    pixelate_screenshot_region(canvas, region, block, origin);
+}
+
+fn pixelate_screenshot_region(canvas: &mut Canvas, region: Region, block: f64, origin: (i32, i32)) {
     let Some(mut source) = canvas.read_region(
         region.device_x,
         region.device_y,
@@ -1467,11 +1543,29 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
     let height = region.device_height as usize;
     let block_width = ((block as f32 * region.scale_x).round() as usize).max(1);
     let block_height = ((block as f32 * region.scale_y).round() as usize).max(1);
+    let phase_x =
+        (i64::from(region.device_x) - i64::from(origin.0)).rem_euclid(block_width as i64) as usize;
+    let phase_y =
+        (i64::from(region.device_y) - i64::from(origin.1)).rem_euclid(block_height as i64) as usize;
     let pixels = source.data_mut();
-    for top in (0..height).step_by(block_height) {
-        for left in (0..width).step_by(block_width) {
-            let bottom = (top + block_height).min(height);
-            let right = (left + block_width).min(width);
+    let mut top = 0;
+    while top < height {
+        let bottom = (top
+            + if top == 0 {
+                block_height - phase_y
+            } else {
+                block_height
+            })
+        .min(height);
+        let mut left = 0;
+        while left < width {
+            let right = (left
+                + if left == 0 {
+                    block_width - phase_x
+                } else {
+                    block_width
+                })
+            .min(width);
             let count = ((bottom - top) * (right - left)) as u64;
             let mut sums = [0_u64; 4];
             for y in top..bottom {
@@ -1508,7 +1602,9 @@ fn pixelate_screenshot(canvas: &mut Canvas, x: f64, y: f64, width: f64, height: 
                     pixels[offset..offset + 4].copy_from_slice(&color);
                 }
             }
+            left = right;
         }
+        top = bottom;
     }
     let target_width = canvas.width() as usize;
     let target = canvas.pixmap_mut().data_mut();
@@ -1534,12 +1630,27 @@ fn blur_region(
     // Sample beyond the region so the blur has real pixels to pull in at the
     // edges instead of smearing transparency inwards.
     let padding = (radius as f32 * 2.0 * region.scale_x).ceil() as i32;
-    let source_x = (region.device_x - padding).max(0);
-    let source_y = (region.device_y - padding).max(0);
-    let source_width =
-        ((region.device_width as i32 + padding * 2).min(canvas.width() as i32 - source_x)).max(1);
-    let source_height =
-        ((region.device_height as i32 + padding * 2).min(canvas.height() as i32 - source_y)).max(1);
+    let bounds = if screenshot {
+        canvas.screenshot_surface()
+    } else {
+        (0, 0, canvas.width() as i32, canvas.height() as i32)
+    };
+    let Some(full_region) = clamp_region_to_bounds(canvas, x, y, width, height, bounds) else {
+        return;
+    };
+    let full_x = (full_region.device_x - padding).max(bounds.0);
+    let full_y = (full_region.device_y - padding).max(bounds.1);
+    let full_width =
+        ((full_region.device_width as i32 + padding * 2).min(bounds.2 - full_x)).max(1);
+    let full_height =
+        ((full_region.device_height as i32 + padding * 2).min(bounds.3 - full_y)).max(1);
+    let source_x = full_x.max(0);
+    let source_y = full_y.max(0);
+    let source_width = (full_x + full_width).min(canvas.width() as i32) - source_x;
+    let source_height = (full_y + full_height).min(canvas.height() as i32) - source_y;
+    if source_width <= 0 || source_height <= 0 {
+        return;
+    }
 
     let sigma = radius as f32 * region.scale_x;
     let Some(mut source) = canvas.read_region(
@@ -1562,7 +1673,7 @@ fn blur_region(
             None,
         );
     } else {
-        blur::blur(&mut source, sigma);
+        blur::blur_transparent(&mut source, sigma);
     }
 
     canvas.save();
@@ -1581,8 +1692,6 @@ fn blur_region(
     canvas.restore();
 }
 
-/// Box-averaged downsample, matching the browser's high-quality path when the
-/// pixelate redaction shrinks a region before scaling it back up.
 fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let mut target = Pixmap::new(width, height)?;
     let source_width = source.width();
@@ -1590,31 +1699,61 @@ fn downsample(source: &Pixmap, width: u32, height: u32) -> Option<Pixmap> {
     let data = source.data();
     let out = target.data_mut();
 
-    for y in 0..height {
-        let y0 = (y * source_height / height).min(source_height - 1);
-        let y1 = ((y + 1) * source_height)
-            .div_ceil(height)
-            .min(source_height);
-        for x in 0..width {
-            let x0 = (x * source_width / width).min(source_width - 1);
-            let x1 = ((x + 1) * source_width).div_ceil(width).min(source_width);
-            let mut sums = [0u32; 4];
-            let mut count = 0u32;
-            for sample_y in y0..y1.max(y0 + 1) {
-                for sample_x in x0..x1.max(x0 + 1) {
-                    let index = ((sample_y * source_width + sample_x) * 4) as usize;
-                    for channel in 0..4 {
-                        sums[channel] += data[index + channel] as u32;
+    if source_width.is_multiple_of(width) && source_height.is_multiple_of(height) {
+        let block_width = source_width / width;
+        let block_height = source_height / height;
+        let divisor = u64::from(block_width) * u64::from(block_height);
+        for y in 0..height {
+            for x in 0..width {
+                let mut sums = [0u64; 4];
+                for row in y * block_height..(y + 1) * block_height {
+                    let start = (row as usize * source_width as usize
+                        + x as usize * block_width as usize)
+                        * 4;
+                    let end = start + block_width as usize * 4;
+                    for pixel in data[start..end].as_chunks::<4>().0 {
+                        for channel in 0..4 {
+                            sums[channel] += u64::from(pixel[channel]);
+                        }
                     }
-                    count += 1;
+                }
+                let index = ((y * width + x) * 4) as usize;
+                for channel in 0..4 {
+                    out[index + channel] = ((sums[channel] + divisor / 2) / divisor) as u8;
                 }
             }
-            if count == 0 {
-                continue;
+        }
+        return Some(target);
+    }
+
+    let divisor = u64::from(source_width) * u64::from(source_height);
+    for y in 0..height {
+        let top = u64::from(y) * u64::from(source_height);
+        let bottom = u64::from(y + 1) * u64::from(source_height);
+        let y0 = top / u64::from(height);
+        let y1 = bottom.div_ceil(u64::from(height));
+        for x in 0..width {
+            let left = u64::from(x) * u64::from(source_width);
+            let right = u64::from(x + 1) * u64::from(source_width);
+            let x0 = left / u64::from(width);
+            let x1 = right.div_ceil(u64::from(width));
+            let mut sums = [0u64; 4];
+            for sample_y in y0..y1 {
+                let weight_y = bottom.min((sample_y + 1) * u64::from(height))
+                    - top.max(sample_y * u64::from(height));
+                for sample_x in x0..x1 {
+                    let weight_x = right.min((sample_x + 1) * u64::from(width))
+                        - left.max(sample_x * u64::from(width));
+                    let weight = weight_x * weight_y;
+                    let index = ((sample_y * u64::from(source_width) + sample_x) * 4) as usize;
+                    for channel in 0..4 {
+                        sums[channel] += u64::from(data[index + channel]) * weight;
+                    }
+                }
             }
             let index = ((y * width + x) * 4) as usize;
             for channel in 0..4 {
-                out[index + channel] = (sums[channel] / count) as u8;
+                out[index + channel] = ((sums[channel] + divisor / 2) / divisor) as u8;
             }
         }
     }
@@ -2328,6 +2467,123 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_blackout_covers_fractional_boundary_pixels() {
+        for (offset_x, offset_y, x, y, width, height, left, right, row) in [
+            (0., 0., 8.5, 3.25, 12.3, 12.4, 8, 20, 9),
+            (5.25, 4.75, 8.5, 3.25, 12.3, 12.4, 13, 25, 14),
+            (0., 0., 20.8, 15.65, -12.3, -12.4, 8, 20, 9),
+            (0., 0., -2.5, 3.25, 12.3, 12.4, 0, 9, 9),
+            (0., 0., 8.8, 3.8, 12.3, 12.3, 8, 21, 9),
+        ] {
+            let mut canvas = Canvas::new(40, 32).unwrap();
+            canvas.fill_all(Color::WHITE);
+            canvas.translate(offset_x, offset_y);
+            let blackout = Annotation::Redact {
+                id: "blackout".into(),
+                x,
+                y,
+                width,
+                height,
+                style: "blackout".into(),
+                intensity: 5.,
+            };
+            draw_all_screenshot(&mut canvas, &[blackout], 1.);
+            for column in left..=right {
+                assert_eq!(
+                    canvas.pixmap().pixel(column, row).unwrap().red(),
+                    0,
+                    "origin ({offset_x}, {offset_y}), rect ({x}, {y}, {width}, {height}), pixel ({column}, {row})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_blackout_covers_bottom_edge_without_extending_past_it() {
+        let mut canvas = Canvas::new(32, 24).unwrap();
+        canvas.fill_all(Color::WHITE);
+        draw_all_screenshot(
+            &mut canvas,
+            &[Annotation::Redact {
+                id: "blackout".into(),
+                x: 8.8,
+                y: 3.8,
+                width: 12.3,
+                height: 12.3,
+                style: "blackout".into(),
+                intensity: 5.,
+            }],
+            1.,
+        );
+        assert_eq!(canvas.pixmap().pixel(12, 16).unwrap().red(), 0);
+        assert_eq!(canvas.pixmap().pixel(12, 17).unwrap().red(), 255);
+        assert_eq!(canvas.pixmap().pixel(22, 9).unwrap().red(), 255);
+    }
+
+    #[test]
+    fn empty_screenshot_blackout_does_not_paint_a_pixel() {
+        for (width, height) in [(0., 12.3), (12.3, 0.)] {
+            let mut canvas = Canvas::new(32, 24).unwrap();
+            canvas.fill_all(Color::WHITE);
+            draw_all_screenshot(
+                &mut canvas,
+                &[Annotation::Redact {
+                    id: "empty".into(),
+                    x: 8.8,
+                    y: 3.8,
+                    width,
+                    height,
+                    style: "blackout".into(),
+                    intensity: 5.,
+                }],
+                1.,
+            );
+            assert!(canvas
+                .pixmap()
+                .pixels()
+                .iter()
+                .all(|pixel| pixel.red() == 255));
+        }
+    }
+
+    #[test]
+    fn screenshot_selection_follows_redaction_and_annotation_order() {
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 4.,
+            y: 4.,
+            width: 16.,
+            height: 16.,
+            stroke: "#ff0000".into(),
+            stroke_width: 1.,
+            fill: Some("#ff0000".into()),
+        };
+        for style in ["blackout", "pixelate", "blur"] {
+            let redact = Annotation::Redact {
+                id: "redact".into(),
+                x: 4.,
+                y: 4.,
+                width: 16.,
+                height: 16.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            assert_eq!(
+                screenshot_annotation_at(&[shape.clone(), redact.clone()], (10., 10.), 1.)
+                    .map(Annotation::id),
+                Some("redact"),
+                "{style}"
+            );
+            assert_eq!(
+                screenshot_annotation_at(&[redact, shape.clone()], (10., 10.), 1.)
+                    .map(Annotation::id),
+                Some("shape"),
+                "{style}"
+            );
+        }
+    }
+
+    #[test]
     fn pixelating_flattens_detail_but_keeps_coverage() {
         let mut canvas = Canvas::new(32, 32).expect("canvas");
         canvas.fill_all(Color::from_rgba8(10, 20, 30, 255));
@@ -2390,6 +2646,142 @@ mod tests {
             2.,
         );
         assert_eq!(canvas.pixmap().data(), &before);
+    }
+
+    #[test]
+    fn video_blur_matches_electron_on_translucent_clipped_regions() {
+        for (x, y, width, height, samples) in [
+            (
+                0.,
+                0.,
+                128.,
+                128.,
+                vec![
+                    (0, 0, [65, 128, 192, 145]),
+                    (0, 64, [65, 128, 192, 161]),
+                    (10, 64, [63, 128, 192, 186]),
+                    (64, 64, [64, 128, 191, 192]),
+                    (127, 64, [65, 128, 192, 161]),
+                ],
+            ),
+            (
+                -10.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (0, 64, [65, 128, 192, 161]),
+                    (10, 64, [63, 128, 192, 186]),
+                    (39, 64, [64, 128, 191, 192]),
+                    (63, 64, [64, 128, 191, 128]),
+                ],
+            ),
+            (
+                96.,
+                32.,
+                50.,
+                64.,
+                vec![
+                    (80, 64, [64, 128, 191, 128]),
+                    (96, 64, [63, 127, 191, 191]),
+                    (112, 64, [63, 128, 191, 190]),
+                    (127, 64, [65, 128, 192, 161]),
+                ],
+            ),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::from_rgba8(64, 128, 192, 128));
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            let rendered = crate::editor::export::to_rgba(canvas.pixmap());
+            for (sample_x, sample_y, expected) in samples {
+                let actual = rendered.get_pixel(sample_x, sample_y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "video redaction {x},{y}, pixel {sample_x},{sample_y}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_blur_matches_electron_at_opaque_canvas_edges() {
+        for (x, stripe_x, samples) in [
+            (-10., 0., vec![(0, 211), (10, 72), (31, 0), (39, 0)]),
+            (96., 120., vec![(96, 0), (112, 38), (127, 211)]),
+        ] {
+            let mut canvas = Canvas::new(128, 128).unwrap();
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(
+                Rect::from_xywh(stripe_x, 0., 8., 128.).unwrap(),
+                Color::WHITE,
+            );
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x,
+                    y: 32.,
+                    width: 50.,
+                    height: 64.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            for (sample_x, expected) in samples {
+                let actual = canvas.pixmap().pixel(sample_x, 64).unwrap().red();
+                assert!(
+                    actual.abs_diff(expected) <= 3,
+                    "pixel {sample_x}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_blur_keeps_its_apparent_size_at_preview_scale() {
+        let render = |scale: f32| {
+            let side = (128. * scale).round() as u32;
+            let mut canvas = Canvas::new(side, side).unwrap();
+            canvas.scale(scale, scale);
+            canvas.fill_all(Color::BLACK);
+            canvas.fill_rect(Rect::from_xywh(0., 0., 8., 128.).unwrap(), Color::WHITE);
+            draw(
+                &mut canvas,
+                &Annotation::Redact {
+                    id: "blur".into(),
+                    x: -10.,
+                    y: 32.,
+                    width: 50.,
+                    height: 64.,
+                    style: "blur".into(),
+                    intensity: 2.,
+                },
+            );
+            canvas
+        };
+        let full = render(1.);
+        let half = render(0.5);
+        for x in [0, 2, 4, 6, 8, 10, 12, 16, 19] {
+            let actual = half.pixmap().pixel(x, 32).unwrap().red();
+            let left = full.pixmap().pixel(x * 2, 64).unwrap().red();
+            let right = full.pixmap().pixel(x * 2 + 1, 64).unwrap().red();
+            let expected = (u16::from(left) + u16::from(right)).div_ceil(2) as u8;
+            assert!(
+                actual.abs_diff(expected) <= 8,
+                "pixel {x}: {actual} vs {expected}"
+            );
+        }
     }
 
     #[test]
@@ -2544,6 +2936,204 @@ mod tests {
     }
 
     #[test]
+    fn pixelation_weights_partial_source_pixels_by_their_coverage() {
+        let mut source = Pixmap::new(3, 1).unwrap();
+        source
+            .data_mut()
+            .copy_from_slice(&[0, 0, 0, 255, 0, 0, 0, 255, 255, 120, 60, 255]);
+        let reduced = downsample(&source, 2, 1).unwrap();
+        assert_eq!(reduced.data(), &[0, 0, 0, 255, 170, 80, 40, 255]);
+    }
+
+    #[test]
+    fn pixelation_averages_aligned_blocks_without_changing_channels() {
+        let mut source = Pixmap::new(4, 4).unwrap();
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 4;
+            let y = index / 4;
+            pixel.copy_from_slice(&[(x * 50) as u8, (y * 50) as u8, ((x + y) * 20) as u8, 255]);
+        }
+        assert_eq!(
+            downsample(&source, 2, 2).unwrap().data(),
+            &[25, 25, 20, 255, 125, 25, 60, 255, 25, 125, 60, 255, 125, 125, 100, 255]
+        );
+    }
+
+    #[test]
+    fn screenshot_pixelation_keeps_its_block_grid_across_cropped_surfaces() {
+        let mut source = Pixmap::new(53, 41).unwrap();
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 53;
+            let y = index / 53;
+            let alpha = ((x * 11 + y * 7) % 256) as u8;
+            *pixel = [alpha / 2, (x as u8).min(alpha), (y as u8).min(alpha), alpha];
+        }
+
+        for (x, y, width, height) in [(3.25, 7.5, 42., 27.), (-7.25, -3.5, 43., 37.)] {
+            let mut full = Canvas::from_pixmap(source.clone());
+            let full_region = clamp_region(&full, x, y, width, height).unwrap();
+            let (left, top) = (full_region.device_x, full_region.device_y);
+            let right = left + full_region.device_width as i32;
+            let bottom = top + full_region.device_height as i32;
+            pixelate_screenshot(&mut full, x, y, width, height, 8.);
+
+            for (tile_x, tile_y, tile_width, tile_height) in
+                [(0, 0, 29, 25), (15, 11, 28, 27), (27, 21, 26, 20)]
+            {
+                let rect =
+                    tiny_skia::IntRect::from_xywh(tile_x, tile_y, tile_width, tile_height).unwrap();
+                let mut tile = Canvas::from_pixmap(source.clone_rect(rect).unwrap());
+                tile.translate(-(tile_x as f32), -(tile_y as f32));
+                let Some(region) = clamp_region(&tile, x, y, width, height) else {
+                    continue;
+                };
+                pixelate_screenshot_region(&mut tile, region, 8., (left - tile_x, top - tile_y));
+
+                let mut checked = 0;
+                for py in top.max(tile_y)..bottom.min(tile_y + tile_height as i32) {
+                    for px in left.max(tile_x)..right.min(tile_x + tile_width as i32) {
+                        let block_left = left + ((px - left) / 8) * 8;
+                        let block_top = top + ((py - top) / 8) * 8;
+                        if block_left < tile_x
+                            || block_top < tile_y
+                            || (block_left + 8).min(right) > tile_x + tile_width as i32
+                            || (block_top + 8).min(bottom) > tile_y + tile_height as i32
+                        {
+                            continue;
+                        }
+                        assert_eq!(
+                            tile.pixmap()
+                                .pixel((px - tile_x) as u32, (py - tile_y) as u32),
+                            full.pixmap().pixel(px as u32, py as u32),
+                            "tile ({tile_x}, {tile_y}), pixel ({px}, {py}), region ({x}, {y})"
+                        );
+                        checked += 1;
+                    }
+                }
+                assert!(checked > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_redactions_replay_inside_a_cropped_surface() {
+        let mut source = Pixmap::new(240, 200).unwrap();
+        for (index, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 240;
+            let y = index / 240;
+            let alpha = ((x * 11 + y * 7) % 256) as u8;
+            *pixel = [alpha / 2, (x as u8).min(alpha), (y as u8).min(alpha), alpha];
+        }
+        for (x, y) in [(3.25, 7.5), (-7.25, -3.5)] {
+            let annotations = [
+                Annotation::Redact {
+                    id: "pixelate".into(),
+                    x,
+                    y,
+                    width: 210.,
+                    height: 180.,
+                    style: "pixelate".into(),
+                    intensity: 5.,
+                },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x: x + 3.,
+                    y: y + 2.,
+                    width: 200.,
+                    height: 170.,
+                    style: "blur".into(),
+                    intensity: 1.,
+                },
+            ];
+            for count in 1..=annotations.len() {
+                let mut full = Canvas::from_pixmap(source.clone());
+                draw_all_screenshot(&mut full, &annotations[..count], 1.);
+                let mut tile = Canvas::from_pixmap(
+                    source
+                        .clone_rect(tiny_skia::IntRect::from_xywh(45, 30, 140, 130).unwrap())
+                        .unwrap(),
+                );
+                tile.translate(-45., -30.);
+                tile.set_screenshot_surface((-45, -30, 195, 170));
+                draw_all_screenshot(&mut tile, &annotations[..count], 1.);
+                for py in 60..130 {
+                    for px in 75..155 {
+                        assert_eq!(
+                            tile.pixmap().pixel(px - 45, py - 30),
+                            full.pixmap().pixel(px, py),
+                            "pixel ({px}, {py}), region ({x}, {y}), {count} effects"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pixelation_averages_high_frequency_stripes_across_block_edges() {
+        let mut source = Pixmap::new(30, 1).unwrap();
+        for (x, pixel) in source
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            *pixel = [if x % 2 == 0 { 0 } else { 255 }, 0, 0, 255];
+        }
+        let reduced = downsample(&source, 4, 1).unwrap();
+        let red: Vec<_> = reduced
+            .data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .collect();
+        assert_eq!(red, [119, 119, 136, 136]);
+    }
+
+    #[test]
+    fn pixelation_area_sampling_is_consistent_for_scaled_source_pixels() {
+        let mut small = Pixmap::new(3, 3).unwrap();
+        let mut large = Pixmap::new(6, 6).unwrap();
+        for y in 0..3 {
+            for x in 0..3 {
+                let color = [(x * 60) as u8, (y * 50) as u8, ((x + y) * 30) as u8, 255];
+                let offset = ((y * 3 + x) * 4) as usize;
+                small.data_mut()[offset..offset + 4].copy_from_slice(&color);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let offset = (((y * 2 + dy) * 6 + x * 2 + dx) * 4) as usize;
+                        large.data_mut()[offset..offset + 4].copy_from_slice(&color);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            downsample(&small, 2, 2).unwrap().data(),
+            downsample(&large, 2, 2).unwrap().data()
+        );
+    }
+
+    #[test]
     fn pixelation_uses_the_same_nearest_boundaries_at_each_position() {
         let mut source = Pixmap::new(30, 1).unwrap();
         for (x, pixel) in source
@@ -2570,13 +3160,126 @@ mod tests {
             for i in 0..30 {
                 let expected = match i {
                     0..=7 => 10,
-                    8..=14 => 18,
+                    8..=14 => 19,
                     15..=22 => 30,
-                    _ => 38,
+                    _ => 39,
                 };
                 assert_eq!(canvas.pixmap().data()[(x + i) * 4], expected, "{x}+{i}");
             }
         }
+    }
+
+    #[test]
+    fn pixelation_preserves_nearest_block_samples_for_varied_sizes() {
+        for (width, height, block) in [(7, 5, 2), (30, 11, 8), (47, 23, 6), (64, 32, 8)] {
+            let mut source = Pixmap::new(width, height).unwrap();
+            for (index, pixel) in source
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                let x = index % width as usize;
+                let y = index / width as usize;
+                pixel.copy_from_slice(&[
+                    (x * 13 % 256) as u8,
+                    (y * 31 % 256) as u8,
+                    ((x + y) * 7 % 256) as u8,
+                    255,
+                ]);
+            }
+            let small_width = (width as f32 / block as f32).round().max(1.0) as u32;
+            let small_height = (height as f32 / block as f32).round().max(1.0) as u32;
+            let small = downsample(&source, small_width, small_height).unwrap();
+            let mut canvas = Canvas::new(width + 4, height + 4).unwrap();
+            canvas.draw_pixmap(source.as_ref(), 2.0, 2.0, width as f32, height as f32);
+            pixelate_region(
+                &mut canvas,
+                2.0,
+                2.0,
+                width as f64,
+                height as f64,
+                block as f64,
+            );
+            for y in 0..height {
+                for x in 0..width {
+                    let sx = (((2 * x + 1) * small_width - 1) / (2 * width)) as usize;
+                    let sy = (((2 * y + 1) * small_height - 1) / (2 * height)) as usize;
+                    let expected = (sy * small_width as usize + sx) * 4;
+                    let actual = (((y + 2) * (width + 4) + x + 2) * 4) as usize;
+                    assert_eq!(
+                        &canvas.pixmap().data()[actual..actual + 4],
+                        &small.data()[expected..expected + 4],
+                        "{width}x{height}, {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_pixelation_covers_the_last_partially_selected_pixel() {
+        let mut canvas = Canvas::new(12, 12).unwrap();
+        canvas.fill_all(Color::from_rgba8(0, 0, 0, 255));
+        canvas.fill_rect(
+            Rect::from_xywh(9., 9., 1., 1.).unwrap(),
+            Color::from_rgba8(255, 255, 255, 255),
+        );
+
+        pixelate_region(&mut canvas, 1.5, 1.5, 8., 8., 8.);
+
+        let offset = (9 * 12 + 9) * 4;
+        assert!(canvas.pixmap().data()[offset] < 255);
+    }
+
+    #[test]
+    fn fractional_blur_covers_the_last_partially_selected_pixel() {
+        let mut canvas = Canvas::new(12, 12).unwrap();
+        canvas.fill_all(Color::from_rgba8(0, 0, 0, 255));
+        canvas.fill_rect(
+            Rect::from_xywh(9., 9., 1., 1.).unwrap(),
+            Color::from_rgba8(255, 255, 255, 255),
+        );
+
+        blur_region(&mut canvas, 1.5, 1.5, 8., 8., 2., false);
+
+        let offset = (9 * 12 + 9) * 4;
+        assert!(canvas.pixmap().data()[offset] < 255);
+    }
+
+    #[test]
+    fn fractional_redaction_regions_clip_after_scaling() {
+        let mut canvas = Canvas::new(100, 100).unwrap();
+        for (x, y, width, height, expected) in [
+            (10.5, 20.5, 8., 8., (10, 20, 9, 9)),
+            (-0.5, -0.5, 8., 8., (0, 0, 8, 8)),
+            (95.5, 96.5, 8., 8., (95, 96, 5, 4)),
+        ] {
+            let region = clamp_region(&canvas, x, y, width, height).unwrap();
+            assert_eq!(
+                (
+                    region.device_x,
+                    region.device_y,
+                    region.device_width,
+                    region.device_height
+                ),
+                expected
+            );
+        }
+        canvas.scale(2., 2.);
+        let region = clamp_region(&canvas, 10.25, 20.25, 8., 8.).unwrap();
+        assert_eq!(
+            (
+                region.device_x,
+                region.device_y,
+                region.device_width,
+                region.device_height
+            ),
+            (20, 40, 17, 17)
+        );
+        assert!(clamp_region(&canvas, 10.25, 20.25, 0., 8.).is_none());
+        assert!(clamp_region(&canvas, 10.25, 20.25, 8., 0.).is_none());
     }
 
     #[test]

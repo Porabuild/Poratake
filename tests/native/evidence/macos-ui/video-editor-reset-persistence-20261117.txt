@@ -1,0 +1,60 @@
+macOS Electron video editor persistence, 2026-11-17
+
+bun run test tests/renderer/video-editor/state-close.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  24 passed after the source-duration fix. The renderer tests cover a saved
+  duration, a discovered duration and invalid discovered metadata. The main
+  process tests cover reset's use of the duration and generated segment.
+
+bun run test tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/renderer/video-editor/state-close.test.ts
+  32 passed after atomic reset. Temporary-project tests inject a rename
+  failure and verify the original state and music survive; a successful reset
+  preserves the original duration and recording type.
+
+Before serializing reset and autosaves, two renderer regression cases failed:
+an autosave ran during reset, and a failed reset did not promptly save the
+latest edit. After the fix, bun run test
+  tests/renderer/video-editor/state-close.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 23 tests, including a close request during reset and a failed reset.
+
+An additional renderer regression failed when an edit arrived while reset was
+running: reset completed and would have reloaded over the edit. After detecting
+the change and preserving the editor state, bun run test
+  tests/renderer/video-editor/state-close.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  tests/unit/video-ipc-handlers.test.ts
+  passed 57 tests. The renderer and main-process dialog use mocked IPC.
+There is still a crash window between replacing reset state and saving an edit
+made during reset; this test does not simulate process or machine failure.
+
+Initial generation previously overwrote a state created while cursor data was
+loading; the new temporary-project test failed before exclusive creation and
+passed afterward. bun run test
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 27 tests.
+
+Initial generation now stages the complete state before creating the final
+path using a hard link. bun run test tests/unit/atomic-file.test.ts
+  tests/unit/auto-zoom-generator.test.ts
+  tests/unit/auto-zoom-generator-extra.test.ts
+  tests/integration/video-editor-reset-atomic.test.ts
+  tests/unit/video-editor-state-handlers.test.ts
+  passed 33 tests, including competing creation, publication failure, and a
+  simulated unsupported-hard-link fallback. The fallback uses exclusive direct
+  creation and can leave an incomplete file if interrupted; a crash can also
+  leave an unpublished temporary file. No process crash was simulated.
+
+bun run typecheck and targeted oxlint and oxfmt checks passed for the changes.
+Tests used generated temporary files and mocked IPC; no existing project, live
+capture, native window, or export was exercised.

@@ -5,6 +5,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use herogpui::gpui::BackgroundExecutor;
+
+const FRAME_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VideoInfo {
@@ -12,6 +17,7 @@ pub struct VideoInfo {
     pub height: u32,
     pub duration: f64,
     pub frame_rate: f64,
+    pub has_embedded_audio: Option<bool>,
 }
 
 impl VideoInfo {
@@ -32,14 +38,153 @@ impl VideoInfo {
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub bgra: Arc<[u8]>,
+    pub bgra: Arc<Vec<u8>>,
+}
+
+impl DecodedFrame {
+    pub(crate) fn to_pixmap(&self) -> Option<tiny_skia::Pixmap> {
+        let mut pixmap = tiny_skia::Pixmap::new(self.width.max(1), self.height.max(1))?;
+        self.write_to_pixmap(&mut pixmap)?;
+        Some(pixmap)
+    }
+
+    pub(crate) fn write_to_pixmap(&self, pixmap: &mut tiny_skia::Pixmap) -> Option<()> {
+        if (pixmap.width(), pixmap.height()) != (self.width.max(1), self.height.max(1)) {
+            return None;
+        }
+        let target = pixmap.data_mut();
+        if target.len() != self.bgra.len() {
+            return None;
+        }
+        #[cfg(target_os = "macos")]
+        if permute_bgra(&self.bgra, target, self.width.max(1), self.height.max(1)) {
+            return Some(());
+        }
+        for (out, pixel) in target
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.bgra.as_chunks::<4>().0)
+        {
+            out[0] = pixel[2];
+            out[1] = pixel[1];
+            out[2] = pixel[0];
+            out[3] = pixel[3];
+        }
+        Some(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn permute_bgra(source: &[u8], target: &mut [u8], width: u32, height: u32) -> bool {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct ImageBuffer {
+        data: *mut c_void,
+        height: usize,
+        width: usize,
+        row_bytes: usize,
+    }
+
+    #[link(name = "Accelerate", kind = "framework")]
+    unsafe extern "C" {
+        fn vImagePermuteChannels_ARGB8888(
+            source: *const ImageBuffer,
+            target: *const ImageBuffer,
+            channel_map: *const u8,
+            flags: u32,
+        ) -> isize;
+    }
+
+    const DO_NOT_TILE: u32 = 16;
+    const BGRA_TO_RGBA: [u8; 4] = [2, 1, 0, 3];
+    let width = width as usize;
+    let height = height as usize;
+    let row_bytes = width * 4;
+    let Some(size) = row_bytes.checked_mul(height) else {
+        return false;
+    };
+    if source.len() != size || target.len() != size {
+        return false;
+    }
+    let source = ImageBuffer {
+        data: source.as_ptr().cast_mut().cast(),
+        height,
+        width,
+        row_bytes,
+    };
+    let target = ImageBuffer {
+        data: target.as_mut_ptr().cast(),
+        ..source
+    };
+    unsafe {
+        vImagePermuteChannels_ARGB8888(&source, &target, BGRA_TO_RGBA.as_ptr(), DO_NOT_TILE) == 0
+    }
+}
+
+pub(crate) type FrameCancellation = smol::channel::Receiver<()>;
+
+async fn wait_for_cancellation(signal: Option<&FrameCancellation>) {
+    if let Some(signal) = signal {
+        let _ = signal.recv().await;
+    } else {
+        std::future::pending().await
+    }
+}
+
+const STREAM_SEEK_PREROLL: f64 = 2.0;
+
+pub(crate) fn needs_stream_seek(previous: f64, requested: f64) -> bool {
+    requested < previous || requested - previous > STREAM_SEEK_PREROLL
+}
+
+enum FramePosition {
+    First,
+    Time(f64),
 }
 
 enum Command {
-    Seek {
-        time: f64,
-        reply: Sender<Option<DecodedFrame>>,
-    },
+    Frame(FrameCommand),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    ReleaseFrames,
+}
+
+struct FrameCommand {
+    position: FramePosition,
+    reply: FrameReply,
+    cancelled: Option<FrameCancellation>,
+    superseded: Option<FrameCancellation>,
+    abandoned: FrameCancellation,
+}
+
+enum FrameReply {
+    Blocking(Sender<Option<DecodedFrame>>),
+    Supersedable(smol::channel::Sender<Option<DecodedFrame>>),
+}
+
+impl FrameReply {
+    fn send(self, frame: Option<DecodedFrame>) {
+        match self {
+            Self::Blocking(reply) => {
+                let _ = reply.send(frame);
+            }
+            Self::Supersedable(reply) => {
+                let _ = reply.try_send(frame);
+            }
+        }
+    }
+}
+
+struct PendingFrame {
+    reply: Receiver<Option<DecodedFrame>>,
+    _waiting: smol::channel::Sender<()>,
+}
+
+impl PendingFrame {
+    fn wait(self) -> Option<DecodedFrame> {
+        self.reply.recv_timeout(FRAME_RESPONSE_TIMEOUT).ok()?
+    }
 }
 
 pub struct VideoDecoder {
@@ -47,28 +192,83 @@ pub struct VideoDecoder {
     info: VideoInfo,
 }
 
+pub(crate) struct DecoderOpening {
+    commands: Sender<Command>,
+    info: smol::channel::Receiver<Option<VideoInfo>>,
+    deadline: Instant,
+}
+
+impl DecoderOpening {
+    fn finish(self) -> Option<VideoDecoder> {
+        self.finish_interruptible(None, None).ok().flatten()
+    }
+
+    pub(crate) fn finish_interruptible(
+        self,
+        cancelled: Option<&FrameCancellation>,
+        superseded: Option<&FrameCancellation>,
+    ) -> Result<Option<VideoDecoder>, Self> {
+        let ready = smol::future::or(async { self.info.recv().await.ok().flatten() }, async {
+            smol::Timer::at(self.deadline).await;
+            None
+        });
+        let info = smol::block_on(smol::future::or(
+            async {
+                wait_for_cancellation(cancelled).await;
+                Err(())
+            },
+            smol::future::or(async { Ok(ready.await) }, async {
+                wait_for_cancellation(superseded).await;
+                Err(())
+            }),
+        ));
+        match info {
+            Ok(info) => Ok(info
+                .filter(|info| info.is_valid())
+                .map(|info| VideoDecoder {
+                    commands: self.commands,
+                    info,
+                })),
+            Err(()) => Err(self),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn release_frames(&self) {
+        let _ = self.commands.send(Command::ReleaseFrames);
+    }
+
+    pub(crate) fn request_warmup(
+        &self,
+        time: f64,
+        cancelled: FrameCancellation,
+    ) -> Option<Receiver<()>> {
+        request_warmup(&self.commands, time, cancelled)
+    }
+}
+
 impl VideoDecoder {
     /// Opens `path`, returning `None` when the file cannot be decoded on this
     /// platform or has no video stream.
     pub fn open(path: &Path) -> Option<Self> {
-        let (command_tx, command_rx) = mpsc::channel();
-        let (info_tx, info_rx) = mpsc::channel();
+        Self::begin_open(path)?.finish()
+    }
+
+    pub(crate) fn begin_open(path: &Path) -> Option<DecoderOpening> {
+        let (commands, command_rx) = mpsc::channel();
+        let (info_tx, info) = smol::channel::bounded(1);
         let owned = path.to_path_buf();
+        let deadline = Instant::now() + Duration::from_secs(10);
 
         std::thread::Builder::new()
             .name("video-decoder".into())
             .spawn(move || backend::run(owned, command_rx, info_tx))
             .ok()?;
 
-        let info = info_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .ok()??;
-        if !info.is_valid() {
-            return None;
-        }
-        Some(Self {
-            commands: command_tx,
+        Some(DecoderOpening {
+            commands,
             info,
+            deadline,
         })
     }
 
@@ -79,17 +279,126 @@ impl VideoDecoder {
     /// Decodes the frame at `time` seconds. Blocking, so callers run it on the
     /// background executor.
     pub fn frame_at(&self, time: f64) -> Option<DecodedFrame> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.commands
-            .send(Command::Seek {
-                time: time.max(0.0),
-                reply: reply_tx,
-            })
-            .ok()?;
-        reply_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .ok()?
+        self.frame_at_interruptible(time, None)
     }
+
+    pub(crate) fn first_frame(&self) -> Option<DecodedFrame> {
+        request_frame(&self.commands, FramePosition::First, None)?.wait()
+    }
+
+    pub(crate) fn frame_at_interruptible(
+        &self,
+        time: f64,
+        cancelled: Option<&FrameCancellation>,
+    ) -> Option<DecodedFrame> {
+        request_frame(
+            &self.commands,
+            FramePosition::Time(time.max(0.0)),
+            cancelled.cloned(),
+        )?
+        .wait()
+    }
+
+    pub(crate) async fn frame_at_supersedable(
+        &self,
+        time: f64,
+        cancelled: Option<&FrameCancellation>,
+        superseded: &FrameCancellation,
+        executor: &BackgroundExecutor,
+    ) -> Option<DecodedFrame> {
+        let timeout = executor.timer(FRAME_RESPONSE_TIMEOUT);
+        let (reply, received) = smol::channel::bounded(1);
+        let _waiting = queue_frame(
+            &self.commands,
+            FramePosition::Time(time.max(0.0)),
+            FrameReply::Supersedable(reply),
+            cancelled.cloned(),
+            Some(superseded.clone()),
+        )?;
+        smol::future::or(async { received.recv().await.ok().flatten() }, async {
+            smol::future::or(
+                smol::future::or(
+                    wait_for_cancellation(cancelled),
+                    wait_for_cancellation(Some(superseded)),
+                ),
+                timeout,
+            )
+            .await;
+            None
+        })
+        .await
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn release_frames(&self) {
+        let _ = self.commands.send(Command::ReleaseFrames);
+    }
+
+    pub(crate) fn request_warmup(
+        &self,
+        time: f64,
+        cancelled: FrameCancellation,
+    ) -> Option<Receiver<()>> {
+        request_warmup(&self.commands, time, cancelled)
+    }
+}
+
+fn request_frame(
+    commands: &Sender<Command>,
+    position: FramePosition,
+    cancelled: Option<FrameCancellation>,
+) -> Option<PendingFrame> {
+    let (reply, received) = mpsc::channel();
+    let waiting = queue_frame(
+        commands,
+        position,
+        FrameReply::Blocking(reply),
+        cancelled,
+        None,
+    )?;
+    Some(PendingFrame {
+        reply: received,
+        _waiting: waiting,
+    })
+}
+
+fn queue_frame(
+    commands: &Sender<Command>,
+    position: FramePosition,
+    reply: FrameReply,
+    cancelled: Option<FrameCancellation>,
+    superseded: Option<FrameCancellation>,
+) -> Option<smol::channel::Sender<()>> {
+    let (waiting, abandoned) = smol::channel::bounded(1);
+    commands
+        .send(Command::Frame(FrameCommand {
+            position,
+            reply,
+            cancelled,
+            superseded,
+            abandoned,
+        }))
+        .ok()?;
+    Some(waiting)
+}
+
+fn request_warmup(
+    commands: &Sender<Command>,
+    time: f64,
+    cancelled: FrameCancellation,
+) -> Option<Receiver<()>> {
+    let pending = request_frame(
+        commands,
+        FramePosition::Time(time.max(0.0)),
+        Some(cancelled),
+    )?;
+    let (reply, completion) = mpsc::channel();
+    smol::unblock(move || {
+        let _ = pending.wait();
+        let _ = reply.send(());
+    })
+    .detach();
+    Some(completion)
 }
 
 #[cfg(windows)]
@@ -105,11 +414,15 @@ mod backend {
     /// `MFTIME` counts 100-nanosecond units.
     const UNITS_PER_SECOND: f64 = 10_000_000.0;
 
-    pub fn run(path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
+    pub fn run(
+        path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if MFStartup(MF_VERSION, MFSTARTUP_FULL).is_err() {
-                let _ = info_tx.send(None);
+                let _ = info_tx.try_send(None);
                 CoUninitialize();
                 return;
             }
@@ -117,7 +430,7 @@ mod backend {
             let reader = match open_reader(&path) {
                 Some(reader) => reader,
                 None => {
-                    let _ = info_tx.send(None);
+                    let _ = info_tx.try_send(None);
                     let _ = MFShutdown();
                     CoUninitialize();
                     return;
@@ -125,7 +438,7 @@ mod backend {
             };
 
             let info = describe(&reader);
-            let _ = info_tx.send(Some(info));
+            let _ = info_tx.try_send(Some(info));
             if !info.is_valid() {
                 drop(reader);
                 let _ = MFShutdown();
@@ -134,13 +447,29 @@ mod backend {
             }
 
             let mut cursor = DecodeCursor::default();
-            while let Ok(command) = commands.recv() {
-                match command {
-                    Command::Seek { time, reply } => {
-                        let frame = read_frame(&reader, time, info, &mut cursor);
-                        let _ = reply.send(frame);
-                    }
+            while let Ok(Command::Frame(FrameCommand {
+                position,
+                reply,
+                cancelled,
+                superseded,
+                abandoned,
+            })) = commands.recv()
+            {
+                if abandoned.is_closed()
+                    || cancelled.as_ref().is_some_and(FrameCancellation::is_closed)
+                    || superseded
+                        .as_ref()
+                        .is_some_and(FrameCancellation::is_closed)
+                {
+                    reply.send(None);
+                    continue;
                 }
+                let time = match position {
+                    FramePosition::First => 0.0,
+                    FramePosition::Time(time) => time,
+                };
+                let frame = read_frame(&reader, time, info, &mut cursor);
+                reply.send(frame);
             }
 
             drop(reader);
@@ -244,8 +573,17 @@ mod backend {
         if info.duration <= 0.0 {
             return time.max(0.0);
         }
-        let last_frame_time = (info.duration - 1.0 / info.frame_rate()).max(0.0);
-        time.clamp(0.0, last_frame_time)
+        time.clamp(0.0, info.duration)
+    }
+
+    unsafe fn set_reader_position(reader: &IMFSourceReader, position: i64) -> Option<()> {
+        let mut variant = PROPVARIANT::default();
+        {
+            let inner = &mut *variant.Anonymous.Anonymous;
+            inner.vt = VT_I8;
+            inner.Anonymous.hVal = position;
+        }
+        reader.SetCurrentPosition(&GUID::zeroed(), &variant).ok()
     }
 
     unsafe fn read_frame(
@@ -254,38 +592,34 @@ mod backend {
         info: VideoInfo,
         cursor: &mut DecodeCursor,
     ) -> Option<DecodedFrame> {
-        let position = (bounded_time(time, info) * UNITS_PER_SECOND) as i64;
+        const TIMESTAMP_TOLERANCE: i64 = 100;
+        let position = (bounded_time(time, info) * UNITS_PER_SECOND).round() as i64;
         if cursor.needs_seek(position) {
-            let mut variant = PROPVARIANT::default();
-            {
-                let inner = &mut *variant.Anonymous.Anonymous;
-                inner.vt = VT_I8;
-                inner.Anonymous.hVal = position;
-            }
-            reader.SetCurrentPosition(&GUID::zeroed(), &variant).ok()?;
+            set_reader_position(reader, position)?;
             *cursor = DecodeCursor::default();
         }
 
         if cursor
             .next
             .as_ref()
-            .is_some_and(|next| next.timestamp <= position)
+            .is_some_and(|next| next.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE))
         {
             cursor.current = cursor.next.take();
         }
         if cursor
             .next
             .as_ref()
-            .is_some_and(|next| next.timestamp > position)
-            || cursor
-                .current
-                .as_ref()
-                .is_some_and(|current| current.timestamp == position)
+            .is_some_and(|next| next.timestamp > position.saturating_add(TIMESTAMP_TOLERANCE))
+            || cursor.current.as_ref().is_some_and(|current| {
+                current.timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE)
+                    && current.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE)
+            })
         {
             return cursor.frame();
         }
 
         let mut candidate = None;
+        let mut retried_tail = false;
         loop {
             let mut stream_flags = 0u32;
             let mut timestamp = 0i64;
@@ -308,13 +642,21 @@ mod backend {
                         frame: copy_sample(&sample, info)?,
                     });
                     cursor.next = None;
+                } else if !retried_tail && cursor.frame().is_none() && info.duration > 0.0 {
+                    retried_tail = true;
+                    let tail = ((info.duration - 1.0 / info.frame_rate()).max(0.0)
+                        * UNITS_PER_SECOND)
+                        .round() as i64;
+                    set_reader_position(reader, tail)?;
+                    *cursor = DecodeCursor::default();
+                    continue;
                 }
                 return cursor.frame();
             }
             let Some(sample) = sample else {
                 continue;
             };
-            if timestamp > position {
+            if timestamp > position.saturating_add(TIMESTAMP_TOLERANCE) {
                 if let Some((timestamp, sample)) = candidate {
                     cursor.current = Some(TimedFrame {
                         timestamp,
@@ -327,7 +669,7 @@ mod backend {
                 });
                 return cursor.frame();
             }
-            if timestamp == position {
+            if timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE) {
                 cursor.current = Some(TimedFrame {
                     timestamp,
                     frame: copy_sample(&sample, info)?,
@@ -450,7 +792,7 @@ mod backend {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod backend {
     use super::*;
-    use std::io::{BufRead as _, BufReader, Read as _};
+    use std::io::{BufRead as _, BufReader, Read};
     use std::process::{Child, Command as ProcessCommand, Stdio};
 
     struct TimedFrame {
@@ -458,16 +800,31 @@ mod backend {
         frame: DecodedFrame,
     }
 
+    #[derive(Clone, Copy, Default)]
     struct MediaInfo {
         video: VideoInfo,
         start_time: f64,
+        normalize_pixel_aspect: bool,
     }
 
     struct DecoderProcess {
         child: Child,
-        frames: Receiver<Option<TimedFrame>>,
+        frames: smol::channel::Receiver<Option<TimedFrame>>,
+        spare_frame: smol::channel::Sender<Vec<u8>>,
+        seek_start: f64,
+        fallback_seek_start: Option<f64>,
         current: Option<TimedFrame>,
         next: Option<TimedFrame>,
+    }
+
+    impl DecoderProcess {
+        fn advance(&mut self, frame: TimedFrame) {
+            if let Some(previous) = self.current.replace(frame) {
+                if let Ok(bytes) = Arc::try_unwrap(previous.frame.bgra) {
+                    let _ = self.spare_frame.try_send(bytes);
+                }
+            }
+        }
     }
 
     impl Drop for DecoderProcess {
@@ -477,18 +834,42 @@ mod backend {
         }
     }
 
-    pub fn run(path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
+    pub fn run(
+        path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
         let ffmpeg = crate::video::ffmpeg_path();
         let Some(media) = describe(&ffmpeg, &path) else {
-            let _ = info_tx.send(None);
+            let _ = info_tx.try_send(None);
             return;
         };
-        let info = media.video;
-        let _ = info_tx.send(Some(info));
+        let _ = info_tx.try_send(Some(media.video));
         let mut decoder = None;
-        while let Ok(Command::Seek { time, reply }) = commands.recv() {
-            let frame = read_frame(&ffmpeg, &path, time, info, media.start_time, &mut decoder);
-            let _ = reply.send(frame);
+        while let Ok(command) = commands.recv() {
+            let Command::Frame(FrameCommand {
+                position,
+                reply,
+                cancelled,
+                superseded,
+                abandoned,
+            }) = command
+            else {
+                drop(decoder.take());
+                continue;
+            };
+            let wait = FrameWait {
+                cancelled: cancelled.as_ref(),
+                superseded: superseded.as_ref(),
+                abandoned: Some(&abandoned),
+            };
+            let frame = match position {
+                FramePosition::First => read_first_frame(&ffmpeg, &path, media, &mut decoder, wait),
+                FramePosition::Time(time) => {
+                    read_frame(&ffmpeg, &path, time, media, &mut decoder, wait)
+                }
+            };
+            reply.send(frame);
         }
     }
 
@@ -502,11 +883,18 @@ mod backend {
         )
         .ok()?;
         let metadata = String::from_utf8_lossy(&output.stderr);
-        let video = metadata.lines().find(|line| line.contains("Video:"))?;
+        let mut stream = metadata.lines().skip_while(|line| !line.contains("Video:"));
+        let video = stream.next()?;
         let (mut width, mut height) = video
             .split(|character: char| character.is_whitespace() || character == ',')
             .find_map(parse_dimensions)?;
-        if parse_rotation(&metadata).is_some_and(rotation_swaps_dimensions) {
+        let aspect = sample_aspect(video).unwrap_or((1, 1));
+        let normalize_pixel_aspect = aspect.0 != aspect.1;
+        (width, height) = square_pixel_size(width, height, aspect)?;
+        let rotation = stream
+            .take_while(|line| !line.trim_start().starts_with("Stream #"))
+            .find_map(parse_rotation);
+        if rotation.is_some_and(rotation_swaps_dimensions) {
             std::mem::swap(&mut width, &mut height);
         }
         let words: Vec<_> = video.split_whitespace().collect();
@@ -533,9 +921,47 @@ mod backend {
                 height,
                 duration,
                 frame_rate,
+                has_embedded_audio: Some(metadata.lines().any(|line| {
+                    line.trim_start().starts_with("Stream #0:")
+                        && line
+                            .split_once(": ")
+                            .is_some_and(|(_, stream)| stream.starts_with("Audio:"))
+                })),
             },
             start_time,
+            normalize_pixel_aspect,
         })
+    }
+
+    fn sample_aspect(video: &str) -> Option<(u32, u32)> {
+        let (_, ratio) = video.split_once("[SAR ")?;
+        let (num, den) = ratio
+            .split_whitespace()
+            .next()?
+            .trim_end_matches(']')
+            .split_once(':')?;
+        let (num, den) = (num.parse().ok()?, den.parse().ok()?);
+        (num > 0 && den > 0).then_some((num, den))
+    }
+
+    fn square_pixel_size(width: u32, height: u32, (num, den): (u32, u32)) -> Option<(u32, u32)> {
+        if num == den {
+            return Some((width, height));
+        }
+        let expand = |size: u32, num: u32, den: u32| {
+            let rounded = (u64::from(size) * u64::from(num) + u64::from(den / 2)) / u64::from(den);
+            u32::try_from(rounded).ok()
+        };
+        let (width, height) = if num > den {
+            (expand(width, num, den)?, height)
+        } else {
+            (width, expand(height, den, num)?)
+        };
+        let frame_bytes = u64::from(width)
+            .checked_mul(u64::from(height))?
+            .checked_mul(4)?;
+        (frame_bytes <= image::Limits::default().max_alloc.unwrap_or(u64::MAX))
+            .then_some((width, height))
     }
 
     fn parse_dimensions(value: &str) -> Option<(u32, u32)> {
@@ -565,22 +991,87 @@ mod backend {
         (rotation.abs().rem_euclid(180.0) - 90.0).abs() < 0.5
     }
 
+    #[derive(Clone, Copy, Default)]
+    struct FrameWait<'a> {
+        cancelled: Option<&'a FrameCancellation>,
+        superseded: Option<&'a FrameCancellation>,
+        abandoned: Option<&'a FrameCancellation>,
+    }
+
+    impl FrameWait<'_> {
+        fn is_interrupted(self) -> bool {
+            self.cancelled.is_some_and(FrameCancellation::is_closed)
+                || self.superseded.is_some_and(FrameCancellation::is_closed)
+                || self.abandoned.is_some_and(FrameCancellation::is_closed)
+        }
+
+        async fn interrupted(self) -> FrameReadError {
+            smol::future::or(
+                async {
+                    smol::future::or(
+                        wait_for_cancellation(self.cancelled),
+                        wait_for_cancellation(self.superseded),
+                    )
+                    .await;
+                    FrameReadError::Cancelled
+                },
+                async {
+                    wait_for_cancellation(self.abandoned).await;
+                    FrameReadError::TimedOut
+                },
+            )
+            .await
+        }
+    }
+
+    fn read_first_frame(
+        ffmpeg: &Path,
+        path: &Path,
+        media: MediaInfo,
+        decoder: &mut Option<DecoderProcess>,
+        wait: FrameWait<'_>,
+    ) -> Option<DecodedFrame> {
+        if wait.is_interrupted() {
+            return None;
+        }
+        drop(decoder.take());
+        let mut process = start(ffmpeg, path, media, 0.0, None)?;
+        let frame = smol::block_on(wait_for_first_frame(&mut process, wait))?;
+        *decoder = Some(process);
+        Some(frame)
+    }
+
+    async fn wait_for_first_frame(
+        decoder: &mut DecoderProcess,
+        wait: FrameWait<'_>,
+    ) -> Option<DecodedFrame> {
+        let frame = smol::future::or(
+            async {
+                wait.interrupted().await;
+                None
+            },
+            async { decoder.frames.recv().await.ok().flatten() },
+        )
+        .await?;
+        decoder.next = Some(frame);
+        selected_frame(decoder)
+    }
+
     fn read_frame(
         ffmpeg: &Path,
         path: &Path,
         time: f64,
-        info: VideoInfo,
-        start_time: f64,
+        media: MediaInfo,
         decoder: &mut Option<DecoderProcess>,
+        wait: FrameWait<'_>,
     ) -> Option<DecodedFrame> {
-        let time = time.max(0.0);
+        if wait.is_interrupted() {
+            return None;
+        }
+        let time = time.max(0.0).next_up();
         if let Some(decoder) = decoder.as_mut() {
-            if decoder
-                .next
-                .as_ref()
-                .is_some_and(|next| next.timestamp <= time)
-            {
-                decoder.current = decoder.next.take();
+            if let Some(next) = decoder.next.take_if(|next| next.timestamp <= time) {
+                decoder.advance(next);
             }
         }
         let restart = decoder.as_ref().is_none_or(|decoder| {
@@ -591,45 +1082,56 @@ mod backend {
                         .as_ref()
                         .is_some_and(|next| time < next.timestamp)
             });
-            !bracketed
-                && decoder
-                    .current
-                    .as_ref()
-                    .or(decoder.next.as_ref())
-                    .is_some_and(|current| {
-                        time < current.timestamp || time - current.timestamp > 2.0
-                    })
+            let position = decoder
+                .current
+                .as_ref()
+                .or(decoder.next.as_ref())
+                .map_or(decoder.seek_start, |frame| frame.timestamp);
+            !bracketed && needs_stream_seek(position, time)
         });
         let mut process = if restart {
-            start(ffmpeg, path, info, start_time, (time - 2.0).max(0.0))?
+            drop(decoder.take());
+            let preroll_start = (time - STREAM_SEEK_PREROLL).max(0.0);
+            let seek_start = if preroll_start > 0.0 { time } else { 0.0 };
+            let lookbehind = time - 1.0 / media.video.frame_rate();
+            let trim_start = (lookbehind > 0.0)
+                .then_some(lookbehind + media.start_time)
+                .filter(|start| start.is_finite() && *start > 0.0);
+            let mut process = start(ffmpeg, path, media, seek_start, trim_start)?;
+            process.fallback_seek_start =
+                (preroll_start > 0.0 || trim_start.is_some()).then_some(preroll_start);
+            process
         } else {
             decoder.take()?
         };
-        let frame = read_from_process(
-            &mut process,
-            time,
-            std::time::Instant::now() + std::time::Duration::from_secs(10),
-        );
-        match frame {
-            Ok(frame) => {
-                *decoder = Some(process);
-                frame
-            }
-            Err(()) => None,
+        let mut frame = smol::block_on(wait_for_frame(&mut process, time, wait));
+        if process.current.is_some() {
+            process.fallback_seek_start = None;
         }
+        if let Some(preroll_start) = process.fallback_seek_start.filter(|_| frame.is_ok()) {
+            drop(process);
+            process = start(ffmpeg, path, media, preroll_start, None)?;
+            frame = smol::block_on(wait_for_frame(&mut process, time, wait));
+        }
+        if matches!(frame, Ok(Some(_)) | Err(FrameReadError::Cancelled)) {
+            *decoder = Some(process);
+        }
+        frame.ok().flatten()
     }
 
-    fn read_from_process(
+    #[derive(Debug)]
+    enum FrameReadError {
+        Cancelled,
+        TimedOut,
+    }
+
+    async fn wait_for_frame(
         decoder: &mut DecoderProcess,
         time: f64,
-        deadline: std::time::Instant,
-    ) -> Result<Option<DecodedFrame>, ()> {
-        if decoder
-            .next
-            .as_ref()
-            .is_some_and(|next| next.timestamp <= time)
-        {
-            decoder.current = decoder.next.take();
+        wait: FrameWait<'_>,
+    ) -> Result<Option<DecodedFrame>, FrameReadError> {
+        if let Some(next) = decoder.next.take_if(|next| next.timestamp <= time) {
+            decoder.advance(next);
         }
         if decoder
             .next
@@ -638,24 +1140,21 @@ mod backend {
         {
             return Ok(selected_frame(decoder));
         }
-        loop {
-            let timeout = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .ok_or(())?;
-            let frame = match decoder.frames.recv_timeout(timeout) {
-                Ok(Some(frame)) => frame,
-                Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Ok(selected_frame(decoder));
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(()),
-            };
+
+        let mut interrupt = std::pin::pin!(async { Err(wait.interrupted().await) });
+        while let Some(frame) = smol::future::or(interrupt.as_mut(), async {
+            Ok(decoder.frames.recv().await.ok().flatten())
+        })
+        .await?
+        {
             if frame.timestamp <= time {
-                decoder.current = Some(frame);
+                decoder.advance(frame);
                 continue;
             }
             decoder.next = Some(frame);
-            return Ok(selected_frame(decoder));
+            break;
         }
+        Ok(selected_frame(decoder))
     }
 
     fn selected_frame(decoder: &DecoderProcess) -> Option<DecodedFrame> {
@@ -666,37 +1165,135 @@ mod backend {
             .map(|frame| frame.frame.clone())
     }
 
+    #[cfg(target_os = "macos")]
+    const FRAME_SOCKET_BUFFER: usize = 1024 * 1024;
+
+    #[cfg(target_os = "macos")]
+    const MAX_FRAME_SOCKET_SEND_BUFFER: usize = 4 * 1024 * 1024;
+
+    #[cfg(target_os = "macos")]
+    fn frame_socket(frame_size: usize) -> Option<(std::os::unix::net::UnixStream, Stdio)> {
+        use std::ffi::{c_int, c_void};
+        use std::os::fd::{AsRawFd, OwnedFd};
+        use std::os::unix::net::UnixStream;
+
+        unsafe extern "C" {
+            fn setsockopt(
+                socket: c_int,
+                level: c_int,
+                option: c_int,
+                value: *const c_void,
+                length: u32,
+            ) -> c_int;
+        }
+
+        const SOL_SOCKET: c_int = 0xffff;
+        const SO_SNDBUF: c_int = 0x1001;
+        const SO_RCVBUF: c_int = 0x1002;
+
+        if frame_size <= FRAME_SOCKET_BUFFER {
+            return None;
+        }
+        let (reader, writer) = UnixStream::pair().ok()?;
+        let configure_buffer = |fd, option, capacity: usize| {
+            let capacity = capacity as c_int;
+            unsafe {
+                setsockopt(
+                    fd,
+                    SOL_SOCKET,
+                    option,
+                    (&capacity as *const c_int).cast(),
+                    std::mem::size_of::<c_int>() as u32,
+                ) == 0
+            }
+        };
+        if !configure_buffer(reader.as_raw_fd(), SO_RCVBUF, FRAME_SOCKET_BUFFER) {
+            return None;
+        }
+        let capacity = frame_size.min(MAX_FRAME_SOCKET_SEND_BUFFER);
+        let writer_fd = writer.as_raw_fd();
+        if !configure_buffer(writer_fd, SO_SNDBUF, capacity)
+            && !configure_buffer(writer_fd, SO_SNDBUF, FRAME_SOCKET_BUFFER)
+        {
+            return None;
+        }
+        Some((reader, Stdio::from(OwnedFd::from(writer))))
+    }
+
+    fn spawn_frame_reader(
+        mut command: ProcessCommand,
+        _frame_size: usize,
+    ) -> Option<(Child, Box<dyn Read + Send>)> {
+        #[cfg(target_os = "macos")]
+        if let Some((reader, stdout)) = frame_socket(_frame_size) {
+            if let Ok(child) = command.stdout(stdout).spawn() {
+                return Some((child, Box::new(reader)));
+            }
+        }
+
+        let mut child = command.stdout(Stdio::piped()).spawn().ok()?;
+        if let Some(output) = child.stdout.take() {
+            return Some((child, Box::new(output)));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+
     fn start(
         ffmpeg: &Path,
         path: &Path,
-        info: VideoInfo,
-        start_time: f64,
+        media: MediaInfo,
         seek_start: f64,
+        trim_start: Option<f64>,
     ) -> Option<DecoderProcess> {
+        let MediaInfo {
+            video: info,
+            start_time,
+            normalize_pixel_aspect,
+        } = media;
         let frame_size = info.width as usize * info.height as usize * 4;
+        let filter = if normalize_pixel_aspect {
+            format!(
+                "scale={}:{},setsar=1,showinfo=checksum=0",
+                info.width, info.height
+            )
+        } else {
+            "showinfo=checksum=0".to_owned()
+        };
+        let filter = if let Some(trim_start) = trim_start {
+            format!("trim=start={trim_start:.9},{filter}")
+        } else {
+            filter
+        };
         let seek_start = seek_start.max(0.0);
         let mut command = ProcessCommand::new(ffmpeg);
         command.args(["-hide_banner", "-loglevel", "info", "-copyts"]);
         if seek_start > 0.0 {
             command.args(["-ss", &format!("{seek_start:.6}"), "-noaccurate_seek"]);
         }
-        let mut child = command
+        command
             .arg("-i")
             .arg(path)
             .args([
-                "-map", "0:v:0", "-an", "-vf", "showinfo", "-vsync", "0", "-f", "rawvideo",
-                "-pix_fmt", "bgra", "pipe:1",
+                "-map",
+                "0:v:0",
+                "-an",
+                "-vf",
+                &filter,
+                "-fps_mode",
+                "passthrough",
+                "-threads:v",
+                "4",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgra",
+                "pipe:1",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
-        let Some(mut output) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        };
+            .stderr(Stdio::piped());
+        let (mut child, mut output) = spawn_frame_reader(command, frame_size)?;
         let Some(stderr) = child.stderr.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -706,8 +1303,13 @@ mod backend {
         if std::thread::Builder::new()
             .name("ffmpeg-timestamp-reader".into())
             .spawn(move || {
+                let mut time_base = None;
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let Some(timestamp) = parse_pts_time(&line) else {
+                    if let Some(parsed) = parse_time_base(&line) {
+                        time_base = Some(parsed);
+                        continue;
+                    }
+                    let Some(timestamp) = parse_pts_time(&line, time_base) else {
                         continue;
                     };
                     if timestamp_tx.send(timestamp).is_err() {
@@ -721,17 +1323,65 @@ mod backend {
             let _ = child.wait();
             return None;
         }
-        let (frame_tx, frames) = mpsc::sync_channel(1);
+        #[cfg(all(feature = "parity", target_os = "macos"))]
+        let trace_pid =
+            std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").map(|_| child.id());
+        let (frame_tx, frames) = smol::channel::bounded(1);
+        let (spare_frame, reusable) = smol::channel::bounded(1);
         if std::thread::Builder::new()
             .name("ffmpeg-frame-reader".into())
             .spawn(move || {
+                #[cfg(all(feature = "parity", target_os = "macos"))]
+                let _ = trace_pid;
                 while let Ok(timestamp) = timestamp_rx.recv() {
-                    let mut bytes = vec![0; frame_size];
-                    if output.read_exact(&mut bytes).is_err() {
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let timestamp_started = trace_pid.map(|_| std::time::Instant::now());
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let timestamp_received = trace_pid.map(|_| std::time::Instant::now());
+                    let bytes = reusable.try_recv();
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let reused = bytes.is_ok();
+                    let mut bytes = bytes.unwrap_or_else(|_| vec![0; frame_size]);
+                    let payload = bytes.as_mut_slice();
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    let (payload, payload_phases) = if trace_pid.is_some() {
+                        let allocated = std::time::Instant::now();
+                        let (first, rest) = payload.split_at_mut(1);
+                        if output.read_exact(first).is_err() {
+                            break;
+                        }
+                        (rest, Some((allocated, std::time::Instant::now())))
+                    } else {
+                        (payload, None)
+                    };
+                    if output.read_exact(payload).is_err() {
                         break;
                     }
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    if let (
+                        Some(pid),
+                        Some(started),
+                        Some(received),
+                        Some((allocated, first_byte)),
+                    ) = (
+                        trace_pid,
+                        timestamp_started,
+                        timestamp_received,
+                        payload_phases,
+                    ) {
+                        let finished = std::time::Instant::now();
+                        println!(
+                            "VIDEO_SMOKE pipe {pid} {:.6} {:.3} {:.3} {:.3} {:.3} {:.3} {reused}",
+                            timestamp - start_time,
+                            received.duration_since(started).as_secs_f64() * 1000.,
+                            finished.duration_since(received).as_secs_f64() * 1000.,
+                            allocated.duration_since(received).as_secs_f64() * 1000.,
+                            first_byte.duration_since(allocated).as_secs_f64() * 1000.,
+                            finished.duration_since(first_byte).as_secs_f64() * 1000.,
+                        );
+                    }
                     if frame_tx
-                        .send(Some(TimedFrame {
+                        .send_blocking(Some(TimedFrame {
                             timestamp: timestamp - start_time,
                             frame: DecodedFrame {
                                 width: info.width,
@@ -744,7 +1394,7 @@ mod backend {
                         return;
                     }
                 }
-                let _ = frame_tx.send(None);
+                let _ = frame_tx.send_blocking(None);
             })
             .is_err()
         {
@@ -755,12 +1405,30 @@ mod backend {
         Some(DecoderProcess {
             child,
             frames,
+            spare_frame,
+            seek_start,
+            fallback_seek_start: None,
             current: None,
             next: None,
         })
     }
 
-    fn parse_pts_time(line: &str) -> Option<f64> {
+    fn parse_time_base(line: &str) -> Option<(u64, u64)> {
+        let (_, base) = line.split_once("config in time_base: ")?;
+        let base = base.split(',').next()?;
+        let (numerator, denominator) = base.split_once('/')?;
+        let numerator = numerator.trim().parse::<u64>().ok()?;
+        let denominator = denominator.trim().parse::<u64>().ok()?;
+        (numerator > 0 && denominator > 0).then_some((numerator, denominator))
+    }
+
+    fn parse_pts_time(line: &str, time_base: Option<(u64, u64)>) -> Option<f64> {
+        if let Some((numerator, denominator)) = time_base {
+            let pts = line.split_once(" pts:")?.1.split_whitespace().next()?;
+            if let Ok(pts) = pts.parse::<i64>() {
+                return Some(pts as f64 * numerator as f64 / denominator as f64);
+            }
+        }
         let (_, timestamp) = line.split_once("pts_time:")?;
         timestamp.split_whitespace().next()?.parse().ok()
     }
@@ -776,7 +1444,33 @@ mod backend {
             let executable = directory.path().join("ffmpeg");
             std::fs::write(
                 &executable,
-                "#!/bin/sh\ncase \"$*\" in\n  *'showinfo'*'rawvideo'*) printf x >> \"$0.count\"; printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\\n' >&2; printf '\\003\\002\\001\\377\\006\\005\\004\\377'; printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\\n' >&2; printf '\\011\\010\\007\\377\\014\\013\\012\\377' ;;\n  *) printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\\n' >&2; exit 1 ;;\nesac\n",
+                r#"#!/bin/sh
+case "$*" in
+  *'-i'*'showinfo=checksum=0'*'-threads:v'*'rawvideo'*)
+    if [ -f "$0.previous" ]; then
+      read -r previous < "$0.previous"
+      if kill -0 "$previous" 2>/dev/null; then exit 1; fi
+    fi
+    printf x >> "$0.count"
+    if [ -f "$0.fail-once" ]; then
+      rm "$0.fail-once"
+      exit 1
+    fi
+    printf '[Parsed_showinfo] n:0 pts:5 pts_time:5 duration:1\n' >&2
+    printf '\003\002\001\377\006\005\004\377'
+    printf '[Parsed_showinfo] n:1 pts:15 pts_time:15 duration:1\n' >&2
+    printf '\011\010\007\377\014\013\012\377'
+    ;;
+  *)
+    printf 'Duration: 00:00:20.00, start: 5.000000, bitrate: 1 kb/s\nStream #0:0: Video: h264, bgra, 2x1, 1 fps\n' >&2
+    printf '    title: Audio: example\n' >&2
+    if [ -f "$0.with-audio" ]; then
+      printf 'Stream #0:1(und): Audio: aac, 48000 Hz, stereo\n' >&2
+    fi
+    exit 1
+    ;;
+esac
+"#,
             )
             .expect("fake FFmpeg");
             let mut permissions = std::fs::metadata(&executable)
@@ -788,9 +1482,238 @@ mod backend {
         }
 
         #[test]
+        fn superseded_frame_wait_leaves_the_decoder_available() {
+            let (frames_tx, frames) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/bin/sh")
+                    .args(["-c", ":"])
+                    .spawn()
+                    .unwrap(),
+                frames,
+                spare_frame: smol::channel::bounded(1).0,
+                seek_start: 0.0,
+                fallback_seek_start: None,
+                current: None,
+                next: None,
+            };
+            let (cancel, cancelled) = smol::channel::bounded(1);
+            smol::block_on(async {
+                let wait = FrameWait {
+                    cancelled: Some(&cancelled),
+                    superseded: None,
+                    abandoned: None,
+                };
+                let mut pending = std::pin::pin!(wait_for_frame(&mut decoder, 1.0, wait));
+                assert!(smol::future::poll_once(pending.as_mut()).await.is_none());
+                cancel.close();
+                assert!(matches!(pending.await, Err(FrameReadError::Cancelled)));
+            });
+
+            frames_tx
+                .send_blocking(Some(TimedFrame {
+                    timestamp: 0.5,
+                    frame: DecodedFrame {
+                        width: 1,
+                        height: 1,
+                        bgra: vec![10, 20, 30, 255].into(),
+                    },
+                }))
+                .unwrap();
+            let frame = smol::block_on(wait_for_frame(&mut decoder, 0.0, FrameWait::default()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+
+            let (_, reply) = mpsc::channel();
+            let (waiting, abandoned) = smol::channel::bounded(1);
+            let caller = PendingFrame {
+                reply,
+                _waiting: waiting,
+            };
+            smol::block_on(async {
+                let wait = FrameWait {
+                    cancelled: None,
+                    superseded: None,
+                    abandoned: Some(&abandoned),
+                };
+                let mut pending = std::pin::pin!(wait_for_frame(&mut decoder, 1.0, wait));
+                assert!(smol::future::poll_once(pending.as_mut()).await.is_none());
+                drop(caller);
+                assert!(matches!(pending.await, Err(FrameReadError::TimedOut)));
+            });
+        }
+
+        #[test]
+        fn first_frame_is_available_before_lookahead_and_kept_for_playback() {
+            let (frames_tx, frames) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
+                frames,
+                spare_frame: smol::channel::bounded(1).0,
+                seek_start: 0.0,
+                fallback_seek_start: None,
+                current: None,
+                next: None,
+            };
+            frames_tx
+                .send_blocking(Some(TimedFrame {
+                    timestamp: 0.0,
+                    frame: DecodedFrame {
+                        width: 1,
+                        height: 1,
+                        bgra: vec![10, 20, 30, 255].into(),
+                    },
+                }))
+                .unwrap();
+            smol::block_on(async {
+                let mut first =
+                    std::pin::pin!(wait_for_first_frame(&mut decoder, FrameWait::default()));
+                let frame = smol::future::poll_once(first.as_mut())
+                    .await
+                    .expect("poster can be decoded while the second frame is unavailable")
+                    .unwrap();
+                assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+            });
+            assert!(decoder.current.is_none());
+            assert_eq!(decoder.next.as_ref().unwrap().timestamp, 0.0);
+            smol::block_on(async {
+                let mut pending =
+                    std::pin::pin!(wait_for_frame(&mut decoder, 0.0, FrameWait::default()));
+                assert!(smol::future::poll_once(pending.as_mut()).await.is_none());
+                frames_tx.close();
+                let frame = pending.await.unwrap().unwrap();
+                assert_eq!(frame.bgra.as_slice(), [10, 20, 30, 255]);
+            });
+        }
+
+        #[test]
+        fn decoder_reuses_only_unshared_frame_storage() {
+            let (spare_frame, reusable) = smol::channel::bounded(1);
+            let mut decoder = DecoderProcess {
+                child: ProcessCommand::new("/usr/bin/true").spawn().unwrap(),
+                frames: smol::channel::bounded(1).1,
+                spare_frame,
+                seek_start: 0.0,
+                fallback_seek_start: None,
+                current: None,
+                next: None,
+            };
+            let frame = |timestamp, byte| TimedFrame {
+                timestamp,
+                frame: DecodedFrame {
+                    width: 1,
+                    height: 1,
+                    bgra: vec![byte, 0, 0, 255].into(),
+                },
+            };
+            decoder.advance(frame(0.0, 10));
+            let held = selected_frame(&decoder).unwrap();
+            decoder.advance(frame(1.0, 20));
+            assert!(reusable.try_recv().is_err());
+            assert_eq!(held.bgra[0], 10);
+
+            let current = decoder.current.as_ref().unwrap();
+            let cached = Arc::downgrade(&current.frame.bgra);
+            let address = current.frame.bgra.as_ptr();
+            decoder.advance(frame(2.0, 30));
+            let bytes = reusable.try_recv().unwrap();
+            assert_eq!(bytes.as_ptr(), address);
+            assert_eq!(bytes.as_slice(), [20, 0, 0, 255]);
+            assert!(cached.upgrade().is_none());
+            assert_eq!(selected_frame(&decoder).unwrap().bgra[0], 30);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn large_frame_reader_delivers_stdout_then_eof() {
+            let mut command = ProcessCommand::new("/usr/bin/printf");
+            command.arg("frame");
+            let (mut child, mut output) =
+                spawn_frame_reader(command, MAX_FRAME_SOCKET_SEND_BUFFER).unwrap();
+            let mut bytes = Vec::new();
+            output.read_to_end(&mut bytes).unwrap();
+            assert!(child.wait().unwrap().success());
+            assert_eq!(bytes, b"frame");
+        }
+
+        #[test]
         fn parses_ffmpeg_dimensions() {
             assert_eq!(parse_dimensions("1920x1080"), Some((1920, 1080)));
             assert_eq!(parse_dimensions("0x1080"), None);
+        }
+
+        #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn sparse_camera_timeline_decodes_at_main_video_times() {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("camera.mov");
+            std::fs::write(
+                &source,
+                include_bytes!("../ui/parity/fixtures/camera-delayed-toggle.mov"),
+            )
+            .unwrap();
+            let ffmpeg = crate::video::ffmpeg_path();
+            let media = describe(&ffmpeg, &source).expect("camera metadata");
+            assert_eq!(media.start_time, 0.0);
+            let mut decoder = None;
+            for (time, expected_red) in [
+                (10.1, 37_u8),
+                (11.1, 71),
+                (16.1, 145),
+                (17.1, 219),
+                (19.0, 108),
+            ] {
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media,
+                    &mut decoder,
+                    FrameWait::default(),
+                )
+                .expect("camera frame");
+                let red = frame.bgra[(32 * 64 + 32) * 4 + 2];
+                assert!(red.abs_diff(expected_red) <= 15, "red={red} at {time}s");
+            }
+        }
+
+        #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn sparse_screen_timeline_seeks_through_pause_and_end() {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("screen.mov");
+            std::fs::write(
+                &source,
+                include_bytes!("../ui/parity/fixtures/sparse-screen-pause.mov"),
+            )
+            .unwrap();
+            let ffmpeg = crate::video::ffmpeg_path();
+            let media = describe(&ffmpeg, &source).expect("screen metadata");
+            assert!((media.video.duration - 31.0).abs() < 0.01);
+            let mut decoder = None;
+            for (time, expected) in [
+                (0.0, 34_u8),
+                (12.0, 34),
+                (29.5, 34),
+                (30.1, 119),
+                (30.98, 119),
+                (8.0, 34),
+            ] {
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media,
+                    &mut decoder,
+                    FrameWait::default(),
+                )
+                .expect("screen frame");
+                let channel = frame.bgra[(32 * 64 + 32) * 4 + 2];
+                assert!(
+                    channel.abs_diff(expected) <= 5,
+                    "channel={channel} at {time}s"
+                );
+            }
         }
 
         #[test]
@@ -799,10 +1722,338 @@ mod backend {
         }
 
         #[test]
+        fn ffmpeg_integer_pts_preserves_frame_boundary_precision() {
+            let base =
+                parse_time_base("[Parsed_showinfo] config in time_base: 1/12, frame_rate: 12/1");
+            assert_eq!(base, Some((1, 12)));
+            let line = "[Parsed_showinfo] n: 2 pts: 2 pts_time:0.166667 duration: 1";
+            assert_eq!(parse_pts_time(line, base), Some(2.0 / 12.0));
+            assert_eq!(parse_pts_time(line, None), Some(0.166667));
+            assert_eq!(
+                parse_time_base("config in time_base: 1/0, frame_rate: 12/1"),
+                None
+            );
+        }
+
+        #[test]
+        fn unix_frame_selection_uses_precise_pts_at_fractional_boundaries() {
+            let directory = tempfile::tempdir().unwrap();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                "#!/bin/sh\nprintf '[Parsed_showinfo] config in time_base: 1/12, frame_rate: 12/1\\n' >&2\nprintf '[Parsed_showinfo] n:0 pts:0 pts_time:0\\n' >&2\nprintf '\\000\\000\\000\\377'\nprintf '[Parsed_showinfo] n:1 pts:1 pts_time:0.0833333\\n' >&2\nprintf '\\001\\001\\001\\377'\nprintf '[Parsed_showinfo] n:2 pts:2 pts_time:0.166667\\n' >&2\nprintf '\\002\\002\\002\\377'\nprintf '[Parsed_showinfo] n:3 pts:12 pts_time:1\\n' >&2\nprintf '\\014\\014\\014\\377'\n",
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&ffmpeg).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&ffmpeg, permissions).unwrap();
+            let info = VideoInfo {
+                width: 1,
+                height: 1,
+                duration: 2.0,
+                frame_rate: 12.0,
+                ..Default::default()
+            };
+            let media = MediaInfo {
+                video: info,
+                ..Default::default()
+            };
+            let mut decoder = None;
+            let source = directory.path().join("source.mov");
+            for (time, expected) in [
+                (2.0 / 12.0 - 0.000_000_1, 1),
+                (2.0 / 12.0, 2),
+                ((1.0 + 1.0 / 12.0) - 1.0 / 12.0, 12),
+            ] {
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    time,
+                    media,
+                    &mut decoder,
+                    FrameWait::default(),
+                )
+                .unwrap();
+                assert_eq!(frame.bgra[0], expected, "frame at {time:.17}");
+            }
+        }
+
+        #[test]
+        fn square_pixel_dimensions_expand_the_shortened_axis() {
+            assert_eq!(sample_aspect("144x108 [SAR 4:3 DAR 16:9]"), Some((4, 3)));
+            assert_eq!(sample_aspect("144x108 [SAR 1:0]"), None);
+            assert_eq!(sample_aspect("144x108"), None);
+            assert_eq!(square_pixel_size(144, 108, (4, 3)), Some((192, 108)));
+            assert_eq!(square_pixel_size(144, 108, (3, 4)), Some((144, 144)));
+            assert_eq!(square_pixel_size(146, 108, (5, 4)), Some((183, 108)));
+            assert_eq!(square_pixel_size(3840, 2160, (1, 1)), Some((3840, 2160)));
+            assert_eq!(square_pixel_size(3840, 2160, (65535, 1)), None);
+        }
+
+        #[test]
+        #[ignore = "requires development FFmpeg"]
+        fn anamorphic_video_decodes_at_square_pixel_dimensions() {
+            let ffmpeg = crate::video::ffmpeg_path();
+            let directory = tempfile::tempdir().unwrap();
+            let upright = directory.path().join("upright.mp4");
+            let rotated = directory.path().join("rotated.mp4");
+            let encoded = ProcessCommand::new(&ffmpeg)
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=144x108:rate=12",
+                    "-vf",
+                    "setsar=4/3",
+                    "-frames:v",
+                    "12",
+                    "-c:v",
+                    "mpeg4",
+                ])
+                .arg(&upright)
+                .status()
+                .unwrap();
+            assert!(encoded.success());
+            let rotated_copy = ProcessCommand::new(&ffmpeg)
+                .args(["-v", "error", "-display_rotation:v:0", "90", "-i"])
+                .arg(&upright)
+                .args(["-map", "0:v:0", "-c", "copy"])
+                .arg(&rotated)
+                .status()
+                .unwrap();
+            assert!(rotated_copy.success());
+
+            for (path, dimensions) in [(upright, (192, 108)), (rotated, (108, 192))] {
+                let decoder = VideoDecoder::open(&path).unwrap();
+                let info = decoder.info();
+                assert_eq!((info.width, info.height), dimensions);
+                let first = decoder.frame_at(0.).unwrap();
+                let later = decoder.frame_at(0.5).unwrap();
+                let reopened = decoder.frame_at(0.).unwrap();
+                for frame in [&first, &later, &reopened] {
+                    assert_eq!((frame.width, frame.height), dimensions);
+                    assert_eq!(frame.bgra.len(), (dimensions.0 * dimensions.1 * 4) as usize);
+                }
+                assert_eq!(first.bgra, reopened.bgra);
+                assert_ne!(first.bgra, later.bgra);
+            }
+        }
+
+        #[test]
         fn display_rotation_swaps_video_dimensions() {
             assert_eq!(parse_rotation("rotation of -90.00 degrees"), Some(-90.0));
             assert!(rotation_swaps_dimensions(-90.0));
             assert!(!rotation_swaps_dimensions(180.0));
+        }
+
+        #[test]
+        fn a_seek_retires_the_old_decoder_before_launching_its_replacement() {
+            for (last_frame, requested) in [(Some(10.0), 0.25), (None, 4.5)] {
+                let directory = fake_ffmpeg();
+                let ffmpeg = directory.path().join("ffmpeg");
+                let source = directory.path().join("source.mp4");
+                let media = describe(&ffmpeg, &source).expect("video metadata");
+                let child = ProcessCommand::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .expect("stand-in for the active decoder");
+                let (_, frames) = smol::channel::bounded(1);
+                let mut decoder = Some(DecoderProcess {
+                    child,
+                    frames,
+                    spare_frame: smol::channel::bounded(1).0,
+                    seek_start: 0.0,
+                    fallback_seek_start: None,
+                    current: last_frame.map(|timestamp| TimedFrame {
+                        timestamp,
+                        frame: DecodedFrame {
+                            width: 2,
+                            height: 1,
+                            bgra: vec![9, 8, 7, 255, 12, 11, 10, 255].into(),
+                        },
+                    }),
+                    next: None,
+                });
+                let old_pid = decoder.as_ref().unwrap().child.id();
+                std::fs::write(
+                    directory.path().join("ffmpeg.previous"),
+                    old_pid.to_string(),
+                )
+                .expect("decoder PID for the replacement to check");
+
+                let frame = read_frame(
+                    &ffmpeg,
+                    &source,
+                    requested,
+                    media,
+                    &mut decoder,
+                    FrameWait::default(),
+                )
+                .expect("replacement decoder must run after the old process exits");
+
+                assert_eq!(frame.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            }
+        }
+
+        #[test]
+        fn cold_seek_retries_when_the_trim_skips_the_held_frame() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                r#"#!/bin/sh
+case "$*" in
+  *'trim=start=5.650000000,showinfo=checksum=0'*)
+    printf t >> "$0.calls"
+    ;;
+  *)
+    printf p >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:5 pts_time:5\n' >&2
+    printf '\021\000\000\377'
+    ;;
+esac
+printf '[Parsed_showinfo] n:1 pts:6 pts_time:6\n' >&2
+printf '\042\000\000\377'
+"#,
+            )
+            .unwrap();
+            let media = MediaInfo {
+                video: VideoInfo {
+                    width: 1,
+                    height: 1,
+                    duration: 2.0,
+                    frame_rate: 10.0,
+                    ..Default::default()
+                },
+                start_time: 5.0,
+                ..Default::default()
+            };
+            let frame = read_frame(
+                &ffmpeg,
+                &directory.path().join("source.mov"),
+                0.75,
+                media,
+                &mut None,
+                FrameWait::default(),
+            )
+            .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [17, 0, 0, 255]);
+            assert_eq!(
+                std::fs::read(directory.path().join("ffmpeg.calls")).unwrap(),
+                b"tp"
+            );
+        }
+
+        #[test]
+        fn a_stream_restart_trims_preroll_and_retries_if_it_skips_the_target() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            std::fs::write(
+                &ffmpeg,
+                r#"#!/bin/sh
+case "$5 $6" in
+  *'-ss 8.000000')
+    case "$*" in
+      *'trim=start=7.000000000,showinfo=checksum=0'*) printf d >> "$0.calls" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *'-ss 6.000000')
+    printf p >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:7 pts_time:7\n' >&2
+    printf '\021\000\000\377'
+    ;;
+  '-i '*)
+    printf i >> "$0.calls"
+    printf '[Parsed_showinfo] n:0 pts:0 pts_time:0\n' >&2
+    printf '\010\000\000\377'
+    printf '[Parsed_showinfo] n:1 pts:1 pts_time:1\n' >&2
+    printf '\011\000\000\377'
+    exit 0
+    ;;
+  *) exit 1 ;;
+esac
+printf '[Parsed_showinfo] n:1 pts:9 pts_time:9\n' >&2
+printf '\042\000\000\377'
+"#,
+            )
+            .unwrap();
+            let mut decoder = None;
+            let info = VideoInfo {
+                width: 1,
+                height: 1,
+                duration: 10.0,
+                frame_rate: 1.0,
+                ..Default::default()
+            };
+            let media = MediaInfo {
+                video: info,
+                ..Default::default()
+            };
+            let source = directory.path().join("source.mov");
+            let first = read_frame(
+                &ffmpeg,
+                &source,
+                0.0,
+                media,
+                &mut decoder,
+                FrameWait::default(),
+            )
+            .unwrap();
+            assert_eq!(first.bgra.as_slice(), [8, 0, 0, 255]);
+
+            let frame = read_frame(
+                &ffmpeg,
+                &source,
+                8.0,
+                media,
+                &mut decoder,
+                FrameWait::default(),
+            )
+            .unwrap();
+            assert_eq!(frame.bgra.as_slice(), [17, 0, 0, 255]);
+            assert_eq!(
+                std::fs::read(directory.path().join("ffmpeg.calls")).unwrap(),
+                b"idp"
+            );
+        }
+
+        #[test]
+        fn an_empty_decoder_is_restarted_for_the_next_frame_request() {
+            let directory = fake_ffmpeg();
+            let ffmpeg = directory.path().join("ffmpeg");
+            let source = directory.path().join("source.mp4");
+            let media = describe(&ffmpeg, &source).expect("video metadata");
+            std::fs::write(directory.path().join("ffmpeg.fail-once"), []).unwrap();
+            let mut decoder = None;
+
+            let first = read_frame(
+                &ffmpeg,
+                &source,
+                0.25,
+                media,
+                &mut decoder,
+                FrameWait::default(),
+            );
+            assert!(first.is_none());
+            assert!(decoder.is_none());
+
+            let recovered = read_frame(
+                &ffmpeg,
+                &source,
+                0.25,
+                media,
+                &mut decoder,
+                FrameWait::default(),
+            )
+            .expect("decoder should restart after delivering no frames");
+            assert_eq!(recovered.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            assert_eq!(
+                std::fs::read(directory.path().join("ffmpeg.count")).unwrap(),
+                b"xx"
+            );
         }
 
         #[test]
@@ -819,31 +2070,37 @@ mod backend {
                     height: 1,
                     duration: 20.0,
                     frame_rate: 1.0,
+                    has_embedded_audio: Some(false),
                 }
             );
             assert_eq!(media.start_time, 5.0);
+            std::fs::write(directory.path().join("ffmpeg.with-audio"), []).unwrap();
+            assert_eq!(
+                describe(&ffmpeg, &source).unwrap().video.has_embedded_audio,
+                Some(true)
+            );
 
             let mut decoder = None;
             let first = read_frame(
                 &ffmpeg,
                 &source,
                 0.25,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
+                FrameWait::default(),
             )
             .expect("first video frame");
-            assert_eq!(first.bgra.as_ref(), [3, 2, 1, 255, 6, 5, 4, 255]);
+            assert_eq!(first.bgra.as_slice(), [3, 2, 1, 255, 6, 5, 4, 255]);
             let gap = read_frame(
                 &ffmpeg,
                 &source,
                 5.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
+                FrameWait::default(),
             )
             .expect("sparse video gap");
-            assert_eq!(gap.bgra.as_ref(), first.bgra.as_ref());
+            assert_eq!(gap.bgra.as_slice(), first.bgra.as_slice());
             assert_eq!(
                 std::fs::read_to_string(directory.path().join("ffmpeg.count"))
                     .expect("FFmpeg launch count"),
@@ -853,23 +2110,23 @@ mod backend {
                 &ffmpeg,
                 &source,
                 10.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut decoder,
+                FrameWait::default(),
             )
             .expect("second video frame");
-            assert_eq!(second.bgra.as_ref(), [9, 8, 7, 255, 12, 11, 10, 255]);
+            assert_eq!(second.bgra.as_slice(), [9, 8, 7, 255, 12, 11, 10, 255]);
 
             let random = read_frame(
                 &ffmpeg,
                 &source,
                 5.0,
-                media.video,
-                media.start_time,
+                media,
                 &mut None,
+                FrameWait::default(),
             )
             .expect("random seek video frame");
-            assert_eq!(random.bgra.as_ref(), first.bgra.as_ref());
+            assert_eq!(random.bgra.as_slice(), first.bgra.as_slice());
         }
     }
 }
@@ -878,10 +2135,17 @@ mod backend {
 mod backend {
     use super::*;
 
-    pub fn run(_path: PathBuf, commands: Receiver<Command>, info_tx: Sender<Option<VideoInfo>>) {
-        let _ = info_tx.send(None);
-        while let Ok(Command::Seek { time, reply }) = commands.recv() {
-            let _ = time;
+    pub fn run(
+        _path: PathBuf,
+        commands: Receiver<Command>,
+        info_tx: smol::channel::Sender<Option<VideoInfo>>,
+    ) {
+        let _ = info_tx.try_send(None);
+        while let Ok(Command::Frame(FrameCommand {
+            position, reply, ..
+        })) = commands.recv()
+        {
+            let _ = position;
             drop(reply);
         }
     }
@@ -890,6 +2154,114 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::infallible_destructuring_match)]
+    fn expect_frame(command: Command) -> FrameCommand {
+        match command {
+            Command::Frame(command) => command,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Command::ReleaseFrames => panic!("expected a frame request"),
+        }
+    }
+
+    #[test]
+    fn a_superseded_frame_returns_while_the_decoder_is_still_busy() {
+        let (commands, receiver) = mpsc::channel();
+        let decoder = VideoDecoder {
+            commands,
+            info: VideoInfo::default(),
+        };
+        let (supersede, superseded) = smol::channel::bounded(1);
+        let (done, finished) = mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let executor =
+                BackgroundExecutor::new(Arc::new(herogpui::gpui::TestDispatcher::new(0)));
+            let _ = done.send(smol::block_on(decoder.frame_at_supersedable(
+                1.0,
+                None,
+                &superseded,
+                &executor,
+            )));
+        });
+        let command = expect_frame(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        supersede.close();
+        assert!(finished
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_none());
+        assert!(command.abandoned.is_closed());
+        assert!(command.superseded.as_ref().unwrap().is_closed());
+        drop(command);
+        waiting.join().unwrap();
+    }
+
+    #[test]
+    fn supersedable_frame_timeout_follows_the_gpui_clock() {
+        let executor = BackgroundExecutor::new(Arc::new(herogpui::gpui::TestDispatcher::new(0)));
+        let (commands, receiver) = mpsc::channel();
+        let decoder = VideoDecoder {
+            commands,
+            info: VideoInfo::default(),
+        };
+        let (_supersede, superseded) = smol::channel::bounded(1);
+        let mut waiting =
+            std::pin::pin!(decoder.frame_at_supersedable(1.0, None, &superseded, &executor));
+        assert!(smol::block_on(smol::future::poll_once(waiting.as_mut())).is_none());
+
+        let command = expect_frame(receiver.try_recv().unwrap());
+        let margin = Duration::from_millis(1);
+        executor.advance_clock(FRAME_RESPONSE_TIMEOUT - margin);
+        while executor.tick() {}
+        assert!(smol::block_on(smol::future::poll_once(waiting.as_mut())).is_none());
+        executor.advance_clock(margin);
+        while executor.tick() {}
+        assert!(matches!(
+            smol::block_on(smol::future::poll_once(waiting.as_mut())),
+            Some(None)
+        ));
+        assert!(command.abandoned.is_closed());
+    }
+
+    #[test]
+    fn a_cancelled_metadata_wait_preserves_the_pending_decoder() {
+        let (commands, receiver) = mpsc::channel();
+        let (info_tx, info) = smol::channel::bounded(1);
+        let opening = DecoderOpening {
+            commands,
+            info,
+            deadline: Instant::now() + Duration::from_secs(10),
+        };
+        let (cancel, cancelled) = smol::channel::bounded(1);
+        let warmup = opening.request_warmup(0.5, cancelled.clone()).unwrap();
+        let command = expect_frame(receiver.try_recv().unwrap());
+        assert!(matches!(command.position, FramePosition::Time(0.5)));
+        drop(command);
+        warmup.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        cancel.close();
+        let opening = match opening.finish_interruptible(Some(&cancelled), None) {
+            Err(opening) => opening,
+            Ok(_) => panic!("cancelled wait consumed the opening decoder"),
+        };
+        let info = VideoInfo {
+            width: 1,
+            height: 1,
+            duration: 2.0,
+            frame_rate: 30.0,
+            ..Default::default()
+        };
+        let opening = match opening.finish_interruptible(None, Some(&cancelled)) {
+            Err(opening) => opening,
+            Ok(_) => panic!("superseded wait consumed the opening decoder"),
+        };
+        info_tx.try_send(Some(info)).unwrap();
+        let ready = opening
+            .finish_interruptible(None, Some(&cancelled))
+            .ok()
+            .flatten()
+            .unwrap();
+        assert_eq!(ready.info(), info);
+    }
 
     #[cfg(windows)]
     #[derive(serde::Deserialize)]
@@ -2224,6 +3596,7 @@ mod tests {
             height: 1080,
             duration: 3.0,
             frame_rate: 60.0,
+            ..Default::default()
         }
         .is_valid());
         assert!(!VideoInfo {
@@ -2231,6 +3604,7 @@ mod tests {
             height: 0,
             duration: 3.0,
             frame_rate: 60.0,
+            ..Default::default()
         }
         .is_valid());
     }

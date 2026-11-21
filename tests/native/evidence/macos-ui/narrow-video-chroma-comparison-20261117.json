@@ -1,0 +1,16 @@
+{
+  "frameSize": [320, 180],
+  "redPixels": 1196,
+  "previewToDecoded": {
+    "meanRgbError": 20.770345596432552,
+    "maxChannelError": 94
+  },
+  "previewTo420RoundTrip": {
+    "meanRgbError": 20.77006688963211,
+    "maxChannelError": 94
+  },
+  "roundTripToDecoded": {
+    "meanRgbError": 0.024804905239687848,
+    "maxChannelError": 2
+  }
+}

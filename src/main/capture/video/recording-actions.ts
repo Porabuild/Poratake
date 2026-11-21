@@ -54,6 +54,7 @@ import type {
 import { addToHistory } from '@/main/history';
 import {
   showRecordingError,
+  showCameraRecordingWarning,
   checkAndRequestMicrophonePermission,
 } from './permissions.ts';
 import { deleteVideo } from './delete-video.ts';
@@ -181,15 +182,9 @@ async function handleTerminalRecordingFailure(
   await Promise.allSettled([
     disableCameraContentProtection(),
     hideRecordingControl(),
-    outputPath
-      ? deleteVideo(outputPath, {
-          showNotification: false,
-          showErrorDialog: false,
-        })
-      : Promise.resolve(),
   ]);
   hideCameraPreview();
-  await showRecordingError(error);
+  await showRecordingError(error, outputPath);
 }
 
 function stopRecordingWhenTargetClosed(): void {
@@ -210,15 +205,22 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
   }
 
   let recordingResult: CompletedRecording | null = null;
+  let stopError: Error | null = null;
   const recordingType = currentRecordingType;
+  const outputPath = getCurrentRecordingPath();
 
   try {
     recordingResult = await stopRecording(hideRecordingControl);
   } catch (error) {
     disposeRecordingPreviewPreparation();
-    throw error;
+    stopError = error instanceof Error ? error : new Error(String(error));
   } finally {
     await teardownActiveRecordingPresentation();
+  }
+
+  if (stopError) {
+    await showRecordingError(stopError, outputPath);
+    return null;
   }
 
   let previewPreparation = takeRecordingPreviewPreparation();
@@ -271,6 +273,11 @@ async function stopAndFinalizeRecording(): Promise<string | null> {
       await Promise.all([editorStatePromise, historyItemPromise]);
     } finally {
       previewPreparation?.dispose();
+      if (recordingResult.cameraTrackMissing) {
+        void showCameraRecordingWarning().catch(error => {
+          console.error('Failed to show camera recording warning:', error);
+        });
+      }
     }
   } else {
     previewPreparation?.dispose();
@@ -486,7 +493,10 @@ async function startPendingRecordingInternal(
   }
 
   if (clampedDelay > 0) {
-    const countdownResult = await startRecordingCountdown(clampedDelay);
+    const countdownResult = await startRecordingCountdown(
+      clampedDelay,
+      windowId
+    );
     if (countdownResult === 'cancelled') {
       concealAreaSelectorOverlay();
       await Promise.all([

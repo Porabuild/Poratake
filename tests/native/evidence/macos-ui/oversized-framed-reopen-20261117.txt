@@ -1,0 +1,31 @@
+macOS GPUI oversized framed screenshot preview, 2026-11-17, source b0983f55
+
+An isolated Metal fixture generated 17,024x128 and 128x17,024 textured images
+with opaque or varying-alpha pixels. It applied a solid wallpaper with padding
+20 and checked both macOS frame styles, inset 0 or 8, and shadow 0 or 50. It
+asserted that the backdrop was composed and tiled, and that the exported PNG
+retained distinct source pixels.
+
+Both app appearances, simulated display scales 1x, 1.25x and 2x, and 25% and
+50% zoom were exercised. For each of 384 orientation/alpha/frame/inset/shadow/
+appearance/scale/zoom cases, the fixture compared the visible part of the
+preview with the same region of its reopened full PNG, before and after
+simulated command-drag panning. All 768 comparisons had zero pixels more than
+two channel levels apart; the maximum difference was one. The panned check
+asserted that the first tile seam was inside the compared region. The check
+does not compare the full oversized image at once.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-framed-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.5 PORATAKE_PARITY_LARGE_FRAME=macos-light PORATAKE_PARITY_LARGE_SHADOW=50 PORATAKE_PARITY_LARGE_INSET=8 PORATAKE_PARITY_THEME=light src/main/target/debug/poratake-gpui --parity
+
+PORATAKE_PARITY_LARGE_DPI was 1, 1.25 and 2; zoom was 0.25 and 0.5; frame was
+macos-dark and macos-light; shadow was 0 and 50; inset was 0 and 8; theme was
+dark and light. Every run used generated content and an isolated profile.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the existing unrelated editor/window.rs lint suppressed.
+
+This checks editor export and reopen through the fixture, not the native Save
+dialog, physical input or displays, real screenshot or scroll capture, attached
+layers, annotations, unframed shadows, arbitrary zoom or other platforms. It
+does not measure interactive performance or change privacy settings.

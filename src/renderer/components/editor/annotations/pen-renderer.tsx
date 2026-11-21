@@ -41,6 +41,8 @@ export function renderPen({
   offsetY,
   isSelected,
   isPreview,
+  decorationOnly = false,
+  hitOnly = false,
   onMouseDown,
 }: PenRenderProps): JSX.Element {
   const key = isPreview ? `preview-${ann.id}` : ann.id;
@@ -61,19 +63,19 @@ export function renderPen({
       key={key}
       style={{
         cursor: isPreview ? 'default' : 'move',
-        pointerEvents: isPreview ? 'none' : 'auto',
+        pointerEvents: isPreview ? 'none' : hitOnly ? 'painted' : 'auto',
       }}
       onMouseDown={isPreview ? undefined : e => onMouseDown?.(e, ann.id)}
     >
       {isSelected && (
         <path
           d={pathData}
-          fill={SELECTION_STROKE}
+          fill={decorationOnly ? 'none' : SELECTION_STROKE}
           stroke={SELECTION_STROKE}
           strokeWidth={2}
         />
       )}
-      <path d={pathData} fill={ann.stroke} />
+      {!decorationOnly && <path d={pathData} fill={ann.stroke} />}
     </g>
   );
 }

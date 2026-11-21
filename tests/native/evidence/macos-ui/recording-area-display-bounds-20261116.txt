@@ -1,0 +1,24 @@
+macOS recording area bounds, 2026-11-16
+
+The macOS recorder translated an area selection into display-local coordinates
+without checking whether the selection still fit the selected display. A stale
+selection could therefore produce a negative source origin or extend past the
+display after its geometry changed. The recorder now rejects empty, non-finite
+or out-of-display areas with CONFIGURATION_ERROR before creating its output
+writer. Window capture continues to use its window filter rather than this area
+check.
+
+The native fixture covers a valid area and whole display at a negative desktop
+origin; areas extending past each edge; zero width; and a non-finite coordinate.
+The out-of-display assertion failed with the earlier unchecked calculation. It
+also compares the connected main display's AppKit-to-desktop conversion with
+Core Graphics metadata and accepts that full display. One display was connected.
+No Screen Recording permission or pixel capture was requested.
+
+swiftc -parse-as-library src/main/daemon/ScreenRecorder/Types/RecorderError.swift src/main/daemon/ScreenRecorder/Types/RecordingDisplaySelection.swift tests/native/recording-display-selection.swift -o /tmp/poratake-recording-source-rect
+/tmp/poratake-recording-source-rect
+
+The complete Swift daemon typechecked for arm64 and x86_64 macOS. The fixture
+does not verify live display rearrangement, secondary physical displays, actual
+ScreenCaptureKit output or the app's error presentation. It cannot detect every
+layout change when the old area still fits the display's new bounds.

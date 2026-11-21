@@ -2,7 +2,7 @@
 //! and `main/capture/capture-preview/index.ts`. A 200×140 thumbnail docks in
 //! the configured corner, stacks up to four deep, and reveals hover chrome.
 
-#[cfg(feature = "parity")]
+#[cfg(any(target_os = "macos", all(feature = "parity", any(windows, test))))]
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 #[cfg(any(windows, test))]
 use gpui::Entity;
 use gpui::{
-    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Render,
-    Styled, Window,
+    div, img, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, MouseButton, Pixels,
+    Render, Size, Styled, Window,
 };
 use herogpui::components::TooltipPlacement;
 use herogpui::gpui;
@@ -54,29 +54,29 @@ fn preview_thumbnail_decode_slots(cx: &mut App) -> Arc<smol::lock::Semaphore> {
     slots
 }
 
-#[cfg(feature = "parity")]
+#[cfg(all(feature = "parity", any(windows, test)))]
 thread_local! {
     static SIMULATE_HEADLESS_PREVIEW_REVEAL: Cell<bool> = const { Cell::new(false) };
 }
 
-#[cfg(feature = "parity")]
+#[cfg(all(feature = "parity", any(windows, test)))]
 pub(crate) struct HeadlessPreviewRevealGuard(bool);
 
-#[cfg(feature = "parity")]
+#[cfg(all(feature = "parity", any(windows, test)))]
 impl HeadlessPreviewRevealGuard {
     pub(crate) fn enter() -> Self {
         Self(SIMULATE_HEADLESS_PREVIEW_REVEAL.with(|active| active.replace(true)))
     }
 }
 
-#[cfg(feature = "parity")]
+#[cfg(all(feature = "parity", any(windows, test)))]
 impl Drop for HeadlessPreviewRevealGuard {
     fn drop(&mut self) {
         SIMULATE_HEADLESS_PREVIEW_REVEAL.with(|active| active.set(self.0));
     }
 }
 
-#[cfg(feature = "parity")]
+#[cfg(all(feature = "parity", any(windows, test)))]
 fn simulate_headless_preview_reveal() -> bool {
     SIMULATE_HEADLESS_PREVIEW_REVEAL.with(Cell::get)
 }
@@ -108,7 +108,12 @@ impl Render for PreviewDragGhost {
             .rounded(px(PREVIEW_RADIUS))
             .opacity(0.9);
         if let Some(image) = self.image.clone() {
-            ghost = ghost.child(img(image).size_full().object_fit(gpui::ObjectFit::Cover));
+            ghost = ghost.child(
+                img(image)
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS))),
+            );
         }
         ghost
     }
@@ -119,6 +124,12 @@ struct VideoPlayback {
     duration: f64,
     started: Instant,
     in_flight: bool,
+    #[cfg(target_os = "macos")]
+    frames_released: bool,
+    #[cfg(target_os = "macos")]
+    viewport_clipped: Cell<bool>,
+    #[cfg(target_os = "macos")]
+    visibility_changed: smol::channel::Sender<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -166,13 +177,24 @@ struct CapturePreview {
     last_frame: Option<std::time::Instant>,
     hovered: bool,
     busy: bool,
+    deleting: bool,
+    copying: bool,
+    finalizing: bool,
     completed: Option<Instant>,
     export_progress: Option<Arc<AtomicU32>>,
     dismiss_token: Arc<AtomicU64>,
+    #[cfg(target_os = "macos")]
+    dismiss_viewport_clipped: Cell<bool>,
     entered_at: Instant,
     layout_y: Option<f32>,
     layout_animation: Option<LayoutAnimation>,
     dismiss_animation: Option<DismissAnimation>,
+}
+
+impl CapturePreview {
+    fn is_busy(&self) -> bool {
+        self.busy || self.deleting || self.copying
+    }
 }
 
 fn cancel_thumbnail_load(preview: &mut CapturePreview) {
@@ -181,6 +203,19 @@ fn cancel_thumbnail_load(preview: &mut CapturePreview) {
     }
     preview.thumbnail_generation = preview.thumbnail_generation.wrapping_add(1);
     preview.thumbnail_loading = false;
+}
+
+fn release_preview_images(
+    preview: &mut CapturePreview,
+    cx: &mut App,
+    mut window: Option<&mut Window>,
+) {
+    for image in [preview.image.take(), preview.blurred.take()]
+        .into_iter()
+        .flatten()
+    {
+        cx.drop_image(image, window.as_deref_mut());
+    }
 }
 
 fn thumbnail_preview_matches(
@@ -208,7 +243,7 @@ fn thumbnail_preview_mut<'a>(
         .find(|preview| thumbnail_preview_matches(preview, id, path, generation))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn restart_screenshot_thumbnail_loads(
     previews: &mut [CapturePreview],
 ) -> Vec<(
@@ -239,6 +274,8 @@ fn restart_screenshot_thumbnail_loads(
         {
             preview.thumbnail_ready = Some(ready_receiver);
         }
+        #[cfg(all(test, feature = "parity"))]
+        let ready_sender = Some(ready_sender);
         pending.push((
             preview.id,
             preview.path.clone(),
@@ -254,12 +291,80 @@ pub struct CapturePreviewWindow {
     previews: Vec<CapturePreview>,
     revealed: bool,
     layout_generation: u64,
+    #[cfg(target_os = "macos")]
+    pointer_inside: bool,
+    #[cfg(target_os = "macos")]
+    keyboard_controls: bool,
+    #[cfg(target_os = "macos")]
+    pending_keyboard_tab: Option<bool>,
+    #[cfg(target_os = "macos")]
+    viewport_scroll: Option<(PreviewCorner, gpui::ScrollHandle)>,
     display_menu: crate::ui::menu::MenuHandle,
     tooltip_presenter: Arc<crate::ui::tooltip::NativeTooltipPresenter>,
     _display_observer: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    _visibility_observer: Option<gpui::Subscription>,
 }
 
 impl CapturePreviewWindow {
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_viewport_scroll_offset(&self) -> Option<gpui::Point<Pixels>> {
+        self.viewport_scroll
+            .as_ref()
+            .map(|(_, scroll)| scroll.offset())
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_hovered(&self) -> bool {
+        self.previews.iter().any(|preview| preview.hovered)
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_pointer_inside(&self) -> bool {
+        self.pointer_inside
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn act_on_latest_for_parity(
+        handle: gpui::WindowHandle<Self>,
+        copy: bool,
+        cx: &mut App,
+    ) -> bool {
+        handle
+            .update(cx, |view, window, cx| {
+                let Some(preview) = view.previews.last() else {
+                    return false;
+                };
+                let id = preview.id;
+                let entity = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    if copy {
+                        copy_screenshot(&entity, id, false, window, cx);
+                    } else {
+                        delete_preview(&entity, id, window, cx);
+                    }
+                });
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn action_pending_for_parity(&self, copy: bool) -> bool {
+        self.previews.last().is_some_and(|preview| {
+            if copy {
+                preview.copying
+            } else {
+                preview.deleting
+            }
+        })
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn finalizing_for_parity(&self) -> bool {
+        self.previews.iter().any(|preview| preview.finalizing)
+    }
+
     #[cfg(feature = "parity")]
     pub(crate) fn thumbnails_ready_for_parity(&self) -> bool {
         self.previews.iter().all(|preview| {
@@ -270,6 +375,20 @@ impl CapturePreviewWindow {
         })
     }
 
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn video_thumbnail_status_for_parity(&self) -> Option<(bool, bool, bool)> {
+        self.previews
+            .iter()
+            .find(|preview| preview.kind == PreviewKind::Video)
+            .map(|preview| {
+                (
+                    preview.hovered,
+                    preview.image.is_some(),
+                    preview.blurred.is_some(),
+                )
+            })
+    }
+
     fn active_preview_count(&self) -> usize {
         self.previews
             .iter()
@@ -277,7 +396,23 @@ impl CapturePreviewWindow {
             .count()
     }
 
+    fn window_preview_count(&self) -> usize {
+        if cfg!(target_os = "macos") {
+            self.previews.len().min(PREVIEW_MAX_STACK)
+        } else {
+            self.active_preview_count()
+        }
+    }
+
     pub fn open(cx: &mut App, path: PathBuf) {
+        Self::open_screenshot(cx, path, None);
+    }
+
+    pub(crate) fn open_screenshot(
+        cx: &mut App,
+        path: PathBuf,
+        finalization: Option<smol::channel::Receiver<()>>,
+    ) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
         let (thumbnail_cancel, thumbnail_canceled) = smol::channel::bounded(1);
@@ -307,9 +442,14 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                deleting: false,
+                copying: false,
+                finalizing: finalization.is_some(),
                 completed: None,
                 export_progress: None,
                 dismiss_token,
+                #[cfg(target_os = "macos")]
+                dismiss_viewport_clipped: Cell::new(false),
                 entered_at,
                 layout_y: None,
                 layout_animation: None,
@@ -327,12 +467,45 @@ impl CapturePreviewWindow {
             thumbnail_ready_sender,
             cx,
         );
+        Self::watch_finalization(id, finalization, cx);
+    }
+
+    fn watch_finalization(
+        id: u64,
+        finalization: Option<smol::channel::Receiver<()>>,
+        cx: &mut App,
+    ) {
+        let Some(finalization) = finalization else {
+            return;
+        };
+        let Some(handle) = registry::handle(WindowKind::CapturePreview, cx)
+            .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+        else {
+            return;
+        };
+        cx.spawn(async move |cx| {
+            let _ = finalization.recv().await;
+            cx.update(|cx| {
+                let _ = handle.update(cx, |view, _, cx| {
+                    if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    {
+                        preview.finalizing = false;
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
     }
 
     /// Recording counterpart of `open`: the stack shows the project's video
     /// with play/export actions (`recording-actions.ts` shows a `'video'`
     /// preview when `recording.showPreview` is on).
-    pub fn open_video(cx: &mut App, project: PathBuf) {
+    pub(crate) fn open_video(
+        cx: &mut App,
+        project: PathBuf,
+        finalization: Option<smol::channel::Receiver<()>>,
+    ) {
         let id = NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed);
         let dismiss_token = Arc::new(AtomicU64::new(0));
         let entered_at = cx.background_executor().now();
@@ -344,7 +517,7 @@ impl CapturePreviewWindow {
                 id,
                 kind: PreviewKind::Video,
                 image: None,
-                thumbnail_loading: false,
+                thumbnail_loading: true,
                 thumbnail_cancel: None,
                 thumbnail_generation: 0,
                 #[cfg(all(test, feature = "parity"))]
@@ -357,9 +530,14 @@ impl CapturePreviewWindow {
                 last_frame: None,
                 hovered: false,
                 busy: false,
+                deleting: false,
+                copying: false,
+                finalizing: finalization.is_some(),
                 completed: None,
                 export_progress: None,
                 dismiss_token,
+                #[cfg(target_os = "macos")]
+                dismiss_viewport_clipped: Cell::new(false),
                 entered_at,
                 layout_y: None,
                 layout_animation: None,
@@ -367,6 +545,7 @@ impl CapturePreviewWindow {
             },
         );
         pump_video_preview(cx, id);
+        Self::watch_finalization(id, finalization, cx);
     }
 
     fn load_screenshot_thumbnails(
@@ -491,7 +670,7 @@ impl CapturePreviewWindow {
                                 }
                             }
                             view.previews.push(preview);
-                            configure_stack_window(window, cx, view.active_preview_count());
+                            configure_stack_window(window, cx, view.window_preview_count());
                             cx.notify();
                             view.revealed
                                 && view
@@ -517,10 +696,6 @@ impl CapturePreviewWindow {
         Self::open_stack_window(cx, vec![preview]);
     }
 
-    /// Port of the `capture-preview:reposition` IPC: moves the live stack to
-    /// the newly configured corner. Windows moves the window in place; other
-    /// platforms rebuild it, the way the recording bar reopens when its
-    /// anchor moves, because GPUI cannot move a live window there.
     pub fn reposition(cx: &mut App) {
         let Some(stack) = registry::handle(WindowKind::CapturePreview, cx) else {
             return;
@@ -529,11 +704,17 @@ impl CapturePreviewWindow {
             registry::forget(WindowKind::CapturePreview, cx);
             return;
         };
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let moved = handle
                 .update(cx, |view, window, cx| {
-                    configure_stack_window(window, cx, view.active_preview_count());
+                    #[cfg(target_os = "macos")]
+                    {
+                        view.display_menu.close(window, cx);
+                        view.pointer_inside = false;
+                        view.clear_native_tooltip(window);
+                    }
+                    configure_stack_window(window, cx, view.window_preview_count());
                     cx.notify();
                 })
                 .is_ok();
@@ -541,7 +722,7 @@ impl CapturePreviewWindow {
                 registry::forget(WindowKind::CapturePreview, cx);
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let previews =
                 handle.update(cx, |view, _window, _cx| std::mem::take(&mut view.previews));
@@ -583,7 +764,7 @@ impl CapturePreviewWindow {
     }
 
     fn open_stack_window(cx: &mut App, previews: Vec<CapturePreview>) {
-        let (bounds, display_id) = preview_stack_placement(cx);
+        let (bounds, display_id) = preview_stack_placement(cx, previews.len());
         let window_bounds = display_id
             .and_then(|id| cx.find_display(id))
             .map(|display| crate::system::work_area::local_window_bounds(bounds, display.as_ref()))
@@ -612,6 +793,9 @@ impl CapturePreviewWindow {
             ),
             |window, cx| {
                 window.set_window_title("Poratake capture preview");
+                super::remove_popup_frame(window);
+                #[cfg(all(target_os = "macos", not(test)))]
+                super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
                 #[cfg(windows)]
                 if !cfg!(test) {
                     if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -649,11 +833,52 @@ impl CapturePreviewWindow {
                     previews,
                     revealed: !cfg!(windows) || cfg!(test),
                     layout_generation: 0,
+                    #[cfg(target_os = "macos")]
+                    pointer_inside: false,
+                    #[cfg(target_os = "macos")]
+                    keyboard_controls: false,
+                    #[cfg(target_os = "macos")]
+                    pending_keyboard_tab: None,
+                    #[cfg(target_os = "macos")]
+                    viewport_scroll: None,
                     display_menu: crate::ui::menu::MenuHandle::new(),
                     tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
                         "capture-preview",
                     ),
                     _display_observer: Some(display_observer),
+                    #[cfg(target_os = "macos")]
+                    _visibility_observer: None,
+                });
+                #[cfg(target_os = "macos")]
+                view.update(cx, |view, cx| {
+                    view._visibility_observer = Some(cx.observe_window_visibility(
+                        window,
+                        |view, visibility, window, cx| {
+                            let visible = visibility.is_visible();
+                            for preview in &view.previews {
+                                if let Some(video) = &preview.video {
+                                    let _ = video.visibility_changed.try_send(());
+                                }
+                                if !visible {
+                                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            if visible {
+                                let handle = window.window_handle();
+                                cx.defer(move |cx| {
+                                    if registry::handle(WindowKind::CapturePreview, cx)
+                                        == Some(handle)
+                                    {
+                                        schedule_revealed_previews(handle, cx);
+                                    }
+                                });
+                            } else {
+                                view.pointer_inside = false;
+                                view.clear_native_tooltip(window);
+                                cx.notify();
+                            }
+                        },
+                    ));
                 });
                 #[cfg(windows)]
                 if !cfg!(test) {
@@ -697,7 +922,7 @@ fn reveal_preview_when_ready(
     configured: bool,
     cx: &mut App,
 ) {
-    let (bounds, display_id) = preview_stack_placement(cx);
+    let (bounds, display_id) = preview_stack_placement(cx, PREVIEW_MAX_STACK);
     let native_window = crate::windows::window_hwnd(window);
     #[cfg(feature = "parity")]
     let simulate_headless = native_window.is_none() && simulate_headless_preview_reveal();
@@ -804,7 +1029,9 @@ fn schedule_revealed_previews(handle: AnyWindowHandle, cx: &mut App) {
                     view.revealed.then(|| {
                         view.previews
                             .iter()
-                            .filter(|preview| !preview.thumbnail_loading)
+                            .filter(|preview| {
+                                !preview.thumbnail_loading && preview.dismiss_animation.is_none()
+                            })
                             .map(|preview| (preview.id, preview.dismiss_token.clone()))
                             .collect::<Vec<_>>()
                     })
@@ -839,12 +1066,21 @@ fn schedule_auto_dismiss(
     }
     let timeout = Duration::from_secs_f64(preview.auto_dismiss_seconds);
     let generation = dismiss_token.fetch_add(1, Ordering::Relaxed) + 1;
+    let start = cx.background_executor().now();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(timeout).await;
+        let mut elapsed = false;
         loop {
             let verdict = cx.update(|cx| dismiss_verdict(handle, id, generation, cx));
             match verdict {
                 DismissVerdict::Gone => return,
+                _ if !elapsed => {
+                    let executor = cx.background_executor();
+                    let remaining = timeout.saturating_sub(executor.now() - start);
+                    if !remaining.is_zero() {
+                        executor.timer(remaining).await;
+                    }
+                    elapsed = true;
+                }
                 DismissVerdict::Ready => {
                     let removed = cx.update(|cx| {
                         handle
@@ -887,21 +1123,33 @@ fn dismiss_verdict(
     };
     handle
         .update(cx, |view, window, cx| {
+            #[cfg(target_os = "macos")]
+            if !window.is_visible() {
+                return DismissVerdict::Gone;
+            }
             let Some(preview) = view.previews.iter().find(|preview| preview.id == id) else {
                 return DismissVerdict::Gone;
             };
-            dismiss_state(
+            let verdict = dismiss_state(
                 preview.dismiss_token.load(Ordering::Relaxed),
                 generation,
                 preview.hovered,
-                window.is_window_hovered(),
-                preview.thumbnail_loading
-                    || preview.busy
+                view.preview_window_hovered(window),
+                view.keyboard_controls_visible(window)
+                    || preview.thumbnail_loading
+                    || preview.finalizing
+                    || preview.is_busy()
                     || preview.completed.is_some()
                     || view
                         .display_menu
                         .is_open_for(&format!("preview-display-menu-{id}"), cx),
-            )
+            );
+            #[cfg(target_os = "macos")]
+            if verdict != DismissVerdict::Gone && view.preview_is_clipped(preview, window) {
+                preview.dismiss_viewport_clipped.set(true);
+                return DismissVerdict::Gone;
+            }
+            verdict
         })
         .unwrap_or(DismissVerdict::Gone)
 }
@@ -935,7 +1183,10 @@ fn pump_video_preview(cx: &mut App, id: u64) {
     let started = handle
         .update(cx, |view, _, cx| {
             let preview = view.previews.iter().find(|preview| preview.id == id)?;
-            if preview.kind != PreviewKind::Video || preview.video.is_some() {
+            if preview.kind != PreviewKind::Video
+                || preview.video.is_some()
+                || preview.dismiss_animation.is_some()
+            {
                 return None;
             }
             let video_path = crate::video::project::recording_video_path(&preview.path);
@@ -945,20 +1196,32 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     .spawn(async move { crate::video::decoder::VideoDecoder::open(&video_path) })
                     .await;
                 let Some(decoder) = decoder else {
+                    cx.update(|cx| apply_video_preview_frame(handle.into(), &entity, id, None, cx));
                     return;
                 };
                 let duration = decoder.info().duration;
                 let decoder = Arc::new(decoder);
+                #[cfg(target_os = "macos")]
+                let (visibility_changed, visibility_changes) = smol::channel::bounded(1);
                 let attached = cx.update(|cx| {
                     entity
                         .update(cx, |view, cx| {
                             let preview =
                                 view.previews.iter_mut().find(|preview| preview.id == id)?;
+                            if preview.dismiss_animation.is_some() {
+                                return None;
+                            }
                             preview.video = Some(VideoPlayback {
-                                decoder: decoder.clone(),
+                                decoder,
                                 duration,
                                 started: cx.background_executor().now(),
                                 in_flight: false,
+                                #[cfg(target_os = "macos")]
+                                frames_released: false,
+                                #[cfg(target_os = "macos")]
+                                viewport_clipped: Cell::new(false),
+                                #[cfg(target_os = "macos")]
+                                visibility_changed,
                             });
                             cx.notify();
                             Some(())
@@ -969,33 +1232,91 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                 if attached.is_none() {
                     return;
                 };
+                let mut first_frame = true;
+                #[cfg(target_os = "macos")]
+                let mut wait_for_visibility = false;
                 loop {
-                    cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                    if !first_frame {
+                        #[cfg(not(target_os = "macos"))]
+                        cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                        #[cfg(target_os = "macos")]
+                        {
+                            let awake = if wait_for_visibility {
+                                visibility_changes.recv().await.is_ok()
+                            } else {
+                                smol::future::or(
+                                    async { visibility_changes.recv().await.is_ok() },
+                                    async {
+                                        cx.background_executor().timer(VIDEO_PLAYBACK_TICK).await;
+                                        true
+                                    },
+                                )
+                                .await
+                            };
+                            if !awake {
+                                return;
+                            }
+                            wait_for_visibility = false;
+                        }
+                    }
+                    first_frame = false;
                     let job = cx.update(|cx| {
-                        entity
-                            .update(cx, |view, cx| {
+                        handle
+                            .update(cx, |view, _window, cx| {
+                                let index =
+                                    view.previews.iter().position(|preview| preview.id == id)?;
+                                #[cfg(target_os = "macos")]
+                                let clipped =
+                                    view.preview_is_clipped(&view.previews[index], _window);
                                 let now = cx.background_executor().now();
-                                let preview =
-                                    view.previews.iter_mut().find(|preview| preview.id == id)?;
+                                let menu_open = view
+                                    .display_menu
+                                    .is_open_for(&format!("preview-display-menu-{id}"), cx);
+                                let preview = &mut view.previews[index];
+                                let blur = preview.hovered
+                                    || preview.is_busy()
+                                    || menu_open
+                                    || preview.dismiss_animation.is_some_and(|animation| {
+                                        animation.controls_progress.is_some()
+                                    });
                                 let playback = preview.video.as_mut()?;
                                 if playback.in_flight {
                                     return None;
                                 }
+                                #[cfg(target_os = "macos")]
+                                {
+                                    playback.viewport_clipped.set(clipped);
+                                    if clipped
+                                        || (!_window.is_visible() && !preview.thumbnail_loading)
+                                    {
+                                        wait_for_visibility = true;
+                                        if !playback.frames_released {
+                                            playback.decoder.release_frames();
+                                            playback.frames_released = true;
+                                        }
+                                        return None;
+                                    }
+                                    playback.frames_released = false;
+                                }
                                 playback.in_flight = true;
-                                let time = looped_playhead(
-                                    now.saturating_duration_since(playback.started)
-                                        .as_secs_f64(),
-                                    playback.duration,
-                                );
-                                Some((playback.decoder.clone(), time))
+                                let time = (!preview.thumbnail_loading).then(|| {
+                                    looped_playhead(
+                                        now.saturating_duration_since(playback.started)
+                                            .as_secs_f64(),
+                                        playback.duration,
+                                    )
+                                });
+                                Some((playback.decoder.clone(), time, blur))
                             })
                             .ok()
                             .flatten()
                     });
-                    let Some((decoder, time)) = job else {
+                    let Some((decoder, time, blur)) = job else {
                         let alive = entity
                             .update(cx, |view, _| {
-                                view.previews.iter().any(|preview| preview.id == id)
+                                view.previews
+                                    .iter()
+                                    .any(|preview| preview.id == id && preview.video.is_some())
                             })
                             .unwrap_or(false);
                         if !alive {
@@ -1006,29 +1327,17 @@ fn pump_video_preview(cx: &mut App, id: u64) {
                     let frame = cx
                         .background_executor()
                         .spawn({
-                            let decoder = decoder.clone();
                             async move {
-                                decoder
-                                    .frame_at(time)
-                                    .and_then(|frame| video_thumbnail(&frame))
+                                let frame = match time {
+                                    Some(time) => decoder.frame_at(time),
+                                    None => decoder.first_frame(),
+                                };
+                                frame.and_then(|frame| video_thumbnails(&frame, blur))
                             }
                         })
                         .await;
                     cx.update(|cx| {
-                        let _ = entity.update(cx, |view, cx| {
-                            let Some(preview) =
-                                view.previews.iter_mut().find(|preview| preview.id == id)
-                            else {
-                                return;
-                            };
-                            if let Some(playback) = preview.video.as_mut() {
-                                playback.in_flight = false;
-                            }
-                            if let Some(image) = frame {
-                                preview.image = Some(image);
-                            }
-                            cx.notify();
-                        });
+                        apply_video_preview_frame(handle.into(), &entity, id, frame, cx)
                     });
                 }
             })
@@ -1040,6 +1349,40 @@ fn pump_video_preview(cx: &mut App, id: u64) {
     let _ = started;
 }
 
+type VideoThumbnails = (Arc<gpui::RenderImage>, Option<Arc<gpui::RenderImage>>);
+
+fn apply_video_preview_frame(
+    handle: AnyWindowHandle,
+    entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    frame: Option<VideoThumbnails>,
+    cx: &mut App,
+) {
+    let dismiss_token = entity
+        .update(cx, |view, cx| {
+            let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+            if preview.dismiss_animation.is_some() {
+                return None;
+            }
+            if let Some(playback) = preview.video.as_mut() {
+                playback.in_flight = false;
+            }
+            if let Some((image, blurred)) = frame {
+                release_preview_images(preview, cx, None);
+                preview.image = Some(image);
+                preview.blurred = blurred;
+            }
+            let finished_loading = std::mem::take(&mut preview.thumbnail_loading);
+            cx.notify();
+            (finished_loading && view.revealed).then(|| preview.dismiss_token.clone())
+        })
+        .ok()
+        .flatten();
+    if let Some(dismiss_token) = dismiss_token {
+        schedule_auto_dismiss(handle, id, cx, dismiss_token);
+    }
+}
+
 fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
     if duration.is_finite() && duration > 0.0 {
         elapsed % duration
@@ -1049,27 +1392,29 @@ fn looped_playhead(elapsed: f64, duration: f64) -> f64 {
 }
 
 /// A decoded BGRA frame as a cover-fit thumbnail, following `load_thumbnail`.
-fn video_thumbnail(frame: &crate::video::decoder::DecodedFrame) -> Option<Arc<gpui::RenderImage>> {
+fn video_thumbnails(
+    frame: &crate::video::decoder::DecodedFrame,
+    blur: bool,
+) -> Option<VideoThumbnails> {
     if frame.width == 0 || frame.height == 0 {
         return None;
     }
-    let mut rgba = frame.bgra.to_vec();
-    for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
-    }
-    let decoded = image::RgbaImage::from_raw(frame.width, frame.height, rgba)?;
+    let decoded = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.to_vec())?;
     let mut buffer = image::DynamicImage::ImageRgba8(decoded)
         .resize_to_fill(
             PREVIEW_WIDTH as u32,
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
-        .to_rgba8();
-    for pixel in buffer.as_chunks_mut::<4>().0 {
+        .into_rgba8();
+    if !blur {
+        return Some((render_bgra_thumbnail(buffer), None));
+    }
+    for pixel in buffer.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let frame = image::Frame::new(buffer);
-    Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame])))
+    let blurred = blur_thumbnail(&buffer);
+    Some((render_thumbnail(buffer), blurred))
 }
 
 fn start_video_export(
@@ -1084,7 +1429,7 @@ fn start_video_export(
             handle
                 .update(cx, |view, _, cx| {
                     let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
-                    if preview.busy || preview.completed.is_some() {
+                    if preview.finalizing || preview.is_busy() || preview.completed.is_some() {
                         return None;
                     }
                     preview.busy = true;
@@ -1213,6 +1558,22 @@ fn preview_stack_height(count: usize) -> f32 {
         + PREVIEW_SHADOW_PADDING * 2.0
 }
 
+fn preview_stack_size(count: usize) -> Size<Pixels> {
+    size(
+        px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
+        px(preview_stack_height(count)),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn preview_stack_top_inset(height: Pixels, bottom_aligned: bool) -> Pixels {
+    if bottom_aligned {
+        (px(preview_stack_height(PREVIEW_MAX_STACK)) - height).max(px(0.))
+    } else {
+        px(0.)
+    }
+}
+
 fn preview_bottom_aligned(cx: &mut App) -> bool {
     matches!(
         PreviewCorner::parse(&crate::state::state(cx).config.get().preview.corner),
@@ -1220,7 +1581,10 @@ fn preview_bottom_aligned(cx: &mut App) -> bool {
     )
 }
 
-fn preview_stack_placement(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
+fn preview_stack_placement(
+    cx: &mut App,
+    count: usize,
+) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
     let (display, display_id) = selected_display(cx)
         .map(|(bounds, id)| (bounds, Some(id)))
         .unwrap_or_else(|| {
@@ -1234,18 +1598,28 @@ fn preview_stack_placement(cx: &mut App) -> (Bounds<gpui::Pixels>, Option<gpui::
         });
     let config = crate::state::state(cx).config.get();
     let corner = PreviewCorner::parse(&config.preview.corner);
-    (preview_stack_bounds(display, corner), display_id)
+    let count = if cfg!(target_os = "macos") {
+        count.clamp(1, PREVIEW_MAX_STACK)
+    } else {
+        PREVIEW_MAX_STACK
+    };
+    (
+        preview_fitted_stack_bounds(display, corner, count),
+        display_id,
+    )
 }
 
-fn preview_stack_bounds(
+fn preview_fitted_stack_bounds(
     display: Bounds<gpui::Pixels>,
     corner: PreviewCorner,
+    count: usize,
 ) -> Bounds<gpui::Pixels> {
+    let count = count.clamp(1, PREVIEW_MAX_STACK);
     let index = if matches!(
         corner,
         PreviewCorner::BottomLeft | PreviewCorner::BottomRight
     ) {
-        PREVIEW_MAX_STACK.saturating_sub(1)
+        count - 1
     } else {
         0
     };
@@ -1257,20 +1631,45 @@ fn preview_stack_bounds(
         index,
         corner,
     );
-    Bounds {
-        origin: gpui::point(
+    let bounds = Bounds::new(
+        gpui::point(
             px(x - PREVIEW_SHADOW_PADDING),
             px(y - PREVIEW_SHADOW_PADDING),
         ),
-        size: size(
-            px(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.0),
-            px(preview_stack_height(PREVIEW_MAX_STACK)),
-        ),
+        preview_stack_size(count),
+    );
+    #[cfg(target_os = "macos")]
+    if display.size.width > px(0.) && display.size.height > px(0.) {
+        let viewport = bounds.size.min(&display.size);
+        let origin = bounds.origin.clamp(
+            &display.origin,
+            &gpui::point(
+                display.right() - viewport.width,
+                display.bottom() - viewport.height,
+            ),
+        );
+        return Bounds::new(origin, viewport);
     }
+    bounds
 }
 
 fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
-    let (bounds, display_id) = preview_stack_placement(cx);
+    let (bounds, display_id) = preview_stack_placement(cx, count);
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        super::pin_macos_window_contents(window, preview_bottom_aligned(cx));
+        if super::set_macos_window_bounds(window, bounds) {
+            window.bounds_changed(cx);
+        } else {
+            #[cfg(feature = "parity")]
+            {
+                let scale = window.scale_factor();
+                window.resize(bounds.size);
+                window.bounds_changed(cx);
+                window.set_scale_factor(scale);
+            }
+        }
+    }
     #[cfg(windows)]
     if !cfg!(test) {
         if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -1287,6 +1686,8 @@ fn configure_stack_window(window: &mut Window, cx: &mut App, count: usize) {
     }
     #[cfg(test)]
     window.resize(bounds.size);
+    #[cfg(all(test, target_os = "macos"))]
+    window.bounds_changed(cx);
     #[cfg(not(windows))]
     let _ = (window, count, bounds, display_id);
 }
@@ -1444,10 +1845,7 @@ fn load_preview_thumbnails(
     Option<Arc<gpui::RenderImage>>,
     Option<Arc<gpui::RenderImage>>,
 ) {
-    let Ok(bytes) = std::fs::read(path) else {
-        return (None, None);
-    };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
+    let Ok(decoded) = crate::render::images::open(path) else {
         return (None, None);
     };
     let scaled = decoded
@@ -1456,18 +1854,26 @@ fn load_preview_thumbnails(
             PREVIEW_HEIGHT as u32,
             image::imageops::FilterType::Triangle,
         )
-        .to_rgba8();
-    let blurred = crate::editor::export::from_rgba(&scaled).map(|mut pixmap| {
+        .into_rgba8();
+    let blurred = blur_thumbnail(&scaled);
+    (Some(render_thumbnail(scaled)), blurred)
+}
+
+fn blur_thumbnail(scaled: &image::RgbaImage) -> Option<Arc<gpui::RenderImage>> {
+    crate::editor::export::from_rgba(scaled).map(|mut pixmap| {
         crate::render::blur::blur(&mut pixmap, BLUR_SIGMA);
         render_thumbnail(crate::editor::export::to_rgba(&pixmap))
-    });
-    (Some(render_thumbnail(scaled)), blurred)
+    })
 }
 
 fn render_thumbnail(mut image: image::RgbaImage) -> Arc<gpui::RenderImage> {
     for pixel in image.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
+    render_bgra_thumbnail(image)
+}
+
+fn render_bgra_thumbnail(image: image::RgbaImage) -> Arc<gpui::RenderImage> {
     let frame = image::Frame::new(image);
     Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]))
 }
@@ -1485,75 +1891,245 @@ fn starred_preset(cx: &mut App) -> Option<crate::config::schema::WallpaperPreset
         .cloned()
 }
 
-/// Composes the capture with the starred preset and puts the result on the
-/// clipboard -- `polish` in `use-polish-copy.ts`, which renders the capture over
-/// the preset's wallpaper and copies it rather than saving it.
-fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
-    let Some(preset) = starred_preset(cx) else {
-        return false;
+fn prepare_screenshot_copy(
+    path: &Path,
+    polish: Option<&crate::config::schema::WallpaperPreset>,
+    scale_factor: f32,
+) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|_| format!("could not read {}", path.display()))?;
+    let decoded =
+        crate::render::images::decode(&bytes).map_err(|_| "could not decode the capture")?;
+    let image = match polish {
+        None => decoded.into_rgba8(),
+        Some(preset) => {
+            let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
+            crate::editor::wallpaper::apply_preset(&mut settings, preset);
+            let native_scale = crate::editor::wallpaper::native_scale(
+                f64::from(decoded.width()),
+                f64::from(decoded.height()),
+                f64::from(scale_factor),
+            );
+            crate::editor::export::compose(
+                Some(&decoded),
+                decoded.width(),
+                decoded.height(),
+                &[],
+                &settings.for_scale(native_scale),
+                native_scale,
+            )
+        }
     };
-    let Ok(bytes) = std::fs::read(path) else {
-        report_copy_failure(cx, &format!("could not read {}", path.display()));
-        return false;
-    };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
-        report_copy_failure(cx, "could not decode the capture");
-        return false;
-    };
-
-    let mut settings = crate::editor::wallpaper::WallpaperSettings::default();
-    crate::editor::wallpaper::apply_preset(&mut settings, &preset);
-    let native_scale = crate::editor::wallpaper::native_scale(
-        f64::from(decoded.width()),
-        f64::from(decoded.height()),
-        f64::from(scale_factor),
-    );
-    let settings = settings.for_scale(native_scale);
-    let canvas = crate::editor::export::compose(
-        Some(&decoded),
-        decoded.width(),
-        decoded.height(),
-        &[],
-        &settings,
-        native_scale,
-    );
-
-    let (width, height) = (canvas.width(), canvas.height());
-    let copied = crate::system::clipboard::ClipboardService::write_rgba(
-        cx,
-        width,
-        height,
-        canvas.into_raw(),
-    )
-    .is_ok();
-    if !copied {
-        report_copy_failure(cx, "could not reach the clipboard");
-    }
-    copied
+    crate::render::images::encode_srgb_png(&image)
+        .map_err(|error| format!("could not prepare the clipboard image: {error}"))
 }
 
-fn copy_image(path: &Path, cx: &mut App) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
-        report_copy_failure(cx, &format!("could not read {}", path.display()));
-        return false;
+fn copy_screenshot(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    polish: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let preset = if polish {
+        let Some(preset) = starred_preset(cx) else {
+            return;
+        };
+        Some(preset)
+    } else {
+        None
     };
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
-        report_copy_failure(cx, "could not decode the capture");
-        return false;
+    let Ok(Some(path)) = preview_entity.update(cx, |view, cx| {
+        if view.previews.iter().any(|preview| preview.copying) {
+            return None;
+        }
+        let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+        if preview.kind != PreviewKind::Screenshot
+            || preview.is_busy()
+            || preview.finalizing
+            || preview.completed.is_some()
+            || preview.dismiss_animation.is_some()
+        {
+            return None;
+        }
+        preview.copying = true;
+        cx.notify();
+        Some(preview.path.clone())
+    }) else {
+        return;
     };
-    let rgba = decoded.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
-    let copied =
-        crate::system::clipboard::ClipboardService::write_rgba(cx, width, height, rgba.into_raw())
-            .is_ok();
-    if !copied {
-        report_copy_failure(cx, "could not reach the clipboard");
-    }
-    copied
+    let scale = window.scale_factor();
+    let handle = window.window_handle();
+    let preview_entity = preview_entity.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { prepare_screenshot_copy(&path, preset.as_ref(), scale) })
+            .await;
+        cx.update(|cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = preview_entity.update(cx, |view, cx| {
+                    let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    else {
+                        return;
+                    };
+                    preview.copying = false;
+                    if preview.dismiss_animation.is_some() {
+                        return;
+                    }
+                    match result {
+                        Ok(bytes) => {
+                            crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                            begin_remove_preview(
+                                view,
+                                id,
+                                DismissBehavior::PreserveControls,
+                                window,
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            report_copy_failure(cx, &error);
+                            cx.notify();
+                        }
+                    }
+                });
+            });
+        });
+    })
+    .detach();
 }
 
 fn report_copy_failure(cx: &mut App, message: &str) {
     crate::windows::toast::Toast::show(cx, "Copy failed", message.to_string());
+}
+
+fn delete_preview(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Ok(Some((path, kind))) = preview_entity.update(cx, |view, cx| {
+        let preview = view.previews.iter_mut().find(|preview| preview.id == id)?;
+        if preview.finalizing
+            || preview.is_busy()
+            || preview.completed.is_some()
+            || preview.dismiss_animation.is_some()
+        {
+            return None;
+        }
+        preview.deleting = true;
+        cx.notify();
+        let kind = match preview.kind {
+            PreviewKind::Video => crate::history_store::HistoryItemType::Video,
+            PreviewKind::Screenshot => crate::history_store::HistoryItemType::Screenshot,
+        };
+        Some((preview.path.clone(), kind))
+    }) else {
+        return;
+    };
+    let handle = window.window_handle();
+    let preview_entity = preview_entity.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { crate::history_store::delete_path(&path, kind) })
+            .await;
+        cx.update(|cx| {
+            let deleted = report_delete_result(
+                result,
+                kind == crate::history_store::HistoryItemType::Video,
+                cx,
+            );
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = preview_entity.update(cx, |view, cx| {
+                    let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id)
+                    else {
+                        return;
+                    };
+                    preview.deleting = false;
+                    if deleted {
+                        begin_remove_preview(
+                            view,
+                            id,
+                            DismissBehavior::PreserveControls,
+                            window,
+                            cx,
+                        );
+                    } else {
+                        cx.notify();
+                    }
+                });
+            });
+        });
+    })
+    .detach();
+}
+
+fn report_delete_result(
+    result: crate::history_store::DeleteOutcome,
+    is_video: bool,
+    cx: &mut App,
+) -> bool {
+    use crate::history_store::DeleteOutcome;
+
+    match result {
+        DeleteOutcome::Deleted => {}
+        DeleteOutcome::DeletedWithBackupWarning(path) => {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History recovery copy remains",
+                format!("Could not remove the saved recovery copy at {path}"),
+            );
+        }
+        DeleteOutcome::HistoryPersistenceFailed(error) => {
+            crate::windows::toast::Toast::show(
+                cx,
+                "History update failed",
+                format!("The capture was deleted, but its history entry may return after restart: {error}"),
+            );
+        }
+        DeleteOutcome::SourceDeletionFailed
+        | DeleteOutcome::HistoryUnavailable
+        | DeleteOutcome::NotFound => {
+            let message = if is_video {
+                "Could not delete the recording."
+            } else {
+                "Could not delete the screenshot."
+            };
+            crate::windows::toast::Toast::show(cx, "Delete failed", message);
+            return false;
+        }
+    }
+    true
+}
+
+fn edit_preview(
+    preview_entity: &gpui::WeakEntity<CapturePreviewWindow>,
+    id: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let edited = preview_entity.update(cx, |view, cx| {
+        let preview = view.previews.iter().find(|preview| preview.id == id)?;
+        if preview.dismiss_animation.is_some()
+            || preview.finalizing
+            || preview.is_busy()
+            || preview.completed.is_some()
+        {
+            return None;
+        }
+        let source = (preview.kind, preview.path.to_string_lossy().into_owned());
+        begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
+        Some(source)
+    });
+    let Ok(Some((kind, path))) = edited else {
+        return;
+    };
+    match kind {
+        PreviewKind::Screenshot => crate::open_editor_async(cx, path, false),
+        PreviewKind::Video => crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path)),
+    }
 }
 
 fn begin_remove_preview(
@@ -1588,6 +2164,7 @@ fn begin_remove_preview(
     }
     preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
     preview.dismiss_animation = Some(start_dismiss_animation(preview, behavior, now));
+    preview.video = None;
     let bottom_aligned = preview_bottom_aligned(cx);
     let layout_generation = start_layout_transition(view, bottom_aligned, now);
     cx.notify();
@@ -1665,6 +2242,7 @@ fn remove_preview_now(
 ) {
     if let Some(preview) = view.previews.iter_mut().find(|preview| preview.id == id) {
         cancel_thumbnail_load(preview);
+        release_preview_images(preview, cx, Some(window));
     }
     view.previews.retain(|preview| preview.id != id);
     if view.previews.is_empty() {
@@ -1672,6 +2250,8 @@ fn remove_preview_now(
         window.remove_window();
         return;
     }
+    #[cfg(target_os = "macos")]
+    configure_stack_window(window, cx, view.window_preview_count());
     cx.notify();
 }
 
@@ -1722,7 +2302,8 @@ impl CapturePreviewWindow {
     }
 
     fn advance_hover(preview: &mut CapturePreview, hovered: bool, now: Instant) -> (f32, bool) {
-        let target = if Self::show_controls(hovered, preview.busy, preview.completed.is_some()) {
+        let target = if Self::show_controls(hovered, preview.is_busy(), preview.completed.is_some())
+        {
             1.0
         } else {
             0.0
@@ -1750,6 +2331,7 @@ impl CapturePreviewWindow {
         preview: &mut CapturePreview,
         window_hovered: bool,
         menu_open: bool,
+        keyboard_controls: bool,
         now: Instant,
     ) -> (bool, f32, bool) {
         if let Some(progress) = preview
@@ -1759,10 +2341,14 @@ impl CapturePreviewWindow {
             preview.last_frame = None;
             return (true, progress, false);
         }
-        let hovered = preview.hovered && window_hovered || menu_open;
-        let (progress, animating) = Self::advance_hover(preview, hovered, now);
+        let controls_active = preview.hovered && window_hovered || menu_open || keyboard_controls;
+        let (progress, animating) = Self::advance_hover(preview, controls_active, now);
         (
-            Self::show_controls(hovered, preview.busy, preview.completed.is_some()),
+            Self::show_controls(
+                controls_active,
+                preview.is_busy(),
+                preview.completed.is_some(),
+            ),
             progress,
             animating,
         )
@@ -1771,6 +2357,7 @@ impl CapturePreviewWindow {
     fn render_preview(
         &mut self,
         index: usize,
+        window: &mut Window,
         cx: &mut Context<Self>,
         theme: &crate::theme::vars::ThemeVars,
         polish: Option<&crate::config::schema::WallpaperPreset>,
@@ -1787,6 +2374,19 @@ impl CapturePreviewWindow {
             && self
                 .display_menu
                 .is_open_for(&format!("preview-display-menu-{id}"), cx);
+        if menu_open {
+            self.clear_native_tooltip(window);
+        }
+        let keyboard_controls = self.keyboard_controls_visible(window);
+        self.tooltip_presenter
+            .set_hover_suppressed(keyboard_controls);
+        let stack_copying = self.previews.iter().any(|preview| preview.copying);
+        #[cfg(target_os = "macos")]
+        let wrap_reveal = |chip_id: gpui::ElementId, element: gpui::AnyElement| {
+            preview::focus_reveal(chip_id, preview_entity.clone(), element)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let wrap_reveal = |_chip_id: gpui::ElementId, element: gpui::AnyElement| element;
         let preview = &mut self.previews[index];
         let is_video = preview.kind == PreviewKind::Video;
         let polish = if is_video { None } else { polish };
@@ -1795,9 +2395,12 @@ impl CapturePreviewWindow {
         let busy = preview.busy;
         let finished = preview.completed.map(|at| finished_progress(at, now));
         let export_progress = preview.export_progress.clone();
-        let gated = busy || finished.is_some();
+        let deleting = preview.deleting;
+        let copying = preview.copying;
+        let finalizing = preview.finalizing;
+        let gated = finalizing || preview.is_busy() || finished.is_some();
         let (show_controls, progress, animating) =
-            Self::control_frame(preview, window_hovered, menu_open, now);
+            Self::control_frame(preview, window_hovered, menu_open, keyboard_controls, now);
         let (layout_y, layout_animating) = advance_layout(preview, target_y, enter_offset, now);
         let (opacity, opacity_animating) = preview_opacity(preview, now);
         *needs_frame |= animating || layout_animating || opacity_animating;
@@ -1828,6 +2431,14 @@ impl CapturePreviewWindow {
                             return;
                         };
                         preview.hovered = *hovered;
+                        #[cfg(target_os = "macos")]
+                        if !*hovered
+                            && !Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                                .contains(&window.mouse_position())
+                        {
+                            view.pointer_inside = false;
+                            view.clear_native_tooltip(window);
+                        }
                         cx.notify();
                     });
                     schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
@@ -1835,25 +2446,9 @@ impl CapturePreviewWindow {
             })
             .on_mouse_down(MouseButton::Left, {
                 let preview_entity = preview_entity.clone();
-                let path = path.clone();
                 move |event: &gpui::MouseDownEvent, window, cx| {
-                    if event.click_count < 2 || gated {
-                        return;
-                    }
-                    let path = path.to_string_lossy().into_owned();
-                    let _ = preview_entity.update(cx, |view, cx| {
-                        begin_remove_preview(
-                            view,
-                            id,
-                            DismissBehavior::PreserveControls,
-                            window,
-                            cx,
-                        )
-                    });
-                    if is_video {
-                        crate::windows::video_editor::VideoEditorWindow::open(cx, Some(path));
-                    } else {
-                        crate::open_editor_for(cx, &path);
+                    if event.click_count >= 2 {
+                        edit_preview(&preview_entity, id, window, cx);
                     }
                 }
             });
@@ -1892,23 +2487,67 @@ impl CapturePreviewWindow {
                 });
         }
         root = root.child(match thumbnail {
-            Some(render_image) => div()
-                .absolute()
-                .inset_0()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    img(render_image.clone())
-                        .w(px(image_w))
-                        .h(px(image_h))
-                        .object_fit(gpui::ObjectFit::Cover),
-                )
-                .into_any_element(),
+            Some(render_image) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let render_image = render_image.clone();
+                    gpui::canvas(
+                        |_, _, _| {},
+                        move |bounds, _: (), window, _| {
+                            let natural = render_image.size(0);
+                            let nat_w = natural.width.0 as f32;
+                            let nat_h = natural.height.0 as f32;
+                            let (fitted_w, fitted_h) = if nat_w > 0.0 && nat_h > 0.0 {
+                                let cover = (image_w / nat_w).max(image_h / nat_h);
+                                (nat_w * cover, nat_h * cover)
+                            } else {
+                                (image_w, image_h)
+                            };
+                            let image_bounds = Bounds::new(
+                                gpui::point(
+                                    bounds.origin.x
+                                        + px((f32::from(bounds.size.width) - fitted_w) * 0.5),
+                                    bounds.origin.y
+                                        + px((f32::from(bounds.size.height) - fitted_h) * 0.5),
+                                ),
+                                size(px(fitted_w), px(fitted_h)),
+                            );
+                            let _ = window.paint_image(
+                                bounds,
+                                image_bounds,
+                                gpui::Corners::all(px(PREVIEW_RADIUS - 1.0)),
+                                render_image,
+                                0,
+                                false,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .inset_0()
+                    .into_any_element()
+                }
+                #[cfg(not(target_os = "macos"))]
+                div()
+                    .absolute()
+                    .inset_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        img(render_image.clone())
+                            .w(px(image_w))
+                            .h(px(image_h))
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                    .into_any_element()
+            }
             None => div()
                 .absolute()
                 .inset_0()
+                .when(chrome::is_macos(), |el| {
+                    el.rounded(px(PREVIEW_RADIUS - 1.0))
+                })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1928,6 +2567,7 @@ impl CapturePreviewWindow {
                     div()
                         .absolute()
                         .inset_0()
+                        .when(chrome::is_macos(), |el| el.rounded(px(PREVIEW_RADIUS - 1.0)))
                         // `bg-black/25` behind `animate-in fade-in duration-200`.
                         .bg(gpui::hsla(0.0, 0.0, 0.0, 0.25 * progress)),
                 )
@@ -1938,32 +2578,35 @@ impl CapturePreviewWindow {
                         .top(px(PREVIEW_CONTROL_INSET))
                         .left(px(PREVIEW_CONTROL_INSET))
                         .when(menu_open, |el| el.hidden())
-                        .child(preview::circle(
-                            &self.tooltip_presenter,
-                            ("preview-close", id),
-                            "x",
-                            false,
-                            "Close preview",
-                            TooltipPlacement::BottomStart,
-                            theme,
-                            theme.destructive,
-                            {
-                                let preview_entity = preview_entity.clone();
-                                move |window, cx| {
-                                    if gated {
-                                        return;
+                        .child(wrap_reveal(
+                            ("preview-close", id).into(),
+                            preview::circle(
+                                &self.tooltip_presenter,
+                                ("preview-close", id),
+                                "x",
+                                false,
+                                "Close preview",
+                                TooltipPlacement::BottomStart,
+                                theme,
+                                theme.destructive,
+                                {
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        if gated && !finalizing {
+                                            return;
+                                        }
+                                        let _ = preview_entity.update(cx, |view, cx| {
+                                            begin_remove_preview(
+                                                view,
+                                                id,
+                                                DismissBehavior::PreserveControls,
+                                                window,
+                                                cx,
+                                            )
+                                        });
                                     }
-                                    let _ = preview_entity.update(cx, |view, cx| {
-                                        begin_remove_preview(
-                                            view,
-                                            id,
-                                            DismissBehavior::PreserveControls,
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                }
-                            },
+                                },
+                            ),
                         )),
                 )
                 .child(
@@ -1973,74 +2616,33 @@ impl CapturePreviewWindow {
                         .top(px(PREVIEW_CONTROL_INSET))
                         .right(px(PREVIEW_CONTROL_INSET))
                         .when(menu_open, |el| el.hidden())
-                        .child(preview::circle(
-                            &self.tooltip_presenter,
-                            ("preview-delete", id),
-                            "trash-2",
-                            false,
-                            if is_video {
-                                "Delete recording"
-                            } else {
-                                "Delete screenshot"
-                            },
-                            TooltipPlacement::BottomEnd,
-                            theme,
-                            theme.destructive,
-                            {
-                                let path = path.clone();
-                                let preview_entity = preview_entity.clone();
-                                move |window, cx| {
-                                    if gated {
-                                        return;
-                                    }
-                                    let kind = if is_video {
-                                        crate::history_store::HistoryItemType::Video
-                                    } else {
-                                        crate::history_store::HistoryItemType::Screenshot
-                                    };
-                                    match crate::history_store::delete_path(&path, kind) {
-                                        crate::history_store::DeleteOutcome::Deleted => {}
-                                        crate::history_store::DeleteOutcome::DeletedWithBackupWarning(path) => {
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "History recovery copy remains",
-                                                format!("Could not remove the saved recovery copy at {path}"),
-                                            );
-                                        }
-                                        crate::history_store::DeleteOutcome::HistoryPersistenceFailed(error) => {
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "History update failed",
-                                                format!("The capture was deleted, but its history entry may return after restart: {error}"),
-                                            );
-                                        }
-                                        crate::history_store::DeleteOutcome::SourceDeletionFailed
-                                        | crate::history_store::DeleteOutcome::HistoryUnavailable
-                                        | crate::history_store::DeleteOutcome::NotFound => {
-                                            let message = if is_video {
-                                                "Could not delete the recording."
-                                            } else {
-                                                "Could not delete the screenshot."
-                                            };
-                                            crate::windows::toast::Toast::show(
-                                                cx,
-                                                "Delete failed",
-                                                message,
-                                            );
+                        .child(wrap_reveal(
+                            ("preview-delete", id).into(),
+                            preview::circle(
+                                &self.tooltip_presenter,
+                                ("preview-delete", id),
+                                "trash-2",
+                                deleting,
+                                if deleting {
+                                    "Deleting…"
+                                } else if is_video {
+                                    "Delete recording"
+                                } else {
+                                    "Delete screenshot"
+                                },
+                                TooltipPlacement::BottomEnd,
+                                theme,
+                                theme.destructive,
+                                {
+                                    let preview_entity = preview_entity.clone();
+                                    move |window, cx| {
+                                        if gated {
                                             return;
                                         }
+                                        delete_preview(&preview_entity, id, window, cx);
                                     }
-                                    let _ = preview_entity.update(cx, |view, cx| {
-                                        begin_remove_preview(
-                                            view,
-                                            id,
-                                            DismissBehavior::PreserveControls,
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                }
-                            },
+                                },
+                            ),
                         )),
                 )
                 .child(
@@ -2057,7 +2659,7 @@ impl CapturePreviewWindow {
                         .flex_col()
                         .gap(px(4.0))
                         .when(menu_open, |el| el.hidden())
-                        .when(is_video && !busy, |el| {
+                        .when(is_video && !gated, |el| {
                             el.child(preview::pill(
                                 &self.tooltip_presenter,
                                 ("preview-copy-video", id),
@@ -2088,7 +2690,19 @@ impl CapturePreviewWindow {
                                 },
                             ))
                         })
-                        .when_some(polish, |el, preset| {
+                        .when(finalizing, |el| {
+                            el.child(
+                                div()
+                                    .text_sm()
+                                    .px(px(10.))
+                                    .py(px(4.))
+                                    .rounded_full()
+                                    .bg(theme.popover)
+                                    .text_color(theme.popover_foreground)
+                                    .child(if is_video { "Saving recording…" } else { "Saving capture…" }),
+                            )
+                        })
+                        .when_some(polish.filter(|_| !gated && !stack_copying), |el, preset| {
                             let tooltip = format!("Copy with \"{}\"", preset.name);
                             el.child(preview::pill(
                                 &self.tooltip_presenter,
@@ -2098,59 +2712,28 @@ impl CapturePreviewWindow {
                                 TooltipPlacement::Bottom,
                                 theme,
                                 {
-                                    let path = path.clone();
                                     let preview_entity = preview_entity.clone();
-                                    move |window, cx| {
-                                        if gated {
-                                            return;
-                                        }
-                                        if polish_and_copy(&path, window.scale_factor(), cx) {
-                                            let _ = preview_entity.update(cx, |view, cx| {
-                                                begin_remove_preview(
-                                                    view,
-                                                    id,
-                                                    DismissBehavior::PreserveControls,
-                                                    window,
-                                                    cx,
-                                                )
-                                            });
-                                        }
-                                    }
+                                    move |window, cx| copy_screenshot(&preview_entity, id, true, window, cx)
                                 },
                             ))
                         })
                         .when(!gated, |el| {
-                            el.child(preview::pill(
-                                &self.tooltip_presenter,
-                                ("preview-edit", id),
-                                "Edit",
-                                None,
-                                TooltipPlacement::Top,
-                                theme,
-                                {
-                                    let path = path.clone();
-                                    let preview_entity = preview_entity.clone();
-                                    move |window, cx| {
-                                        let path = path.to_string_lossy().into_owned();
-                                        let _ = preview_entity.update(cx, |view, cx| {
-                                            begin_remove_preview(
-                                                view,
-                                                id,
-                                                DismissBehavior::PreserveControls,
-                                                window,
-                                                cx,
-                                            )
-                                        });
-                                        if is_video {
-                                            crate::windows::video_editor::VideoEditorWindow::open(
-                                                cx,
-                                                Some(path),
-                                            );
-                                        } else {
-                                            crate::open_editor_for(cx, &path);
+                            el.child(wrap_reveal(
+                                ("preview-edit", id).into(),
+                                preview::pill(
+                                    &self.tooltip_presenter,
+                                    ("preview-edit", id),
+                                    "Edit",
+                                    None,
+                                    TooltipPlacement::Top,
+                                    theme,
+                                    {
+                                        let preview_entity = preview_entity.clone();
+                                        move |window, cx| {
+                                            edit_preview(&preview_entity, id, window, cx);
                                         }
-                                    }
-                                },
+                                    },
+                                ),
                             ))
                         })
                         .when(is_video && busy, |el| {
@@ -2180,29 +2763,16 @@ impl CapturePreviewWindow {
                                 &self.tooltip_presenter,
                                 ("preview-copy", id),
                                 "copy",
-                                false,
-                                "Copy",
+                                copying,
+                                if copying { "Copying…" } else { "Copy" },
                                 TooltipPlacement::TopStart,
                                 theme,
                                 theme.primary,
                             {
-                                let path = path.clone();
                                 let preview_entity = preview_entity.clone();
                                 move |window, cx| {
-                                    if gated {
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    if copy_image(&path, cx) {
-                                        let _ = preview_entity.update(cx, |view, cx| {
-                                            begin_remove_preview(
-                                                view,
-                                                id,
-                                                DismissBehavior::PreserveControls,
-                                                window,
-                                                cx,
-                                            )
-                                        });
+                                    if !gated && !stack_copying {
+                                        copy_screenshot(&preview_entity, id, false, window, cx);
                                     }
                                     cx.stop_propagation();
                                 }
@@ -2230,7 +2800,9 @@ impl CapturePreviewWindow {
                                 {
                                     let path = path.clone();
                                     move |_, cx| {
-                                        crate::system::desktop::reveal_in_file_manager(&path);
+                                        if !deleting {
+                                            crate::system::desktop::reveal_in_file_manager(&path);
+                                        }
                                         cx.stop_propagation();
                                     }
                                 },
@@ -2271,7 +2843,7 @@ impl CapturePreviewWindow {
                                                 .previews
                                                 .iter_mut()
                                                 .find(|preview| preview.id == id)?;
-                                            if preview.busy || preview.completed.is_some() {
+                                            if preview.is_busy() || preview.completed.is_some() {
                                                 return None;
                                             }
                                             preview.busy = true;
@@ -2427,7 +2999,7 @@ impl CapturePreviewWindow {
                                                 config.update(|settings| {
                                                     settings.preview.display_id = Some(id);
                                                 });
-                                                CapturePreviewWindow::reposition(app);
+                                                app.defer(CapturePreviewWindow::reposition);
                                             }),
                                     );
                                 }
@@ -2478,6 +3050,83 @@ impl CapturePreviewWindow {
 }
 
 impl CapturePreviewWindow {
+    #[cfg(target_os = "macos")]
+    fn preview_is_clipped(&self, preview: &CapturePreview, window: &Window) -> bool {
+        if self.viewport_scroll.is_none() {
+            return false;
+        }
+        let Some(bounds) = self.preview_scroll_bounds(preview) else {
+            return true;
+        };
+        let viewport = window.viewport_size();
+        bounds.top() >= viewport.height
+            || bounds.bottom() <= px(0.)
+            || bounds.left() >= viewport.width
+            || bounds.right() <= px(0.)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn update_viewport_visibility(&self, window: &Window) -> Vec<(u64, Arc<AtomicU64>)> {
+        let visible = self.revealed && window.is_visible();
+        self.previews
+            .iter()
+            .filter_map(|preview| {
+                let clipped = self.preview_is_clipped(preview, window);
+                if let Some(video) = &preview.video {
+                    if video.viewport_clipped.replace(clipped) != clipped {
+                        let _ = video.visibility_changed.try_send(());
+                    }
+                }
+                if preview.dismiss_viewport_clipped.replace(clipped) == clipped {
+                    return None;
+                }
+                if clipped {
+                    preview.dismiss_token.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                (visible && !preview.thumbnail_loading && preview.dismiss_animation.is_none())
+                    .then(|| (preview.id, preview.dismiss_token.clone()))
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn preview_scroll_bounds(&self, preview: &CapturePreview) -> Option<Bounds<Pixels>> {
+        let (corner, scroll) = self.viewport_scroll.as_ref()?;
+        let y = preview.layout_y?;
+        let bottom_aligned = matches!(
+            corner,
+            PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+        );
+        let height = px(preview_stack_height(self.window_preview_count()));
+        let offset = scroll.offset();
+        let top = px(y) - preview_stack_top_inset(height, bottom_aligned) + offset.y;
+        let left = px(PREVIEW_SHADOW_PADDING) + offset.x;
+        Some(Bounds::new(
+            gpui::point(left, top),
+            size(px(PREVIEW_WIDTH), px(PREVIEW_HEIGHT)),
+        ))
+    }
+
+    fn keyboard_controls_visible(&self, _window: &Window) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.keyboard_controls && _window.is_window_active();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    fn preview_window_hovered(&self, window: &Window) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = window;
+            self.pointer_inside
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            window.is_window_hovered()
+        }
+    }
+
     pub(crate) fn surface(
         &mut self,
         window_hovered: bool,
@@ -2519,6 +3168,47 @@ impl CapturePreviewWindow {
         let now = cx.background_executor().now();
         let mut needs_frame = false;
         let mut root = crate::ui::font::root().relative().size_full();
+        #[cfg(target_os = "macos")]
+        let content = {
+            let content = preview_stack_size(self.window_preview_count());
+            let viewport = window.viewport_size();
+            let overflow_x = (content.width - viewport.width).max(px(0.));
+            let overflow_y = (content.height - viewport.height).max(px(0.));
+            if overflow_x == px(0.) && overflow_y == px(0.) {
+                self.viewport_scroll = None;
+            } else {
+                let (previous_corner, scroll) = self
+                    .viewport_scroll
+                    .get_or_insert_with(|| (corner, gpui::ScrollHandle::new()));
+                let corner_changed = std::mem::replace(previous_corner, corner) != corner;
+                let right_aligned =
+                    matches!(corner, PreviewCorner::TopRight | PreviewCorner::BottomRight);
+                let current = scroll.offset();
+                let limit = scroll.max_offset();
+                let anchored_offset = |offset, limit: Pixels, overflow: Pixels, end_aligned| {
+                    if end_aligned && (corner_changed || offset == -limit) {
+                        -overflow
+                    } else if corner_changed {
+                        px(0.)
+                    } else {
+                        offset
+                    }
+                };
+                scroll.set_offset(gpui::point(
+                    anchored_offset(current.x, limit.x, overflow_x, right_aligned),
+                    anchored_offset(current.y, limit.y, overflow_y, bottom_aligned),
+                ));
+            }
+            let full_height = preview_stack_height(PREVIEW_MAX_STACK);
+            let content_height = if self.viewport_scroll.is_some() {
+                content.height
+            } else {
+                viewport.height
+            };
+            let offset = preview_stack_top_inset(content_height, bottom_aligned);
+            root = root.h(px(full_height)).top(-offset);
+            content
+        };
         let mut active_index = 0;
         for index in 0..self.previews.len() {
             let target_y = if self.previews[index].dismiss_animation.is_some() {
@@ -2532,6 +3222,7 @@ impl CapturePreviewWindow {
             };
             root = root.child(self.render_preview(
                 index,
+                window,
                 cx,
                 &theme,
                 polish.as_ref(),
@@ -2550,17 +3241,145 @@ impl CapturePreviewWindow {
         let root = root.on_children_prepainted(|bounds, _, _| {
             crate::ui::parity::record("capture-previews", bounds);
         });
-        crate::ui::window_root::focus_root(root, window, cx)
+        #[cfg(target_os = "macos")]
+        let root = root
+            .on_mouse_move(cx.listener(|this, _, _, cx| {
+                if !this.pointer_inside {
+                    this.pointer_inside = true;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_exit(cx.listener(|this, _, window, cx| {
+                this.pointer_inside = false;
+                this.clear_native_tooltip(window);
+                cx.notify();
+            }));
+        #[cfg(target_os = "macos")]
+        let root = if let Some((_, scroll)) = &self.viewport_scroll {
+            div()
+                .id("capture-preview-scroll")
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(scroll)
+                .child(
+                    div()
+                        .relative()
+                        .w(content.width)
+                        .h(content.height)
+                        .child(root),
+                )
+                .into_any_element()
+        } else {
+            root.into_any_element()
+        };
+        #[cfg(target_os = "macos")]
+        if let Some(backward) = self.pending_keyboard_tab.take() {
+            let owner = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                if !owner
+                    .upgrade()
+                    .is_some_and(|view| view.read(cx).keyboard_controls_visible(window))
+                {
+                    return;
+                }
+                if backward {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+            });
+        }
+        let root = crate::ui::window_root::focus_root(root, window, cx).capture_key_down(
+            cx.listener(|this, _event: &gpui::KeyDownEvent, window, _cx| {
+                this.clear_native_tooltip(window);
+                #[cfg(target_os = "macos")]
+                if _event.keystroke.key == "tab"
+                    && !this.keyboard_controls
+                    && window.is_window_active()
+                    && !this.display_menu.is_open(_cx)
+                {
+                    this.keyboard_controls = true;
+                    this.pending_keyboard_tab = Some(_event.keystroke.modifiers.shift);
+                    herogpui::extend::set_focus_visible(true, _cx);
+                    _cx.stop_propagation();
+                    _cx.notify();
+                }
+            }),
+        );
+        #[cfg(target_os = "macos")]
+        let root = root.capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+            if std::mem::take(&mut this.keyboard_controls) {
+                this.pending_keyboard_tab = None;
+                cx.notify();
+            }
+        }));
+        #[cfg(target_os = "macos")]
+        let root = if self.viewport_scroll.is_some()
+            || self.previews.iter().any(|preview| {
+                preview.dismiss_viewport_clipped.get()
+                    || preview
+                        .video
+                        .as_ref()
+                        .is_some_and(|video| video.viewport_clipped.get())
+            }) {
+            let owner = cx.entity().downgrade();
+            root.on_children_prepainted(move |_, window, cx| {
+                if let Some(owner) = owner.upgrade() {
+                    let timers = owner.read(cx).update_viewport_visibility(window);
+                    if !timers.is_empty() {
+                        let handle = window.window_handle();
+                        cx.defer(move |cx| {
+                            for (id, token) in timers {
+                                schedule_auto_dismiss(handle, id, cx, token);
+                            }
+                        });
+                    }
+                }
+            })
+        } else {
+            root
+        };
+        root
     }
 }
 
 impl Render for CapturePreviewWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.surface(window.is_window_hovered(), window, cx)
+        self.surface(self.preview_window_hovered(window), window, cx)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl preview::PreviewFocusRevealHost for CapturePreviewWindow {
+    fn keyboard_reveal_target(
+        &self,
+        window: &Window,
+        button: Bounds<Pixels>,
+    ) -> Option<(gpui::ScrollHandle, Bounds<Pixels>)> {
+        if !self.keyboard_controls_visible(window) {
+            return None;
+        }
+        let (_, scroll) = self.viewport_scroll.as_ref()?;
+        let viewport = scroll.bounds();
+        let card = self
+            .previews
+            .iter()
+            .filter_map(|preview| self.preview_scroll_bounds(preview))
+            .map(|card| Bounds::new(card.origin + viewport.origin, card.size))
+            .find(|card| {
+                card.size.width <= viewport.size.width
+                    && card.size.height <= viewport.size.height
+                    && card.contains(&button.center())
+            });
+        Some((scroll.clone(), card.unwrap_or(button)))
     }
 }
 
 impl CapturePreviewWindow {
+    fn clear_native_tooltip(&self, window: &mut Window) {
+        self.tooltip_presenter.dismiss_active(Some(window));
+    }
+
     #[cfg(feature = "parity")]
     pub(crate) fn native_tooltip_active(&self) -> bool {
         self.tooltip_presenter.active_content().is_some()
@@ -2627,9 +3446,14 @@ mod tests {
             last_frame: None,
             hovered: false,
             busy: false,
+            deleting: false,
+            copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
@@ -2645,11 +3469,21 @@ mod tests {
                 previews: vec![preview(1, PreviewKind::Screenshot, screenshot_path.clone())],
                 revealed: true,
                 layout_generation: 0,
+                #[cfg(target_os = "macos")]
+                pointer_inside: false,
+                #[cfg(target_os = "macos")]
+                keyboard_controls: false,
+                #[cfg(target_os = "macos")]
+                pending_keyboard_tab: None,
+                #[cfg(target_os = "macos")]
+                viewport_scroll: None,
                 display_menu: crate::ui::menu::MenuHandle::new(),
                 tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new(
                     "capture-preview",
                 ),
                 _display_observer: None,
+                #[cfg(target_os = "macos")]
+                _visibility_observer: None,
             })
         });
         let (_wrapper, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview {
@@ -2686,6 +3520,7 @@ mod tests {
                 delete_bounds
             );
             visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+            visual.run_until_parked();
             visual.settle();
 
             assert!(
@@ -2752,6 +3587,7 @@ mod tests {
             .debug_bounds("preview-delete-1-tooltip-trigger")
             .expect("Delete control must render while the preview is hovered");
         visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
         visual.settle();
         assert!(!persisted_capture.exists());
         assert!(preview.update(visual, |view, _| {
@@ -2770,6 +3606,8 @@ mod tests {
             preview.kind = PreviewKind::Screenshot;
             preview.path = successful_capture.clone();
             preview.image = None;
+            preview.dismiss_animation = None;
+            preview.deleting = false;
         });
         visual.settle();
         let delete_point = gpui::point(px(100.), px(500.));
@@ -2780,6 +3618,7 @@ mod tests {
             .debug_bounds("preview-delete-1-tooltip-trigger")
             .expect("Delete control must render while the preview is hovered");
         visual.simulate_click(delete_bounds.center(), gpui::Modifiers::none());
+        visual.run_until_parked();
         visual.settle();
         assert!(!successful_capture.exists());
         assert!(preview.update(visual, |view, _| {
@@ -2848,7 +3687,7 @@ mod tests {
         let (mut cx, attempts) = preview_open_failure_context();
         cx.update(|cx| crate::state::set_test_state(cx, config));
 
-        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone(), None));
 
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(&*notifications.borrow(), &["Preview unavailable"]);
@@ -3059,6 +3898,200 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn keyboard_reveals_preview_controls_without_pointer_hover(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        config.update(|settings| settings.preview.auto_dismiss = false);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        let stack = stack_handle(cx).unwrap();
+        let control = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let (id, generation) = control
+            .update(&mut visual, |view, _, _| {
+                let preview = &view.previews[0];
+                (preview.id, preview.dismiss_token.load(Ordering::Relaxed))
+            })
+            .unwrap();
+        let selector: &'static str =
+            Box::leak(format!("preview-delete-{id}-tooltip-trigger").into_boxed_str());
+        let initial_focus = visual.update(|window, cx| {
+            assert!(window.is_window_active());
+            window.focused(cx)
+        });
+        assert!(visual.debug_bounds(selector).is_none());
+
+        visual.press("tab");
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        assert!(visual.debug_bounds(selector).is_some());
+        let first_focus = visual.update(|window, cx| window.focused(cx));
+        assert!(first_focus.is_some() && first_focus != initial_focus);
+        visual.press("tab");
+        assert_ne!(visual.update(|window, cx| window.focused(cx)), first_focus);
+        visual.cx.update(|cx| {
+            assert_eq!(
+                dismiss_verdict(stack, id, generation, cx),
+                DismissVerdict::Blocked
+            );
+        });
+
+        let button = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_move(button, None, gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(200));
+        visual.settle();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+        visual.click_at(gpui::point(px(100.), px(15.)));
+        visual.settle();
+        assert!(!control
+            .update(&mut visual, |view, _, _| view.keyboard_controls)
+            .unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn unfocused_preview_hover_and_exit_control_visibility(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        struct NativeHoverPreview {
+            preview: gpui::Entity<CapturePreviewWindow>,
+        }
+
+        impl Render for NativeHoverPreview {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.preview.update(cx, |preview, cx| {
+                    preview.surface(preview.preview_window_hovered(window), window, cx)
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.corner = "bottom-right".into();
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::theme::vars::init_theme(
+                cx,
+                crate::theme::presets::ThemeMode::Light,
+                crate::theme::presets::DEFAULT_THEME_ID,
+            );
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        let stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let check = preview.clone();
+        let (_, visual) = herogpui::test::open_window(cx, |_, _| NativeHoverPreview { preview });
+        visual.update(|_, cx| {
+            crate::theme::vars::init_theme(
+                cx,
+                crate::theme::presets::ThemeMode::Light,
+                crate::theme::presets::DEFAULT_THEME_ID,
+            );
+        });
+        visual.simulate_resize(size(px(208.), px(148.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let id = visual.update(|_, cx| check.read(cx).previews[0].id);
+        let delete_selector: &'static str =
+            Box::leak(format!("preview-delete-{id}-tooltip-trigger").into_boxed_str());
+
+        for inside in [true, false, true] {
+            if inside {
+                visual.simulate_mouse_move(
+                    gpui::point(px(100.), px(60.)),
+                    None,
+                    gpui::Modifiers::none(),
+                );
+            } else {
+                visual.simulate_event(gpui::MouseExitEvent {
+                    position: gpui::point(px(210.), px(60.)),
+                    pressed_button: None,
+                    modifiers: gpui::Modifiers::none(),
+                });
+            }
+            visual.executor().advance_clock(Duration::from_millis(500));
+            visual.settle();
+            assert_eq!(visual.update(|_, cx| check.read(cx).pointer_inside), inside);
+            assert_eq!(
+                visual.debug_bounds(delete_selector).is_some(),
+                inside,
+                "preview controls must follow window entry and exit"
+            );
+            assert_eq!(
+                dismiss_state(1, 1, true, inside, false),
+                if inside {
+                    DismissVerdict::Blocked
+                } else {
+                    DismissVerdict::Ready
+                }
+            );
+        }
+        visual.simulate_mouse_move(
+            gpui::point(px(210.), px(60.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        assert!(!visual.update(|_, cx| check.read(cx).pointer_inside));
+        visual.simulate_mouse_move(gpui::point(px(25.), px(25.)), None, gpui::Modifiers::none());
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(200));
+        visual.settle();
+        assert_eq!(
+            crate::windows::scroll_capture::test_native_tooltip().as_deref(),
+            Some("Close preview")
+        );
+        visual.simulate_mouse_move(
+            gpui::point(px(183.), px(25.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(200));
+        visual.settle();
+        assert_eq!(
+            crate::windows::scroll_capture::test_native_tooltip().as_deref(),
+            Some("Delete screenshot")
+        );
+        visual.simulate_event(gpui::MouseExitEvent {
+            position: gpui::point(px(210.), px(25.)),
+            pressed_button: None,
+            modifiers: gpui::Modifiers::none(),
+        });
+        visual.executor().advance_clock(Duration::from_millis(200));
+        visual.settle();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+    }
+
     fn bind_stack(
         visual: &mut gpui::VisualTestContext,
         wrapper: &gpui::Entity<HoveredPreview>,
@@ -3093,7 +4126,8 @@ mod tests {
                 origin: gpui::point(px(x), px(0.0)),
                 size: size(px(width), px(height)),
             };
-            let bounds = preview_stack_bounds(display, PreviewCorner::BottomRight);
+            let bounds =
+                preview_fitted_stack_bounds(display, PreviewCorner::BottomRight, PREVIEW_MAX_STACK);
             let physical = (
                 (f32::from(bounds.origin.x) * scale).round() as i32,
                 (f32::from(bounds.origin.y) * scale).round() as i32,
@@ -3102,6 +4136,65 @@ mod tests {
             );
             assert_eq!(physical, expected);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn display_menu_fits_a_single_fitted_preview(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.corner = "bottom-right".into();
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+        });
+        for id in 10..13 {
+            cx.simulate_display_added(gpui::DisplayId::new(id), None);
+        }
+        cx.update(|cx| CapturePreviewWindow::open(cx, path));
+        let stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let check = preview.clone();
+        let (_, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        visual.simulate_resize(size(px(208.), px(148.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(184.), px(96.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.click_at(gpui::point(px(184.), px(96.)));
+        assert!(visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        visual.update(|window, _| {
+            let scale = window.scale_factor();
+            let panel = window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| {
+                    (quad.bounds.size.width.0 / scale - 184.).abs() < 0.5
+                        && (quad.bounds.size.height.0 / scale - 120.).abs() < 0.5
+                })
+                .expect("the display menu must paint within the fitted preview");
+            assert!(panel.bounds.top().0 >= 0.);
+            assert!(panel.bounds.bottom().0 <= 148. * scale);
+        });
     }
 
     #[herogpui::test]
@@ -3213,11 +4306,12 @@ mod tests {
                 window.resize(size(px(32.), px(32.)));
             })
             .unwrap();
-        #[cfg(not(windows))]
         let previous_stack: AnyWindowHandle = stack.into();
         visual.simulate_display_removed(gpui::DisplayId::new(10));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
+        #[cfg(any(windows, target_os = "macos"))]
+        assert_eq!(stack_handle(visual), Some(previous_stack));
         #[cfg(windows)]
         assert_eq!(
             stack
@@ -3228,7 +4322,7 @@ mod tests {
                 .unwrap(),
             size(px(208.), px(604.))
         );
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             (stack, check) = bind_stack(visual, &wrapper);
             assert_ne!(AnyWindowHandle::from(stack), previous_stack);
@@ -3270,7 +4364,7 @@ mod tests {
         visual.simulate_display_removed(gpui::DisplayId::new(11));
         visual.settle();
         assert!(!visual.update(|_, cx| check.read(cx).display_menu.is_open(cx)));
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             check = bind_stack(visual, &wrapper).1;
         }
@@ -3324,7 +4418,7 @@ mod tests {
         for id in 11..13 {
             visual.simulate_display_added(gpui::DisplayId::new(id), None);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             (stack, check) = bind_stack(visual, &wrapper);
         }
@@ -3353,6 +4447,63 @@ mod tests {
         );
         visual.click_at(gpui::point(px(24.), px(480.)));
         assert!(visual.update(|_, cx| check.read(cx).previews[0].dismiss_animation.is_some()));
+    }
+
+    fn polish_and_copy(path: &Path, scale_factor: f32, cx: &mut App) -> bool {
+        let Some(preset) = starred_preset(cx) else {
+            return false;
+        };
+        let Ok(bytes) = prepare_screenshot_copy(path, Some(&preset), scale_factor) else {
+            return false;
+        };
+        crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+        true
+    }
+
+    #[herogpui::test]
+    fn screenshot_copy_publishes_pixels_before_dismissing(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        let source = image::RgbaImage::from_fn(320, 240, |x, y| {
+            image::Rgba([(x % 256) as u8, y as u8, 64, 255])
+        });
+        source.save(&path).unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        cx.run_until_parked();
+        let handle = stack_handle(cx)
+            .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+            .unwrap();
+        handle
+            .update(cx, |view, window, cx| {
+                let id = view.previews[0].id;
+                let entity = cx.weak_entity();
+                window.defer(cx, move |window, cx| {
+                    copy_screenshot(&entity, id, false, window, cx);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let clipboard = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+            assert_eq!(
+                image::load_from_memory(&clipboard.bytes)
+                    .unwrap()
+                    .into_rgba8(),
+                source
+            );
+            handle
+                .update(cx, |view, _, _| {
+                    assert!(view.previews[0].dismiss_animation.is_some());
+                    assert!(!view.previews[0].is_busy());
+                })
+                .unwrap();
+        });
     }
 
     #[herogpui::test]
@@ -3628,6 +4779,468 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_capture_preview_viewport_fits_small_work_areas() {
+        for (width, height) in [(800., 610.), (800., 600.), (640., 480.), (180., 120.)] {
+            let display = Bounds::new(
+                gpui::point(px(-800.), px(-300.)),
+                size(px(width), px(height)),
+            );
+            for corner in [
+                PreviewCorner::TopLeft,
+                PreviewCorner::TopRight,
+                PreviewCorner::BottomLeft,
+                PreviewCorner::BottomRight,
+            ] {
+                let viewport = preview_fitted_stack_bounds(display, corner, PREVIEW_MAX_STACK);
+                assert!(
+                    viewport.left() >= display.left()
+                        && viewport.right() <= display.right()
+                        && viewport.top() >= display.top()
+                        && viewport.bottom() <= display.bottom(),
+                    "{corner:?} preview {viewport:?} must fit {display:?}"
+                );
+                assert_eq!(
+                    viewport.size,
+                    size(
+                        px(width.min(PREVIEW_WIDTH + PREVIEW_SHADOW_PADDING * 2.)),
+                        px(height.min(preview_stack_height(PREVIEW_MAX_STACK))),
+                    )
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn a_short_preview_viewport_scrolls_to_the_clipped_card_controls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+        });
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            for _ in 0..PREVIEW_MAX_STACK {
+                CapturePreviewWindow::open(cx, path.clone());
+            }
+        });
+        cx.run_until_parked();
+        let stack = stack_handle(cx).unwrap();
+        let handle = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let newest = handle
+            .update(cx, |view, _, _| view.previews.last().unwrap().id)
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let scroll_offset = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.viewport_scroll.as_ref().unwrap().1.offset().y
+                })
+                .unwrap()
+        };
+        assert_eq!(scroll_offset(&mut visual), px(-124.));
+        visual.simulate_resize(size(px(208.), px(360.)));
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(-244.));
+
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(320.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+
+        let oldest = handle
+            .update(&mut visual, |view, _, _| view.previews[0].id)
+            .unwrap();
+        let oldest_close: &'static str =
+            Box::leak(format!("preview-close-{oldest}-tooltip-trigger").into_boxed_str());
+        visual.simulate_resize(size(px(208.), px(360.)));
+        visual.update(|window, _| window.activate_window());
+        visual.settle();
+        assert_eq!(scroll_offset(&mut visual), px(0.));
+        visual.press("tab");
+        visual.executor().advance_clock(Duration::from_millis(500));
+        let bounds = visual.expect(oldest_close);
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() < px(360.),
+            "{bounds:?}"
+        );
+        assert!(scroll_offset(&mut visual) < px(0.));
+        assert!(
+            visual.update(|window, cx| {
+                let overlay = gpui::Background::from(crate::theme::vars::active_theme(cx).overlay);
+                let scale = window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    quad.background == overlay
+                        && (31. ..=35.).contains(&(quad.bounds.size.height.0 / scale))
+                        && quad.bounds.top().0 >= 0.
+                        && quad.bounds.bottom().0
+                            <= f32::from(window.viewport_size().height) * scale
+                })
+            }),
+            "the focused action's keyboard label must also be visible"
+        );
+        let close_focus = visual.update(|window, cx| window.focused(cx)).unwrap();
+        visual.simulate_resize(size(px(128.), px(100.)));
+        let bounds = visual.expect(oldest_close);
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() <= px(100.),
+            "{bounds:?}"
+        );
+        assert_eq!(
+            visual.update(|window, cx| window.focused(cx)),
+            Some(close_focus.clone())
+        );
+        let oldest_delete: &'static str =
+            Box::leak(format!("preview-delete-{oldest}-tooltip-trigger").into_boxed_str());
+        visual.press("tab");
+        let bounds = visual.expect(oldest_delete);
+        assert!(
+            bounds.left() >= px(0.) && bounds.right() <= px(128.),
+            "{bounds:?}"
+        );
+        assert!(
+            bounds.top() >= px(0.) && bounds.bottom() <= px(100.),
+            "{bounds:?}"
+        );
+        assert_ne!(
+            visual.update(|window, cx| window.focused(cx)),
+            Some(close_focus)
+        );
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
+        visual.click_at(gpui::point(px(100.), px(12.)));
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(320.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.simulate_resize(size(px(208.), px(480.)));
+        visual.settle();
+
+        let close = gpui::point(px(25.), px(25.));
+        visual.simulate_mouse_move(close, None, gpui::Modifiers::none());
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.click_at(close);
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS + 1));
+        visual.settle();
+        handle
+            .update(&mut visual, |view, _, _| {
+                assert_eq!(view.previews.len(), PREVIEW_MAX_STACK - 1);
+                assert!(view.previews.iter().all(|preview| preview.id != newest));
+            })
+            .unwrap();
+        assert!(path.is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn clipped_capture_preview_gets_its_full_dismiss_delay_after_scrolling_into_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+            config.preview.auto_dismiss_seconds = 2.;
+        });
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let project = dir.path().join("Take.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            crate::video::project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store.clone());
+            for _ in 1..PREVIEW_MAX_STACK {
+                CapturePreviewWindow::open(cx, path.clone());
+            }
+            CapturePreviewWindow::open_video(cx, project, None);
+        });
+        cx.run_until_parked();
+        let stack = stack_handle(cx).unwrap();
+        let handle = stack.downcast::<CapturePreviewWindow>().unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(stack, cx);
+        visual.simulate_resize(size(px(208.), px(300.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        let (id, token, hidden_frame) = handle
+            .update(&mut visual, |view, window, _| {
+                let newest = view.previews.last().unwrap();
+                assert!(view.preview_is_clipped(newest, window));
+                assert!(newest.video.as_ref().unwrap().frames_released);
+                (
+                    newest.id,
+                    newest.dismiss_token.clone(),
+                    newest.image.clone().expect("initial video frame"),
+                )
+            })
+            .unwrap();
+        store.update(|config| config.preview.auto_dismiss = true);
+        visual.update(|_, cx| schedule_auto_dismiss(stack, id, cx, token));
+        visual.settle();
+        let current_frame = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.previews
+                        .iter()
+                        .find(|preview| preview.id == id)
+                        .unwrap()
+                        .image
+                        .clone()
+                        .unwrap()
+                })
+                .unwrap()
+        };
+        let pending = |visual: &mut gpui::VisualTestContext| {
+            handle
+                .update(visual, |view, _, _| {
+                    view.previews
+                        .iter()
+                        .any(|preview| preview.id == id && preview.dismiss_animation.is_none())
+                })
+                .unwrap()
+        };
+        visual.executor().advance_clock(Duration::from_secs(3));
+        visual.settle();
+        assert!(
+            pending(&mut visual),
+            "a completely clipped card must stay available"
+        );
+        assert!(
+            Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
+            "a completely clipped card must stop decoding frames"
+        );
+
+        visual.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(px(100.), px(240.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(400.))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        visual.settle();
+        assert!(
+            !Arc::ptr_eq(&hidden_frame, &current_frame(&mut visual)),
+            "a revealed card must decode frames again without a playback tick"
+        );
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(1_999));
+        visual.settle();
+        assert!(pending(&mut visual), "the revealed card gets a full delay");
+        handle
+            .update(&mut visual, |view, _, _| {
+                let preview = view
+                    .previews
+                    .iter()
+                    .find(|preview| preview.id == id)
+                    .unwrap();
+                assert!(!preview.video.as_ref().unwrap().frames_released);
+            })
+            .unwrap();
+        visual.executor().advance_clock(Duration::from_millis(1));
+        visual.settle();
+        assert!(!pending(&mut visual));
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn fitted_stack_keeps_each_card_at_the_same_screen_position() {
+        let display = Bounds {
+            origin: gpui::point(px(-1920.), px(100.)),
+            size: size(px(1920.), px(1080.)),
+        };
+        for corner in [
+            PreviewCorner::TopLeft,
+            PreviewCorner::TopRight,
+            PreviewCorner::BottomLeft,
+            PreviewCorner::BottomRight,
+        ] {
+            let bottom = matches!(
+                corner,
+                PreviewCorner::BottomLeft | PreviewCorner::BottomRight
+            );
+            let full = preview_fitted_stack_bounds(display, corner, PREVIEW_MAX_STACK);
+            for count in 1..=PREVIEW_MAX_STACK {
+                let fitted = preview_fitted_stack_bounds(display, corner, count);
+                let offset = if bottom {
+                    preview_stack_height(PREVIEW_MAX_STACK) - preview_stack_height(count)
+                } else {
+                    0.0
+                };
+                assert_eq!(fitted.size.height, px(preview_stack_height(count)));
+                assert_eq!(fitted.left(), full.left());
+                for index in 0..count {
+                    let full_y = full.top() + px(preview_layout_y(index, bottom));
+                    let fitted_y = fitted.top() + px(preview_layout_y(index, bottom) - offset);
+                    assert_eq!(fitted_y, full_y);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn moving_the_preview_to_another_display_keeps_pending_work(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        let display = gpui::DisplayId::new(42);
+        cx.simulate_display_added(display, None);
+        store.update(|config| {
+            config.preview.auto_dismiss = false;
+            config.preview.display_id = Some(42);
+        });
+        cx.update(|cx| crate::state::set_test_state(cx, store.clone()));
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+
+        cx.update(|cx| {
+            assert_eq!(selected_display(cx).unwrap().1, display);
+            CapturePreviewWindow::open(cx, path.clone());
+            CapturePreviewWindow::open(cx, path.clone());
+        });
+        cx.run_until_parked();
+        let original = stack_handle(cx).unwrap();
+        let (survivor, pending_owner) = original
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(cx, |view, window, cx| {
+                let dismissed = view.previews[0].id;
+                begin_remove_preview(view, dismissed, DismissBehavior::Automatic, window, cx);
+                view.previews[1].busy = true;
+                (view.previews[1].id, cx.entity().downgrade())
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_display_removed(display);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let _ = pending_owner.update(cx, |view, _| {
+                if let Some(preview) = view
+                    .previews
+                    .iter_mut()
+                    .find(|preview| preview.id == survivor)
+                {
+                    preview.busy = false;
+                }
+            });
+        });
+        cx.executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS + 1));
+        cx.run_until_parked();
+
+        let current = stack_handle(cx).unwrap();
+        current
+            .downcast::<CapturePreviewWindow>()
+            .unwrap()
+            .update(cx, |view, _, cx| {
+                assert_eq!(view.previews.len(), 1);
+                assert_eq!(view.previews[0].id, survivor);
+                assert!(
+                    !view.previews[0].busy,
+                    "the pending preview action must finish"
+                );
+                assert_eq!(
+                    selected_display(cx).unwrap().1,
+                    cx.primary_display().unwrap().id()
+                );
+            })
+            .unwrap();
+        assert_eq!(current, original);
+        assert_eq!(store.get().preview.display_id, Some(42));
+        assert!(path.is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn preview_window_grows_and_shrinks_with_its_stack(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.preview.auto_dismiss = false);
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+
+        for count in 1..=3 {
+            cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
+            cx.run_until_parked();
+            let handle = stack_handle(cx).unwrap();
+            handle
+                .update(cx, |_, window, cx| {
+                    window.bounds_changed(cx);
+                    assert_eq!(
+                        window.viewport_size().height,
+                        px(preview_stack_height(count))
+                    );
+                })
+                .unwrap();
+        }
+        let handle = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        handle
+            .update(cx, |view, window, cx| {
+                let id = view.previews[0].id;
+                remove_preview_now(view, id, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |_, window, cx| {
+                window.bounds_changed(cx);
+                assert_eq!(window.viewport_size().height, px(preview_stack_height(2)));
+            })
+            .unwrap();
+    }
+
     #[test]
     fn fixed_stack_slots_anchor_to_the_selected_edge() {
         let step = PREVIEW_HEIGHT + PREVIEW_STACK_GAP;
@@ -3663,9 +5276,19 @@ mod tests {
             previews: Vec::new(),
             revealed: false,
             layout_generation: 0,
+            #[cfg(target_os = "macos")]
+            pointer_inside: false,
+            #[cfg(target_os = "macos")]
+            keyboard_controls: false,
+            #[cfg(target_os = "macos")]
+            pending_keyboard_tab: None,
+            #[cfg(target_os = "macos")]
+            viewport_scroll: None,
             display_menu: crate::ui::menu::MenuHandle::new(),
             tooltip_presenter: crate::ui::tooltip::NativeTooltipPresenter::new("capture-preview"),
             _display_observer: None,
+            #[cfg(target_os = "macos")]
+            _visibility_observer: None,
         };
         let first = start_layout_transition(&mut view, true, Instant::now());
         let second = start_layout_transition(&mut view, true, Instant::now());
@@ -3732,13 +5355,87 @@ mod tests {
             height: 2,
             bgra: vec![10u8; 4 * 4 * 2].into(),
         };
-        assert!(super::video_thumbnail(&frame).is_some());
+        assert!(super::video_thumbnails(&frame, false).is_some());
         let empty = crate::video::decoder::DecodedFrame {
             width: 0,
             height: 0,
             bgra: Vec::new().into(),
         };
-        assert!(super::video_thumbnail(&empty).is_none());
+        assert!(super::video_thumbnails(&empty, true).is_none());
+    }
+
+    #[test]
+    fn video_thumbnails_preserve_the_cover_crop_and_alpha() {
+        for (width, height) in [
+            (3840, 2160),
+            (2160, 3840),
+            (1543, 663),
+            (663, 1543),
+            (200, 140),
+            (7, 5),
+            (3, 7),
+        ] {
+            let pixels = image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([
+                    (x.wrapping_mul(7) % 256) as u8,
+                    (y.wrapping_mul(11) % 256) as u8,
+                    ((x + y).wrapping_mul(3) % 256) as u8,
+                    ((x + y) % 256) as u8,
+                ])
+            });
+            let expected = image::DynamicImage::ImageRgba8(pixels.clone())
+                .resize_to_fill(
+                    PREVIEW_WIDTH as u32,
+                    PREVIEW_HEIGHT as u32,
+                    image::imageops::FilterType::Triangle,
+                )
+                .into_rgba8();
+            let mut rgba = expected.clone();
+            for pixel in rgba.as_mut().as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let blurred = blur_thumbnail(&rgba).unwrap();
+            let source = crate::video::decoder::DecodedFrame {
+                width,
+                height,
+                bgra: pixels.into_raw().into(),
+            };
+            let (thumbnail, no_blur) = video_thumbnails(&source, false).unwrap();
+            assert_eq!(thumbnail.as_bytes(0), Some(expected.as_raw().as_slice()));
+            assert!(no_blur.is_none());
+            let (thumbnail, actual_blur) = video_thumbnails(&source, true).unwrap();
+            assert_eq!(thumbnail.as_bytes(0), Some(expected.as_raw().as_slice()));
+            assert_eq!(actual_blur.unwrap().as_bytes(0), blurred.as_bytes(0));
+        }
+    }
+
+    #[test]
+    fn video_hover_blur_matches_the_screenshot_thumbnail() {
+        let directory = tempfile::tempdir().unwrap();
+        for (width, height) in [(320, 180), (180, 320)] {
+            let path = directory.path().join("frame.png");
+            let pixels = image::RgbaImage::from_fn(width, height, |x, y| {
+                let value = if (x / 12 + y / 12) % 2 == 0 { 0 } else { 255 };
+                image::Rgba([value, 80, 255 - value, 255])
+            });
+            pixels.save(&path).unwrap();
+            let mut bgra = pixels.into_raw();
+            for pixel in bgra.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let frame = crate::video::decoder::DecodedFrame {
+                width,
+                height,
+                bgra: bgra.into(),
+            };
+            let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
+            let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
+            let blurred = blurred.unwrap();
+            assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
+            assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
+            assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
+            assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
+        }
     }
 
     #[test]
@@ -3812,7 +5509,7 @@ mod tests {
         let config =
             Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
         cx.update(|cx| crate::state::set_test_state(cx, config));
-        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone()));
+        cx.update(|cx| CapturePreviewWindow::open_video(cx, project.clone(), None));
         cx.run_until_parked();
 
         let kinds = stack_handle(cx)
@@ -3822,13 +5519,146 @@ mod tests {
                     .update(cx, |view, _, _| {
                         view.previews
                             .iter()
-                            .map(|preview| (preview.kind, preview.path.clone()))
+                            .map(|preview| {
+                                assert!(!preview.thumbnail_loading);
+                                assert!(preview.dismiss_token.load(Ordering::Relaxed) > 0);
+                                (preview.kind, preview.path.clone())
+                            })
                             .collect::<Vec<_>>()
                     })
                     .ok()
             })
             .expect("stack window");
         assert_eq!(kinds, vec![(super::PreviewKind::Video, project)]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn video_preview_decodes_its_first_frame_before_the_playback_tick(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("Take.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            crate::video::project::recording_video_path(&project),
+            include_bytes!("../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open_video(cx, project, None);
+            let handle = registry::handle(WindowKind::CapturePreview, cx)
+                .and_then(|handle| handle.downcast::<CapturePreviewWindow>())
+                .unwrap();
+            handle
+                .update(cx, |view, _, _| {
+                    let preview = &view.previews[0];
+                    assert!(preview.thumbnail_loading);
+                    assert_eq!(preview.dismiss_token.load(Ordering::Relaxed), 0);
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+
+        let stack = stack_handle(cx)
+            .and_then(|stack| stack.downcast::<CapturePreviewWindow>())
+            .unwrap();
+        let redraw = |cx: &mut gpui::TestAppContext,
+                      current: &gpui::RenderImage,
+                      retired: Option<&gpui::RenderImage>| {
+            cx.update(|cx| {
+                cx.update_window(stack.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    assert!(window.has_image_atlas_entry(current));
+                    if let Some(retired) = retired {
+                        assert!(!window.has_image_atlas_entry(retired));
+                    }
+                })
+                .unwrap();
+            });
+        };
+        let first = stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(!preview.thumbnail_loading);
+                assert!(preview.dismiss_token.load(Ordering::Relaxed) > 0);
+                preview.image.clone()
+            })
+            .unwrap()
+            .expect("the video thumbnail should be ready");
+        redraw(cx, &first, None);
+
+        cx.simulate_window_visibility_change(stack.into(), gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(preview.video.as_ref().unwrap().frames_released);
+                assert!(Arc::ptr_eq(preview.image.as_ref().unwrap(), &first));
+            })
+            .unwrap();
+        cx.simulate_window_visibility_change(stack.into(), gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        let resumed = stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                assert!(!preview.video.as_ref().unwrap().frames_released);
+                preview.image.clone().unwrap()
+            })
+            .unwrap();
+        assert!(!Arc::ptr_eq(&resumed, &first));
+        redraw(cx, &resumed, Some(&first));
+
+        stack
+            .update(cx, |view, _, _| view.previews[0].busy = true)
+            .unwrap();
+
+        cx.executor().advance_clock(super::VIDEO_PLAYBACK_TICK);
+        cx.run_until_parked();
+        let (id, blurred) = stack
+            .update(cx, |view, _, _| {
+                let preview = &view.previews[0];
+                (
+                    preview.id,
+                    preview.blurred.clone().expect("blurred playback frame"),
+                )
+            })
+            .unwrap();
+        redraw(cx, &blurred, Some(&resumed));
+
+        let decoder = stack
+            .update(cx, |view, window, cx| {
+                let preview = &view.previews[0];
+                let decoder = Arc::downgrade(&preview.video.as_ref().unwrap().decoder);
+                let displayed = preview.image.clone().unwrap();
+                begin_remove_preview(view, id, DismissBehavior::PreserveControls, window, cx);
+                let dismissing = &view.previews[0];
+                assert!(dismissing.dismiss_animation.is_some());
+                assert!(dismissing.video.is_none());
+                assert!(Arc::ptr_eq(dismissing.image.as_ref().unwrap(), &displayed));
+                assert!(Arc::ptr_eq(dismissing.blurred.as_ref().unwrap(), &blurred));
+                decoder
+            })
+            .unwrap();
+        assert!(
+            decoder.upgrade().is_none(),
+            "dismissal retained the decoder"
+        );
+
+        cx.update(|cx| {
+            CapturePreviewWindow::open_video(cx, dir.path().join("Other.poratake"), None)
+        });
+        stack
+            .update(cx, |view, window, cx| {
+                super::remove_preview_now(view, id, window, cx);
+                assert_eq!(view.previews.len(), 1);
+                assert!(!window.has_image_atlas_entry(&blurred));
+            })
+            .unwrap();
     }
 
     #[test]
@@ -3851,9 +5681,14 @@ mod tests {
             last_frame: Some(now),
             hovered: true,
             busy: false,
+            deleting: false,
+            copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
@@ -3866,7 +5701,7 @@ mod tests {
         ));
 
         assert_eq!(
-            CapturePreviewWindow::control_frame(&mut preview, false, false, now),
+            CapturePreviewWindow::control_frame(&mut preview, false, false, false, now),
             (true, 0.75, false)
         );
     }
@@ -3893,9 +5728,14 @@ mod tests {
             last_frame: None,
             hovered: false,
             busy: false,
+            deleting: false,
+            copying: false,
+            finalizing: false,
             completed: None,
             export_progress: None,
             dismiss_token: Arc::new(AtomicU64::new(0)),
+            #[cfg(target_os = "macos")]
+            dismiss_viewport_clipped: Cell::new(false),
             entered_at: now,
             layout_y: None,
             layout_animation: None,
@@ -4033,6 +5873,102 @@ mod tests {
         assert_eq!(step_hover(0.3, 0.3, 0.016), 0.3, "already there, no drift");
     }
 
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covering_a_preview_cancels_pending_hover_tooltips(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|config| config.preview.auto_dismiss = false);
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        cx.run_until_parked();
+        let window = stack_handle(cx).unwrap();
+        let stack = window.downcast::<CapturePreviewWindow>().unwrap();
+        stack
+            .update(cx, |view, window, _| {
+                view.pointer_inside = true;
+                view.previews[0].hovered = true;
+                view.tooltip_presenter.show_for_test(
+                    "close".into(),
+                    "Close preview".into(),
+                    window,
+                );
+                assert!(view.tooltip_presenter.active_content().is_some());
+            })
+            .unwrap();
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        stack
+            .update(cx, |view, window, _| {
+                assert!(!view.preview_window_hovered(window));
+                assert!(view.tooltip_presenter.active_content().is_none());
+            })
+            .unwrap();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        assert_eq!(crate::windows::scroll_capture::test_native_tooltip(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covered_preview_gets_its_dismiss_delay_after_becoming_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([64, 112, 192, 255]))
+            .save(&path)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| {
+            config.preview.auto_dismiss = true;
+            config.preview.auto_dismiss_seconds = 2.0;
+        });
+        cx.update(|cx| {
+            crate::state::set_test_state(cx, store);
+            CapturePreviewWindow::open(cx, path.clone());
+        });
+        cx.run_until_parked();
+        let window = stack_handle(cx).unwrap();
+        let stack = window.downcast::<CapturePreviewWindow>().unwrap();
+        let active = |cx: &mut gpui::TestAppContext| {
+            stack
+                .update(cx, |view, _, _| view.active_preview_count())
+                .unwrap_or(0)
+        };
+
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 1, "the covered card must stay available");
+
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(1_900));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 1, "the revealed card gets a full delay");
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        assert_eq!(active(cx), 0);
+        assert!(path.is_file());
+    }
+
     #[herogpui::test]
     fn the_preview_closes_itself_when_the_dismiss_timer_elapses(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
@@ -4126,6 +6062,71 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn auto_dismiss_waits_for_unfocused_pointer_exit(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(60, 40, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.auto_dismiss = true;
+            settings.preview.auto_dismiss_seconds = 1.0;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path.clone());
+        });
+        let handle = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(60.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        assert!(handle
+            .update(&mut visual, |view, _, _| view.pointer_inside
+                && view.previews[0].hovered)
+            .unwrap());
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert!(
+            handle.update(cx, |_, _, _| ()).is_ok(),
+            "hover must hold the preview open"
+        );
+        visual.simulate_event(gpui::MouseExitEvent {
+            position: gpui::point(px(210.), px(60.)),
+            pressed_button: None,
+            modifiers: gpui::Modifiers::none(),
+        });
+        visual.settle();
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(Duration::from_millis(PREVIEW_EXIT_MS));
+        cx.run_until_parked();
+        assert!(
+            handle.update(cx, |_, _, _| ()).is_err(),
+            "preview must close after exit"
+        );
+        assert!(
+            path.is_file(),
+            "automatic dismissal must preserve the source image"
+        );
+    }
+
     #[herogpui::test]
     fn hidden_preview_starts_its_dismiss_delay_after_reveal(cx: &mut gpui::TestAppContext) {
         use crate::config::store::ConfigStore;
@@ -4208,6 +6209,10 @@ mod tests {
     fn leaving_the_stack_unblocks_auto_dismiss() {
         assert_eq!(
             dismiss_state(4, 4, true, false, false),
+            DismissVerdict::Ready
+        );
+        assert_eq!(
+            dismiss_state(4, 4, false, false, false),
             DismissVerdict::Ready
         );
     }

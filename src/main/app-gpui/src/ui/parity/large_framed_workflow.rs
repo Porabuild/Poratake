@@ -1,0 +1,513 @@
+use gpui::AppContext;
+use herogpui::gpui;
+
+use crate::editor::annotations::Annotation;
+use crate::editor::wallpaper::GradientOption;
+use crate::editor::window::EditorWindow;
+
+use super::{
+    large_texture_sampling::{ordered_annotations, pan},
+    measured, px, settle, size, HeadlessAppContext, Path,
+};
+
+pub(super) fn run(cx: &mut HeadlessAppContext, scratch: &Path) {
+    let scale = std::env::var("PORATAKE_PARITY_LARGE_DPI")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(1.);
+    let zoom = std::env::var("PORATAKE_PARITY_LARGE_ZOOM")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.25);
+    let style =
+        std::env::var("PORATAKE_PARITY_LARGE_FRAME").unwrap_or_else(|_| "macos-dark".into());
+    let shadow = std::env::var("PORATAKE_PARITY_LARGE_SHADOW")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
+    let inset = std::env::var("PORATAKE_PARITY_LARGE_INSET")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
+    let corners = std::env::var("PORATAKE_PARITY_LARGE_CORNERS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
+    let padding = std::env::var("PORATAKE_PARITY_LARGE_PADDING")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(20.);
+    let annotation = std::env::var("PORATAKE_PARITY_LARGE_ANNOTATION").ok();
+    let transparent_background =
+        std::env::var_os("PORATAKE_PARITY_LARGE_TRANSPARENT_BACKGROUND").is_some();
+    let background = std::env::var("PORATAKE_PARITY_LARGE_BACKGROUND_COLOR")
+        .unwrap_or_else(|_| "#203060".into());
+    let image_background = std::env::var("PORATAKE_PARITY_LARGE_IMAGE_ALPHA")
+        .ok()
+        .map(|value| value.parse::<u8>().unwrap());
+    let background_blur = std::env::var("PORATAKE_PARITY_LARGE_BACKGROUND_BLUR")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.);
+    let wallpaper_path = scratch.join("large-wallpaper.png");
+    if let Some(alpha) = image_background {
+        let patterned = std::env::var_os("PORATAKE_PARITY_LARGE_IMAGE_PATTERN").is_some();
+        image::RgbaImage::from_fn(64, 48, |x, y| {
+            if patterned {
+                let shade = if (x / 4 + y / 4) % 2 == 0 { 0 } else { 255 };
+                return image::Rgba([shade, shade, shade, alpha]);
+            }
+            image::Rgba([(x * 3) as u8, (y * 5) as u8, (x * 2 + y) as u8, alpha])
+        })
+        .save(&wallpaper_path)
+        .unwrap();
+    }
+    let pan_first = std::env::var_os("PORATAKE_PARITY_LARGE_PAN_FIRST").is_some();
+    let save_images = std::env::var_os("PORATAKE_PARITY_LARGE_SAVE_IMAGES").is_some();
+    assert!(zoom == 0.25 || zoom == 0.5 || zoom == 1.0);
+    for horizontal in [true, false] {
+        for transparent in [false, true] {
+            let (width, height) = if horizontal {
+                (17_024, 128)
+            } else {
+                (128, 17_024)
+            };
+            let path = scratch.join(format!("framed-source-{horizontal}-{transparent}.png"));
+            image::RgbaImage::from_fn(width, height, |x, y| {
+                let (long, short) = if horizontal { (x, y) } else { (y, x) };
+                let shade = if (long / 5 + short / 7) % 2 == 0 {
+                    220
+                } else {
+                    30
+                };
+                let alpha = if transparent {
+                    ((long * 11 + short * 7) % 256) as u8
+                } else {
+                    255
+                };
+                image::Rgba([shade, (long % 251) as u8, (short * 2) as u8, alpha])
+            })
+            .save(&path)
+            .unwrap();
+            let editor = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(path.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            editor
+                .update(cx, |editor, _, cx| {
+                    if image_background.is_some() {
+                        editor.wallpaper.set_background_image(Some(
+                            wallpaper_path.to_string_lossy().into_owned(),
+                        ));
+                    } else if !transparent_background {
+                        editor.wallpaper.gradient = Some(GradientOption {
+                            id: "framed".into(),
+                            colors: vec![background.clone()],
+                            angle: 0.,
+                        });
+                    }
+                    editor.wallpaper.padding = padding;
+                    editor.wallpaper.background_blur = background_blur;
+                    editor.wallpaper.inset = inset;
+                    editor.wallpaper.corners = corners;
+                    editor.wallpaper.shadow = shadow;
+                    editor.wallpaper.window_frame.style = style.clone();
+                    if let Some(style) = annotation.as_ref().filter(|style| *style != "interactive")
+                    {
+                        if let Some(redaction) = style.strip_prefix("ordered-") {
+                            editor
+                                .history
+                                .push(ordered_annotations(redaction, horizontal, 8192.));
+                        } else if style.starts_with("corner") {
+                            let mut annotations = Vec::new();
+                            if style != "corner-blackout" {
+                                annotations.push(Annotation::Rectangle {
+                                    id: "corner-shape".into(),
+                                    x: 0.,
+                                    y: 0.,
+                                    width: 48.,
+                                    height: 48.,
+                                    stroke: "#00ff00".into(),
+                                    stroke_width: 2.,
+                                    fill: Some("#00ff00".into()),
+                                });
+                            }
+                            if style != "corner-shape" {
+                                let redaction = match style.as_str() {
+                                    "corner-blur" => "blur",
+                                    "corner-pixelate" => "pixelate",
+                                    _ => "blackout",
+                                };
+                                annotations.push(Annotation::Redact {
+                                    id: "corner-blackout".into(),
+                                    x: 0.,
+                                    y: 0.,
+                                    width: 30.,
+                                    height: 30.,
+                                    style: redaction.into(),
+                                    intensity: 5.,
+                                });
+                            }
+                            editor.history.push(annotations);
+                        } else {
+                            let (x, y, width, height) = if horizontal {
+                                (8162., 42., 60., 44.)
+                            } else {
+                                (42., 8162., 44., 60.)
+                            };
+                            editor.history.push(vec![Annotation::Redact {
+                                id: "redact".into(),
+                                x,
+                                y,
+                                width,
+                                height,
+                                style: style.clone(),
+                                intensity: 5.,
+                            }]);
+                        }
+                    }
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            editor
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, editor.into());
+            if annotation.as_deref() == Some("interactive") {
+                super::large_interactive::draw_rectangle(
+                    cx,
+                    editor,
+                    horizontal,
+                    zoom,
+                    scale,
+                    scratch,
+                    transparent,
+                );
+            }
+            let (png, frame_scale) = cx.update(|cx| {
+                let editor = editor.read(cx).unwrap();
+                let snapshot = editor.snapshot.borrow();
+                assert!(snapshot.backdrop.is_some(), "backdrop was not ready");
+                if snapshot.backdrop_composite {
+                    assert!(
+                        !snapshot.preview_edges.is_empty(),
+                        "composed backdrop was not tiled"
+                    );
+                } else {
+                    assert!(
+                        !snapshot.image_tiles.is_empty(),
+                        "oversized source was not tiled"
+                    );
+                    #[cfg(target_os = "macos")]
+                    assert!(
+                        !snapshot.backdrop_tiles.is_empty(),
+                        "oversized backdrop was not tiled"
+                    );
+                }
+                println!(
+                    "large backdrop composed={} edge_tiles={}",
+                    snapshot.backdrop_composite,
+                    snapshot.preview_edges.len()
+                );
+                (editor.export_png().unwrap(), snapshot.frame_scale)
+            });
+            let output = image::load_from_memory(&png).unwrap().to_rgba8();
+            if let Some(alpha) = image_background {
+                let (x, y) = if horizontal {
+                    (output.width() / 2, 0)
+                } else {
+                    (0, output.height() / 2)
+                };
+                assert_eq!(output.get_pixel(x, y).0[3], alpha);
+                assert!((1..128).any(|index| {
+                    let (x, y) = if horizontal {
+                        (index * (output.width() - 1) / 127, 0)
+                    } else {
+                        (0, index * (output.height() - 1) / 127)
+                    };
+                    output.get_pixel(0, 0) != output.get_pixel(x, y)
+                }));
+            } else if transparent_background {
+                assert_eq!(output.get_pixel(0, 0).0[3], 0);
+            } else if background == "#20306080" {
+                assert_eq!(output.get_pixel(0, 0).0[3], 128);
+            }
+            if let Some(style) = &annotation {
+                let control_png = editor
+                    .update(cx, |editor, _, _| {
+                        assert!(editor.history.undo());
+                        let png = editor.export_png().unwrap();
+                        assert!(editor.history.redo());
+                        png
+                    })
+                    .unwrap();
+                let control = image::load_from_memory(&control_png).unwrap().to_rgba8();
+                assert_eq!(output.dimensions(), control.dimensions());
+                let modified = output
+                    .pixels()
+                    .zip(control.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                println!("large framed control=annotation style={style} horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(modified > 0, "the annotation must change exported pixels");
+            }
+            let mut controls = Vec::new();
+            if shadow > 0. {
+                controls.push(("shadow", 0., corners));
+            }
+            if corners > 0. {
+                controls.push(("corners", shadow, 0.));
+            }
+            for (name, control_shadow, control_corners) in controls {
+                let control_png = editor
+                    .update(cx, |editor, _, _| {
+                        let old_shadow = editor.wallpaper.shadow;
+                        let old_corners = editor.wallpaper.corners;
+                        editor.wallpaper.shadow = control_shadow;
+                        editor.wallpaper.corners = control_corners;
+                        let png = editor.export_png().unwrap();
+                        editor.wallpaper.shadow = old_shadow;
+                        editor.wallpaper.corners = old_corners;
+                        png
+                    })
+                    .unwrap();
+                let control = image::load_from_memory(&control_png).unwrap().to_rgba8();
+                assert_eq!(output.dimensions(), control.dimensions());
+                let modified = output
+                    .pixels()
+                    .zip(control.pixels())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                println!("large framed control={name} horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(
+                    modified > 0,
+                    "the {name} setting must change the exported pixels"
+                );
+            }
+            let settings =
+                cx.update(|cx| editor.read(cx).unwrap().wallpaper.for_scale(frame_scale));
+            let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+                &settings,
+                f64::from(width),
+                f64::from(height),
+                frame_scale,
+                false,
+            );
+            let ox = x.round() as u32;
+            let oy = (y.round()
+                + crate::render::window_frame::title_bar_height(
+                    &settings.window_frame.style,
+                    frame_scale,
+                )) as u32;
+            if annotation
+                .as_ref()
+                .is_some_and(|style| style.starts_with("ordered-"))
+            {
+                let unredacted_png = editor
+                    .update(cx, |editor, _, _| {
+                        let original = editor.history.current().to_vec();
+                        let without = original
+                            .iter()
+                            .filter(|item| !matches!(item, Annotation::Redact { .. }))
+                            .cloned()
+                            .collect();
+                        editor.history.replace_current(without);
+                        let png = editor.export_png().unwrap();
+                        editor.history.replace_current(original);
+                        png
+                    })
+                    .unwrap();
+                let unredacted = image::load_from_memory(&unredacted_png).unwrap().to_rgba8();
+                let point = |long, short| {
+                    if horizontal {
+                        (ox + long, oy + short)
+                    } else {
+                        (ox + short, oy + long)
+                    }
+                };
+                let modified = (8162..8222)
+                    .flat_map(|long| (42..86).map(move |short| point(long, short)))
+                    .filter(|(x, y)| output.get_pixel(*x, *y) != unredacted.get_pixel(*x, *y))
+                    .count();
+                println!("ordered redaction effect horizontal={horizontal} transparent={transparent} modified_pixels={modified}");
+                assert!(modified > 100, "redaction must change the underlying image");
+                let (x, y) = point(8192, 62);
+                assert_eq!(output.get_pixel(x, y).0, [0, 255, 0, 255]);
+                if annotation.as_deref() == Some("ordered-blackout") {
+                    let (x, y) = point(8172, 62);
+                    assert_eq!(output.get_pixel(x, y).0, [0, 0, 0, 255]);
+                }
+            }
+            if annotation.as_deref() == Some("blackout") {
+                let (x, y) = if horizontal {
+                    (ox + 8192, oy + 64)
+                } else {
+                    (ox + 64, oy + 8192)
+                };
+                assert_eq!(output.get_pixel(x, y).0, [0, 0, 0, 255]);
+            }
+            if annotation.as_deref() == Some("corner") {
+                assert_eq!(output.get_pixel(ox + 20, oy + 20).0, [0, 0, 0, 255]);
+                assert_eq!(output.get_pixel(ox + 40, oy + 40).0, [0, 255, 0, 255]);
+                assert_ne!(output.get_pixel(ox, oy).0, [0, 0, 0, 255]);
+            }
+            let (a, b) = if horizontal {
+                ((ox + 8000, oy + 45), (ox + 8005, oy + 45))
+            } else {
+                ((ox + 45, oy + 8000), (ox + 45, oy + 8005))
+            };
+            assert_ne!(
+                output.get_pixel(a.0, a.1),
+                output.get_pixel(b.0, b.1),
+                "export must retain image detail"
+            );
+            let exported = scratch.join(format!("framed-export-{horizontal}-{transparent}.png"));
+            std::fs::write(&exported, png).unwrap();
+            let reopened = cx
+                .open_window(size(px(1280.), px(738.)), |window, cx| {
+                    window.set_scale_factor(scale);
+                    cx.new(|cx| EditorWindow::from_file(exported.to_str().unwrap(), window, cx))
+                })
+                .unwrap();
+            settle(cx, reopened.into());
+            reopened
+                .update(cx, |editor, _, cx| {
+                    editor.zoom = zoom;
+                    cx.notify();
+                })
+                .unwrap();
+            settle(cx, reopened.into());
+            for panned in if annotation
+                .as_ref()
+                .is_some_and(|style| style.starts_with("corner"))
+            {
+                &[false][..]
+            } else if pan_first {
+                &[true][..]
+            } else {
+                &[false, true]
+            } {
+                let panned = *panned;
+                if panned {
+                    pan(cx, editor, horizontal, zoom);
+                    pan(cx, reopened, horizontal, zoom);
+                }
+                settle(cx, editor.into());
+                let stage = measured("editor-stage", 0);
+                assert_eq!(cx.update(|cx| editor.read(cx).unwrap().zoom), zoom);
+                let actual = cx.capture_screenshot(editor.into()).unwrap();
+                settle(cx, reopened.into());
+                assert_eq!(cx.update(|cx| reopened.read(cx).unwrap().zoom), zoom);
+                let flat_bounds =
+                    cx.update(|cx| reopened.read(cx).unwrap().bounds.borrow().unwrap());
+                let expected = cx.capture_screenshot(reopened.into()).unwrap();
+                assert_eq!(stage, flat_bounds, "preview and reopened stage bounds");
+                let left = (f32::from(stage.left()).max(200.) * scale).ceil() as u32;
+                let top = (f32::from(stage.top()).max(120.) * scale).ceil() as u32;
+                let right = (f32::from(stage.right()).min(1080.) * scale).floor() as u32;
+                let bottom = (f32::from(stage.bottom()).min(650.) * scale).floor() as u32;
+                assert!(right > left && bottom > top);
+                if !panned
+                    && annotation
+                        .as_ref()
+                        .is_some_and(|style| style.starts_with("corner"))
+                {
+                    let corner_x =
+                        ((f32::from(stage.left()) + ox as f32 * zoom) * scale).round() as u32;
+                    let corner_y =
+                        ((f32::from(stage.top()) + oy as f32 * zoom) * scale).round() as u32;
+                    assert!(
+                        corner_x >= left
+                            && corner_y >= top
+                            && corner_x + 20 < right
+                            && corner_y + 20 < bottom,
+                        "the rounded corner must be visible"
+                    );
+                }
+                if panned {
+                    let source_x = ox + if horizontal { 8192 } else { 64 };
+                    let source_y = oy + if horizontal { 64 } else { 8192 };
+                    let seam_x =
+                        ((f32::from(stage.left()) + source_x as f32 * zoom) * scale).round() as u32;
+                    let seam_y =
+                        ((f32::from(stage.top()) + source_y as f32 * zoom) * scale).round() as u32;
+                    assert!(
+                        (left..right).contains(&seam_x) && (top..bottom).contains(&seam_y),
+                        "the tiled seam must be in the compared region"
+                    );
+                    if let Some(style) = annotation
+                        .as_ref()
+                        .filter(|style| !style.starts_with("corner") && *style != "interactive")
+                    {
+                        assert!(
+                            seam_x >= left + 2
+                                && seam_x + 2 < right
+                                && seam_y >= top + 2
+                                && seam_y + 2 < bottom,
+                            "the annotation sample must be visible"
+                        );
+                        if style == "blackout" {
+                            assert_eq!(
+                                expected.get_pixel(seam_x, seam_y).0,
+                                [0, 0, 0, 255],
+                                "the sampled point must lie inside the blackout"
+                            );
+                        }
+                        let mut changed = 0;
+                        let mut worst = 0;
+                        for y in seam_y - 2..=seam_y + 2 {
+                            for x in seam_x - 2..=seam_x + 2 {
+                                let delta = actual
+                                    .get_pixel(x, y)
+                                    .0
+                                    .iter()
+                                    .zip(expected.get_pixel(x, y).0)
+                                    .map(|(a, b)| a.abs_diff(b))
+                                    .max()
+                                    .unwrap();
+                                changed += usize::from(delta > 2);
+                                worst = worst.max(delta);
+                            }
+                        }
+                        println!("large annotation style={style} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} differences={changed} max={worst}");
+                        assert_eq!(changed, 0, "annotation differs from reopened PNG");
+                    }
+                }
+                let (mut changed, mut worst) = (0, 0);
+                for y in top..bottom {
+                    for x in left..right {
+                        let a = actual.get_pixel(x, y).0;
+                        let b = expected.get_pixel(x, y).0;
+                        let delta = a.iter().zip(b).map(|(a, b)| a.abs_diff(b)).max().unwrap();
+                        changed += usize::from(delta > 2);
+                        worst = worst.max(delta);
+                    }
+                }
+                println!("large framed style={style} shadow={shadow} inset={inset} corners={corners} horizontal={horizontal} transparent={transparent} zoom={zoom} scale={scale} panned={panned} differences={changed} max={worst}");
+                if changed > 0 || save_images {
+                    actual
+                        .save(scratch.join(format!(
+                            "framed-preview-{horizontal}-{transparent}-{panned}.png"
+                        )))
+                        .unwrap();
+                    expected
+                        .save(scratch.join(format!(
+                            "framed-reopened-{horizontal}-{transparent}-{panned}.png"
+                        )))
+                        .unwrap();
+                }
+                assert_eq!(changed, 0, "framed preview differs from reopened PNG");
+            }
+            for window in [editor, reopened] {
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+}

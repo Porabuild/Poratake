@@ -1,0 +1,41 @@
+{
+  "electron": "43.4.0",
+  "preview": {
+    "x": 590,
+    "y": 345.5,
+    "width": 100,
+    "height": 80,
+    "dpr": 1
+  },
+  "bounds": {
+    "x": 1180,
+    "y": 691,
+    "width": 200,
+    "height": 160
+  },
+  "differentPixels": 966,
+  "maximumDifference": 255,
+  "differentOuterPixels": 716,
+  "differentNearBlackoutPixels": 250,
+  "nonBlackInSelection": 0,
+  "blackPreviewWhiteExport": 26,
+  "blackPreviewWhiteExportBounds": {
+    "minX": 17,
+    "maxX": 42,
+    "minY": 33,
+    "maxY": 33
+  },
+  "nonFixtureExportPixels": 0,
+  "reopenedPreview": {
+    "x": 590,
+    "y": 345.5,
+    "width": 100,
+    "height": 80,
+    "dpr": 1
+  },
+  "differentReopenedPixels": 416,
+  "maximumReopenedDifference": 158,
+  "blackPreviewLighterReopened": 192,
+  "blackPreviewWhiteReopened": 0,
+  "chromaticPreviewInSelection": 0
+}

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import type {
   VideoEditorState,
   ExportSettings,
@@ -21,6 +27,7 @@ import type { SidebarTab } from '../editor-sidebar';
 const SAVE_DEBOUNCE_MS = 500;
 
 interface EditorStateValues {
+  sourceDuration: number;
   segments: Segment[];
   cursorStyle: CursorStyle;
   cameraStyle: CameraStyle;
@@ -62,7 +69,13 @@ export function useEditorStatePersistence({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasAppliedStateRef = useRef(false);
   const isMountedRef = useRef(true);
-  const isSavingRef = useRef(false);
+  const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const resetPromiseRef = useRef<Promise<boolean> | null>(null);
+  const resetCompletedRef = useRef(false);
+  const latestRef = useRef({ isReady, isStateLoaded, loadedState, values });
+  useLayoutEffect(() => {
+    latestRef.current = { isReady, isStateLoaded, loadedState, values };
+  }, [isReady, isStateLoaded, loadedState, values]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -99,46 +112,94 @@ export function useEditorStatePersistence({
     }
   }, [isReady, values.segments.length]);
 
-  const saveState = useCallback(() => {
-    if (!isMountedRef.current || isSavingRef.current) return;
-
-    isSavingRef.current = true;
-
-    const state: VideoEditorState = {
-      version: EDITOR_STATE_VERSION,
-      savedAt: new Date().toISOString(),
-      recordingType: loadedState?.recordingType,
-      segments: values.segments,
-      cursorStyle: values.cursorStyle,
-      cameraStyle: values.cameraStyle,
-      keyboardStyle: values.keyboardStyle,
-      subtitleStyle: values.subtitleStyle,
-      audioStyle: values.audioStyle,
-      zoomSegments: values.zoomSegments,
-      zoomSettings: values.zoomSettings,
-      cameraSegments: values.cameraSegments,
-      drawingSegments: values.drawingSegments,
-      wallpaper: values.wallpaper,
-      firstFrame: values.firstFrame,
-      musicTracks: values.musicTracks,
-      exportSettings: values.exportSettings,
-      timelineZoom: values.timelineZoom,
-      ui: {
-        sidebarOpen: values.sidebarOpen,
-        sidebarTab: values.sidebarTab,
-        scrubAudioEnabled: values.scrubAudioEnabled,
-      },
-    };
-
-    window.ipcRenderer
-      .invoke('video-editor:saveState', state)
-      .catch((err: Error) => {
-        console.error('Failed to save editor state:', err);
-      })
-      .finally(() => {
-        isSavingRef.current = false;
+  const enqueueSave = useCallback((): Promise<boolean> => {
+    const save = saveQueueRef.current
+      .catch(() => false)
+      .then(async () => {
+        const snapshot = latestRef.current;
+        const currentValues = snapshot.values;
+        if (
+          !isMountedRef.current ||
+          !snapshot.isStateLoaded ||
+          !snapshot.isReady ||
+          !hasAppliedStateRef.current ||
+          currentValues.segments.length === 0
+        ) {
+          return true;
+        }
+        const state: VideoEditorState = {
+          version: EDITOR_STATE_VERSION,
+          savedAt: new Date().toISOString(),
+          recordingType: snapshot.loadedState?.recordingType,
+          sourceDuration:
+            snapshot.loadedState?.sourceDuration ??
+            (Number.isFinite(currentValues.sourceDuration) &&
+            currentValues.sourceDuration > 0
+              ? currentValues.sourceDuration
+              : undefined),
+          segments: currentValues.segments,
+          cursorStyle: currentValues.cursorStyle,
+          cameraStyle: currentValues.cameraStyle,
+          keyboardStyle: currentValues.keyboardStyle,
+          subtitleStyle: currentValues.subtitleStyle,
+          audioStyle: currentValues.audioStyle,
+          zoomSegments: currentValues.zoomSegments,
+          zoomSettings: currentValues.zoomSettings,
+          cameraSegments: currentValues.cameraSegments,
+          drawingSegments: currentValues.drawingSegments,
+          wallpaper: currentValues.wallpaper,
+          firstFrame: currentValues.firstFrame,
+          musicTracks: currentValues.musicTracks,
+          exportSettings: currentValues.exportSettings,
+          timelineZoom: currentValues.timelineZoom,
+          ui: {
+            sidebarOpen: currentValues.sidebarOpen,
+            sidebarTab: currentValues.sidebarTab,
+            scrubAudioEnabled: currentValues.scrubAudioEnabled,
+          },
+        };
+        try {
+          const saved = await window.ipcRenderer.invoke(
+            'video-editor:saveState',
+            state
+          );
+          if (!saved) console.error('Failed to save editor state');
+          return saved === true;
+        } catch (err) {
+          console.error('Failed to save editor state:', err);
+          return false;
+        }
       });
-  }, [loadedState?.recordingType, values]);
+    saveQueueRef.current = save;
+    return save;
+  }, []);
+
+  const saveState = useCallback((): Promise<boolean> => {
+    if (resetCompletedRef.current) return Promise.resolve(true);
+    const pendingReset = resetPromiseRef.current;
+    if (pendingReset) {
+      return pendingReset.then(success => (success ? true : enqueueSave()));
+    }
+    return enqueueSave();
+  }, [enqueueSave]);
+
+  useEffect(() => {
+    const remove = window.ipcRenderer.on('video-editor:prepare-close', () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      void saveState().then(saved => {
+        window.ipcRenderer.send(
+          saved
+            ? 'video-editor:close-confirmed'
+            : 'video-editor:close-save-failed'
+        );
+      });
+    });
+    window.ipcRenderer.send('video-editor:close-handler-ready');
+    return remove;
+  }, [saveState]);
 
   useEffect(() => {
     if (
@@ -156,7 +217,7 @@ export function useEditorStatePersistence({
 
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = null;
-      saveState();
+      void saveState();
     }, SAVE_DEBOUNCE_MS);
 
     return () => {
@@ -167,19 +228,43 @@ export function useEditorStatePersistence({
     };
   }, [isStateLoaded, isReady, values, saveState]);
 
-  const resetState = useCallback(async (): Promise<boolean> => {
+  const resetState = useCallback((): Promise<boolean> => {
+    if (resetCompletedRef.current) return Promise.resolve(true);
+    if (resetPromiseRef.current) return resetPromiseRef.current;
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     }
+    const valuesAtReset = JSON.stringify(latestRef.current.values);
 
-    try {
-      return await window.ipcRenderer.invoke('video-editor:resetState');
-    } catch (err) {
-      console.error('Failed to reset editor state:', err);
-      return false;
-    }
-  }, []);
+    const reset = saveQueueRef.current
+      .catch(() => false)
+      .then(async () => {
+        try {
+          return (
+            (await window.ipcRenderer.invoke('video-editor:resetState')) ===
+            true
+          );
+        } catch (err) {
+          console.error('Failed to reset editor state:', err);
+          return false;
+        }
+      })
+      .then(success => {
+        const unchanged =
+          valuesAtReset === JSON.stringify(latestRef.current.values);
+        const completed = success && unchanged;
+        if (success && !unchanged && isMountedRef.current) {
+          window.ipcRenderer.send('video-editor:reset-conflict');
+        }
+        resetPromiseRef.current = null;
+        resetCompletedRef.current = completed;
+        if (!completed && isMountedRef.current) void enqueueSave();
+        return completed;
+      });
+    resetPromiseRef.current = reset;
+    return reset;
+  }, [enqueueSave]);
 
   return {
     loadedState,

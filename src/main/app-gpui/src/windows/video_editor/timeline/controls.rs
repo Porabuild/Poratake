@@ -42,6 +42,7 @@ fn separator(_theme: &ThemeVars) -> AnyElement {
 pub fn render(
     state: &ControlsState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let can_zoom_out = state.pixels_per_second > MIN_PIXELS_PER_SECOND;
@@ -50,60 +51,68 @@ pub fn render(
     let cut_name = "Cut Tool";
     let delete_name = "Delete Segment";
 
-    let mut bar = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .px(px(4.0))
-        .py(px(4.0))
-        .border_b_1()
-        .border_color(theme.border)
-        .child(
-            Tooltip::new(icon_button::hinted(play_name, "Space")).child(
-                Button::new("timeline-play")
-                    .child(crate::ui::icon::icon_element(
-                        if state.is_playing { "pause" } else { "play" },
-                        px(16.0),
-                    ))
-                    .variant(Variant::Ghost)
-                    .size(Size::Md)
-                    .is_icon_only(true)
-                    .aria_label(play_name)
-                    .on_press(cx.listener(|this, _event, _window, cx| this.toggle_playback(cx))),
-            ),
-        )
-        .child(separator(theme))
-        .child(
-            Tooltip::new(icon_button::hinted(cut_name, "C")).child(
-                Button::new("timeline-cut")
-                    .child(crate::ui::icon::icon_element("scissors", px(16.0)))
-                    .variant(if state.is_cut_tool_active {
-                        Variant::Secondary
-                    } else {
-                        Variant::Ghost
-                    })
-                    .size(Size::Md)
-                    .is_icon_only(true)
-                    .aria_label(cut_name)
-                    .on_press(cx.listener(|this, _event, _window, cx| this.toggle_cut_tool(cx))),
-            ),
-        );
+    let mut items = vec![
+        (
+            Some("play"),
+            Tooltip::new(icon_button::hinted(play_name, "Space"))
+                .child(
+                    Button::new("timeline-play")
+                        .child(crate::ui::icon::icon_element(
+                            if state.is_playing { "pause" } else { "play" },
+                            px(16.0),
+                        ))
+                        .variant(Variant::Ghost)
+                        .size(Size::Md)
+                        .is_icon_only(true)
+                        .aria_label(play_name)
+                        .on_press(
+                            cx.listener(|this, _event, _window, cx| this.toggle_playback(cx)),
+                        ),
+                )
+                .into_any_element(),
+        ),
+        (None, separator(theme)),
+        (
+            Some("cut"),
+            Tooltip::new(icon_button::hinted(cut_name, "C"))
+                .child(
+                    Button::new("timeline-cut")
+                        .child(crate::ui::icon::icon_element("scissors", px(16.0)))
+                        .variant(if state.is_cut_tool_active {
+                            Variant::Secondary
+                        } else {
+                            Variant::Ghost
+                        })
+                        .size(Size::Md)
+                        .is_icon_only(true)
+                        .aria_label(cut_name)
+                        .on_press(
+                            cx.listener(|this, _event, _window, cx| this.toggle_cut_tool(cx)),
+                        ),
+                )
+                .into_any_element(),
+        ),
+    ];
 
     if state.has_selected_segment && state.can_delete_segment {
-        bar = bar.child(separator(theme)).child(
-            Tooltip::new(icon_button::hinted(delete_name, "Backspace")).child(
-                Button::new("timeline-delete-segment")
-                    .child(crate::ui::icon::icon_element("trash-2", px(16.0)))
-                    .variant(Variant::Ghost)
-                    .size(Size::Md)
-                    .is_icon_only(true)
-                    .aria_label(delete_name)
-                    .recipe("danger-text")
-                    .on_press(
-                        cx.listener(|this, _event, _window, cx| this.delete_selected_segment(cx)),
-                    ),
-            ),
-        );
+        items.push((None, separator(theme)));
+        items.push((
+            Some("delete"),
+            Tooltip::new(icon_button::hinted(delete_name, "Backspace"))
+                .child(
+                    Button::new("timeline-delete-segment")
+                        .child(crate::ui::icon::icon_element("trash-2", px(16.0)))
+                        .variant(Variant::Ghost)
+                        .size(Size::Md)
+                        .is_icon_only(true)
+                        .aria_label(delete_name)
+                        .recipe("danger-text")
+                        .on_press(cx.listener(|this, _event, _window, cx| {
+                            this.delete_selected_segment(cx)
+                        })),
+                )
+                .into_any_element(),
+        ));
     }
 
     let mut readout = div()
@@ -126,104 +135,143 @@ pub fn render(
         );
     }
 
-    bar = bar.child(separator(theme)).child(readout);
+    items.push((None, separator(theme)));
+    items.push((None, readout.into_any_element()));
 
     if state.has_selected_segment {
-        bar = bar.child(separator(theme)).child(speed_selector(
-            state.selected_segment_speed,
-            theme,
-            cx,
+        items.push((None, separator(theme)));
+        items.push((
+            Some("speed"),
+            speed_selector(state.selected_segment_speed, theme, cx),
         ));
     }
 
     let zoom_out_name = "Zoom Out";
     let zoom_in_name = "Zoom In";
     let fit_name = "Fit to View";
-    bar.child(div().flex_1())
-        .child(separator(theme))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-zoom-out", "minus", zoom_out_name)
-                        .is_disabled(!can_zoom_out),
-                    icon_button::hinted(zoom_out_name, &accelerator::display("CommandOrControl+-")),
-                    cx,
-                    |this, _window, cx| this.zoom_timeline_out(cx),
-                ))
-                .child(
-                    div().w(px(96.0)).child(
-                        rows::slider_control(
-                            "timeline-zoom",
-                            state.pixels_per_second as f64,
-                            MIN_PIXELS_PER_SECOND as f64,
-                            MAX_PIXELS_PER_SECOND as f64,
-                            1.0,
-                            cx,
-                            |this, next, cx| this.set_timeline_zoom(next as f32, cx),
-                        )
-                        .size(SliderSize::Sm),
-                    ),
-                )
-                .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-zoom-in", "plus", zoom_in_name)
-                        .is_disabled(!can_zoom_in),
-                    icon_button::hinted(zoom_in_name, &accelerator::display("CommandOrControl+=")),
-                    cx,
-                    |this, _window, cx| this.zoom_timeline_in(cx),
-                ))
-                .child(toolbar::tooltip_button(
-                    icon_button::compact_sm("timeline-fit", "maximize-2", fit_name),
-                    icon_button::hinted(fit_name, "F"),
-                    cx,
-                    |this, _window, cx| this.fit_timeline_to_view(cx),
-                )),
-        )
-        .child(separator(theme))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(theme.muted_foreground)
-                        .child("Scrub Audio"),
-                )
-                .child(
-                    rows::switch(
-                        "timeline-scrub-audio",
-                        state.scrub_audio_enabled,
-                        cx,
-                        |this, enabled, cx| this.set_scrub_audio(enabled, cx),
-                    )
-                    .size(Size::Sm)
-                    .is_disabled(!state.is_scrub_audio_available),
-                ),
-        )
-        .child(separator(theme))
-        .child(
-            Tooltip::new(if state.is_cut_tool_active {
-                CUT_TOOL_HINT
-            } else {
-                DEFAULT_HINT
-            })
+    items.push((None, div().flex_1().into_any_element()));
+    items.push((None, separator(theme)));
+    items.push((
+        Some("zoom"),
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .child(toolbar::tooltip_button(
+                icon_button::compact_sm("timeline-zoom-out", "minus", zoom_out_name)
+                    .is_disabled(!can_zoom_out),
+                icon_button::hinted(zoom_out_name, &accelerator::display("CommandOrControl+-")),
+                cx,
+                |this, _window, cx| this.zoom_timeline_out(cx),
+            ))
             .child(
-                Button::new("timeline-help")
-                    .child(crate::ui::icon::icon_element("help-circle", px(16.0)))
-                    .variant(Variant::Ghost)
-                    .size(Size::Md)
-                    .is_icon_only(true)
-                    .aria_label("Keyboard shortcuts")
-                    .recipe("muted"),
-            ),
+                div().w(px(96.0)).child(
+                    rows::slider_control(
+                        "timeline-zoom",
+                        state.pixels_per_second as f64,
+                        MIN_PIXELS_PER_SECOND as f64,
+                        MAX_PIXELS_PER_SECOND as f64,
+                        1.0,
+                        cx,
+                        |this, next, cx| this.set_timeline_zoom(next as f32, cx),
+                    )
+                    .size(SliderSize::Sm),
+                ),
+            )
+            .child(toolbar::tooltip_button(
+                icon_button::compact_sm("timeline-zoom-in", "plus", zoom_in_name)
+                    .is_disabled(!can_zoom_in),
+                icon_button::hinted(zoom_in_name, &accelerator::display("CommandOrControl+=")),
+                cx,
+                |this, _window, cx| this.zoom_timeline_in(cx),
+            ))
+            .child(toolbar::tooltip_button(
+                icon_button::compact_sm("timeline-fit", "maximize-2", fit_name),
+                icon_button::hinted(fit_name, "F"),
+                cx,
+                |this, _window, cx| this.fit_timeline_to_view(cx),
+            ))
+            .into_any_element(),
+    ));
+    items.push((None, separator(theme)));
+    items.push((
+        Some("scrub"),
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(theme.muted_foreground)
+                    .child("Scrub Audio"),
+            )
+            .child(
+                rows::switch(
+                    "timeline-scrub-audio",
+                    state.scrub_audio_enabled,
+                    cx,
+                    |this, enabled, cx| this.set_scrub_audio(enabled, cx),
+                )
+                .size(Size::Sm)
+                .is_disabled(!state.is_scrub_audio_available),
+            )
+            .into_any_element(),
+    ));
+    items.push((None, separator(theme)));
+    items.push((
+        Some("help"),
+        Tooltip::new(if state.is_cut_tool_active {
+            CUT_TOOL_HINT
+        } else {
+            DEFAULT_HINT
+        })
+        .child(
+            Button::new("timeline-help")
+                .child(crate::ui::icon::icon_element("help-circle", px(16.0)))
+                .variant(Variant::Ghost)
+                .size(Size::Md)
+                .is_icon_only(true)
+                .aria_label("Keyboard shortcuts")
+                .recipe("muted"),
         )
-        .into_any_element()
+        .into_any_element(),
+    ));
+    let reveal = chrome::is_macos()
+        .then(|| crate::ui::focus_reveal::FocusReveal::new("video-timeline-scroll", window, cx));
+    let items = items.into_iter().map(|(id, item)| match (&reveal, id) {
+        (Some(reveal), Some(id)) => {
+            reveal.wrap(format!("video-timeline-{id}-focus"), item, window, cx)
+        }
+        _ => item,
+    });
+    let bar = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .px(px(4.0))
+        .py(px(4.0))
+        .border_b_1()
+        .border_color(theme.border)
+        .children(items);
+    #[cfg(feature = "parity")]
+    let bar = bar.on_children_prepainted(|bounds, _, _| {
+        crate::ui::parity::record("video-timeline-controls", bounds);
+    });
+    if let Some(reveal) = reveal {
+        return div()
+            .id("video-timeline-controls")
+            .flex()
+            .w_full()
+            .min_w_0()
+            .overflow_x_scroll()
+            .track_scroll(&reveal.scroll)
+            .child(bar.flex_shrink_0().min_w_full())
+            .into_any_element();
+    }
+    bar.into_any_element()
 }
 
 fn speed_selector(

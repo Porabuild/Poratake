@@ -1,5 +1,5 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron';
-import { existsSync } from 'fs';
+import { constants, existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { getWindowData } from '../window-manager';
@@ -12,6 +12,8 @@ import {
   isExportOutputPathAllowed,
 } from './export-session';
 import { buildAtempoFilter } from './audio-handlers';
+import { isMusicNameReserved, recordMusicCandidate } from '../music-retention';
+import type { MusicRetentionSession } from '../music-retention';
 
 function sanitizeFileName(fileName: string): string {
   return path.basename(fileName);
@@ -46,21 +48,25 @@ async function probeAudioDuration(
   return hours * 3600 + minutes * 60 + seconds + centiseconds / 100;
 }
 
-async function getUniqueFileName(
+async function copyMusicToUniquePath(
+  sourcePath: string,
   musicFolder: string,
   originalName: string
-): Promise<string> {
+): Promise<{ fileName: string; destPath: string }> {
   const ext = path.extname(originalName);
   const base = path.basename(originalName, ext);
-  let candidate = originalName;
-  let counter = 1;
-
-  while (existsSync(path.join(musicFolder, candidate))) {
-    candidate = `${base} (${counter})${ext}`;
-    counter++;
+  for (let counter = 0; ; counter++) {
+    const fileName =
+      counter === 0 ? originalName : `${base} (${counter})${ext}`;
+    const destPath = path.join(musicFolder, fileName);
+    if (isMusicNameReserved(musicFolder, fileName)) continue;
+    try {
+      await fs.copyFile(sourcePath, destPath, constants.COPYFILE_EXCL);
+      return { fileName, destPath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
   }
-
-  return candidate;
 }
 
 export function registerMusicHandlers(): void {
@@ -80,93 +86,94 @@ export function registerMusicHandlers(): void {
         return { success: false, error: 'No video data found' };
       }
 
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { success: false, error: 'Window not found' };
-      }
-
-      const result = await dialog.showOpenDialog(window, {
-        title: 'Add Music',
-        filters: [
-          {
-            name: 'Audio Files',
-            extensions: SUPPORTED_MUSIC_EXTENSIONS,
-          },
-        ],
-        properties: ['openFile'],
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, error: 'Cancelled' };
-      }
-
-      const sourcePath = result.filePaths[0];
-      const musicFolder = getMusicFolderPath(data.filePath);
-      if (!musicFolder) {
-        return { success: false, error: 'Could not resolve music folder' };
-      }
-
-      if (!existsSync(musicFolder)) {
-        await fs.mkdir(musicFolder, { recursive: true });
-      }
-
-      const originalName = path.basename(sourcePath);
-      const fileName = await getUniqueFileName(musicFolder, originalName);
-      const destPath = path.join(musicFolder, fileName);
-
+      let importSession: MusicRetentionSession | null = null;
       try {
-        await fs.copyFile(sourcePath, destPath);
+        importSession = data.musicSession?.lease() ?? null;
       } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to copy file',
-        };
-      }
-
-      const duration = await probeAudioDuration(destPath);
-      if (duration <= 0) {
-        await fs.unlink(destPath).catch(() => {});
-        return { success: false, error: 'Could not determine audio duration' };
-      }
-
-      const ext = path.extname(fileName);
-      const name = path.basename(fileName, ext);
-
-      return { success: true, fileName, name, originalDuration: duration };
-    }
-  );
-
-  ipcMain.handle(
-    'video-editor:music:remove',
-    async (
-      event,
-      { fileName }: { fileName: string }
-    ): Promise<{ success: boolean; error?: string }> => {
-      const data = getWindowData(event.sender.id);
-      if (!data) {
-        return { success: false, error: 'No video data found' };
-      }
-
-      const musicFolder = getMusicFolderPath(data.filePath);
-      if (!musicFolder) {
-        return { success: false, error: 'Could not resolve music folder' };
-      }
-
-      const safeFileName = sanitizeFileName(fileName);
-      const filePath = path.join(musicFolder, safeFileName);
-      try {
-        await fs.unlink(filePath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          return { success: true };
-        }
         return {
           success: false,
           error:
-            error instanceof Error ? error.message : 'Failed to remove file',
+            error instanceof Error ? error.message : 'Music files are in use',
         };
       }
-      return { success: true };
+
+      try {
+        const window = BrowserWindow.fromWebContents(event.sender);
+        if (!window) {
+          return { success: false, error: 'Window not found' };
+        }
+
+        const result = await dialog.showOpenDialog(window, {
+          title: 'Add Music',
+          filters: [
+            {
+              name: 'Audio Files',
+              extensions: SUPPORTED_MUSIC_EXTENSIONS,
+            },
+          ],
+          properties: ['openFile'],
+        });
+
+        if (result.canceled || result.filePaths.length === 0) {
+          return { success: false, error: 'Cancelled' };
+        }
+
+        const sourcePath = result.filePaths[0];
+        const musicFolder = getMusicFolderPath(data.filePath);
+        if (!musicFolder) {
+          return { success: false, error: 'Could not resolve music folder' };
+        }
+
+        if (!existsSync(musicFolder)) {
+          await fs.mkdir(musicFolder, { recursive: true });
+        }
+
+        const originalName = path.basename(sourcePath);
+        let fileName: string;
+        let destPath: string;
+        try {
+          ({ fileName, destPath } = await copyMusicToUniquePath(
+            sourcePath,
+            musicFolder,
+            originalName
+          ));
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error ? error.message : 'Failed to copy file',
+          };
+        }
+
+        const duration = await probeAudioDuration(destPath);
+        if (duration <= 0) {
+          await fs.unlink(destPath).catch(() => {});
+          return {
+            success: false,
+            error: 'Could not determine audio duration',
+          };
+        }
+
+        const ext = path.extname(fileName);
+        const name = path.basename(fileName, ext);
+
+        try {
+          recordMusicCandidate(data.filePath, fileName);
+        } catch (error) {
+          await fs.unlink(destPath).catch(() => {});
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? `Could not retain imported music: ${error.message}`
+                : 'Could not retain imported music',
+          };
+        }
+
+        return { success: true, fileName, name, originalDuration: duration };
+      } finally {
+        importSession?.close();
+      }
     }
   );
 

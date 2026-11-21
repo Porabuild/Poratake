@@ -1,0 +1,5 @@
+macOS scroll-capture display selection, 2026-11-16
+
+The native scroll fixture used NSScreen metadata from the connected display without starting a screen capture. Before this change, a request with a nonexistent display ID entered capture state; a request with an unmatched display origin fell back to the primary display. The updated daemon rejects both with DISPLAY_UNAVAILABLE before changing session state. A request using the connected display's ID and another using its origin each entered capture state and were cancelled before the deferred UI setup; a further request while a session was active did not replace it. Invalid origins and coordinate-edge overflow are covered by the validation-only fixture. Both daemon architectures typechecked. The optional ScreenCaptureKit capture test was not run.
+
+This verifies selection and failure handling on one available display. It does not verify a physical display being unplugged, multiple displays, live scrolling or captured pixels.

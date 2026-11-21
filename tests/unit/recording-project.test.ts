@@ -176,25 +176,26 @@ describe('recording-project', () => {
       );
     });
 
-    it('creates folder when missing', async () => {
+    it('reserves the folder exclusively', async () => {
       const fs = await import('fs');
-      vi.mocked(fs.existsSync).mockReturnValue(false);
       const { createProjectFolder } =
         await import('@/main/capture/video/recording-project');
       const result = createProjectFolder('/path/to/My.poratake');
-      expect(fs.mkdirSync).toHaveBeenCalledWith('/path/to/My.poratake', {
-        recursive: true,
-      });
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/path/to/My.poratake');
       expect(result).toBe(path.join('/path/to/My.poratake', 'recording.mov'));
     });
 
-    it('does not call mkdir when folder exists', async () => {
+    it('propagates an existing-folder error', async () => {
       const fs = await import('fs');
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      const exists = Object.assign(new Error('already exists'), {
+        code: 'EEXIST',
+      });
+      vi.mocked(fs.mkdirSync).mockImplementationOnce(() => {
+        throw exists;
+      });
       const { createProjectFolder } =
         await import('@/main/capture/video/recording-project');
-      createProjectFolder('/path/to/My.poratake');
-      expect(fs.mkdirSync).not.toHaveBeenCalled();
+      expect(() => createProjectFolder('/path/to/My.poratake')).toThrow(exists);
     });
   });
 

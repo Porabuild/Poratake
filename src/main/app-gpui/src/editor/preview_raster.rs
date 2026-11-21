@@ -21,13 +21,25 @@ const MAX_PATCH_DIMENSION: f64 = 16_384.0;
 const CACHE_TTL_FRAMES: u64 = 4;
 
 #[derive(Clone, Copy)]
+pub struct RoundedClip<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub offset_x: i64,
+    pub offset_y: i64,
+    pub edges: &'a [crate::editor::export::PreviewEdgeImage],
+}
+
+#[derive(Clone, Copy)]
 pub struct Surface<'a> {
     pub image_id: Option<gpui::ImageId>,
     pub width: u32,
     pub height: u32,
     pub offset_x: f64,
     pub offset_y: f64,
+    pub source_is_composed: bool,
+    pub align_to_composition_grid: bool,
     pub native_scale: f64,
+    pub rounded_clip: Option<RoundedClip<'a>>,
     pub pixels: Option<&'a [u8]>,
     pub matte: Option<[u8; 3]>,
     pub matte_image: Option<(&'a RenderImage, f64, f64)>,
@@ -35,8 +47,17 @@ pub struct Surface<'a> {
 }
 
 impl Surface<'_> {
+    fn content_bounds(&self) -> (f64, f64, f64, f64) {
+        self.rounded_clip
+            .map(|clip| (0.0, 0.0, f64::from(clip.width), f64::from(clip.height)))
+            .unwrap_or_else(|| self.bounds())
+    }
+
     fn bounds(&self) -> (f64, f64, f64, f64) {
-        if let Some((image, x, y)) = self.matte_image.filter(|_| self.composite_backdrop) {
+        if let Some((image, x, y)) = self
+            .matte_image
+            .filter(|_| self.composite_backdrop || self.rounded_clip.is_some())
+        {
             let size = image.size(0);
             return (
                 -x,
@@ -75,10 +96,24 @@ pub struct PatchImage {
 pub struct SamplingGrid {
     pub origin: (f32, f32),
     pub stage_bounds: (f32, f32, f32, f32),
+    pub viewport: Option<(f32, f32, f32, f32)>,
     pub stage_size: (f64, f64),
     pub offset: (f64, f64),
     pub zoom: f32,
     pub dpi: f32,
+}
+
+pub fn needs_bounded_composition(surface: &Surface) -> bool {
+    needs_bounded_output(surface, 1.)
+}
+
+pub fn needs_bounded_output(surface: &Surface, scale: f64) -> bool {
+    let (left, top, right, bottom) = surface.bounds();
+    let width = (right - left) * scale;
+    let height = (bottom - top) * scale;
+    width > MAX_PATCH_DIMENSION - 1.
+        || height > MAX_PATCH_DIMENSION - 1.
+        || width * height > MAX_PATCH_PIXELS
 }
 
 pub fn is_rasterized(annotation: &Annotation) -> bool {
@@ -102,6 +137,62 @@ fn padded(bounds: (f64, f64, f64, f64), padding: f64) -> (f64, f64, f64, f64) {
         bounds.2 + padding,
         bounds.3 + padding,
     )
+}
+
+fn replay_bounds<'a>(
+    target: (f64, f64, f64, f64),
+    paints: impl DoubleEndedIterator<Item = ScreenshotPaint<'a>>,
+    surface: &Surface,
+) -> (f64, f64, f64, f64) {
+    let mut sample = target;
+    let limits = surface.bounds();
+    let content = surface.content_bounds();
+    for paint in paints.rev() {
+        let ScreenshotPaint::Annotation(
+            annotation @ Annotation::Redact {
+                style, intensity, ..
+            },
+        ) = paint
+        else {
+            continue;
+        };
+        let effect = padded(annotation.bounds(), 2.);
+        let overlap = (
+            sample.0.max(effect.0),
+            sample.1.max(effect.1),
+            sample.2.min(effect.2),
+            sample.3.min(effect.3),
+        );
+        if overlap.2 <= overlap.0 || overlap.3 <= overlap.1 {
+            continue;
+        }
+        let (block, radius) = crate::editor::annotations::redact_intensity(*intensity);
+        let padding = match style.as_str() {
+            "pixelate" => (block * surface.native_scale).round().max(1.) + 2.,
+            "blur" => {
+                let sigma = (radius * surface.native_scale).round().max(1.) as f32;
+                (crate::render::blur::box_radius(sigma) * 3 + 2) as f64
+            }
+            _ => continue,
+        };
+        let dependency = padded(overlap, padding);
+        let dependency = (
+            dependency.0.max(content.0),
+            dependency.1.max(content.1),
+            dependency.2.min(content.2),
+            dependency.3.min(content.3),
+        );
+        if dependency.2 <= dependency.0 || dependency.3 <= dependency.1 {
+            continue;
+        }
+        sample = (
+            sample.0.min(dependency.0).max(limits.0),
+            sample.1.min(dependency.1).max(limits.1),
+            sample.2.max(dependency.2).min(limits.2),
+            sample.3.max(dependency.3).min(limits.3),
+        );
+    }
+    sample
 }
 
 fn raster_bounds(
@@ -177,7 +268,7 @@ fn raster_bounds(
                 + 2.0 / scale;
             let target = annotation.bounds();
             let mut bounds = padded(target, padding);
-            let (left_limit, top_limit, right_limit, bottom_limit) = surface.bounds();
+            let (left_limit, top_limit, right_limit, bottom_limit) = surface.content_bounds();
             let left = target.0.floor().max(left_limit);
             let top = target.1.floor().max(top_limit);
             let right = target.2.ceil().min(right_limit);
@@ -237,6 +328,35 @@ pub fn patch(
     patch_padded(paint, beneath, surface, scale, 0.)
 }
 
+fn paint_target_bounds(
+    annotation: &Annotation,
+    bounds: (f64, f64, f64, f64),
+    composition_origin: (f64, f64),
+) -> (f64, f64, f64, f64) {
+    match annotation {
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            ..
+        } if style == "blackout" => {
+            let target = annotation.bounds();
+            let (x, y, width, height) =
+                renderer::screenshot_blackout_rect(*x, *y, *width, *height, composition_origin);
+            (
+                target.0.min(x),
+                target.1.min(y),
+                target.2.max(x + width),
+                target.3.max(y + height),
+            )
+        }
+        Annotation::Redact { .. } => annotation.bounds(),
+        _ => bounds,
+    }
+}
+
 fn patch_padded(
     paint: ScreenshotPaint<'_>,
     beneath: &[ScreenshotPaint<'_>],
@@ -244,6 +364,22 @@ fn patch_padded(
     scale: f64,
     padding: f64,
 ) -> Option<Patch> {
+    let bounds = patch_bounds(paint, beneath, surface, scale, padding)?;
+    render_patch(paint, beneath, surface, bounds.sample, bounds.target, scale)
+}
+
+struct PatchBounds {
+    sample: (f64, f64, f64, f64),
+    target: (f64, f64, f64, f64),
+}
+
+fn patch_bounds(
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    scale: f64,
+    padding: f64,
+) -> Option<PatchBounds> {
     if scale <= 0.0 {
         return None;
     }
@@ -253,13 +389,14 @@ fn patch_padded(
     let minimum_scale = fit_scale(surface_width, surface_height, scale)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_width)
         .min((MAX_PATCH_DIMENSION - 1.0) / surface_height);
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
     let annotation = paint.annotation();
     let bounds = raster_bounds(annotation, surface, minimum_scale)?;
-    let target = if matches!(annotation, Annotation::Redact { .. }) {
-        annotation.bounds()
-    } else {
-        bounds
-    };
+    let target = paint_target_bounds(annotation, bounds, composition_origin);
     let target = padded(target, padding);
     let mut sample = (
         bounds.0.min(target.0),
@@ -291,6 +428,12 @@ fn patch_padded(
             break;
         }
     }
+    Some(PatchBounds { sample, target })
+}
+
+fn clipped_patch_bounds(surface: &Surface, bounds: PatchBounds) -> Option<PatchBounds> {
+    let PatchBounds { sample, target } = bounds;
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
     let left = sample.0.max(surface_left);
     let top = sample.1.max(surface_top);
     let right = sample.2.min(surface_right);
@@ -308,28 +451,85 @@ fn patch_padded(
     if target.2 <= target.0 || target.3 <= target.1 {
         return None;
     }
-    let scale = fit_scale(right - left, bottom - top, scale)
-        .min((MAX_PATCH_DIMENSION - 1.0) / (target.2 - target.0))
-        .min((MAX_PATCH_DIMENSION - 1.0) / (target.3 - target.1));
-    let device_x = (left * scale).floor();
-    let device_y = (top * scale).floor();
-    let width = ((right * scale).ceil() - device_x).max(1.0) as u32;
-    let height = ((bottom * scale).ceil() - device_y).max(1.0) as u32;
+    Some(PatchBounds {
+        sample: (left, top, right, bottom),
+        target,
+    })
+}
 
-    let mut canvas = Canvas::new(width, height)?;
-    canvas.translate(-device_x as f32, -device_y as f32);
-    canvas.scale(scale as f32, scale as f32);
+fn patch_scale(bounds: &PatchBounds, scale: f64) -> f64 {
+    fit_scale(
+        bounds.sample.2 - bounds.sample.0,
+        bounds.sample.3 - bounds.sample.1,
+        scale,
+    )
+    .min((MAX_PATCH_DIMENSION - 1.0) / (bounds.target.2 - bounds.target.0))
+    .min((MAX_PATCH_DIMENSION - 1.0) / (bounds.target.3 - bounds.target.1))
+}
+
+fn render_patch(
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    sample: (f64, f64, f64, f64),
+    target: (f64, f64, f64, f64),
+    scale: f64,
+) -> Option<Patch> {
+    let bounds = clipped_patch_bounds(surface, PatchBounds { sample, target })?;
+    let scale = patch_scale(&bounds, scale);
+    let (left, top, right, bottom) = bounds.sample;
+    let target = bounds.target;
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.content_bounds();
     let composition_origin = surface
         .matte_image
         .filter(|_| surface.composite_backdrop)
         .map(|(_, x, y)| (x, y))
         .unwrap_or((surface.offset_x, surface.offset_y));
+    let (phase_x, phase_y) = if surface.align_to_composition_grid && surface.rounded_clip.is_none()
+    {
+        (
+            (composition_origin.0 * scale).rem_euclid(1.0),
+            (composition_origin.1 * scale).rem_euclid(1.0),
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    let sample_x = (left * scale + phase_x).floor();
+    let sample_y = (top * scale + phase_y).floor();
+    let device_x = sample_x - phase_x;
+    let device_y = sample_y - phase_y;
+    let width = ((right * scale + phase_x).ceil() - sample_x).max(1.0) as u32;
+    let height = ((bottom * scale + phase_y).ceil() - sample_y).max(1.0) as u32;
+    let (render_x, render_y, render_width, render_height) = if let Some(clip) = surface.rounded_clip
+    {
+        let x = device_x.max(0.);
+        let y = device_y.max(0.);
+        let right = (device_x + f64::from(width)).min((f64::from(clip.width) * scale).ceil());
+        let bottom = (device_y + f64::from(height)).min((f64::from(clip.height) * scale).ceil());
+        if right <= x || bottom <= y {
+            return None;
+        }
+        (x, y, (right - x) as u32, (bottom - y) as u32)
+    } else {
+        (device_x, device_y, width, height)
+    };
+
+    let mut canvas = Canvas::new(render_width, render_height)?;
+    canvas.translate(-render_x as f32, -render_y as f32);
+    canvas.scale(scale as f32, scale as f32);
+    canvas.set_screenshot_surface((
+        (surface_left * scale - render_x).floor() as i32,
+        (surface_top * scale - render_y).floor() as i32,
+        (surface_right * scale - render_x).ceil() as i32,
+        (surface_bottom * scale - render_y).ceil() as i32,
+    ));
+    canvas.set_pixel_grid_origin(composition_origin);
     canvas.set_patch_path_anchor(
         (
             (composition_origin.0 * scale) as f32,
             (composition_origin.1 * scale) as f32,
         ),
-        (device_x as f32, device_y as f32),
+        (render_x as f32, render_y as f32),
     );
 
     let draw_matte = |canvas: &mut Canvas| {
@@ -345,7 +545,10 @@ fn patch_padded(
             height: image.size(0).height.into(),
             offset_x,
             offset_y,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: surface.native_scale,
+            rounded_clip: None,
             pixels: Some(pixels),
             matte: None,
             matte_image: None,
@@ -377,19 +580,84 @@ fn patch_padded(
         }
     }
     renderer::draw_screenshot_paint(&mut canvas, paint, surface.native_scale);
+    if let Some(clip) = surface.rounded_clip {
+        let rendered = canvas.into_pixmap();
+        canvas = Canvas::new(width, height)?;
+        canvas.translate(-device_x as f32, -device_y as f32);
+        canvas.scale(scale as f32, scale as f32);
+        let (offset_x, offset_y) = (
+            (render_x - device_x) as usize,
+            (render_y - device_y) as usize,
+        );
+        let row_width = render_width as usize * 4;
+        for row in 0..render_height as usize {
+            let source = row * row_width;
+            let target = ((row + offset_y) * width as usize + offset_x) * 4;
+            canvas.pixmap_mut().data_mut()[target..target + row_width]
+                .copy_from_slice(&rendered.data()[source..source + row_width]);
+        }
+        let mut mask = tiny_skia::Mask::new(canvas.width(), canvas.height())?;
+        let edges = clip
+            .edges
+            .iter()
+            .map(|edge| Some((edge, edge.image.as_bytes(0)?)))
+            .collect::<Option<Vec<_>>>()?;
+        let stride = canvas.width() as usize;
+        let columns: Vec<_> = (0..stride)
+            .map(|x| ((x as f64 + 0.5 + device_x) / scale).floor() as i64)
+            .collect();
+        for (row_index, row) in mask.data_mut().chunks_exact_mut(stride).enumerate() {
+            let y = ((row_index as f64 + 0.5 + device_y) / scale).floor() as i64;
+            if y < 0 || y >= i64::from(clip.height) {
+                continue;
+            }
+            let y = y + clip.offset_y;
+            for (&x, alpha) in columns.iter().zip(row) {
+                if x < 0 || x >= i64::from(clip.width) {
+                    continue;
+                }
+                *alpha = 255;
+                let x = x + clip.offset_x;
+                for (edge, pixels) in &edges {
+                    let (left, top) = (i64::from(edge.x), i64::from(edge.y));
+                    if x < left
+                        || y < top
+                        || x >= left + i64::from(edge.width)
+                        || y >= top + i64::from(edge.height)
+                    {
+                        continue;
+                    }
+                    let size = edge.image.size(0);
+                    let offset = (((y - top) as usize + edge.inset_y as usize)
+                        * u32::from(size.width) as usize
+                        + (x - left) as usize
+                        + edge.inset_x as usize)
+                        * 4
+                        + 3;
+                    *alpha = 255 - *pixels.get(offset)?;
+                    break;
+                }
+            }
+        }
+        canvas.pixmap_mut().apply_mask(&mask);
+    }
     if !surface.composite_backdrop {
         draw_matte(&mut canvas);
     }
 
-    let target_left = (target.0 * scale).floor().max(device_x);
-    let target_top = (target.1 * scale).floor().max(device_y);
-    let target_right = (target.2 * scale).ceil().min(device_x + f64::from(width));
-    let target_bottom = (target.3 * scale).ceil().min(device_y + f64::from(height));
+    let target_left = (target.0 * scale + phase_x).floor().max(sample_x);
+    let target_top = (target.1 * scale + phase_y).floor().max(sample_y);
+    let target_right = (target.2 * scale + phase_x)
+        .ceil()
+        .min(sample_x + f64::from(width));
+    let target_bottom = (target.3 * scale + phase_y)
+        .ceil()
+        .min(sample_y + f64::from(height));
     let target_width = (target_right - target_left) as u32;
     let target_height = (target_bottom - target_top) as u32;
     let rect = tiny_skia::IntRect::from_xywh(
-        (target_left - device_x) as i32,
-        (target_top - device_y) as i32,
+        (target_left - sample_x) as i32,
+        (target_top - sample_y) as i32,
         target_width,
         target_height,
     )?;
@@ -407,8 +675,8 @@ fn patch_padded(
     }
     Some(Patch {
         pixmap,
-        x: target_left / scale,
-        y: target_top / scale,
+        x: (target_left - phase_x) / scale,
+        y: (target_top - phase_y) / scale,
         width: f64::from(target_width) / scale,
         height: f64::from(target_height) / scale,
     })
@@ -438,6 +706,7 @@ fn draw_backdrop(
         return;
     };
     let target = crop.data_mut();
+    let rounding = if surface.source_is_composed { 127 } else { 0 };
     for row in 0..crop_height as usize {
         let from = (y0 as usize + row) * stride + x0 as usize * 4;
         let to = row * crop_width as usize * 4;
@@ -445,7 +714,7 @@ fn draw_backdrop(
             let source = from + column * 4;
             let pixel = to + column * 4;
             let alpha = pixels[source + 3] as u32;
-            let premultiply = |value: u8| ((value as u32 * alpha + 127) / 255) as u8;
+            let premultiply = |value: u8| ((value as u32 * alpha + rounding) / 255) as u8;
             target[pixel] = premultiply(pixels[source + 2]);
             target[pixel + 1] = premultiply(pixels[source + 1]);
             target[pixel + 2] = premultiply(pixels[source]);
@@ -554,6 +823,74 @@ pub fn image(
     Some(value)
 }
 
+#[derive(Clone, Copy)]
+struct AlignedBounds {
+    left: f64,
+    top: f64,
+    scale_x: f64,
+    scale_y: f64,
+    pixels: (f64, f64, f64, f64),
+}
+
+fn aligned_bounds(
+    paint: ScreenshotPaint<'_>,
+    surface: &Surface,
+    grid: SamplingGrid,
+) -> Option<AlignedBounds> {
+    let snap = |value: f32| {
+        let value = value * grid.dpi;
+        (value.abs() - 0.5).ceil().copysign(value) as f64
+    };
+    let left = snap(grid.stage_bounds.0);
+    let top = snap(grid.stage_bounds.1);
+    let scale_x = (snap(grid.stage_bounds.0 + grid.stage_bounds.2) - left) / grid.stage_size.0;
+    let scale_y = (snap(grid.stage_bounds.1 + grid.stage_bounds.3) - top) / grid.stage_size.1;
+    if scale_x <= 0. || scale_y <= 0. {
+        return None;
+    }
+    let annotation = paint.annotation();
+    let bounds = raster_bounds(annotation, surface, 1.)?;
+    let composition_origin = surface
+        .matte_image
+        .filter(|_| surface.composite_backdrop)
+        .map(|(_, x, y)| (x, y))
+        .unwrap_or((surface.offset_x, surface.offset_y));
+    let target = padded(
+        paint_target_bounds(annotation, bounds, composition_origin),
+        1.,
+    );
+    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
+    let target = (
+        target.0.max(surface_left),
+        target.1.max(surface_top),
+        target.2.min(surface_right),
+        target.3.min(surface_bottom),
+    );
+    if target.2 <= target.0 || target.3 <= target.1 {
+        return None;
+    }
+    let mut x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
+    let mut y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
+    let mut x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
+    let mut y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
+    if let Some((x, y, width, height)) = grid.viewport {
+        x0 = x0.max(f64::from(x * grid.dpi).floor() - 1.);
+        y0 = y0.max(f64::from(y * grid.dpi).floor() - 1.);
+        x1 = x1.min(f64::from((x + width) * grid.dpi).ceil() + 1.);
+        y1 = y1.min(f64::from((y + height) * grid.dpi).ceil() + 1.);
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(AlignedBounds {
+        left,
+        top,
+        scale_x,
+        scale_y,
+        pixels: (x0, y0, x1, y1),
+    })
+}
+
 pub fn aligned_image(
     keys: &FrameKeys,
     index: usize,
@@ -561,6 +898,74 @@ pub fn aligned_image(
     beneath: &[ScreenshotPaint<'_>],
     surface: &Surface,
     grid: SamplingGrid,
+) -> Option<PatchImage> {
+    aligned_tile(keys, index, paint, beneath, surface, grid, None)
+}
+
+pub fn aligned_images(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+) -> Option<Vec<PatchImage>> {
+    aligned_images_with_limit(keys, index, paint, beneath, surface, grid, MAX_PATCH_PIXELS)
+}
+
+fn aligned_images_with_limit(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+    max_pixels: f64,
+) -> Option<Vec<PatchImage>> {
+    if !max_pixels.is_finite() || max_pixels < 1. {
+        return None;
+    }
+    let bounds = aligned_bounds(paint, surface, grid)?.pixels;
+    let width = bounds.2 - bounds.0;
+    let height = bounds.3 - bounds.1;
+    if width <= MAX_PATCH_DIMENSION && height <= MAX_PATCH_DIMENSION && width * height <= max_pixels
+    {
+        return Some(vec![aligned_image(
+            keys, index, paint, beneath, surface, grid,
+        )?]);
+    }
+    let tile_size = max_pixels.sqrt().floor().min(MAX_PATCH_DIMENSION);
+    let mut patches = Vec::new();
+    let mut y = bounds.1;
+    while y < bounds.3 {
+        let bottom = (y + tile_size).min(bounds.3);
+        let mut x = bounds.0;
+        while x < bounds.2 {
+            let right = (x + tile_size).min(bounds.2);
+            patches.push(aligned_tile(
+                keys,
+                index,
+                paint,
+                beneath,
+                surface,
+                grid,
+                Some((x, y, right, bottom)),
+            )?);
+            x = right;
+        }
+        y = bottom;
+    }
+    Some(patches)
+}
+
+fn aligned_tile(
+    keys: &FrameKeys,
+    index: usize,
+    paint: ScreenshotPaint<'_>,
+    beneath: &[ScreenshotPaint<'_>],
+    surface: &Surface,
+    grid: SamplingGrid,
+    clip: Option<(f64, f64, f64, f64)>,
 ) -> Option<PatchImage> {
     surface.pixels?;
     let snap = |value: f32| {
@@ -594,6 +999,27 @@ pub fn aligned_image(
     ] {
         hasher.write_u64(value.to_bits());
     }
+    if let Some((x, y, width, height)) = grid.viewport {
+        hasher.write_u8(1);
+        for value in [x - grid.origin.0, y - grid.origin.1, width, height] {
+            hasher.write_u32(value.to_bits());
+        }
+    } else {
+        hasher.write_u8(0);
+    }
+    if let Some((left, top, right, bottom)) = clip {
+        hasher.write_u8(1);
+        for value in [
+            left - snap(grid.origin.0),
+            top - snap(grid.origin.1),
+            right - left,
+            bottom - top,
+        ] {
+            hasher.write_u64(value.to_bits());
+        }
+    } else {
+        hasher.write_u8(0);
+    }
     let key = hasher.finish();
     let frame = FRAME.with(|frame| frame.get());
     let cached = CACHE.with(|cache| {
@@ -605,37 +1031,23 @@ pub fn aligned_image(
     if let Some(cached) = cached {
         return Some(cached);
     }
-    let stage_x = grid.stage_bounds.0;
-    let stage_y = grid.stage_bounds.1;
-    let left = snap(stage_x);
-    let top = snap(stage_y);
-    let scale_x = (snap(stage_x + grid.stage_bounds.2) - left) / grid.stage_size.0;
-    let scale_y = (snap(stage_y + grid.stage_bounds.3) - top) / grid.stage_size.1;
-    if scale_x <= 0. || scale_y <= 0. {
+    let bounds = aligned_bounds(paint, surface, grid)?;
+    let AlignedBounds {
+        left,
+        top,
+        scale_x,
+        scale_y,
+        pixels: (mut x0, mut y0, mut x1, mut y1),
+    } = bounds;
+    if let Some((clip_left, clip_top, clip_right, clip_bottom)) = clip {
+        x0 = x0.max(clip_left);
+        y0 = y0.max(clip_top);
+        x1 = x1.min(clip_right);
+        y1 = y1.min(clip_bottom);
+    }
+    if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    let annotation = paint.annotation();
-    let bounds = raster_bounds(annotation, surface, 1.)?;
-    let target = if matches!(annotation, Annotation::Redact { .. }) {
-        annotation.bounds()
-    } else {
-        bounds
-    };
-    let target = padded(target, 1.);
-    let (surface_left, surface_top, surface_right, surface_bottom) = surface.bounds();
-    let target = (
-        target.0.max(surface_left),
-        target.1.max(surface_top),
-        target.2.min(surface_right),
-        target.3.min(surface_bottom),
-    );
-    if target.2 <= target.0 || target.3 <= target.1 {
-        return None;
-    }
-    let x0 = (left + (target.0 + grid.offset.0) * scale_x).floor();
-    let y0 = (top + (target.1 + grid.offset.1) * scale_y).floor();
-    let x1 = (left + (target.2 + grid.offset.0) * scale_x).ceil();
-    let y1 = (top + (target.3 + grid.offset.1) * scale_y).ceil();
     let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
     if width == 0
         || height == 0
@@ -650,61 +1062,33 @@ pub fn aligned_image(
         matte: None,
         ..*surface
     };
-    let patch = patch_padded(paint, beneath, &raw_surface, 1., guard)?;
-    if f64::from(patch.pixmap.width()) != patch.width
-        || f64::from(patch.pixmap.height()) != patch.height
-    {
-        return None;
-    }
-    let source = crate::editor::export::to_rgba(&patch.pixmap);
+    let bounds = clipped_patch_bounds(
+        &raw_surface,
+        patch_bounds(paint, beneath, &raw_surface, 1., guard)?,
+    )?;
     let mut out = image::RgbaImage::new(width, height);
-    let xs = (0..width)
-        .map(|x| {
-            let sx = (x0 + f64::from(x) + 0.5 - left) / scale_x - grid.offset.0 - patch.x - 0.5;
-            let ix = sx.floor();
-            let first = ix.max(0.).min(f64::from(source.width() - 1)) as usize;
-            let second = (ix + 1.).max(0.).min(f64::from(source.width() - 1)) as usize;
-            (first, second, (sx - ix) as f32)
-        })
-        .collect::<Vec<_>>();
-    let stride = source.width() as usize;
-    let source_pixels = source.as_raw().as_chunks::<4>().0;
-    let output: &mut [u8] = out.as_mut();
-    for (y, row) in output
-        .as_chunks_mut::<4>()
-        .0
-        .chunks_exact_mut(width as usize)
-        .enumerate()
-    {
-        let sy = (y0 + y as f64 + 0.5 - top) / scale_y - grid.offset.1 - patch.y - 0.5;
-        let iy = sy.floor();
-        let fy = (sy - iy) as f32;
-        let first_y = iy.max(0.).min(f64::from(source.height() - 1)) as usize * stride;
-        let second_y = (iy + 1.).max(0.).min(f64::from(source.height() - 1)) as usize * stride;
-        for (pixel, &(first_x, second_x, fx)) in row.iter_mut().zip(&xs) {
-            let pixels = [
-                source_pixels[first_y + first_x],
-                source_pixels[first_y + second_x],
-                source_pixels[second_y + first_x],
-                source_pixels[second_y + second_x],
-            ];
-            let mut sample = [0.0_f32; 4];
-            for c in 0..4 {
-                let a = f32::from(pixels[0][c]) * (1. - fx) + f32::from(pixels[1][c]) * fx;
-                let b = f32::from(pixels[2][c]) * (1. - fx) + f32::from(pixels[3][c]) * fx;
-                sample[c] = a * (1. - fy) + b * fy;
-            }
-            if let Some(background) = surface.matte {
-                let alpha = sample[3] / 255.;
-                for c in 0..3 {
-                    sample[c] = sample[c] * alpha + f32::from(background[c]) * (1. - alpha);
-                }
-                sample[3] = 255.;
-            }
-            let mut color = sample.map(|value| value.round() as u8);
-            color.swap(0, 2);
-            *pixel = color;
-        }
+    let sampling = AlignedSampling {
+        left,
+        top,
+        x0,
+        y0,
+        scale_x,
+        scale_y,
+        offset: grid.offset,
+        matte: surface.matte,
+    };
+    if patch_scale(&bounds, 1.) >= 1. {
+        let patch = render_patch(
+            paint,
+            beneath,
+            &raw_surface,
+            bounds.sample,
+            bounds.target,
+            1.,
+        )?;
+        sampling.sample(&mut out, &patch, (0, 0, width, height));
+    } else {
+        sampling.compose_tiles(&mut out, paint, beneath, &raw_surface, MAX_PATCH_PIXELS)?;
     }
     let value = PatchImage {
         image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
@@ -736,6 +1120,161 @@ impl std::fmt::Write for Fingerprint {
     }
 }
 
+struct AlignedSampling {
+    left: f64,
+    top: f64,
+    x0: f64,
+    y0: f64,
+    scale_x: f64,
+    scale_y: f64,
+    offset: (f64, f64),
+    matte: Option<[u8; 3]>,
+}
+
+impl AlignedSampling {
+    fn compose_tiles(
+        &self,
+        out: &mut image::RgbaImage,
+        paint: ScreenshotPaint<'_>,
+        beneath: &[ScreenshotPaint<'_>],
+        surface: &Surface,
+        max_pixels: f64,
+    ) -> Option<()> {
+        let limits = surface.bounds();
+        let mut pending = vec![(0, 0, out.width(), out.height())];
+        while let Some((x0, y0, x1, y1)) = pending.pop() {
+            let source_x = |x: u32| {
+                (self.x0 + f64::from(x) + 0.5 - self.left) / self.scale_x - self.offset.0 - 0.5
+            };
+            let source_y = |y: u32| {
+                (self.y0 + f64::from(y) + 0.5 - self.top) / self.scale_y - self.offset.1 - 0.5
+            };
+            let left = source_x(x0)
+                .floor()
+                .clamp(limits.0.floor(), limits.2.ceil() - 1.);
+            let top = source_y(y0)
+                .floor()
+                .clamp(limits.1.floor(), limits.3.ceil() - 1.);
+            let right = (source_x(x1 - 1).floor() + 2.).clamp(left + 1., limits.2.ceil());
+            let bottom = (source_y(y1 - 1).floor() + 2.).clamp(top + 1., limits.3.ceil());
+            let sample = replay_bounds(
+                (left, top, right, bottom),
+                beneath.iter().copied().chain(std::iter::once(paint)),
+                surface,
+            );
+            let sample_width = sample.2.ceil() - sample.0.floor();
+            let sample_height = sample.3.ceil() - sample.1.floor();
+            if sample_width > MAX_PATCH_DIMENSION - 1.
+                || sample_height > MAX_PATCH_DIMENSION - 1.
+                || sample_width * sample_height > max_pixels
+            {
+                if x1 - x0 >= y1 - y0 && x1 - x0 > 1 {
+                    let middle = x0 + (x1 - x0) / 2;
+                    pending.extend([(x0, y0, middle, y1), (middle, y0, x1, y1)]);
+                    continue;
+                }
+                if y1 - y0 > 1 {
+                    let middle = y0 + (y1 - y0) / 2;
+                    pending.extend([(x0, y0, x1, middle), (x0, middle, x1, y1)]);
+                    continue;
+                }
+                return None;
+            }
+            let patch = render_patch(paint, beneath, surface, sample, sample, 1.)?;
+            if f64::from(patch.pixmap.width()) != patch.width
+                || f64::from(patch.pixmap.height()) != patch.height
+            {
+                return None;
+            }
+            self.sample(out, &patch, (x0, y0, x1, y1));
+        }
+        Some(())
+    }
+
+    fn sample(&self, out: &mut image::RgbaImage, patch: &Patch, bounds: (u32, u32, u32, u32)) {
+        let Self {
+            left,
+            top,
+            x0,
+            y0,
+            scale_x,
+            scale_y,
+            offset,
+            matte,
+        } = *self;
+        let width = out.width();
+        let source = crate::editor::export::to_rgba(&patch.pixmap);
+        let xs = (bounds.0..bounds.2)
+            .map(|x| {
+                let sx = (x0 + f64::from(x) + 0.5 - left) / scale_x - offset.0 - patch.x - 0.5;
+                let ix = sx.floor();
+                let first = ix.max(0.).min(f64::from(source.width() - 1)) as usize;
+                let second = (ix + 1.).max(0.).min(f64::from(source.width() - 1)) as usize;
+                (first, second, (sx - ix) as f32)
+            })
+            .collect::<Vec<_>>();
+        let stride = source.width() as usize;
+        let source_pixels = source.as_raw().as_chunks::<4>().0;
+        let premultiply =
+            cfg!(target_os = "macos") && source_pixels.iter().any(|pixel| pixel[3] < 255);
+        let output: &mut [u8] = out.as_mut();
+        for (y, row) in output
+            .as_chunks_mut::<4>()
+            .0
+            .chunks_exact_mut(width as usize)
+            .enumerate()
+            .skip(bounds.1 as usize)
+            .take((bounds.3 - bounds.1) as usize)
+        {
+            let sy = (y0 + y as f64 + 0.5 - top) / scale_y - offset.1 - patch.y - 0.5;
+            let iy = sy.floor();
+            let fy = (sy - iy) as f32;
+            let first_y = iy.max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+            let second_y = (iy + 1.).max(0.).min(f64::from(source.height() - 1)) as usize * stride;
+            for (pixel, &(first_x, second_x, fx)) in row[bounds.0 as usize..bounds.2 as usize]
+                .iter_mut()
+                .zip(&xs)
+            {
+                let pixels = [
+                    source_pixels[first_y + first_x],
+                    source_pixels[first_y + second_x],
+                    source_pixels[second_y + first_x],
+                    source_pixels[second_y + second_x],
+                ];
+                let mut sample = [0.0_f32; 4];
+                for c in 0..4 {
+                    let channel = |pixel: [u8; 4]| {
+                        let value = f32::from(pixel[c]);
+                        if premultiply && c < 3 {
+                            value * f32::from(pixel[3]) / 255.
+                        } else {
+                            value
+                        }
+                    };
+                    let a = channel(pixels[0]) * (1. - fx) + channel(pixels[1]) * fx;
+                    let b = channel(pixels[2]) * (1. - fx) + channel(pixels[3]) * fx;
+                    sample[c] = a * (1. - fy) + b * fy;
+                }
+                if premultiply && sample[3] > 0. {
+                    for c in 0..3 {
+                        sample[c] *= 255. / sample[3];
+                    }
+                }
+                if let Some(background) = matte {
+                    let alpha = sample[3] / 255.;
+                    for c in 0..3 {
+                        sample[c] = sample[c] * alpha + f32::from(background[c]) * (1. - alpha);
+                    }
+                    sample[3] = 255.;
+                }
+                let mut color = sample.map(|value| value.round() as u8);
+                color.swap(0, 2);
+                *pixel = color;
+            }
+        }
+    }
+}
+
 fn hash_of(paint: &ScreenshotPaint<'_>) -> u64 {
     let mut hasher = Fingerprint(DefaultHasher::new());
     let _ = write!(hasher, "{paint:?}");
@@ -751,7 +1290,21 @@ fn fingerprint(keys: &FrameKeys, index: usize, surface: &Surface, scale: f64) ->
     hasher.write_u32(surface.height);
     hasher.write_u64(surface.offset_x.to_bits());
     hasher.write_u64(surface.offset_y.to_bits());
+    hasher.write_u8(u8::from(surface.source_is_composed));
+    hasher.write_u8(u8::from(surface.align_to_composition_grid));
     hasher.write_u64(surface.native_scale.to_bits());
+    if let Some(clip) = surface.rounded_clip {
+        hasher.write_u8(1);
+        hasher.write_u32(clip.width);
+        hasher.write_u32(clip.height);
+        hasher.write_i64(clip.offset_x);
+        hasher.write_i64(clip.offset_y);
+        for edge in clip.edges {
+            edge.image.id.hash(&mut hasher);
+        }
+    } else {
+        hasher.write_u8(0);
+    }
     hasher.write_u8(u8::from(surface.pixels.is_some()));
     surface.matte.hash(&mut hasher);
     surface.composite_backdrop.hash(&mut hasher);
@@ -773,6 +1326,9 @@ fn render_image(pixmap: &Pixmap) -> Arc<RenderImage> {
         buffer
     )]))
 }
+
+#[cfg(test)]
+mod rounded_tests;
 
 #[cfg(test)]
 mod tests {
@@ -861,6 +1417,294 @@ mod tests {
         pixmap
     }
 
+    #[test]
+    fn aligned_output_tiles_cover_the_single_patch_without_seams() {
+        let base = base_pixmap(120, 90);
+        let image = render_image(&base);
+        let surface = Surface {
+            image_id: Some(image.id),
+            width: 120,
+            height: 90,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: image.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        let grid = SamplingGrid {
+            origin: (100.25, 50.75),
+            stage_bounds: (100.25, 50.75, 150., 112.5),
+            viewport: Some((100., 50., 150., 113.)),
+            stage_size: (120., 90.),
+            offset: (0., 0.),
+            zoom: 1.25,
+            dpi: 1.,
+        };
+        for style in ["pixelate", "blur"] {
+            let annotation = Annotation::Redact {
+                id: style.into(),
+                x: 0.,
+                y: 0.,
+                width: 120.,
+                height: 90.,
+                style: style.into(),
+                intensity: 2.,
+            };
+            let paint = ScreenshotPaint::Annotation(&annotation);
+            let keys = super::begin_frame(&[paint]);
+            let full = super::aligned_image(&keys, 0, paint, &[], &surface, grid).unwrap();
+            let tiles =
+                super::aligned_images_with_limit(&keys, 0, paint, &[], &surface, grid, 400.)
+                    .unwrap();
+            let repeated =
+                super::aligned_images_with_limit(&keys, 0, paint, &[], &surface, grid, 400.)
+                    .unwrap();
+            assert!(tiles.len() > 1);
+            let size = full.image.size(0);
+            let width = u32::from(size.width) as usize;
+            let height = u32::from(size.height) as usize;
+            let source = full.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+            let mut coverage = vec![false; width * height];
+            for (tile, cached) in tiles.iter().zip(&repeated) {
+                assert!(Arc::ptr_eq(&tile.image, &cached.image));
+                let size = tile.image.size(0);
+                let tile_width = u32::from(size.width) as usize;
+                let tile_height = u32::from(size.height) as usize;
+                let x = ((tile.x - full.x) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+                let y = ((tile.y - full.y) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+                let pixels = tile.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+                for row in 0..tile_height {
+                    for column in 0..tile_width {
+                        let index = (y + row) * width + x + column;
+                        assert!(!coverage[index]);
+                        coverage[index] = true;
+                        assert_eq!(
+                            pixels[row * tile_width + column],
+                            source[index],
+                            "{style}, pixel {index}"
+                        );
+                    }
+                }
+            }
+            assert!(coverage.into_iter().all(|covered| covered));
+        }
+    }
+
+    #[test]
+    fn transparent_source_redactions_match_the_export_pixels() {
+        let rgba = image::RgbaImage::from_fn(64, 48, |x, y| {
+            image::Rgba([
+                if (x / 3 + y / 5) % 2 == 0 { 24 } else { 224 },
+                (y % 32 * 6) as u8,
+                80,
+                ((x + y * 3) % 256) as u8,
+            ])
+        });
+        let mut bgra = rgba.clone();
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let source = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+            bgra
+        )]));
+        let surface = Surface {
+            image_id: Some(source.id),
+            width: 64,
+            height: 48,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: false,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: source.as_bytes(0),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        for style in ["pixelate", "blur"] {
+            let annotation = Annotation::Redact {
+                id: style.into(),
+                x: 0.,
+                y: 0.,
+                width: 64.,
+                height: 48.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            let mut expected = Canvas::new(64, 48).unwrap();
+            let image = crate::editor::export::from_rgba(&rgba).unwrap();
+            expected.draw_pixmap(image.as_ref(), 0., 0., 64., 48.);
+            renderer::draw_screenshot(&mut expected, &annotation, 1.);
+            let actual = patch(&annotation, &[], &surface, 1.).unwrap();
+            assert_eq!(actual.pixmap.data(), expected.pixmap().data(), "{style}");
+        }
+    }
+
+    #[test]
+    fn bounded_redaction_replay_matches_a_full_resolution_patch() {
+        let base = base_pixmap(120, 90);
+        let bgra = to_bgra(&base);
+        let surface = Surface {
+            image_id: None,
+            width: 120,
+            height: 90,
+            offset_x: 0.,
+            offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
+            native_scale: 1.,
+            rounded_clip: None,
+            pixels: Some(&bgra),
+            matte: None,
+            matte_image: None,
+            composite_backdrop: false,
+        };
+        for styles in [
+            ["pixelate", "blur"],
+            ["blur", "pixelate"],
+            ["pixelate", "pixelate"],
+        ] {
+            let annotations: Vec<_> = styles
+                .iter()
+                .enumerate()
+                .map(|(index, style)| Annotation::Redact {
+                    id: index.to_string(),
+                    x: -1.,
+                    y: -1.,
+                    width: 122.,
+                    height: 92.,
+                    style: (*style).into(),
+                    intensity: 1.,
+                })
+                .collect();
+            let paints = renderer::screenshot_paints(annotations.iter());
+            for scale in [0.4, 0.75, 1.25] {
+                let width = (120. * scale) as u32;
+                let height = (90. * scale) as u32;
+                let sampling = AlignedSampling {
+                    left: 0.,
+                    top: 0.,
+                    x0: 0.,
+                    y0: 0.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    offset: (0., 0.),
+                    matte: None,
+                };
+                let patch = super::patch_padded(
+                    paints[1],
+                    &paints[..1],
+                    &surface,
+                    1.,
+                    (1. / scale).ceil() + 2.,
+                )
+                .unwrap();
+                let mut expected = image::RgbaImage::new(width, height);
+                sampling.sample(&mut expected, &patch, (0, 0, width, height));
+                let mut tiled = image::RgbaImage::new(width, height);
+                sampling
+                    .compose_tiles(&mut tiled, paints[1], &paints[..1], &surface, 2500.)
+                    .unwrap();
+                assert_eq!(tiled.as_raw(), expected.as_raw(), "{styles:?} at {scale}");
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_redaction_replay_preserves_transparency_and_offsets() {
+        let mut bgra = to_bgra(&base_pixmap(120, 90));
+        for (index, pixel) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            pixel[3] = ((index * 17) % 256) as u8;
+        }
+        for (offset_x, offset_y) in [(7., 13.), (2.5, 4.5)] {
+            let surface = Surface {
+                image_id: None,
+                width: 120,
+                height: 90,
+                offset_x,
+                offset_y,
+                source_is_composed: true,
+                align_to_composition_grid: false,
+                native_scale: 1.,
+                rounded_clip: None,
+                pixels: Some(&bgra),
+                matte: None,
+                matte_image: None,
+                composite_backdrop: false,
+            };
+            let annotations = [
+                Annotation::Rectangle {
+                    id: "shape".into(),
+                    x: 17.25,
+                    y: 11.75,
+                    width: 65.,
+                    height: 49.,
+                    stroke: "#ff0000".into(),
+                    stroke_width: 3.,
+                    fill: Some("#00ff00".into()),
+                },
+                Annotation::Redact {
+                    id: "pixelate".into(),
+                    x: -offset_x - 1.,
+                    y: -offset_y - 1.,
+                    width: 122.,
+                    height: 92.,
+                    style: "pixelate".into(),
+                    intensity: 2.,
+                },
+                Annotation::Redact {
+                    id: "blur".into(),
+                    x: -offset_x - 1.,
+                    y: -offset_y - 1.,
+                    width: 122.,
+                    height: 92.,
+                    style: "blur".into(),
+                    intensity: 1.,
+                },
+            ];
+            let paints = renderer::screenshot_paints(annotations.iter());
+            for scale in [0.4, 1.25] {
+                let width = (120. * scale) as u32;
+                let height = (90. * scale) as u32;
+                let sampling = AlignedSampling {
+                    left: 0.,
+                    top: 0.,
+                    x0: 0.,
+                    y0: 0.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    offset: (offset_x, offset_y),
+                    matte: Some([28, 32, 36]),
+                };
+                let patch = super::patch_padded(
+                    paints[2],
+                    &paints[..2],
+                    &surface,
+                    1.,
+                    (1. / scale).ceil() + 2.,
+                )
+                .unwrap();
+                let mut expected = image::RgbaImage::new(width, height);
+                sampling.sample(&mut expected, &patch, (0, 0, width, height));
+                let mut tiled = image::RgbaImage::new(width, height);
+                sampling
+                    .compose_tiles(&mut tiled, paints[2], &paints[..2], &surface, 2500.)
+                    .unwrap();
+                assert_eq!(
+                    tiled.as_raw(),
+                    expected.as_raw(),
+                    "offset ({offset_x}, {offset_y}) at {scale}"
+                );
+            }
+        }
+    }
+
     fn to_bgra(pixmap: &Pixmap) -> Vec<u8> {
         let mut bytes = pixmap.data().to_vec();
         for pixel in bytes.as_chunks_mut::<4>().0 {
@@ -908,7 +1752,10 @@ mod tests {
             height: base.height(),
             offset_x: 0.0,
             offset_y: 0.0,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -1037,7 +1884,10 @@ mod tests {
             height: 140,
             offset_x: 0.0,
             offset_y: 0.0,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: first.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -1150,7 +2000,10 @@ mod tests {
             height: backdrop.height(),
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
             matte_image: None,
@@ -1272,7 +2125,10 @@ mod tests {
             height: export.height(),
             offset_x: primary_origin.0,
             offset_y: primary_origin.1,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: Some(&backdrop_bgra),
             matte: Some([18, 18, 20]),
             matte_image: None,
@@ -1434,7 +2290,10 @@ mod tests {
             height: 80,
             offset_x: 0.25,
             offset_y: 0.25,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.0,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,
@@ -1474,7 +2333,10 @@ mod tests {
             height: 140,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: first.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
@@ -1483,6 +2345,7 @@ mod tests {
         let grid = SamplingGrid {
             origin: (100., 50.),
             stage_bounds: (100., 50., 270., 210.),
+            viewport: None,
             stage_size: (180., 140.),
             offset: (0., 0.),
             zoom: 1.5,
@@ -1492,6 +2355,42 @@ mod tests {
         let first_patch = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
         let repeated = aligned_image(&keys, 0, &annotation, &[], &surface, grid).unwrap();
         assert!(Arc::ptr_eq(&first_patch.image, &repeated.image));
+        let viewport = SamplingGrid {
+            viewport: Some((150., 90., 36., 32.)),
+            ..grid
+        };
+        let clipped = aligned_image(&keys, 0, &annotation, &[], &surface, viewport).unwrap();
+        assert!(clipped.width < first_patch.width);
+        let full_size = first_patch.image.size(0);
+        let clipped_size = clipped.image.size(0);
+        let full_width = u32::from(full_size.width) as usize;
+        let clipped_width = u32::from(clipped_size.width) as usize;
+        let clipped_height = u32::from(clipped_size.height) as usize;
+        let x = ((clipped.x - first_patch.x) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+        let y = ((clipped.y - first_patch.y) * f64::from(grid.zoom * grid.dpi)).round() as usize;
+        let full_pixels = first_patch.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+        let clipped_pixels = clipped.image.as_bytes(0).unwrap().as_chunks::<4>().0;
+        for row in 0..clipped_height {
+            assert_eq!(
+                &clipped_pixels[row * clipped_width..(row + 1) * clipped_width],
+                &full_pixels
+                    [(row + y) * full_width + x..(row + y) * full_width + x + clipped_width],
+            );
+        }
+        let shifted_viewport = aligned_image(
+            &keys,
+            0,
+            &annotation,
+            &[],
+            &surface,
+            SamplingGrid {
+                viewport: Some((160., 90., 36., 32.)),
+                ..grid
+            },
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&clipped.image, &shifted_viewport.image));
+        assert!(shifted_viewport.x > clipped.x);
         let shifted = aligned_image(
             &keys,
             0,
@@ -1631,7 +2530,10 @@ mod tests {
             height: 160,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&[]),
             matte: None,
             matte_image: None,
@@ -1640,6 +2542,7 @@ mod tests {
         let grid = SamplingGrid {
             origin: (0., 0.),
             stage_bounds: (0., 0., 19_200., 160.),
+            viewport: None,
             stage_size: (19_200., 160.),
             offset: (0., 0.),
             zoom: 1.,
@@ -1698,7 +2601,10 @@ mod tests {
             height: base.height(),
             offset_x: 48.,
             offset_y: 20.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -1741,6 +2647,75 @@ mod tests {
     }
 
     #[test]
+    fn fractional_blackout_boundary_matches_export_with_composition_offsets() {
+        let base = base_pixmap(80, 60);
+        let bgra = to_bgra(&base);
+        let annotations = [Annotation::Redact {
+            id: "blackout".into(),
+            x: 8.8,
+            y: 3.8,
+            width: 12.3,
+            height: 12.3,
+            style: "blackout".into(),
+            intensity: 5.,
+        }];
+        let operations = renderer::screenshot_paints(annotations.iter());
+        let paint = PixmapPaint {
+            opacity: 1.,
+            blend_mode: BlendMode::Source,
+            quality: FilterQuality::Nearest,
+        };
+        for (offset_x, offset_y, scale) in
+            [(0., 0., 1.), (5., 4., 1.), (4., 4., 1.25), (4.5, 3.5, 2.)]
+        {
+            let surface = Surface {
+                image_id: None,
+                width: base.width(),
+                height: base.height(),
+                offset_x,
+                offset_y,
+                source_is_composed: true,
+                align_to_composition_grid: false,
+                native_scale: 1.,
+                rounded_clip: None,
+                pixels: Some(&bgra),
+                matte: None,
+                matte_image: None,
+                composite_backdrop: false,
+            };
+            let mut expected = Canvas::new((80. * scale) as u32, (60. * scale) as u32).unwrap();
+            expected.scale(scale as f32, scale as f32);
+            expected.draw_pixmap(base.as_ref(), 0., 0., 80., 60.);
+            let mut actual = expected.pixmap().clone();
+            expected.translate(offset_x as f32, offset_y as f32);
+            for (index, operation) in operations.iter().enumerate() {
+                renderer::draw_screenshot_paint(&mut expected, *operation, 1.);
+                let patch =
+                    super::patch(*operation, &operations[..index], &surface, scale).unwrap();
+                actual.draw_pixmap(
+                    ((patch.x + offset_x) * scale).round() as i32,
+                    ((patch.y + offset_y) * scale).round() as i32,
+                    patch.pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
+                for (channel, (actual, expected)) in actual
+                    .data()
+                    .iter()
+                    .zip(expected.pixmap().data())
+                    .enumerate()
+                {
+                    assert!(
+                        actual.abs_diff(*expected) <= 2,
+                        "operation {index}, offset ({offset_x}, {offset_y}), {scale}x, channel {channel}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn blackout_and_shape_patches_match_export_at_fractional_origins() {
         let scales: [f64; 5] = [0.73, 1., 1.25, 1.5, 2.];
         let origins = [(32.25, 22.375), (32.5, 22.5)];
@@ -1762,7 +2737,10 @@ mod tests {
                     height,
                     offset_x: 0.,
                     offset_y: 0.,
+                    source_is_composed: true,
+                    align_to_composition_grid: false,
                     native_scale: 1.,
+                    rounded_clip: None,
                     pixels: Some(&bgra),
                     matte: None,
                     matte_image: None,
@@ -1836,7 +2814,10 @@ mod tests {
             height: 80,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: source.as_bytes(0),
             matte: None,
             matte_image: None,
@@ -1933,7 +2914,10 @@ mod tests {
             height: 120,
             offset_x: 90.,
             offset_y: -20.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: Some(&bgra),
             matte: None,
             matte_image: None,
@@ -2000,7 +2984,10 @@ mod tests {
             height: 80,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: source.as_bytes(0),
             matte: Some([240, 240, 240]),
             matte_image: None,
@@ -2082,7 +3069,10 @@ mod tests {
                     height: 80,
                     offset_x: 0.,
                     offset_y: 0.,
+                    source_is_composed: true,
+                    align_to_composition_grid: false,
                     native_scale: 1.,
+                    rounded_clip: None,
                     pixels: source.as_bytes(0),
                     matte: Some(matte),
                     matte_image: Some((&backdrop, 12., 12.)),
@@ -2200,7 +3190,10 @@ mod tests {
                 height: 80,
                 offset_x: 0.,
                 offset_y: 0.,
+                source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: source.as_bytes(0),
                 matte: None,
                 matte_image: Some((&backdrop, offset, snapped_y)),
@@ -2240,7 +3233,10 @@ mod tests {
             height: 3000,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 2.,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,
@@ -2289,7 +3285,10 @@ mod tests {
                 height: 256,
                 offset_x,
                 offset_y,
+                source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.25,
+                rounded_clip: None,
                 pixels: Some(&bgra),
                 matte: None,
                 matte_image: None,
@@ -2470,7 +3469,10 @@ mod tests {
                 height: height as u32,
                 offset_x: 0.,
                 offset_y: 0.,
+                source_is_composed: true,
+                align_to_composition_grid: false,
                 native_scale: 1.,
+                rounded_clip: None,
                 pixels: None,
                 matte: None,
                 matte_image: None,
@@ -2496,7 +3498,10 @@ mod tests {
             height: 20,
             offset_x: 0.,
             offset_y: 0.,
+            source_is_composed: true,
+            align_to_composition_grid: false,
             native_scale: 1.,
+            rounded_clip: None,
             pixels: None,
             matte: None,
             matte_image: None,

@@ -12,6 +12,8 @@ const mockMkdir = vi.fn();
 const mockCopyFile = vi.fn();
 const mockUnlink = vi.fn();
 const mockGetExportAbortSignal = vi.fn();
+const mockRecordMusicCandidate = vi.fn();
+const mockIsMusicNameReserved = vi.fn();
 const exportEvent = { sender: { id: 1 } };
 
 vi.mock('electron', () => ({
@@ -27,6 +29,7 @@ vi.mock('electron', () => ({
 vi.mock('fs', () => ({
   default: { existsSync: (...a: unknown[]) => mockExistsSync(...a) },
   existsSync: (...a: unknown[]) => mockExistsSync(...a),
+  constants: { COPYFILE_EXCL: 1 },
 }));
 
 vi.mock('fs/promises', () => ({
@@ -64,6 +67,12 @@ vi.mock('@/main/capture/video/recording-project', () => ({
   },
 }));
 
+vi.mock('@/main/capture/video/music-retention', () => ({
+  recordMusicCandidate: (...args: unknown[]) =>
+    mockRecordMusicCandidate(...args),
+  isMusicNameReserved: (...args: unknown[]) => mockIsMusicNameReserved(...args),
+}));
+
 vi.mock('@/main/utils/ffmpeg', () => ({
   getFFmpegPath: () => '/bin/ffmpeg',
 }));
@@ -80,6 +89,7 @@ describe('music handlers', () => {
     vi.resetModules();
     Object.keys(ipcHandle).forEach(k => delete ipcHandle[k]);
     mockGetExportAbortSignal.mockReturnValue(undefined);
+    mockIsMusicNameReserved.mockReturnValue(false);
   });
 
   describe('music:add', () => {
@@ -110,6 +120,25 @@ describe('music handlers', () => {
       })) as { success: boolean; error?: string };
       expect(result.success).toBe(false);
       expect(result.error).toBe('Cancelled');
+    });
+
+    it('holds a project lease while the music picker is open', async () => {
+      const close = vi.fn();
+      const lease = vi.fn(() => ({ close }));
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+        musicSession: { lease },
+      });
+      mockShowOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as { success: boolean };
+      expect(result.success).toBe(false);
+      expect(lease).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
     });
 
     it('returns error when music folder cannot be resolved', async () => {
@@ -159,6 +188,126 @@ describe('music handlers', () => {
       expect(result.success).toBe(true);
       expect(result.fileName).toBe('song.mp3');
       expect(result.originalDuration).toBeCloseTo(83.45, 1);
+      expect(mockRecordMusicCandidate).toHaveBeenCalledWith(
+        '/p/Rec.poratake/recording.mov',
+        'song.mp3'
+      );
+    });
+
+    it('removes an imported copy when its retention record cannot be saved', async () => {
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+      });
+      mockShowOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ['/path/song.mp3'],
+      });
+      mockExistsSync.mockReturnValue(false);
+      mockMkdir.mockResolvedValue(undefined);
+      mockCopyFile.mockResolvedValue(undefined);
+      mockExecFileAsync.mockImplementation(() => {
+        const error = new Error('ffmpeg always errors on info');
+        (error as { stderr?: string }).stderr =
+          'Duration: 00:00:10.00, start: 0';
+        throw error;
+      });
+      mockRecordMusicCandidate.mockImplementationOnce(() => {
+        throw new Error('retention directory is unavailable');
+      });
+      mockUnlink.mockResolvedValue(undefined);
+
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as { success: boolean; error?: string };
+
+      expect(result).toEqual({
+        success: false,
+        error:
+          'Could not retain imported music: retention directory is unavailable',
+      });
+      expect(mockUnlink).toHaveBeenCalledWith(
+        path.join('/p/Rec.poratake', 'music', 'song.mp3')
+      );
+    });
+
+    it('does not overwrite a file created during a concurrent import', async () => {
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+      });
+      mockShowOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ['/path/song.mp3'],
+      });
+      mockExistsSync.mockReturnValue(true);
+      const collision = Object.assign(new Error('exists'), { code: 'EEXIST' });
+      mockCopyFile
+        .mockRejectedValueOnce(collision)
+        .mockResolvedValueOnce(undefined);
+      mockExecFileAsync.mockImplementation(() => {
+        const error = new Error('ffmpeg always errors on info');
+        (error as { stderr?: string }).stderr =
+          'Duration: 00:00:10.00, start: 0';
+        throw error;
+      });
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as {
+        success: boolean;
+        fileName: string;
+      };
+      expect(result.success).toBe(true);
+      expect(result.fileName).toBe('song (1).mp3');
+      expect(mockCopyFile).toHaveBeenNthCalledWith(
+        1,
+        '/path/song.mp3',
+        path.join('/p/Rec.poratake', 'music', 'song.mp3'),
+        1
+      );
+      expect(mockCopyFile).toHaveBeenNthCalledWith(
+        2,
+        '/path/song.mp3',
+        path.join('/p/Rec.poratake', 'music', 'song (1).mp3'),
+        1
+      );
+    });
+
+    it('does not reuse a filename reserved by a retention record', async () => {
+      mockGetWindowData.mockReturnValue({
+        filePath: '/p/Rec.poratake/recording.mov',
+      });
+      mockShowOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ['/path/song.mp3'],
+      });
+      mockExistsSync.mockReturnValue(true);
+      mockIsMusicNameReserved
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false);
+      mockCopyFile.mockResolvedValue(undefined);
+      mockExecFileAsync.mockImplementation(() => {
+        const error = new Error('ffmpeg always errors on info');
+        (error as { stderr?: string }).stderr =
+          'Duration: 00:00:10.00, start: 0';
+        throw error;
+      });
+      const { registerMusicHandlers } =
+        await import('@/main/capture/video/ipc/music-handlers');
+      registerMusicHandlers();
+      const result = (await ipcHandle['video-editor:music:add']({
+        sender: { id: 1 },
+      })) as {
+        success: boolean;
+        fileName: string;
+      };
+      expect(result.success).toBe(true);
+      expect(result.fileName).toBe('song (1).mp3');
+      expect(mockCopyFile).toHaveBeenCalledOnce();
     });
 
     it('returns error when copyFile fails', async () => {
@@ -213,68 +362,6 @@ describe('music handlers', () => {
       })) as { success: boolean; error?: string };
       expect(result.success).toBe(false);
       expect(result.error).toBe('Could not determine audio duration');
-    });
-  });
-
-  describe('music:remove', () => {
-    it('returns error without window data', async () => {
-      mockGetWindowData.mockReturnValue(undefined);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = (await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      )) as { success: boolean };
-      expect(result.success).toBe(false);
-    });
-
-    it('unlinks file and returns success', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      mockUnlink.mockResolvedValue(undefined);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      );
-      expect(result).toEqual({ success: true });
-    });
-
-    it('treats ENOENT as success', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      const err = new Error('not found');
-      (err as NodeJS.ErrnoException).code = 'ENOENT';
-      mockUnlink.mockRejectedValue(err);
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      );
-      expect(result).toEqual({ success: true });
-    });
-
-    it('returns error on other unlink failures', async () => {
-      mockGetWindowData.mockReturnValue({
-        filePath: '/p/Rec.poratake/recording.mov',
-      });
-      mockUnlink.mockRejectedValue(new Error('locked'));
-      const { registerMusicHandlers } =
-        await import('@/main/capture/video/ipc/music-handlers');
-      registerMusicHandlers();
-      const result = (await ipcHandle['video-editor:music:remove'](
-        { sender: { id: 1 } },
-        { fileName: 'song.mp3' }
-      )) as { success: boolean; error?: string };
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('locked');
     });
   });
 

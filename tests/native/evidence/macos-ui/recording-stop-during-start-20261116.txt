@@ -1,0 +1,11 @@
+macOS recorder coordination fixture, 2026-11-16
+
+The permission-free Swift fixture holds a synthetic startup behind a continuation
+and issues two Stop requests. Neither backend stop runs before startup finishes;
+afterward both callers receive the same result and the backend stops once. It
+also checks a failed startup and rejects a stale stop without affecting a newer
+session. The fixture completed successfully; the optional ScreenCaptureKit
+exclusion check was skipped.
+
+The full Swift daemon was typechecked without launching a capture. This evidence
+does not exercise a real capture stream or the GPUI startup-timeout handoff.

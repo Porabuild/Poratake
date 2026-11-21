@@ -3,14 +3,19 @@
 //! hand the result to GPUI as an image.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
+use herogpui::gpui::BackgroundExecutor;
 use parking_lot::Mutex;
 use tiny_skia::Pixmap;
 
 use crate::video::composition::segments::{self, VideoSegment};
 use crate::video::composition::{Config, Engine, Frames};
-use crate::video::decoder::{DecodedFrame, VideoDecoder, VideoInfo};
+use crate::video::decoder::{
+    needs_stream_seek, DecodedFrame, DecoderOpening, FrameCancellation, VideoDecoder, VideoInfo,
+};
 use crate::video::{project, sidecars};
 use crate::windows::video_editor::model::VideoEditorState;
 
@@ -21,9 +26,25 @@ pub struct Source {
     engine: Engine,
     video: Option<VideoDecoder>,
     camera: Option<VideoDecoder>,
+    camera_opening: Option<DecoderOpening>,
     video_segments: Vec<VideoSegment>,
-    video_frame: Option<(f64, Arc<Pixmap>)>,
-    camera_frame: Option<(f64, Arc<Pixmap>)>,
+    video_frame: Option<CachedFrame>,
+    camera_frame: Option<CachedFrame>,
+    camera_warmup: Option<CameraWarmup>,
+    camera_decode_active: bool,
+    has_decoded_camera: bool,
+}
+
+struct CameraWarmup {
+    time: f64,
+    completed: Receiver<()>,
+    cancel: smol::channel::Sender<()>,
+}
+
+struct CachedFrame {
+    time: f64,
+    decoded: Weak<Vec<u8>>,
+    pixmap: Arc<Pixmap>,
 }
 
 impl Source {
@@ -37,9 +58,9 @@ impl Source {
         }
 
         let camera_path = project::camera_video_path(path);
-        let camera = camera_path
+        let camera_opening = camera_path
             .is_file()
-            .then(|| VideoDecoder::open(&camera_path))
+            .then(|| VideoDecoder::begin_open(&camera_path))
             .flatten();
 
         let preview_fps = crate::video::export::frame_rate(&state).max(1) as f64;
@@ -65,10 +86,14 @@ impl Source {
         Some(Self {
             engine: Engine::new(config),
             video,
-            camera,
+            camera: None,
+            camera_opening,
             video_segments,
             video_frame: None,
             camera_frame: None,
+            camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
         })
     }
 
@@ -82,6 +107,10 @@ impl Source {
             .as_ref()
             .map(VideoDecoder::info)
             .unwrap_or_default()
+    }
+
+    pub(super) fn has_camera_decoder(&self) -> bool {
+        self.camera.is_some() || self.camera_opening.is_some()
     }
 
     /// Applies edited state to the engine so the next composed frame reflects
@@ -99,6 +128,9 @@ impl Source {
         let next_first_frame = state.first_frame.image_data.clone();
         let frame_rate = crate::video::export::frame_rate(&state).max(1) as f64;
 
+        if !state.camera_style.visible {
+            self.release_inactive_camera();
+        }
         self.video_segments = segments::to_video_segments(&state.segments);
         self.engine.set_state(state);
         self.engine.set_frame_rate(frame_rate);
@@ -120,24 +152,176 @@ impl Source {
     }
 
     /// Composes the frame at `timeline_time`.
+    #[cfg(any(test, feature = "parity"))]
     pub fn compose(
         &mut self,
         timeline_time: f64,
         max_dimensions: Option<(u32, u32)>,
     ) -> Option<Pixmap> {
+        let mut decode_wait = Duration::ZERO;
+        self.compose_measured(timeline_time, max_dimensions, &mut decode_wait, None, None)
+    }
+
+    pub(super) fn compose_measured(
+        &mut self,
+        timeline_time: f64,
+        max_dimensions: Option<(u32, u32)>,
+        decode_wait: &mut Duration,
+        cancelled: Option<&FrameCancellation>,
+        camera_wait: Option<(&FrameCancellation, &BackgroundExecutor)>,
+    ) -> Option<Pixmap> {
+        if cancelled.is_some_and(FrameCancellation::is_closed) {
+            return None;
+        }
         let first_frame_duration = self.engine.first_frame_duration();
+        if first_frame_duration > 0. && timeline_time < first_frame_duration {
+            return self.render(
+                timeline_time,
+                max_dimensions,
+                Frames {
+                    video: None,
+                    camera: None,
+                },
+            );
+        }
         let adjusted = (timeline_time - first_frame_duration).max(0.0);
         let video_time = segments::map_timeline_to_video_time(adjusted, &self.video_segments)
             .or_else(|| self.video_segments.last().map(|segment| segment.end_time))
             .unwrap_or(adjusted);
 
-        let video = cached_frame(self.video.as_ref(), &mut self.video_frame, video_time);
-        let camera = cached_frame(self.camera.as_ref(), &mut self.camera_frame, video_time);
+        if let Some(warmup) = self
+            .camera_warmup
+            .take_if(|warmup| needs_stream_seek(warmup.time, video_time))
+        {
+            warmup.cancel.close();
+        }
 
-        let frames = Frames {
-            video: video.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
-            camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
+        let video = cached_frame(&mut self.video_frame, video_time, || {
+            decode_frame(
+                self.video.as_ref(),
+                video_time,
+                decode_wait,
+                cancelled,
+                None,
+            )
+        })?;
+        let camera = if self.engine.camera_visible_at(timeline_time) {
+            let camera_wait_superseded = camera_wait.map(|(superseded, _)| superseded);
+            if let Some(opening) = self.camera_opening.take() {
+                match opening.finish_interruptible(cancelled, camera_wait_superseded) {
+                    Ok(camera) => self.camera = camera,
+                    Err(opening) => {
+                        self.camera_opening = Some(opening);
+                        return None;
+                    }
+                }
+            }
+            self.camera_decode_active = self.camera.is_some();
+            let camera = cached_frame(&mut self.camera_frame, video_time, || {
+                decode_frame(
+                    self.camera.as_ref(),
+                    video_time,
+                    decode_wait,
+                    cancelled,
+                    camera_wait,
+                )
+            });
+            if camera.is_none()
+                && (self.has_decoded_camera
+                    || cancelled.is_some_and(FrameCancellation::is_closed)
+                    || camera_wait_superseded.is_some_and(FrameCancellation::is_closed))
+            {
+                return None;
+            }
+            self.has_decoded_camera |= camera.is_some();
+            camera
+        } else {
+            let state = &self.engine.config().state;
+            if state.camera_style.visible
+                && state
+                    .camera_segments
+                    .iter()
+                    .any(|segment| segment.end_time > adjusted)
+            {
+                self.warm_camera(video_time);
+            } else {
+                self.release_inactive_camera();
+            }
+            None
         };
+
+        self.render(
+            timeline_time,
+            max_dimensions,
+            Frames {
+                video: Some(video.as_ref().as_ref()),
+                camera: camera.as_ref().map(|pixmap| pixmap.as_ref().as_ref()),
+            },
+        )
+    }
+
+    fn warm_camera(&mut self, time: f64) {
+        if self
+            .camera_warmup
+            .as_ref()
+            .is_some_and(|pending| matches!(pending.completed.try_recv(), Err(TryRecvError::Empty)))
+        {
+            return;
+        }
+        let (cancel, cancelled) = smol::channel::bounded(1);
+        let completed = match (&self.camera, &self.camera_opening) {
+            (Some(decoder), _) => decoder.request_warmup(time, cancelled),
+            (None, Some(opening)) => opening.request_warmup(time, cancelled),
+            (None, None) => None,
+        };
+        self.camera_decode_active |= completed.is_some();
+        self.camera_warmup = completed.map(|completed| CameraWarmup {
+            time,
+            completed,
+            cancel,
+        });
+    }
+
+    fn release_inactive_camera(&mut self) {
+        self.camera_frame = None;
+        self.park_camera_decoder();
+    }
+
+    fn park_camera_decoder(&mut self) {
+        if let Some(warmup) = self.camera_warmup.take() {
+            warmup.cancel.close();
+        }
+        if std::mem::take(&mut self.camera_decode_active) {
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            match (&self.camera, &self.camera_opening) {
+                (Some(decoder), _) => decoder.release_frames(),
+                (None, Some(opening)) => opening.release_frames(),
+                (None, None) => {}
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn release_buffered_frames(&mut self) {
+        self.video_frame = None;
+        self.camera_frame = None;
+        self.park_decoders();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn park_decoders(&mut self) {
+        if let Some(video) = &self.video {
+            video.release_frames();
+        }
+        self.park_camera_decoder();
+    }
+
+    fn render(
+        &mut self,
+        timeline_time: f64,
+        max_dimensions: Option<(u32, u32)>,
+        frames: Frames<'_>,
+    ) -> Option<Pixmap> {
         match max_dimensions {
             Some((width, height)) => {
                 self.engine
@@ -148,45 +332,70 @@ impl Source {
     }
 }
 
-fn cached_frame(
+fn decode_frame(
     decoder: Option<&VideoDecoder>,
-    cached: &mut Option<(f64, Arc<Pixmap>)>,
     time: f64,
-) -> Option<Arc<Pixmap>> {
-    if let Some(frame) = cached
-        .as_ref()
-        .filter(|(cached_time, _)| (*cached_time - time).abs() < f64::EPSILON)
-        .map(|(_, frame)| frame.clone())
-    {
-        return Some(frame);
-    }
-    let frame = decoder
-        .and_then(|decoder| decoder.frame_at(time))
-        .and_then(|frame| to_pixmap(&frame))
-        .map(Arc::new);
-    *cached = frame.clone().map(|frame| (time, frame));
+    decode_wait: &mut Duration,
+    cancelled: Option<&FrameCancellation>,
+    superseded: Option<(&FrameCancellation, &BackgroundExecutor)>,
+) -> Option<DecodedFrame> {
+    let decoder = decoder?;
+    let started = Instant::now();
+    let frame = match superseded {
+        Some((superseded, executor)) => {
+            smol::block_on(decoder.frame_at_supersedable(time, cancelled, superseded, executor))
+        }
+        None => decoder.frame_at_interruptible(time, cancelled),
+    };
+    *decode_wait += started.elapsed();
     frame
 }
 
-/// A decoded BGRA frame as a tiny-skia RGBA pixmap. Decoded frames are opaque,
-/// so premultiplication is a no-op and only the channel order changes.
-fn to_pixmap(frame: &DecodedFrame) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(frame.width.max(1), frame.height.max(1))?;
-    let target = pixmap.data_mut();
-    if target.len() != frame.bgra.len() {
-        return None;
-    }
-    for (out, pixel) in target
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(frame.bgra.as_chunks::<4>().0)
+fn cached_frame(
+    cached: &mut Option<CachedFrame>,
+    time: f64,
+    decode: impl FnOnce() -> Option<DecodedFrame>,
+) -> Option<Arc<Pixmap>> {
+    if let Some(frame) = cached
+        .as_ref()
+        .filter(|frame| (frame.time - time).abs() < f64::EPSILON)
     {
-        out[0] = pixel[2];
-        out[1] = pixel[1];
-        out[2] = pixel[0];
-        out[3] = pixel[3];
+        return Some(frame.pixmap.clone());
     }
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    let decode_started =
+        std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").map(|_| std::time::Instant::now());
+    let decoded = decode();
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    if let Some(started) = decode_started {
+        println!(
+            "VIDEO_SMOKE decode {time:.6} {:.3} {}",
+            started.elapsed().as_secs_f64() * 1000.,
+            decoded.is_some(),
+        );
+    }
+
+    let frame = decoded?;
+    let decoded = Arc::downgrade(&frame.bgra);
+    if let Some(cached) = cached.as_mut().filter(|cached| {
+        cached.pixmap.width() == frame.width.max(1) && cached.pixmap.height() == frame.height.max(1)
+    }) {
+        if !cached.decoded.ptr_eq(&decoded) {
+            match Arc::get_mut(&mut cached.pixmap) {
+                Some(pixmap) => frame.write_to_pixmap(pixmap)?,
+                None => cached.pixmap = Arc::new(frame.to_pixmap()?),
+            }
+            cached.decoded = decoded;
+        }
+        cached.time = time;
+        return Some(cached.pixmap.clone());
+    }
+    let pixmap = Arc::new(frame.to_pixmap()?);
+    *cached = Some(CachedFrame {
+        time,
+        decoded,
+        pixmap: pixmap.clone(),
+    });
     Some(pixmap)
 }
 
@@ -203,6 +412,16 @@ fn to_render_image_with_alpha(
     pixmap: &Pixmap,
     preserve_alpha: bool,
 ) -> Option<Arc<gpui::RenderImage>> {
+    if !preserve_alpha {
+        let buffer = image::RgbaImage::from_raw(
+            pixmap.width(),
+            pixmap.height(),
+            crate::video::composition::opaque::bgra(pixmap),
+        )?;
+        return Some(Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(buffer)
+        ])));
+    }
     let mut buffer = image::RgbaImage::new(pixmap.width(), pixmap.height());
     for (index, pixel) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
         let alpha = pixel[3];
@@ -223,7 +442,7 @@ fn to_render_image_with_alpha(
                 unpremultiply(pixel[2]),
                 unpremultiply(pixel[1]),
                 unpremultiply(pixel[0]),
-                if preserve_alpha { alpha } else { 255 },
+                alpha,
             ]),
         );
     }
@@ -246,8 +465,28 @@ mod tests {
             height: 1,
             bgra: vec![10, 20, 30, 255].into(),
         };
-        let pixmap = to_pixmap(&frame).expect("pixmap");
+        let pixmap = frame.to_pixmap().expect("pixmap");
         assert_eq!(pixmap.data(), &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn decoded_frame_conversion_preserves_all_channels_at_row_boundaries() {
+        let (width, height) = (101, 7);
+        let bgra: Vec<_> = (0..width * height * 4)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let rgba = bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|[b, g, r, a]| [*r, *g, *b, *a])
+            .collect::<Vec<_>>();
+        let frame = DecodedFrame {
+            width,
+            height,
+            bgra: Arc::new(bgra),
+        };
+        assert_eq!(frame.to_pixmap().unwrap().data(), rgba);
     }
 
     #[test]
@@ -257,7 +496,7 @@ mod tests {
             height: 4,
             bgra: vec![0; 8].into(),
         };
-        assert!(to_pixmap(&frame).is_none());
+        assert!(frame.to_pixmap().is_none());
     }
 
     #[test]
@@ -271,8 +510,7 @@ mod tests {
 
         let opaque = to_render_image_opaque(&pixmap).expect("opaque image");
         let opaque_pixels = opaque.as_bytes(0).expect("opaque pixels");
-        assert_eq!(&pixels[..3], &opaque_pixels[..3]);
-        assert_eq!(opaque_pixels[3], 255);
+        assert_eq!(opaque_pixels, &[25, 50, 100, 255]);
     }
 
     #[test]
@@ -282,10 +520,269 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_screen_frame_does_not_produce_a_background_only_preview() {
+        let mut state = VideoEditorState::default();
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+
+        let mut intro = Pixmap::new(2, 2).unwrap();
+        intro.fill(tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+        let mut config = Config::new(2., 2., state);
+        config.first_frame_image = Some(intro);
+
+        let mut source = Source {
+            engine: Engine::new(config),
+            video: None,
+            camera: None,
+            camera_opening: None,
+            video_segments: Vec::new(),
+            video_frame: None,
+            camera_frame: None,
+            camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
+        };
+        let video_time = 0.5;
+        let decoded = DecodedFrame {
+            width: 2,
+            height: 2,
+            bgra: [220, 140, 50, 255].repeat(4).into(),
+        };
+        let before = cached_frame(&mut source.video_frame, video_time, || {
+            Some(decoded.clone())
+        })
+        .unwrap();
+        let intro_duration = source.engine.first_frame_duration();
+        assert!(intro_duration > 0.);
+        let rendered_intro = source.compose(0., None).expect("intro preview");
+        assert!(rendered_intro
+            .data()
+            .as_chunks::<4>()
+            .0
+            .contains(&[10, 20, 30, 255]));
+        assert!(Arc::ptr_eq(
+            &before,
+            &source.video_frame.as_ref().unwrap().pixmap
+        ));
+
+        assert!(source.compose(intro_duration, None).is_none());
+        assert!(source
+            .compose(intro_duration + 0.25, Some((1, 1)))
+            .is_none());
+
+        cached_frame(&mut source.video_frame, video_time, || Some(decoded)).unwrap();
+        let recovered = source
+            .compose(intro_duration + video_time, None)
+            .expect("screen preview");
+        assert!(recovered
+            .data()
+            .as_chunks::<4>()
+            .0
+            .contains(&[50, 140, 220, 255]));
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            source.park_decoders();
+            let after_park = source.compose(intro_duration + video_time, None).unwrap();
+            assert_eq!(after_park.data(), recovered.data());
+            source.release_buffered_frames();
+            assert!(source.video_frame.is_none());
+            assert!(source.compose(intro_duration + video_time, None).is_none());
+            assert!(recovered
+                .data()
+                .as_chunks::<4>()
+                .0
+                .contains(&[50, 140, 220, 255]));
+        }
+    }
+
+    #[test]
+    fn a_missing_visible_camera_frame_holds_the_last_complete_preview() {
+        use crate::windows::video_editor::model::CameraSegment;
+
+        let mut state = VideoEditorState {
+            camera_segments: vec![CameraSegment {
+                id: "camera".into(),
+                start_time: 0.,
+                end_time: 1.,
+            }],
+            ..Default::default()
+        };
+        state.camera_style.visible = true;
+        let mut source = Source {
+            engine: Engine::new(Config::new(320., 180., state)),
+            video: None,
+            camera: None,
+            camera_opening: None,
+            video_segments: Vec::new(),
+            video_frame: None,
+            camera_frame: None,
+            camera_warmup: None,
+            camera_decode_active: false,
+            has_decoded_camera: false,
+        };
+        let screen = DecodedFrame {
+            width: 320,
+            height: 180,
+            bgra: [220, 140, 50, 255].repeat(320 * 180).into(),
+        };
+        let camera = DecodedFrame {
+            width: 32,
+            height: 32,
+            bgra: [12, 34, 240, 255].repeat(32 * 32).into(),
+        };
+        let has_camera_pixels = |frame: &Pixmap| {
+            frame
+                .data()
+                .as_chunks::<4>()
+                .0
+                .contains(&[240, 34, 12, 255])
+        };
+
+        cached_frame(&mut source.video_frame, 0., || Some(screen.clone())).unwrap();
+        assert!(!has_camera_pixels(&source.compose(0., None).unwrap()));
+        cached_frame(&mut source.camera_frame, 0., || Some(camera.clone())).unwrap();
+        assert!(has_camera_pixels(&source.compose(0., None).unwrap()));
+
+        for time in [0.25, 0.5] {
+            cached_frame(&mut source.video_frame, time, || Some(screen.clone())).unwrap();
+            assert!(source.compose(time, Some((160, 90))).is_none());
+        }
+
+        cached_frame(&mut source.video_frame, 0.75, || Some(screen.clone())).unwrap();
+        cached_frame(&mut source.camera_frame, 0.75, || Some(camera)).unwrap();
+        assert!(has_camera_pixels(&source.compose(0.75, None).unwrap()));
+
+        cached_frame(&mut source.video_frame, 1.25, || Some(screen)).unwrap();
+        assert!(!has_camera_pixels(&source.compose(1.25, None).unwrap()));
+    }
+
+    #[test]
     fn unchanged_times_reuse_the_composed_source_frame() {
-        let frame = Arc::new(Pixmap::new(1, 1).expect("pixmap"));
-        let mut cached = Some((2.0, frame.clone()));
-        let reused = cached_frame(None, &mut cached, 2.0).expect("cached frame");
+        let decoded = DecodedFrame {
+            width: 1,
+            height: 1,
+            bgra: vec![10, 20, 30, 255].into(),
+        };
+        let mut cached = None;
+        let frame = cached_frame(&mut cached, 2.0, || Some(decoded)).unwrap();
+        let reused = cached_frame(&mut cached, 2.0, || panic!("already cached")).unwrap();
         assert!(Arc::ptr_eq(&frame, &reused));
+    }
+
+    #[test]
+    fn nearby_times_reuse_the_same_decoded_frame_without_retaining_its_buffer() {
+        let decoded = DecodedFrame {
+            width: 1,
+            height: 1,
+            bgra: vec![10, 20, 30, 255].into(),
+        };
+        let mut cached = None;
+        let first = cached_frame(&mut cached, 0.0, || Some(decoded.clone())).unwrap();
+        let next = cached_frame(&mut cached, 0.01, || Some(decoded.clone())).unwrap();
+        assert!(Arc::ptr_eq(&first, &next));
+        assert_eq!(next.data(), &[30, 20, 10, 255]);
+        assert_eq!(Arc::strong_count(&decoded.bgra), 1);
+
+        let different = DecodedFrame {
+            bgra: vec![40, 50, 60, 255].into(),
+            ..decoded
+        };
+        let changed = cached_frame(&mut cached, 0.02, || Some(different)).unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(changed.data(), &[60, 50, 40, 255]);
+    }
+
+    #[test]
+    fn a_distinct_frame_reuses_unshared_pixmap_storage() {
+        let mut cached = None;
+        let first = DecodedFrame {
+            width: 2,
+            height: 1,
+            bgra: vec![10, 20, 30, 255, 40, 50, 60, 255].into(),
+        };
+        let original = cached_frame(&mut cached, 0., || Some(first)).unwrap();
+        let allocation = original.data().as_ptr();
+        drop(original);
+
+        let next = DecodedFrame {
+            width: 2,
+            height: 1,
+            bgra: vec![15, 25, 35, 255, 45, 55, 65, 255].into(),
+        };
+        let reused = cached_frame(&mut cached, 0.1, || Some(next.clone())).unwrap();
+        assert_eq!(reused.data().as_ptr(), allocation);
+        assert_eq!(reused.data(), next.to_pixmap().unwrap().data());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[test]
+    fn preview_only_converts_visible_camera_frames() {
+        use crate::windows::video_editor::model::{CameraSegment, Segment};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("camera-preview.poratake");
+        std::fs::create_dir(&path).unwrap();
+        let video = include_bytes!("../../ui/parity/fixtures/capture.mov");
+        std::fs::write(project::recording_video_path(&path), video).unwrap();
+        std::fs::write(project::camera_video_path(&path), video).unwrap();
+
+        let mut state = VideoEditorState {
+            segments: vec![Segment::spanning(2.)],
+            camera_segments: vec![
+                CameraSegment {
+                    id: "first".into(),
+                    start_time: 0.,
+                    end_time: 0.5,
+                },
+                CameraSegment {
+                    id: "second".into(),
+                    start_time: 1.25,
+                    end_time: 2.,
+                },
+            ],
+            ..Default::default()
+        };
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("data:,".into());
+        state.camera_style.visible = true;
+
+        let mut source = Source::open(&path, state.clone()).unwrap();
+        let still = source.engine.first_frame_duration();
+        assert!(still > 0.);
+        let dimensions = Some((160, 90));
+        let mut decode_wait = Duration::ZERO;
+        assert!(source
+            .compose_measured(0., dimensions, &mut decode_wait, None, None)
+            .is_some());
+        assert_eq!(decode_wait, Duration::ZERO);
+        assert!(source.video_frame.is_none());
+        assert!(source.camera_frame.is_none());
+        assert!(source.compose(still + 0.75, dimensions).is_some());
+        assert!(source.camera_frame.is_none());
+        assert!(source.camera_warmup.is_some());
+        assert!(source.camera_opening.is_some());
+        assert!(source.camera.is_none());
+        let mut decode_wait = Duration::ZERO;
+        assert!(source
+            .compose_measured(still + 0.75, dimensions, &mut decode_wait, None, None)
+            .is_some());
+        assert_eq!(decode_wait, Duration::ZERO);
+        assert!(source.compose(still + 0.25, dimensions).is_some());
+        let first = source.camera_frame.as_ref().unwrap().pixmap.clone();
+        assert!(source.camera_opening.is_none());
+        assert!(source.camera.is_some());
+
+        let mut disabled = state.clone();
+        disabled.camera_style.visible = false;
+        source.set_state(disabled);
+        assert!(source.compose(still + 1.5, dimensions).is_some());
+        assert!(source.camera_frame.is_none());
+
+        source.set_state(state);
+        assert!(source.compose(still + 1.5, dimensions).is_some());
+        let resumed = source.camera_frame.as_ref().unwrap();
+        assert!((resumed.time - 1.5).abs() < 0.001);
+        assert!(!Arc::ptr_eq(&first, &resumed.pixmap));
     }
 }

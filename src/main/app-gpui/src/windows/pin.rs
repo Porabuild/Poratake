@@ -1,6 +1,7 @@
 //! Pin window — a borderless always-on-top image viewer, port of the Electron
 //! `pin-window` (screenshot pinned to desktop).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{div, img, prelude::*, px, size, App, Bounds, Context, Render, Styled, Window};
@@ -16,30 +17,57 @@ pub struct PinWindow {
 }
 
 impl PinWindow {
-    pub fn open(cx: &mut App, png_bytes: Vec<u8>) {
-        Self::open_with_restore(cx, png_bytes, None);
+    pub(crate) fn open_file(cx: &mut App, path: PathBuf) {
+        cx.spawn(async move |cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = (|| {
+                        let bytes = std::fs::read(&path)?;
+                        let decoded = crate::render::images::decode(&bytes)?;
+                        Ok::<_, anyhow::Error>(Self::prepare_image(decoded.into_rgba8()))
+                    })();
+                    result.map_err(|error| format!("{}: {error}", path.display()))
+                })
+                .await;
+            cx.update(|cx| match prepared {
+                Ok(image) => {
+                    if !Self::open_with_restore(cx, image, None) {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Pin failed",
+                            "Could not open the pinned screenshot",
+                        );
+                    }
+                }
+                Err(error) => crate::windows::toast::Toast::show(cx, "Pin failed", error),
+            });
+        })
+        .detach();
     }
 
-    /// Port of `screenshot:pin`: the editor closes into the pin and the pin
-    /// reopens it, with its persisted state, when closed.
     pub(crate) fn open_for_editor(
         cx: &mut App,
-        png_bytes: Vec<u8>,
+        image: Arc<gpui::RenderImage>,
         file_path: String,
         state: crate::editor::window::PersistedEditorState,
-    ) {
-        Self::open_with_restore(cx, png_bytes, Some((file_path, state)));
+    ) -> bool {
+        Self::open_with_restore(cx, image, Some((file_path, state)))
+    }
+
+    pub(crate) fn prepare_image(mut rgba: image::RgbaImage) -> Arc<gpui::RenderImage> {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        let frame = image::Frame::new(rgba);
+        Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]))
     }
 
     fn open_with_restore(
         cx: &mut App,
-        png_bytes: Vec<u8>,
+        render_image: Arc<gpui::RenderImage>,
         restore: Option<(String, crate::editor::window::PersistedEditorState)>,
-    ) {
-        let decoded = match image::load_from_memory(&png_bytes) {
-            Ok(img) => img.to_rgba8(),
-            Err(_) => return,
-        };
+    ) -> bool {
         let displays = cx.displays();
         let display = displays.first();
         let scale = display
@@ -55,16 +83,11 @@ impl PinWindow {
         } else {
             scale
         };
+        let image_size = render_image.size(0);
         let (width, height) = (
-            decoded.width() as f32 / scale,
-            decoded.height() as f32 / scale,
+            image_size.width.0 as f32 / scale,
+            image_size.height.0 as f32 / scale,
         );
-        let mut buffer = decoded;
-        for pixel in buffer.as_chunks_mut::<4>().0 {
-            pixel.swap(0, 2);
-        }
-        let frame = image::Frame::new(buffer);
-        let render_image = Arc::new(gpui::RenderImage::new(smallvec::smallvec![frame]));
 
         let (work_width, work_height) = display
             .map(|display| {
@@ -98,6 +121,7 @@ impl PinWindow {
         options.window_min_size = Some(size(px(chrome::PIN_MIN_SIZE), px(chrome::PIN_MIN_SIZE)));
         cx.open_window(options, |window, cx| {
             window.set_window_title("Poratake pinned screenshot");
+            crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
             let view = cx.new(|_| Self {
                 image: render_image.clone(),
                 image_size: size(px(width), px(height)),
@@ -105,23 +129,38 @@ impl PinWindow {
                 hovered: false,
             });
             let weak = view.downgrade();
-            window.on_window_should_close(cx, move |_, cx| {
-                weak.update(cx, |view, cx| view.restore_editor(cx)).ok();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = weak.update(cx, |view, cx| {
+                    let _ = window.drop_image(view.image.clone());
+                    view.restore_editor(cx);
+                });
+                crate::system::memory::reclaim_idle_memory();
                 true
             });
             view
         })
-        .ok();
+        .is_ok()
     }
 
     fn restore_editor(&mut self, cx: &mut App) {
-        if let Some((path, state)) = self.restore.take() {
-            crate::open_editor_with_state(cx, &path, Some(state));
-        }
+        let Some((path, state)) = self.restore.take() else {
+            return;
+        };
+        let source = path.clone();
+        let image = cx
+            .background_executor()
+            .spawn(async move { crate::editor::window::PreparedScreenshot::open(&source) });
+        cx.spawn(async move |cx| {
+            let image = image.await;
+            cx.update(|cx| crate::open_editor_with_image(cx, &path, Some(state), image));
+        })
+        .detach();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut App) {
+        let _ = window.drop_image(self.image.clone());
         self.restore_editor(cx);
+        crate::system::memory::reclaim_idle_memory();
         window.remove_window();
     }
 }
@@ -281,7 +320,9 @@ mod tests {
         let expected = editor
             .update(cx, |editor, _, _| editor.export_png().unwrap())
             .unwrap();
-        cx.update(|cx| PinWindow::open_for_editor(cx, expected.clone(), path.clone(), state));
+        let image =
+            PinWindow::prepare_image(image::load_from_memory(&expected).unwrap().into_rgba8());
+        cx.update(|cx| assert!(PinWindow::open_for_editor(cx, image, path.clone(), state)));
         editor
             .update(cx, |_, window, _| window.remove_window())
             .unwrap();
@@ -322,11 +363,12 @@ mod tests {
                 .unwrap(),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
-        let mut bytes = std::io::Cursor::new(Vec::new());
+        let path = directory.path().join("standalone.png");
         image::RgbaImage::from_pixel(320, 180, image::Rgba([64, 112, 192, 255]))
-            .write_to(&mut bytes, image::ImageFormat::Png)
+            .save(&path)
             .unwrap();
-        cx.update(|cx| PinWindow::open(cx, bytes.into_inner()));
+        cx.update(|cx| PinWindow::open_file(cx, path));
+        cx.run_until_parked();
         let pin = cx.read(|cx| cx.windows()[0]);
         let mut visual = gpui::VisualTestContext::from_window(pin, cx);
         assert!(visual.simulate_close());

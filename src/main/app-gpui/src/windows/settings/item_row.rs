@@ -73,6 +73,7 @@ impl SettingsWindow {
                         this.mutate(cx, move |config| set(config, value));
                     },
                 )
+                .aria_label(item.label)
                 .is_disabled(disabled.is_some_and(|predicate| predicate(self.config())))
                 .into_any_element()
             }
@@ -82,6 +83,7 @@ impl SettingsWindow {
                 let current = get(self.config());
                 let value = rows::selected_value(&items, &current);
                 Select::new(SharedString::from(format!("{}-select", item.id)), items)
+                    .aria_label(item.label)
                     .variant(FieldVariant::Secondary)
                     .value(value.clone())
                     .w(px(CONTROL_WIDTH))
@@ -106,7 +108,9 @@ impl SettingsWindow {
                 // and the description sits under that.
                 let (set, step) = (*set, *step);
                 let value = get(self.config());
+                let id = item.id;
                 return div()
+                    .debug_selector(move || id.into())
                     .flex()
                     .flex_col()
                     .gap(px(STACK_GAP))
@@ -125,17 +129,21 @@ impl SettingsWindow {
                                     .child(format!("{}", value.round() as i64)),
                             ),
                     )
-                    .child(rows::slider_control(
-                        SharedString::from(format!("{}-slider", item.id)),
-                        value,
-                        *min,
-                        *max,
-                        step,
-                        cx,
-                        move |this, next, cx| {
-                            this.mutate(cx, move |config| set(config, next));
-                        },
-                    ))
+                    .child(
+                        rows::slider_control(
+                            SharedString::from(format!("{}-slider", item.id)),
+                            value,
+                            *min,
+                            *max,
+                            step,
+                            cx,
+                            move |this, next, cx| {
+                                this.mutate(cx, move |config| set(config, next));
+                            },
+                        )
+                        .step(step as f32)
+                        .aria_label(item.label),
+                    )
                     .child(rows::description(item.description, theme))
                     .into_any_element();
             }

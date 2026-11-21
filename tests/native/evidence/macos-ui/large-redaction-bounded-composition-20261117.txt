@@ -1,0 +1,24 @@
+macOS GPUI Metal: generated 4096x2160 screenshot, reopened PNG comparison
+Simulated display scale: 1; editor window: 1280x738; source samples: 1024.
+The 25% check compares the entire displayed image; the 100% check compares a 650x490 visible editor region.
+Tolerance count is the number of displayed pixels with a maximum channel difference greater than 2.
+
+dark, 25%:
+large 4096x2160 none at 0.25x: 0 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 0.25x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 0.25x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.0070
+
+dark, 100%:
+large 4096x2160 none at 1x: 0 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 1x: 1024 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 1x: 1024 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000
+
+light, 25%:
+large 4096x2160 none at 0.25x: 0 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 0.25x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 0.25x: 1024 of 1024 source samples changed; 0 of 552960 displayed pixels above two; max 1; mean max-channel 0.0070
+
+light, 100%:
+large 4096x2160 none at 1x: 0 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 pixelate at 1x: 1024 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000
+large 4096x2160 blur at 1x: 1024 of 1024 source samples changed; 0 of 318500 displayed pixels above two; max 0; mean max-channel 0.0000

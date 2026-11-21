@@ -8,6 +8,8 @@ pub mod cursor_sprites;
 pub mod device_frame;
 pub mod drawing;
 pub mod keyboard;
+pub mod opaque;
+mod redaction;
 pub mod segments;
 pub mod subtitle;
 pub mod wallpaper;
@@ -15,7 +17,7 @@ pub mod zoom;
 
 use tiny_skia::{Color, FillRule, Pixmap, PixmapRef};
 
-use crate::render::canvas::{rounded_rect_path, Canvas};
+use crate::render::canvas::{rounded_rect_path, Canvas, PathShadowCache};
 use crate::video::sidecars::{CursorData, KeyboardData, SubtitleData};
 use crate::windows::video_editor::model::VideoEditorState;
 use crate::windows::video_editor::styles::CursorStyle;
@@ -87,6 +89,7 @@ pub struct Frames<'a> {
 pub struct Engine {
     config: Config,
     zoom_cache: ZoomCache,
+    camera_shadows: PathShadowCache,
     video_segments: Vec<VideoSegment>,
     cached_dimensions: (u32, u32),
 }
@@ -98,6 +101,7 @@ impl Engine {
         Self {
             config,
             zoom_cache: ZoomCache::default(),
+            camera_shadows: PathShadowCache::default(),
             video_segments,
             cached_dimensions,
         }
@@ -142,6 +146,14 @@ impl Engine {
         1.0 / self.config.fps.max(1.0)
     }
 
+    pub(crate) fn camera_visible_at(&self, timeline_time: f64) -> bool {
+        crate::video::sidecars::editor_camera_visible_at(
+            &self.config.state,
+            timeline_time,
+            self.first_frame_duration(),
+        )
+    }
+
     /// `getCompositionDimensions`.
     pub fn dimensions(&self) -> (u32, u32) {
         self.cached_dimensions
@@ -178,14 +190,12 @@ impl Engine {
         if scale >= 1.0 {
             return self.render_frame(timeline_time, frames);
         }
-        let mut canvas = Canvas::new(
+        self.render_frame_at(
+            timeline_time,
+            frames,
             (width as f32 * scale).round().max(1.0) as u32,
             (height as f32 * scale).round().max(1.0) as u32,
-        )?;
-        canvas.set_shadow_scale(scale);
-        canvas.scale(scale, scale);
-        self.render_into(&mut canvas, timeline_time, frames);
-        Some(canvas.into_pixmap())
+        )
     }
 
     pub fn render_frame_at(
@@ -205,7 +215,10 @@ impl Engine {
         canvas.set_shadow_scale((scale_x + scale_y) / 2.0);
         canvas.scale(scale_x, scale_y);
         self.render_into(&mut canvas, timeline_time, frames);
-        Some(canvas.into_pixmap())
+        if width == 0 || height == 0 {
+            return Some(canvas.into_pixmap());
+        }
+        redaction::apply(self, canvas.into_pixmap(), timeline_time, frames)
     }
 
     /// Port of `renderFrame`.
@@ -533,7 +546,7 @@ impl Engine {
 
     /// `renderCameraOverlay`.
     fn render_camera(
-        &self,
+        &mut self,
         canvas: &mut Canvas,
         timeline_time: f64,
         source: PixmapRef<'_>,
@@ -563,6 +576,7 @@ impl Engine {
                     viewport: transform.viewport,
                 }),
             },
+            &mut self.camera_shadows,
         );
     }
 
@@ -774,6 +788,47 @@ mod tests {
             .expect("frame");
         assert_eq!((composed.width(), composed.height()), (640, 360));
     }
+
+    #[test]
+    fn fitted_preview_uses_the_same_dimensions_as_export_after_rounding() {
+        for (width, height, maximum, expected) in [
+            (31, 19, 12, (12, 7)),
+            (19, 31, 12, (7, 12)),
+            (343, 201, 172, (172, 101)),
+        ] {
+            let mut engine = Engine::new(Config::new(width as f64, height as f64, state()));
+            let mut video = source(width, height, Color::from_rgba8(255, 32, 0, 255));
+            for (index, pixel) in video
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                let row = index / width as usize;
+                let column = index % width as usize;
+                pixel[0] = (row * 13 % 256) as u8;
+                pixel[1] = (column * 7 % 256) as u8;
+            }
+            let frames = Frames {
+                video: Some(video.as_ref()),
+                camera: None,
+            };
+            let preview = engine
+                .render_frame_scaled(0.0, frames, maximum, maximum)
+                .unwrap();
+            assert_eq!((preview.width(), preview.height()), expected);
+            let export = engine
+                .render_frame_at(0.0, frames, expected.0, expected.1)
+                .unwrap();
+            assert_eq!(preview.data(), export.data(), "{width}x{height}");
+        }
+    }
+
+    include!("redaction_crop_tests.rs");
+    include!("redaction_layer_tests.rs");
+    include!("redaction_matrix_tests.rs");
+    include!("redaction_timing_tests.rs");
 
     fn camera_engine(
         camera_segments: Vec<crate::windows::video_editor::model::CameraSegment>,

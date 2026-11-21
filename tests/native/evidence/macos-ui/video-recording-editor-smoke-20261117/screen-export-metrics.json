@@ -1,0 +1,11 @@
+{
+  "viewport": [720, 520],
+  "frameSize": [3456, 2234],
+  "firstMeanError": 0.919149212299811,
+  "firstAnnotationRegionMeanError": 1.2920336385504771,
+  "changedPixels": 16389,
+  "editedChangedPixelMeanError": 23.405210812130086,
+  "originalChangedPixelMeanError": 97.67811743649196,
+  "laterTime": 13.9,
+  "laterMeanError": 0.3773355706940714
+}

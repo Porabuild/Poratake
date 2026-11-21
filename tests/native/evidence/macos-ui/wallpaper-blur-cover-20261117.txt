@@ -1,0 +1,48 @@
+macOS GPUI and Electron blurred image wallpaper comparison, 2026-11-17
+
+Electron 43.4.0 renders an expanded wallpaper image before applying canvas
+blur. GPUI previously covered only the final canvas and blurred that crop.
+A generated 64x48 high-contrast checker wallpaper, scaled behind a 17,024x128
+opaque screenshot with 25px output padding and blur radius 25px, exposed the
+difference. In the 25px top margin (426,850 pixels), the maximum per-pixel
+channel error against Electron was 43, the mean maximum-channel error was
+14.544, and 415,994 pixels differed by more than two levels. The bottom margin
+had maximum 32, mean 5.007 and 291,877 pixels over two levels.
+
+GPUI now renders using the expanded cover dimensions and enough surrounding
+pixels for the blur kernel, and composites that result once. For the same
+input, the top margin maximum fell to 13, mean to 7.495 and count over two to
+401,167. The bottom maximum fell to 11, mean to 7.042 and count over two to
+397,066. This is an improvement, not a complete match. A 320x180 generated
+checker comparison against four independently obtained Electron samples failed
+before the change (for example 7 versus 47) and passes within eight levels
+with the changed geometry.
+
+Three additional oversized cases used a high-contrast alpha-128 wallpaper at
+blur radius 7.5 and 3.4375, and a smooth alpha-128 wallpaper at radius 7.5.
+With both screenshot orientations and both exposed 25px margins, the patterned
+cases had mean maximum-channel errors of 7.027 to 7.782 and maxima of 12 to 18;
+the smooth case had means of 0.814 to 0.843 and a maximum of four. A check with
+Electron imageSmoothingQuality set to low rather than high produced identical
+output in the opaque patterned case. This does not establish the remaining
+cause, which should be investigated rather than attributed to a particular
+filter or fixed with a visual tolerance.
+
+The GPUI fixture compared each editor preview with its reopened PNG before and
+after panning. Across four runs, both source orientations and opaque/varying
+source alpha, all 32 comparisons stayed within two channel levels. Its
+translucent background check samples an interior point of the exposed margin;
+blurred image edges may legitimately have reduced alpha. This replaces the
+previous fixture's assumption that the extreme corner always retains full
+wallpaper alpha.
+
+Reproduction uses generated images and isolated profiles. One GPUI case:
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-pattern-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.25 PORATAKE_PARITY_LARGE_FRAME=none PORATAKE_PARITY_LARGE_CORNERS=24 PORATAKE_PARITY_LARGE_IMAGE_ALPHA=255 PORATAKE_PARITY_LARGE_IMAGE_PATTERN=1 PORATAKE_PARITY_LARGE_BACKGROUND_BLUR=40 PORATAKE_PARITY_LARGE_ANNOTATION=ordered-blackout PORATAKE_PARITY_THEME=light src/main/target/debug/poratake-gpui --parity
+
+Use the generated profile's large-wallpaper.png and framed-export-true-false.png:
+env -u ELECTRON_RUN_AS_NODE node_modules/.bin/electron tests/native/electron-wallpaper-blur.cjs <profile>/large-wallpaper.png /tmp/electron-wallpaper.png 17074 178 25
+python3 tests/native/compare-wallpaper-margins.py <profile>/framed-export-true-false.png /tmp/electron-wallpaper.png --orientation horizontal --margin 25
+
+The fixtures do not use a live capture, exercise physical displays or establish
+complete Electron parity. Peak memory and interactive performance of the
+expanded blur surface have not been measured.

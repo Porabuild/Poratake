@@ -12,6 +12,10 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use parking_lot::RwLock;
 
+use crate::config::cloud_secrets::{
+    has_unprotected_cloud_secrets, protect_cloud_secrets, reveal_cloud_secrets,
+    RetainedCloudSecrets, SecretPolicy,
+};
 use crate::config::schema::SettingsConfig;
 
 const CONFIG_WRITE_DEBOUNCE_MS: u64 = 150;
@@ -51,6 +55,8 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 
 struct StoreState {
     config: SettingsConfig,
+    retained_secrets: RetainedCloudSecrets,
+    secret_policy: SecretPolicy,
     revision: u64,
     persisted_revision: u64,
 }
@@ -71,7 +77,7 @@ impl ConfigStore {
     pub fn load_at(path: PathBuf) -> Result<Self> {
         ensure_dir(path.parent().unwrap_or(Path::new(".")))?;
 
-        let (config, existed) = match fs::read_to_string(&path) {
+        let (mut config, existed) = match fs::read_to_string(&path) {
             Ok(content) => match serde_json::from_str::<SettingsConfig>(&content) {
                 Ok(parsed) => (parsed, true),
                 Err(error) => {
@@ -83,17 +89,23 @@ impl ConfigStore {
             Err(_) => (SettingsConfig::default(), false),
         };
 
+        let secret_policy = SecretPolicy::for_runtime();
+        let needs_secret_upgrade = existed && has_unprotected_cloud_secrets(&config.cloud);
+        let mut retained_secrets = reveal_cloud_secrets(&mut config.cloud, secret_policy);
+
         let state = std::sync::Arc::new(RwLock::new(StoreState {
             config,
+            retained_secrets: retained_secrets.clone(),
+            secret_policy,
             revision: 0,
             persisted_revision: 0,
         }));
 
-        if !existed {
-            // A fresh install writes its defaults immediately so the Electron
-            // shell finds a valid config too.
+        if !existed || needs_secret_upgrade {
             let snapshot = state.read().config.clone();
-            let _ = write_sync(&snapshot, &path);
+            if write_sync(&snapshot, &mut retained_secrets, secret_policy, &path) {
+                state.write().retained_secrets = retained_secrets;
+            }
         }
 
         let store = Self {
@@ -127,23 +139,29 @@ impl ConfigStore {
                     loop {
                         thread::sleep(Duration::from_millis(CONFIG_WRITE_DEBOUNCE_MS));
                         match rx.try_recv() {
-                            Ok(()) | Err(TryRecvError::Disconnected) => continue,
-                            Err(TryRecvError::Empty) => break,
+                            Ok(()) => continue,
+                            Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
                         }
                     }
                     loop {
                         let _write = write_lock.lock();
-                        let (snapshot, revision) = {
+                        let (snapshot, mut retained, policy, revision) = {
                             let state = shared.read();
                             if state.revision == state.persisted_revision {
                                 break;
                             }
-                            (state.config.clone(), state.revision)
+                            (
+                                state.config.clone(),
+                                state.retained_secrets.clone(),
+                                state.secret_policy,
+                                state.revision,
+                            )
                         };
-                        if !write_sync(&snapshot, &path) {
+                        if !write_sync(&snapshot, &mut retained, policy, &path) {
                             break;
                         }
                         let mut state = shared.write();
+                        state.retained_secrets = retained;
                         state.persisted_revision = state.persisted_revision.max(revision);
                     }
                 }
@@ -178,15 +196,21 @@ impl ConfigStore {
     /// Writes any pending change immediately (used on quit).
     pub fn flush(&self) {
         let _write = self.write_lock.lock();
-        let (snapshot, revision) = {
+        let (snapshot, mut retained, policy, revision) = {
             let state = self.state.read();
             if state.revision == state.persisted_revision {
                 return;
             }
-            (state.config.clone(), state.revision)
+            (
+                state.config.clone(),
+                state.retained_secrets.clone(),
+                state.secret_policy,
+                state.revision,
+            )
         };
-        if write_sync(&snapshot, &self.path) {
+        if write_sync(&snapshot, &mut retained, policy, &self.path) {
             let mut state = self.state.write();
+            state.retained_secrets = retained;
             state.persisted_revision = state.persisted_revision.max(revision);
         }
     }
@@ -194,38 +218,25 @@ impl ConfigStore {
 
 static WRITE_SIGNAL: parking_lot::Mutex<Option<Sender<()>>> = parking_lot::Mutex::new(None);
 
-fn write_sync(config: &SettingsConfig, path: &Path) -> bool {
+fn write_sync(
+    config: &SettingsConfig,
+    retained: &mut RetainedCloudSecrets,
+    policy: SecretPolicy,
+    path: &Path,
+) -> bool {
+    let mut disk_config = config.clone();
+    if protect_cloud_secrets(&mut disk_config.cloud, retained, policy) {
+        eprintln!("[settings] failed to protect cloud credential");
+    }
     let temp = path.with_extension("json.tmp");
-    let payload = serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".to_string());
+    let payload = serde_json::to_string_pretty(&disk_config).unwrap_or_else(|_| "{}".to_string());
     let saved = fs::write(&temp, payload)
-        .and_then(|_| replace_file(&temp, path))
+        .and_then(|_| crate::util::atomic_file::replace(&temp, path))
         .is_ok();
     if !saved {
         eprintln!("[settings] failed to save config");
     }
     saved
-}
-
-#[cfg(windows)]
-fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    use windows::core::HSTRING;
-    use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    unsafe {
-        MoveFileExW(
-            &HSTRING::from(temp.as_os_str()),
-            &HSTRING::from(path.as_os_str()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }
-    .map_err(std::io::Error::other)
-}
-
-#[cfg(not(windows))]
-fn replace_file(temp: &Path, path: &Path) -> std::io::Result<()> {
-    fs::rename(temp, path)
 }
 
 fn preserve_corrupt_config(path: &Path, content: &str) {
@@ -286,6 +297,130 @@ mod dir_tests {
                 .expect("valid config");
         let _ = std::fs::remove_dir_all(folder);
         assert!(!saved.general.start_on_login);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plaintext_cloud_secrets_are_upgraded_on_load_and_revealed_in_memory() {
+        let folder = std::env::temp_dir().join(format!(
+            "poratake-config-secrets-{}-{}",
+            std::process::id(),
+            super::timestamp_ms()
+        ));
+        std::fs::create_dir_all(&folder).expect("dir");
+        let path = folder.join("config.json");
+        let mut initial = super::SettingsConfig::default();
+        initial.cloud.s3.secret_access_key = "plaintext-s3-key".into();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&initial).expect("serialize"),
+        )
+        .expect("write");
+
+        let store = super::ConfigStore::load_at(path.clone()).expect("load");
+        assert_eq!(store.get().cloud.s3.secret_access_key, "plaintext-s3-key");
+
+        let saved: super::SettingsConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("saved config"))
+                .expect("valid config");
+        assert!(saved
+            .cloud
+            .s3
+            .secret_access_key
+            .starts_with(super::super::cloud_secrets::GPUI_SECRET_PREFIX));
+        assert!(!saved
+            .cloud
+            .s3
+            .secret_access_key
+            .contains("plaintext-s3-key"));
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn electron_profile_config_migrates_cleanly_to_gpui() {
+        let folder = std::env::temp_dir().join(format!(
+            "poratake-electron-migrate-{}-{}",
+            std::process::id(),
+            super::timestamp_ms()
+        ));
+        std::fs::create_dir_all(&folder).expect("dir");
+        let path = folder.join("config.json");
+        let locked_electron_secret = format!(
+            "{}djEwLWVsZWN0cm9uLXNlY3JldA==",
+            super::super::cloud_secrets::SAFE_STORAGE_PREFIX
+        );
+        let electron_json = serde_json::json!({
+            "onboarding": {
+                "completed": true
+            },
+            "general": {
+                "startOnLogin": true,
+                "playSoundOnScreenshot": false,
+                "hideMenuBarIcon": true
+            },
+            "history": {
+                "enabled": true,
+                "maxItems": 75
+            },
+            "appearance": {
+                "mode": "light",
+                "theme": "sunset"
+            },
+            "shortcuts": {
+                "screenshot": {
+                    "area": "CommandOrControl+Shift+4"
+                },
+                "allInOne": "CommandOrControl+Shift+S"
+            },
+            "cloud": {
+                "enabled": true,
+                "activeProvider": "s3",
+                "s3": {
+                    "endpoint": "https://s3.example.com",
+                    "region": "us-east-1",
+                    "bucket": "shots",
+                    "accessKeyId": "AKIAEXAMPLE",
+                    "secretAccessKey": locked_electron_secret,
+                    "customDomain": ""
+                },
+                "rest": {
+                    "url": "",
+                    "method": "POST",
+                    "headers": [
+                        { "key": "X-Plain", "value": "legacy-plaintext-token" }
+                    ]
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&electron_json).unwrap()).unwrap();
+
+        let store = super::ConfigStore::load_at(path.clone()).expect("load electron profile");
+        let loaded = store.get();
+        assert!(loaded.onboarding.completed);
+        assert!(loaded.general.start_on_login);
+        assert!(!loaded.general.play_sound_on_screenshot);
+        assert!(loaded.general.hide_menu_bar_icon);
+        assert_eq!(loaded.history.max_items, 75.0);
+        assert_eq!(loaded.appearance.mode, "light");
+        assert_eq!(loaded.appearance.theme, "sunset");
+        assert_eq!(loaded.shortcuts.screenshot.area, "CommandOrControl+Shift+4");
+        assert_eq!(loaded.cloud.rest.headers[0].value, "legacy-plaintext-token");
+
+        store.update(|settings| settings.general.play_sound_on_screenshot = true);
+        store.flush();
+
+        let disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            disk["cloud"]["s3"]["secretAccessKey"].as_str(),
+            Some(locked_electron_secret.as_str())
+        );
+        #[cfg(target_os = "macos")]
+        assert!(disk["cloud"]["rest"]["headers"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with(super::super::cloud_secrets::GPUI_SECRET_PREFIX));
+        let _ = std::fs::remove_dir_all(folder);
     }
 }
 

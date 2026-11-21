@@ -1,0 +1,37 @@
+macOS GPUI oversized screenshot annotation seams, 2026-11-17, source 8d940eb6
+
+An isolated Metal fixture used generated 17,024x128 and 128x17,024 images,
+with opaque or varying-alpha textured pixels over a solid wallpaper. A red
+stripe, a redaction and a green rectangle were applied in that order, crossing
+the first tile seam. The comparison crop was 512x128 or 128x512. No frames or
+wallpaper padding were used.
+
+For each of blackout, pixelation and blur, the fixture checked both image
+orientations, both alpha variants, 25% and 50% zoom, simulated display scales
+1x, 1.25x and 2x, and both light and dark appearance: 144 cases total.
+
+- The large preview matched the smaller reference preview within one channel
+  level in the sampled interior, including the seam and annotation region.
+- Every pixel of the corresponding exported PNG crop matched the smaller
+  reference export exactly.
+- The sampled large preview and smaller reference preview each matched their
+  own reopened PNG within one channel level after panning the large image.
+- Comparing each export to an otherwise identical unredacted control showed
+  2,167 or 2,168 changed pixels. Blackout covered a sampled pixel of the red
+  stripe with opaque black; a sampled pixel in the later green shape remained
+  green. Blur and pixelation also retained a nonblack sampled filtered pixel.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-annotation-seam-check PORATAKE_PARITY_LARGE_TEXTURE_SAMPLING_ONLY=1 PORATAKE_PARITY_LARGE_COMPOSED=1 PORATAKE_PARITY_LARGE_ANNOTATION=blackout PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.5 PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
+
+PORATAKE_PARITY_LARGE_ANNOTATION was blackout, pixelate and blur;
+PORATAKE_PARITY_LARGE_DPI was 1, 1.25 and 2; zoom was 0.25 and 0.5; theme was
+dark and light. Each run used generated images and a scratch profile.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the existing unrelated editor/window.rs lint suppressed.
+
+This does not verify actual scroll capture, physical input or displays,
+frames, padding, shadows, attached images, other annotation layouts, arbitrary
+zoom, other platforms or performance. The fixture does not alter privacy
+settings or access the screen, microphone, camera or system audio.

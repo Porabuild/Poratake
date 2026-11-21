@@ -123,6 +123,7 @@ const drawTrafficLights = (
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
+  frameWidth: number,
   scale: number
 ) => {
   const buttons = [
@@ -131,11 +132,16 @@ const drawTrafficLights = (
     TRAFFIC_LIGHT_COLORS.maximize,
   ];
 
-  const scaledSize = TRAFFIC_LIGHT_SIZE * scale;
-  const scaledSpacing = TRAFFIC_LIGHT_SPACING * scale;
+  const groupWidth =
+    TRAFFIC_LIGHT_OFFSET_X * 2 +
+    (buttons.length - 1) * (TRAFFIC_LIGHT_SIZE + TRAFFIC_LIGHT_SPACING);
+  const fittedScale = Math.min(scale, frameWidth / groupWidth);
+  const scaledSize = TRAFFIC_LIGHT_SIZE * fittedScale;
+  const scaledSpacing = TRAFFIC_LIGHT_SPACING * fittedScale;
+  const startX = x + TRAFFIC_LIGHT_OFFSET_X * fittedScale;
 
   buttons.forEach((color, index) => {
-    const buttonX = x + index * (scaledSize + scaledSpacing);
+    const buttonX = startX + index * (scaledSize + scaledSpacing);
     ctx.beginPath();
     ctx.arc(buttonX, y, scaledSize / 2, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -234,8 +240,7 @@ export const renderWindowFrame = (
     drawWindowsControls(ctx, x, y, frameWidth, theme.control, scale);
   } else {
     const trafficLightY = y + scaledTitleBarHeight / 2;
-    const trafficLightX = x + TRAFFIC_LIGHT_OFFSET_X * scale;
-    drawTrafficLights(ctx, trafficLightX, trafficLightY, scale);
+    drawTrafficLights(ctx, x, trafficLightY, frameWidth, scale);
   }
 
   if (inset > 0 && insetColor) {

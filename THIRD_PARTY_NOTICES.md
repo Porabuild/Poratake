@@ -175,6 +175,8 @@ Build-time-only tools that do not ship in the binary (proc macros and code gener
 
 The Poratake GPUI shell and Rust daemon crates directly depend on the following crates. Exact versions and the complete transitive dependency closure are pinned in `src/main/Cargo.lock`, and the license strings below are taken from each crate's Cargo manifest at that version.
 
+The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) and `png` 0.18.1 (MIT OR Apache-2.0), both already bundled through `image`.
+
 | Crate                      |   Version | License                   |
 | -------------------------- | --------: | ------------------------- |
 | `anyhow`                   |   1.0.104 | MIT OR Apache-2.0         |
@@ -192,6 +194,7 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 | `gtk`                      |    0.18.2 | MIT                       |
 | `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |   0.25.10 | MIT OR Apache-2.0         |
+| `libc`                     |   0.2.189 | MIT OR Apache-2.0         |
 | `lyon`                     |    1.0.19 | MIT OR Apache-2.0         |
 | `md-5`                     |    0.11.0 | MIT OR Apache-2.0         |
 | `objc`                     |     0.2.7 | MIT                       |
@@ -289,7 +292,15 @@ SOFTWARE.
 
 The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.11 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-bench-metrics`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-ios`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. GPUI itself links ICU4X `icu_segmenter` and `icu_segmenter_data` 2.4.0 (Unicode-3.0). On macOS the GPUI crates also link `mach2` 0.6.0 (BSD-2-Clause OR MIT OR Apache-2.0) and `objc2-core-text`, `objc2-core-video`, `objc2-metal`, `objc2-quartz-core`, `objc2-security`, and `objc2-uniform-type-identifiers` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
 
+The GPUI core is vendored as `vendor/gpui-pre` from the published `gpui-pre` 0.3.11 archive (SHA-256 `9303c771abf2acff2a96d706f69d9a82088c4770173a07cce88f0002431d887d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/window.rs` to preserve one-pixel image dimensions when cropping and skip empty images; on Apple platforms it retains fractional crop coordinates and the original atlas allocation in polychrome sprites. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre/LICENSE-APACHE`.
+
 The Windows backend is vendored as `vendor/gpui-pre-windows` from the published `gpui-pre-windows` 0.3.11 archive (SHA-256 `5141a3db59bab761a16ab19529fe4117a86e91922e8fc00af6dfc4829cb1744d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/shaders.hlsl` to clamp image sampling to each atlas tile's texel centers, preventing neighboring images from bleeding into scaled captures. It also modifies `src/clipboard.rs` to provide a Windows bitmap alongside PNG and correctly read bitmap headers with embedded color masks. In `src/events.rs`, mouse-leave handling updates GPUI's pointer position and dispatches mouse-exit input so hover handlers clear correctly across client and nonclient boundaries. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre-windows/LICENSE-APACHE`.
+
+The Apple renderer is vendored as `vendor/gpui-pre-apple` from the published `gpui-pre-apple` 0.3.11 archive (SHA-256 `8c0bea8ffa563d3a1ada533e148bb55be7fb873c178979e889a3d1204f8e1b91`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/shaders.metal` and the vendored shader bindings to sample fractional crop coordinates within the original atlas tile and interpolate translucent images in premultiplied-alpha space. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre-apple/LICENSE-APACHE`.
+
+The macOS backend is vendored as `vendor/gpui-pre-macos` from the published `gpui-pre-macos` 0.3.11 archive (SHA-256 `d7410cfdaa1fa55a414346cc492d18ce340e3a8b6d0ac3213b984ed690c82b92`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake forwards AppKit mouse-enter events as pointer movement to GPUI and opts popup windows into unpressed mouse-move events. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre-macos/LICENSE-APACHE`.
+
+`rfd` is vendored as `vendor/rfd` from the published 0.15.4 archive (SHA-256 `ef2bee61e6cffa4635c72d7d81a84294e28f0930db0ddcb0f66d10244674ebed`). Poratake corrects the macOS dialog's starting-directory URL so the suggested filename is set separately. The original MIT license is retained in `vendor/rfd/LICENSE`.
 
 HeroGPUI also introduces ICU4X calendar and date/time components and compiled locale data: `icu_calendar` 2.4.0, `icu_calendar_data`, `icu_datetime`, `icu_datetime_data`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_data`, `icu_locale_fallback`, `icu_locale_fallback_data`, `icu_plurals`, `icu_plurals_data`, `icu_time` 2.4.0, `icu_time_data` 2.4.0, and `icu_pattern` 0.5.1 (Unicode-3.0). Local time and locale detection use `jiff`/`jiff-static` 0.2.35, `jiff-core` 0.1.0, `jiff-tzdb` 0.1.8, and `jiff-tzdb-platform` 0.1.3 (MIT OR Unlicense).
 

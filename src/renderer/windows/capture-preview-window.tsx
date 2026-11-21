@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type SyntheticEvent,
+} from 'react';
 import {
   X,
   Copy,
@@ -76,6 +82,17 @@ export default function CapturePreviewWindow({
     contentReadySentRef.current = true;
     window.ipcRenderer.send('capture-preview:content-ready');
   }, [contentType, imageSources.length, videoState, visibleImageSource]);
+
+  const handleVideoPlayback = useCallback(
+    (event: SyntheticEvent<HTMLVideoElement>) => {
+      if (
+        event.currentTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        setVideoState('ready');
+      }
+    },
+    []
+  );
 
   const handleImageLoad = useCallback(
     (source: string) => {
@@ -304,6 +321,9 @@ export default function CapturePreviewWindow({
           playsInline
           preload="auto"
           onLoadedData={() => setVideoState('ready')}
+          onTimeUpdate={
+            videoState === 'loading' ? handleVideoPlayback : undefined
+          }
           onError={() => setVideoState('failed')}
         />
       )}

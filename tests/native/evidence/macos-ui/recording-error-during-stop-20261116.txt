@@ -1,0 +1,14 @@
+macOS GPUI parity fixture, isolated profile and generated video
+
+Sequence: the fake daemon sends CAPTURE_ERROR while handling Stop, followed by a
+successful Stop response. No screen, microphone, camera or system-audio access
+is used.
+
+Before the change, the fixture failed because the terminal-error warning and
+partial-recording path were absent after Stop succeeded.
+
+After the change, the fixture asserts that the warning names the retained
+project, the recording stays byte-identical, and the Stop request occurs once.
+The light and dark runs also exercise the other synthetic recording handoffs.
+This does not verify live recorder callback timing or an error sent after the
+successful Stop response.

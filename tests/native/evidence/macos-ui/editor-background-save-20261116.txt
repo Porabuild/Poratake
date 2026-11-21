@@ -1,0 +1,7 @@
+macOS isolated editor background-input and save-sheet attempt, 2026-11-16
+
+The generated checkerboard opened in a separate 950 x 650 point GPUI editor. The probe dispatched the Rectangle tool action. The computer-use helper sent a background drag to the editor, reported route=event and verified=unchanged, and the probe's exported-image comparison reported zero changed pixels. This does not establish why the background drag had no effect.
+
+The probe then dispatched its own synthetic GPUI drag; the exported-image comparison reported 1,790 changed pixels. A window-only ScreenCaptureKit image showed a red rectangle on the generated checkerboard. The editor requested its native save sheet. AppKit reported the sheet's directory as the probe's private temporary directory and a new Screenshot PNG filename. The helper exposed the Save button in the editor's accessibility tree, but element invocations were refused as stale snapshots; a background coordinate click was delivered with verified=unchanged and the sheet remained open. The sheet was canceled through the isolated probe, and the temporary directory still contained only config.json, preview.png and window-state.json. No save or reopen occurred.
+
+The helper was disabled and the probe exited normally. The open user editor was not touched; no screen capture by Poratake, recording, device access or privacy request was started.

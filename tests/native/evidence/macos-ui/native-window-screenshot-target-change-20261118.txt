@@ -1,0 +1,38 @@
+Native GPUI window screenshots after a target change, macOS, 2026-11-18
+
+Single built-in Retina display, isolated GPUI development profile,
+disposable AppKit window, previously authorized screen-only daemon.
+The native list supplied the actual ID and bounds of the disposable
+window. The bridge limited displayed candidates to that window, and
+app-local events picked it. The selector closed before the bridge
+released the capture request. The target then moved, resized and
+changed color, or closed, as indicated below.
+
+Mode / target change              Saved dimensions   sRGB       Matching pixels
+Live, moved and resized, light   560×640            24,191,39  358400 / 358400
+Frozen, moved and resized, dark   720×480            204,25,31  345600 / 345600
+Frozen, closed, dark              720×480            204,25,31  345600 / 345600
+
+The live request used capture-window with the same window ID after
+the new window geometry was confirmed in WindowServer. Frozen
+capture used capture-area with cached=true and the selected original
+bounds. In both modes the saved image opened in the preview and
+editor, and the frozen screen cleared after capture. Pixel comparison
+used ColorSync conversion to sRGB.
+
+Closed live target                 Daemon response    Preview   Output directory
+a5240945 baseline, light           CAPTURE_FAILED     none      one empty stage
+Revised build, light               CAPTURE_FAILED     none      empty
+Revised build, dark                CAPTURE_FAILED     none      empty
+
+The empty file existed while the real request was held. It was removed
+after the final error arrived. Rust coverage also verifies that a
+nonempty stage survives a definitive error and that an ambiguous RPC
+timeout retains even an empty stage because the daemon could still
+write. All 1,172 runnable GPUI tests and the light and dark timer workflows passed.
+The 71 Electron reference tests also passed, including exclusive
+publication and temporary screenshot cleanup. This comparison uses
+Electron's reference tests. It does not drive an Electron window picker.
+
+The native test uses application-local input and one Retina display,
+with no new permission requests.

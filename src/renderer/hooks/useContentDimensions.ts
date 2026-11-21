@@ -1,21 +1,14 @@
 import { useMemo } from 'react';
-import type {
-  AspectRatioOption,
-  ImageLayer,
-  WallpaperSettings,
-} from '@/types/editor';
+import type { ImageLayer, WallpaperSettings } from '@/types/editor';
 import {
   detectDominantEdgeColor,
   detectContentBounds,
   sampleDominantInsetColor,
   type BalanceCrop,
 } from '@/renderer/utils/color-detection';
-import {
-  computeLayerLayout,
-  findPrimaryRect,
-  type LayerRect,
-} from '@/renderer/utils/layer-layout';
-import { WINDOW_FRAME_TITLE_BAR_HEIGHT } from '@/renderer/utils/window-frame';
+import { findPrimaryRect, type LayerRect } from '@/renderer/utils/layer-layout';
+import { computeScreenshotLayout } from '@/renderer/utils/screenshot-layout';
+export { getAspectRatioValue } from '@/renderer/utils/screenshot-layout';
 
 interface UseContentDimensionsProps {
   image: HTMLImageElement | null;
@@ -61,28 +54,6 @@ export interface ContentDimensions {
   layerInsetColors: Record<string, string | null>;
 }
 
-const ASPECT_RATIO_VALUES: Record<
-  Exclude<AspectRatioOption, 'auto'>,
-  number
-> = {
-  '1:1': 1,
-  '4:3': 4 / 3,
-  '3:2': 3 / 2,
-  '16:9': 16 / 9,
-  '16:10': 16 / 10,
-  '21:9': 21 / 9,
-  '9:16': 9 / 16,
-  '3:4': 3 / 4,
-  '2:3': 2 / 3,
-};
-
-export function getAspectRatioValue(
-  aspectRatio: AspectRatioOption
-): number | null {
-  if (aspectRatio === 'auto') return null;
-  return ASPECT_RATIO_VALUES[aspectRatio] ?? null;
-}
-
 export function useContentDimensions({
   image,
   imageWidth,
@@ -93,9 +64,6 @@ export function useContentDimensions({
 }: UseContentDimensionsProps): ContentDimensions {
   const { padding, inset, balance, windowFrame, aspectRatio, spacing } =
     wallpaper;
-
-  const titleBarHeight =
-    windowFrame?.style !== 'none' ? WINDOW_FRAME_TITLE_BAR_HEIGHT : 0;
 
   const displayScaleX = image ? imageWidth / image.naturalWidth : 1;
   const displayScaleY = image ? imageHeight / image.naturalHeight : 1;
@@ -116,73 +84,72 @@ export function useContentDimensions({
     return bounds;
   }, [image, balance, originalEdgeColor]);
 
+  const composition = useMemo(
+    () =>
+      computeScreenshotLayout({
+        nativeWidth: image?.naturalWidth ?? imageWidth,
+        nativeHeight: image?.naturalHeight ?? imageHeight,
+        imageWidth,
+        imageHeight,
+        crop: nativeBalanceCrop,
+        padding,
+        inset,
+        spacing,
+        windowFrame: windowFrame?.style ?? 'none',
+        aspectRatio: aspectRatio ?? 'auto',
+        extraLayers,
+      }),
+    [
+      image,
+      imageWidth,
+      imageHeight,
+      nativeBalanceCrop,
+      padding,
+      inset,
+      spacing,
+      windowFrame?.style,
+      aspectRatio,
+      extraLayers,
+    ]
+  );
+  const scale = composition.scale;
   const balanceCrop: BalanceCrop = useMemo(
     () => ({
-      left: nativeBalanceCrop.left * displayScaleX,
-      right: nativeBalanceCrop.right * displayScaleX,
-      top: nativeBalanceCrop.top * displayScaleY,
-      bottom: nativeBalanceCrop.bottom * displayScaleY,
+      left: nativeBalanceCrop.left / scale,
+      right: nativeBalanceCrop.right / scale,
+      top: nativeBalanceCrop.top / scale,
+      bottom: nativeBalanceCrop.bottom / scale,
     }),
-    [nativeBalanceCrop, displayScaleX, displayScaleY]
+    [nativeBalanceCrop, scale]
   );
-
-  const contentWidth = imageWidth - balanceCrop.left - balanceCrop.right;
-  const contentHeight = imageHeight - balanceCrop.top - balanceCrop.bottom;
-
-  const primaryFramedWidth = contentWidth + inset * 2;
-  const primaryFramedHeight = contentHeight + titleBarHeight + inset * 2;
-
-  const layout = useMemo(() => {
-    const layoutInput = {
-      primaryWidth: primaryFramedWidth,
-      primaryHeight: primaryFramedHeight,
-      extraLayers: extraLayers.map(l => ({
-        ...l,
-        naturalWidth: l.naturalWidth + inset * 2,
-        naturalHeight: l.naturalHeight + titleBarHeight + inset * 2,
+  const contentWidth = composition.contentWidth / scale;
+  const contentHeight = composition.contentHeight / scale;
+  const titleBarHeight = composition.titleBarHeight / scale;
+  const layout = useMemo(
+    () => ({
+      width: composition.layout.width / scale,
+      height: composition.layout.height / scale,
+      rects: composition.layout.rects.map(rect => ({
+        ...rect,
+        x: rect.x / scale,
+        y: rect.y / scale,
+        width: rect.width / scale,
+        height: rect.height / scale,
       })),
-      spacing,
-    };
-    return computeLayerLayout(layoutInput);
-  }, [
-    primaryFramedWidth,
-    primaryFramedHeight,
-    extraLayers,
-    spacing,
-    inset,
-    titleBarHeight,
-  ]);
-
+    }),
+    [composition, scale]
+  );
   const frameWidth = layout.width;
   const frameHeight = layout.height;
-
-  const baseCanvasWidth = frameWidth + padding * 2;
-  const baseCanvasHeight = frameHeight + padding * 2;
-
-  const targetRatio = getAspectRatioValue(aspectRatio ?? 'auto');
-  let aspectRatioPaddingX = 0;
-  let aspectRatioPaddingY = 0;
-
-  if (targetRatio !== null && baseCanvasWidth > 0 && baseCanvasHeight > 0) {
-    const currentRatio = baseCanvasWidth / baseCanvasHeight;
-
-    if (currentRatio < targetRatio) {
-      const newWidth = baseCanvasHeight * targetRatio;
-      aspectRatioPaddingX = (newWidth - baseCanvasWidth) / 2;
-    } else if (currentRatio > targetRatio) {
-      const newHeight = baseCanvasWidth / targetRatio;
-      aspectRatioPaddingY = (newHeight - baseCanvasHeight) / 2;
-    }
-  }
-
-  const canvasWidth = baseCanvasWidth + aspectRatioPaddingX * 2;
-  const canvasHeight = baseCanvasHeight + aspectRatioPaddingY * 2;
-
+  const canvasWidth = composition.canvasWidth / scale;
+  const canvasHeight = composition.canvasHeight / scale;
+  const aspectRatioPaddingX =
+    (composition.offsetX - composition.nativePadding) / scale;
+  const aspectRatioPaddingY =
+    (composition.offsetY - composition.nativePadding) / scale;
   const primaryRect = findPrimaryRect(layout.rects);
-
-  const contentOffsetX = padding + aspectRatioPaddingX + primaryRect.x + inset;
-  const contentOffsetY =
-    padding + aspectRatioPaddingY + primaryRect.y + inset + titleBarHeight;
+  const contentOffsetX = composition.contentOffsetX / scale;
+  const contentOffsetY = composition.contentOffsetY / scale;
 
   const primaryInsetColor = useMemo(() => {
     if (!image || inset <= 0) return null;

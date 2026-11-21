@@ -8,7 +8,10 @@ use tiny_skia::{Color, FillRule, Pixmap};
 use crate::editor::annotations::Annotation;
 use crate::editor::wallpaper::WallpaperSettings;
 use crate::render::canvas::{paint_rounded_shadow, rounded_rect_path, Canvas, Shadow};
+use crate::render::color_detection::balance_pixmap;
 use crate::render::{annotations as annotation_renderer, color, gradient};
+
+pub use crate::render::color_detection::balance_rgba as balance_bounds;
 
 #[derive(Clone)]
 pub struct PreviewEdgeImage {
@@ -37,12 +40,24 @@ pub fn composites_primary_backdrop(
     layers: &[crate::editor::layers::ImageLayer],
 ) -> bool {
     layers.is_empty()
-        && !wallpaper.balance
-        && (composites_wallpaper_effects(wallpaper, layers)
-            || (wallpaper.corners <= 0.0
-                && wallpaper.shadow <= 0.0
-                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()))
         && wallpaper.is_active(false)
+        && ((!wallpaper.balance
+            && (composites_wallpaper_effects(wallpaper, layers)
+                || (wallpaper.corners <= 0.0
+                    && wallpaper.shadow <= 0.0
+                    && crate::render::window_frame::theme(&wallpaper.window_frame.style)
+                        .is_none())))
+            || (wallpaper.balance
+                && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none()
+                && (wallpaper.corners > 0.0 || wallpaper.shadow > 0.0)))
+}
+
+fn framed_composite_required(
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+) -> bool {
+    crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
+        && (!layers.is_empty() || (wallpaper.balance && wallpaper.inset > 0.0))
 }
 
 /// Renders the base image plus every annotation into a fresh RGBA buffer at
@@ -82,18 +97,16 @@ pub fn compose_with_layers(
         None => (width.max(1), height.max(1)),
     };
 
-    let mut canvas = match Canvas::new(width, height) {
-        Some(canvas) => canvas,
-        None => return RgbaImage::new(width, height),
+    let Some(mut canvas) = base
+        .and_then(from_dynamic_image)
+        .map(Canvas::from_pixmap)
+        .or_else(|| Canvas::new(width, height))
+    else {
+        return RgbaImage::new(width, height);
     };
-    if let Some(base) = base {
-        if let Some(pixmap) = from_rgba(&base.to_rgba8()) {
-            canvas.draw_pixmap(pixmap.as_ref(), 0.0, 0.0, width as f32, height as f32);
-        }
-    }
     let original_balance = wallpaper
         .balance
-        .then(|| balance_bounds_pixmap(canvas.pixmap()))
+        .then(|| balance_pixmap(canvas.pixmap().as_ref()))
         .flatten();
     let original_inset_color = layers.is_empty().then(|| {
         (wallpaper.inset > 0.0)
@@ -105,9 +118,7 @@ pub fn compose_with_layers(
             })
             .flatten()
     });
-    if !layers.is_empty()
-        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
-    {
+    if framed_composite_required(wallpaper, layers) {
         let cropped = original_balance.and_then(|bounds| balance_crop(canvas.pixmap(), bounds));
         let primary = cropped.as_ref().unwrap_or(canvas.pixmap());
         let offset = original_balance
@@ -120,7 +131,7 @@ pub fn compose_with_layers(
             annotations,
             frame_scale,
             offset,
-            None,
+            original_inset_color.clone().flatten(),
         ) {
             return to_rgba(&composed);
         }
@@ -163,7 +174,7 @@ pub fn compose_with_layers(
         let bounds = if layers.is_empty() {
             original_balance
         } else {
-            balance_bounds_pixmap(&annotated)
+            balance_pixmap(annotated.as_ref())
         };
         if let Some(cropped) = bounds.and_then(|bounds| balance_crop(&annotated, bounds)) {
             annotated = cropped;
@@ -189,9 +200,10 @@ pub fn compose_with_layers(
     let mut canvas = Canvas::from_pixmap(composed);
     let title_bar =
         crate::render::window_frame::title_bar_height(&wallpaper.window_frame.style, frame_scale);
+    let crop = original_balance.unwrap_or_default();
     canvas.translate(
-        offset_x.round() as f32,
-        (offset_y.round() + title_bar) as f32,
+        offset_x.round() as f32 - crop.left as f32,
+        (offset_y.round() + title_bar) as f32 - crop.top as f32,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     to_rgba(canvas.pixmap())
@@ -401,6 +413,11 @@ fn compose_framed_layers(
     );
     let ((width, height), (offset_x, offset_y, _, _)) =
         crate::editor::wallpaper::layout(wallpaper, layout.width, layout.height, frame_scale, true);
+    let (offset_x, offset_y) = if layers.is_empty() {
+        (offset_x.round(), offset_y.round())
+    } else {
+        crate::editor::wallpaper::centered_raster_offset((width, height), (offset_x, offset_y))
+    };
     let (width, height) = (
         width.round().max(1.0) as u32,
         height.round().max(1.0) as u32,
@@ -425,8 +442,8 @@ fn compose_framed_layers(
         crate::render::window_frame::render(
             canvas,
             image,
-            offset_x.round() + rect.x,
-            offset_y.round() + rect.y,
+            offset_x + rect.x,
+            offset_y + rect.y,
             content_width,
             content_height,
             &wallpaper.window_frame.style,
@@ -461,28 +478,11 @@ fn compose_framed_layers(
         render_layer(&mut canvas, image.as_ref(), rect, inset_color.as_deref());
     }
     canvas.translate(
-        (offset_x.round() + layout.primary.x + inset) as f32 - crop_offset.0,
-        (offset_y.round() + layout.primary.y + title_bar + inset) as f32 - crop_offset.1,
+        (offset_x + layout.primary.x + inset) as f32 - crop_offset.0,
+        (offset_y + layout.primary.y + title_bar + inset) as f32 - crop_offset.1,
     );
     annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
     Some(canvas.into_pixmap())
-}
-
-/// The margin the balance option trims, in image pixels. The preview shifts
-/// and clips by the same amounts so it shows what the export writes.
-pub fn balance_bounds(
-    image: &image::RgbaImage,
-) -> Option<crate::render::color_detection::ContentBounds> {
-    let pixmap = from_rgba(image)?;
-    balance_bounds_pixmap(&pixmap)
-}
-
-fn balance_bounds_pixmap(pixmap: &Pixmap) -> Option<crate::render::color_detection::ContentBounds> {
-    use crate::render::color_detection;
-
-    let edge = color_detection::dominant_edge_color(pixmap.as_ref())?;
-    let bounds = color_detection::content_bounds(pixmap.as_ref(), &edge)?;
-    (bounds != color_detection::ContentBounds::default()).then_some(bounds)
 }
 
 /// Crops the uniform margin the balance option removes, or `None` when there
@@ -675,15 +675,42 @@ fn image_shadow_at_scale(shadow: f64, scale: f64) -> Option<Shadow> {
 }
 
 fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
-    paint_background_source(canvas, wallpaper, width, height);
-
-    // `backgroundBlur` is a percentage of a 50px radius, as in
-    // `renderWallpaperComposite`.
     if wallpaper.has_background() && wallpaper.background_blur > 0.0 {
         let sigma = ((wallpaper.background_blur / 100.0) * 50.0) as f32;
-        let mut blurred = canvas.pixmap().clone();
-        crate::render::blur::blur(&mut blurred, sigma);
-        canvas.draw_pixmap(blurred.as_ref(), 0.0, 0.0, width, height);
+        let expansion = sigma * 2.;
+        let blur_padding = u32::try_from(crate::render::blur::box_radius(sigma))
+            .unwrap_or(u32::MAX)
+            .saturating_mul(3);
+        let padding = (expansion.ceil() as u32).max(blur_padding);
+        let expanded = padding.checked_mul(2).and_then(|extra| {
+            Canvas::new(
+                canvas.width().checked_add(extra)?,
+                canvas.height().checked_add(extra)?,
+            )
+        });
+        if let Some(mut expanded) = expanded {
+            let shift = padding as f32 - expansion;
+            expanded.translate(shift, shift);
+            paint_background_source(
+                &mut expanded,
+                wallpaper,
+                width + expansion * 2.,
+                height + expansion * 2.,
+            );
+            crate::render::blur::blur_transparent(expanded.pixmap_mut(), sigma);
+            canvas.draw_pixmap(
+                expanded.pixmap().as_ref(),
+                -(padding as f32),
+                -(padding as f32),
+                expanded.width() as f32,
+                expanded.height() as f32,
+            );
+        } else {
+            paint_background_source(canvas, wallpaper, width, height);
+            crate::render::blur::blur(canvas.pixmap_mut(), sigma);
+        }
+    } else {
+        paint_background_source(canvas, wallpaper, width, height);
     }
 
     if wallpaper.has_background() {
@@ -702,7 +729,7 @@ fn paint_background_source(
 ) {
     if let Some(source) = wallpaper.background_image.as_deref() {
         if let Some(image) = gradient::load_image(source) {
-            gradient::fill_image(canvas, image.as_ref(), width, height);
+            gradient::fill_image_high_quality(canvas, image.as_ref(), width, height);
             return;
         }
     }
@@ -762,10 +789,11 @@ fn composite_tiles(
         for x in (0..composite.width()).step_by(side as usize) {
             let right = (x + side).min(composite.width());
             let bottom = (y + side).min(composite.height());
-            let source_x = x.saturating_sub(1);
-            let source_y = y.saturating_sub(1);
-            let source_right = (right + 1).min(composite.width());
-            let source_bottom = (bottom + 1).min(composite.height());
+            let overlap = crate::editor::image_tiles::TILE_OVERLAP;
+            let source_x = x.saturating_sub(overlap);
+            let source_y = y.saturating_sub(overlap);
+            let source_right = right.saturating_add(overlap).min(composite.width());
+            let source_bottom = bottom.saturating_add(overlap).min(composite.height());
             let mut pixels = composite.clone_rect(tiny_skia::IntRect::from_xywh(
                 source_x as i32,
                 source_y as i32,
@@ -819,10 +847,16 @@ pub fn render_backdrop(
     Vec<PreviewEdgeImage>,
     bool,
 )> {
-    if composites_wallpaper_effects(wallpaper, layers) {
-        let primary = from_rgba(&base?.to_rgba8())?;
+    if composites_primary_backdrop(wallpaper, layers) {
+        let primary = from_dynamic_image(base?)?;
+        let cropped = wallpaper
+            .balance
+            .then(|| balance_pixmap(primary.as_ref()))
+            .flatten()
+            .and_then(|bounds| balance_crop(&primary, bounds));
+        let primary = cropped.as_ref().unwrap_or(&primary);
         let composite =
-            compose_wallpaper(&primary, wallpaper, frame_scale, Some(inset_color), false);
+            compose_wallpaper(primary, wallpaper, frame_scale, Some(inset_color), false);
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
             composite_tiles(&composite, stage_background, 8192)?
         } else {
@@ -830,13 +864,11 @@ pub fn render_backdrop(
         };
         return Some((render_image(&composite), tiles, true));
     }
-    if !layers.is_empty()
-        && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some()
-    {
-        let primary = from_rgba(&base?.to_rgba8())?;
+    if framed_composite_required(wallpaper, layers) {
+        let primary = from_dynamic_image(base?)?;
         let balance = wallpaper
             .balance
-            .then(|| balance_bounds_pixmap(&primary))
+            .then(|| balance_pixmap(primary.as_ref()))
             .flatten();
         let cropped = balance.and_then(|bounds| balance_crop(&primary, bounds));
         let primary = cropped.as_ref().unwrap_or(&primary);
@@ -860,10 +892,10 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
-        let primary = from_rgba(&base?.to_rgba8())?;
+        let primary = from_dynamic_image(base?)?;
         let cropped = wallpaper
             .balance
-            .then(|| balance_bounds_pixmap(&primary))
+            .then(|| balance_pixmap(primary.as_ref()))
             .flatten()
             .and_then(|bounds| balance_crop(&primary, bounds));
         let primary = cropped.as_ref().unwrap_or(&primary);
@@ -876,37 +908,8 @@ pub fn render_backdrop(
         };
         return Some((render_image(&composite), tiles, true));
     }
-    let mut canvas = Canvas::new(width.max(1), height.max(1))?;
-    if !wallpaper.has_background() && !composites_primary_backdrop(wallpaper, layers) {
-        canvas.fill_all(Color::from_rgba8(
-            stage_background[0],
-            stage_background[1],
-            stage_background[2],
-            255,
-        ));
-    }
-    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
     let edge_preview = wallpaper.supports_edge_preview(!layers.is_empty());
-    if edge_preview && wallpaper.has_background() {
-        let mut builder = tiny_skia::PathBuilder::new();
-        builder.push_rect(tiny_skia::Rect::from_xywh(
-            0.0,
-            0.0,
-            width as f32,
-            height as f32,
-        )?);
-        canvas.fill_path_blended(
-            &builder.finish()?,
-            Color::from_rgba8(
-                stage_background[0],
-                stage_background[1],
-                stage_background[2],
-                255,
-            ),
-            FillRule::Winding,
-            tiny_skia::BlendMode::DestinationOver,
-        );
-    }
+    let mut canvas = wallpaper_backdrop(wallpaper, width, height, edge_preview, stage_background)?;
 
     if edge_preview && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none() {
         if let Some(shadow) = image_shadow(wallpaper.shadow) {
@@ -1088,6 +1091,64 @@ pub fn render_backdrop(
     ))
 }
 
+fn wallpaper_backdrop(
+    wallpaper: &WallpaperSettings,
+    width: u32,
+    height: u32,
+    edge_preview: bool,
+    stage_background: [u8; 3],
+) -> Option<Canvas> {
+    let mut canvas = Canvas::new(width.max(1), height.max(1))?;
+    if !wallpaper.has_background() {
+        canvas.fill_all(Color::from_rgba8(
+            stage_background[0],
+            stage_background[1],
+            stage_background[2],
+            255,
+        ));
+    }
+    paint_backdrop(&mut canvas, wallpaper, width as f32, height as f32);
+    if edge_preview && wallpaper.has_background() {
+        let mut builder = tiny_skia::PathBuilder::new();
+        builder.push_rect(tiny_skia::Rect::from_xywh(
+            0.0,
+            0.0,
+            width as f32,
+            height as f32,
+        )?);
+        canvas.fill_path_blended(
+            &builder.finish()?,
+            Color::from_rgba8(
+                stage_background[0],
+                stage_background[1],
+                stage_background[2],
+                255,
+            ),
+            FillRule::Winding,
+            tiny_skia::BlendMode::DestinationOver,
+        );
+    }
+    Some(canvas)
+}
+
+#[cfg(target_os = "macos")]
+pub fn render_rounded_preview(
+    base: &image::DynamicImage,
+    wallpaper: &WallpaperSettings,
+    frame_scale: f64,
+) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let primary = from_dynamic_image(base)?;
+    let composed = compose_wallpaper(&primary, wallpaper, frame_scale, None, false);
+    Some(render_image(&composed))
+}
+
+pub fn from_dynamic_image(source: &image::DynamicImage) -> Option<Pixmap> {
+    match source.as_rgba8() {
+        Some(rgba) => from_rgba(rgba),
+        None => from_rgba(&source.to_rgba8()),
+    }
+}
+
 /// Converts an `image` RGBA buffer into a premultiplied pixmap.
 pub fn from_rgba(source: &RgbaImage) -> Option<Pixmap> {
     let mut pixmap = Pixmap::new(source.width().max(1), source.height().max(1))?;
@@ -1134,13 +1195,6 @@ pub fn to_rgba(source: &Pixmap) -> RgbaImage {
     target
 }
 
-/// Encodes an RGBA buffer as PNG bytes.
-pub fn encode_png(canvas: &RgbaImage) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = std::io::Cursor::new(Vec::new());
-    canvas.write_to(&mut bytes, image::ImageFormat::Png)?;
-    Ok(bytes.into_inner())
-}
-
 /// Applies a redaction to a standalone RGBA region. The editor uses this to
 /// rasterize the patch it shows under a committed redaction, so the preview
 /// pixels are the ones the export writes.
@@ -1176,6 +1230,207 @@ pub fn redact_region(
 mod tests {
     use super::*;
     use crate::editor::wallpaper::preset;
+
+    #[test]
+    fn blurred_translucent_background_keeps_its_alpha() {
+        for alpha in [0, 64, 128, 255] {
+            let settings = WallpaperSettings {
+                gradient: Some(crate::editor::wallpaper::GradientOption {
+                    id: "test".into(),
+                    colors: vec![format!("#204060{alpha:02x}"), format!("#e0c080{alpha:02x}")],
+                    angle: 0.,
+                }),
+                background_blur: 40.,
+                ..Default::default()
+            };
+            let mut canvas = Canvas::new(64, 64).unwrap();
+            paint_backdrop(&mut canvas, &settings, 64., 64.);
+            assert!(canvas
+                .pixmap()
+                .pixels()
+                .iter()
+                .all(|pixel| pixel.alpha() <= alpha));
+            assert_eq!(canvas.pixmap().pixel(32, 32).unwrap().alpha(), alpha);
+            if alpha == 128 {
+                let mut sharp = Canvas::new(64, 64).unwrap();
+                let mut unblurred_settings = settings.clone();
+                unblurred_settings.background_blur = 0.;
+                paint_backdrop(&mut sharp, &unblurred_settings, 64., 64.);
+                assert_ne!(canvas.pixmap().data(), sharp.pixmap().data());
+            }
+        }
+    }
+
+    #[test]
+    fn blurred_image_background_uses_expanded_cover_geometry() {
+        use base64::Engine;
+
+        let source = RgbaImage::from_fn(64, 48, |x, y| {
+            let shade = if (x / 16 + y / 16) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let settings = WallpaperSettings {
+            background_image: Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            )),
+            background_blur: 40.,
+            ..Default::default()
+        };
+        let mut canvas = Canvas::new(320, 180).unwrap();
+        paint_backdrop(&mut canvas, &settings, 320., 180.);
+        for (x, y, expected) in [(40, 0, 47), (80, 0, 210), (40, 90, 210), (80, 90, 42)] {
+            let actual = canvas.pixmap().pixel(x, y).unwrap().red();
+            assert!(
+                actual.abs_diff(expected) <= 8,
+                "{x},{y}: {actual} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_wallpaper_scaling_matches_high_quality_canvas_samples() {
+        use base64::Engine;
+
+        let source = RgbaImage::from_fn(64, 48, |x, y| {
+            image::Rgba([
+                ((x * 37 + y * 3) % 256) as u8,
+                ((y * 53 + x * 5) % 256) as u8,
+                ((x * 11 + y * 7) % 256) as u8,
+                ((x * 19 + y * 17) % 256) as u8,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let settings = WallpaperSettings {
+            background_image: Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            )),
+            ..Default::default()
+        };
+        let mut canvas = Canvas::new(320, 180).unwrap();
+        canvas.translate(-40., -40.);
+        paint_background_source(&mut canvas, &settings, 400., 260.);
+        let output = to_rgba(canvas.pixmap());
+        for (x, y, expected) in [
+            (40, 0, [240, 34, 202, 135]),
+            (100, 30, [89, 84, 84, 143]),
+            (160, 90, [222, 131, 98, 244]),
+            (120, 120, [200, 94, 219, 193]),
+        ] {
+            let actual = output.get_pixel(x, y).0;
+            assert!(
+                actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 4),
+                "{x},{y}: {actual:?} vs {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_canvas_matches_drawing_onto_an_empty_canvas() {
+        let (width, height) = (256, 64);
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([(x * 37) as u8, (y * 51) as u8, (x ^ y) as u8, x as u8])
+        }));
+        let source = from_dynamic_image(&base).unwrap();
+        let annotation = Annotation::Rectangle {
+            id: "overlay".into(),
+            x: 72.5,
+            y: 14.25,
+            width: 108.5,
+            height: 25.25,
+            stroke: "#da243b".into(),
+            stroke_width: 2.0,
+            fill: Some("#2a859b80".into()),
+        };
+        for annotations in [&[][..], std::slice::from_ref(&annotation)] {
+            let mut previous = Canvas::new(width, height).unwrap();
+            previous.draw_pixmap(source.as_ref(), 0.0, 0.0, width as f32, height as f32);
+            annotation_renderer::draw_all_screenshot(&mut previous, annotations, 1.0);
+            let actual = compose_with_layers(
+                Some(&base),
+                width,
+                height,
+                annotations,
+                &WallpaperSettings::default(),
+                &[],
+                1.0,
+            );
+            assert_eq!(actual, to_rgba(previous.pixmap()));
+        }
+    }
+
+    #[test]
+    fn borrowed_border_samples_match_premultiplied_images() {
+        use crate::render::color_detection;
+
+        for border_alpha in [0, 1, 127, 128, 254, 255] {
+            for content_alpha in [127, 128, 199, 255] {
+                let source = RgbaImage::from_fn(56, 64, |x, y| {
+                    if (17..36).contains(&x) && (19..39).contains(&y) {
+                        image::Rgba([42, 111, 183, content_alpha])
+                    } else {
+                        image::Rgba([181, 182, 183, border_alpha])
+                    }
+                });
+                let old_pixmap = from_rgba(&source).unwrap();
+                let borrowed = balance_bounds(&source);
+                assert_eq!(
+                    borrowed,
+                    balance_pixmap(old_pixmap.as_ref()),
+                    "border alpha {border_alpha}, content alpha {content_alpha}",
+                );
+                for crop in [
+                    color_detection::ContentBounds::default(),
+                    color_detection::ContentBounds {
+                        top: 19,
+                        right: 20,
+                        bottom: 25,
+                        left: 17,
+                    },
+                ] {
+                    assert_eq!(
+                        color_detection::dominant_inset_color_rgba(&source, crop),
+                        color_detection::dominant_inset_color(old_pixmap.as_ref(), crop),
+                        "border alpha {border_alpha}, content alpha {content_alpha}, crop {crop:?}",
+                    );
+                }
+                if border_alpha == 255 && content_alpha == 255 {
+                    assert_eq!(
+                        borrowed.unwrap(),
+                        crate::render::color_detection::ContentBounds {
+                            top: 9,
+                            right: 10,
+                            bottom: 15,
+                            left: 7,
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn converts_dynamic_rgba_and_rgb_sources_identically() {
+        let rgba = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(256, 1, |x, _| {
+            image::Rgba([x as u8, 255 - x as u8, 80, x as u8])
+        }));
+        let rgb = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 1, |x, _| {
+            image::Rgb([x as u8, 255 - x as u8, 80])
+        }));
+        for source in [rgba, rgb] {
+            let actual = from_dynamic_image(&source).unwrap();
+            let expected = from_rgba(&source.to_rgba8()).unwrap();
+            assert_eq!(actual.data(), expected.data());
+        }
+    }
 
     #[test]
     fn tiled_preview_shadow_matches_the_full_rasterizer() {
@@ -1715,6 +1970,47 @@ mod tests {
     }
 
     #[test]
+    fn rounded_corners_clip_annotations_and_redactions() {
+        let mut settings = WallpaperSettings::default();
+        settings.set_gradient(preset("slate"));
+        settings.padding = 10.0;
+        settings.corners = 30.0;
+        let annotations = vec![
+            Annotation::Rectangle {
+                id: "fill".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 60.0,
+                height: 60.0,
+                stroke: "#00ff00".into(),
+                stroke_width: 1.0,
+                fill: Some("#00ff00".into()),
+            },
+            Annotation::Redact {
+                id: "blackout".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+                style: "blackout".into(),
+                intensity: 5.0,
+            },
+        ];
+        for alpha in [128, 255] {
+            let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                60,
+                60,
+                image::Rgba([255, 0, 0, alpha]),
+            ));
+            let clean = compose(Some(&base), 60, 60, &[], &settings, 1.0);
+            let annotated = compose(Some(&base), 60, 60, &annotations, &settings, 1.0);
+            assert_eq!(annotated.get_pixel(10, 10), clean.get_pixel(10, 10));
+            assert_eq!(annotated.get_pixel(30, 30).0, [0, 0, 0, 255]);
+            assert_eq!(annotated.get_pixel(40, 40).0, [0, 255, 0, 255]);
+        }
+    }
+
+    #[test]
     fn an_attached_layer_widens_the_composition() {
         use crate::editor::layers::{Edge, ImageLayer};
 
@@ -1981,7 +2277,14 @@ mod tests {
                 tiles[4].inset_x,
                 tiles[4].inset_y
             ),
-            (8, 8, 8, 8, 1, 1)
+            (
+                8,
+                8,
+                8,
+                8,
+                crate::editor::image_tiles::TILE_OVERLAP,
+                crate::editor::image_tiles::TILE_OVERLAP
+            )
         );
         let mut expected = composite.clone();
         let mut paint = tiny_skia::Paint::default();
@@ -2136,6 +2439,42 @@ mod tests {
     }
 
     #[test]
+    fn balanced_zero_padding_preserves_unframed_effects() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
+            if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        for inset in [0, 8] {
+            for shadow in [0., 50.] {
+                let settings = WallpaperSettings {
+                    balance: true,
+                    corners: 20.,
+                    inset: f64::from(inset),
+                    shadow,
+                    ..WallpaperSettings::default()
+                };
+                let composed = compose(Some(&base), 200, 160, &[], &settings, 1.);
+                assert_eq!(composed.dimensions(), (140 + inset * 2, 120 + inset * 2));
+                assert_eq!(
+                    composed.get_pixel(70 + inset, 60 + inset).0,
+                    [64, 112, 192, 255]
+                );
+                if inset > 0 {
+                    assert_eq!(composed.get_pixel(4, 60 + inset).0, [230, 230, 230, 255]);
+                }
+                if shadow == 0. {
+                    assert_eq!(composed.get_pixel(0, 0).0[3], 0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn balanced_inset_uses_the_source_border_even_with_annotations() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
             if (40..160).contains(&x) && (30..130).contains(&y) {
@@ -2165,6 +2504,61 @@ mod tests {
         let composed = compose(Some(&base), 200, 160, &[annotation], &settings, 1.0);
         assert_eq!(composed.dimensions(), (196, 176));
         assert_eq!(composed.get_pixel(23, 88).0, [230, 230, 230, 255]);
+    }
+
+    #[test]
+    fn balanced_window_frame_preserves_inset_and_annotations() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(200, 160, |x, y| {
+            if (40..160).contains(&x) && (30..130).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else if (5..195).contains(&x) && (5..155).contains(&y) {
+                image::Rgba([230, 230, 230, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        let annotation = Annotation::Rectangle {
+            id: "balanced-frame-inset".into(),
+            x: 70.,
+            y: 70.,
+            width: 20.,
+            height: 20.,
+            stroke: "#ff00ff".into(),
+            stroke_width: 1.,
+            fill: Some("#ff00ff".into()),
+        };
+        for style in ["macos-light", "macos-dark"] {
+            for padding in [0, 20] {
+                let mut settings = WallpaperSettings {
+                    balance: true,
+                    padding: f64::from(padding),
+                    inset: 8.,
+                    shadow: 50.,
+                    ..WallpaperSettings::default()
+                };
+                settings.window_frame.style = style.into();
+                let composed = compose(
+                    Some(&base),
+                    200,
+                    160,
+                    std::slice::from_ref(&annotation),
+                    &settings,
+                    1.,
+                );
+                assert_eq!(
+                    composed.dimensions(),
+                    (156 + padding * 2, 164 + padding * 2)
+                );
+                assert_eq!(
+                    composed.get_pixel(padding + 4, padding + 76).0,
+                    [230, 230, 230, 255]
+                );
+                assert_eq!(
+                    composed.get_pixel(padding + 58, padding + 96).0,
+                    [255, 0, 255, 255]
+                );
+            }
+        }
     }
 
     #[test]
@@ -2475,6 +2869,48 @@ mod tests {
     }
 
     #[test]
+    fn balanced_attachments_keep_their_individual_insets_and_corners() {
+        use crate::editor::layers::{Edge, ImageLayer};
+
+        let directory = tempfile::tempdir().unwrap();
+        let attachment = directory.path().join("right.png");
+        RgbaImage::from_pixel(20, 20, image::Rgba([240, 80, 64, 255]))
+            .save(&attachment)
+            .unwrap();
+        let layers = [ImageLayer {
+            id: "right".into(),
+            image_url: attachment.to_string_lossy().into_owned(),
+            natural_width: 20.,
+            natural_height: 20.,
+            edge: Edge::Right,
+        }];
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(100, 80, |x, y| {
+            if (20..90).contains(&x) && (15..75).contains(&y) {
+                image::Rgba([64, 112, 192, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        }));
+        for shadow in [0., 50.] {
+            let settings = WallpaperSettings {
+                balance: true,
+                inset: 4.,
+                corners: 12.,
+                shadow,
+                ..WallpaperSettings::default()
+            };
+            let output = compose_with_layers(Some(&base), 100, 80, &[], &settings, &layers, 1.);
+            assert_eq!(output.dimensions(), (181, 83));
+            assert_eq!(output.get_pixel(14, 14).0, [64, 112, 192, 255]);
+            assert_eq!(output.get_pixel(122, 24).0, [240, 80, 64, 255]);
+            if shadow == 0. {
+                assert_eq!(output.get_pixel(0, 0).0[3], 0);
+                assert_eq!(output.get_pixel(98, 0).0[3], 0);
+            }
+        }
+    }
+
+    #[test]
     fn zero_padding_balanced_unframed_attachment_preview_matches_export() {
         use crate::editor::layers::{Edge, ImageLayer};
 
@@ -2671,7 +3107,57 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_annotations_follow_electron_export_order() {
+    fn screenshot_redactions_filter_earlier_annotations_in_order() {
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            40,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let shape = Annotation::Rectangle {
+            id: "shape".into(),
+            x: 16.,
+            y: 10.,
+            width: 2.,
+            height: 20.,
+            stroke: "#ff0000".into(),
+            stroke_width: 1.,
+            fill: Some("#ff0000".into()),
+        };
+        for style in ["blackout", "pixelate", "blur"] {
+            let redact = Annotation::Redact {
+                id: style.into(),
+                x: 10.,
+                y: 5.,
+                width: 30.,
+                height: 30.,
+                style: style.into(),
+                intensity: 5.,
+            };
+            let compose_order = |annotations: &[Annotation]| {
+                compose(
+                    Some(&base),
+                    60,
+                    40,
+                    annotations,
+                    &WallpaperSettings::default(),
+                    1.,
+                )
+            };
+            let filtered = compose_order(&[shape.clone(), redact.clone()]);
+            let above = compose_order(&[redact, shape.clone()]);
+            let filtered_pixel = filtered.get_pixel(17, 20).0;
+            let above_pixel = above.get_pixel(17, 20).0;
+            assert_eq!(above_pixel, [255, 0, 0, 255], "{style}");
+            if style == "blackout" {
+                assert_eq!(filtered_pixel, [0, 0, 0, 255]);
+            } else {
+                assert!(filtered_pixel[1] > 0, "{style}: {filtered_pixel:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_annotations_respect_composition_order() {
         let base = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
             100,
             80,
@@ -2713,12 +3199,12 @@ mod tests {
             stroke_width: 10.,
         };
         for (annotations, expected, corner) in [
-            (vec![shape.clone(), blur.clone()], [255, 0, 255, 255], None),
+            (vec![shape.clone(), blur.clone()], [208, 31, 240, 255], None),
             (vec![blur, shape.clone()], [255, 0, 255, 255], None),
             (
                 vec![shape.clone(), blackout.clone()],
                 [0, 0, 0, 255],
-                Some([169, 0, 169, 255]),
+                Some([0, 0, 0, 255]),
             ),
             (
                 vec![blackout.clone(), shape.clone()],
@@ -2727,7 +3213,7 @@ mod tests {
             ),
             (
                 vec![highlight.clone(), shape.clone()],
-                [255, 0, 127, 255],
+                [255, 0, 255, 255],
                 None,
             ),
             (vec![shape, highlight.clone()], [255, 0, 127, 255], None),
@@ -2754,10 +3240,7 @@ mod tests {
             if let Some(expected) = corner {
                 let actual = output.get_pixel(32, 22).0;
                 assert!(
-                    actual
-                        .iter()
-                        .zip(expected)
-                        .all(|(a, e)| a.abs_diff(e) <= 24),
+                    actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
                     "{annotations:?}: corner {actual:?} vs {expected:?}"
                 );
             }

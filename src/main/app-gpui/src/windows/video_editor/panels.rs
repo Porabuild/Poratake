@@ -9,7 +9,7 @@ use crate::ui::menu::MenuHandle;
 use crate::ui::toolbar;
 use crate::windows::video_editor::data_editor;
 use crate::windows::video_editor::drawing_overlay;
-use crate::windows::video_editor::model::{FocusPoint, VideoEditorState};
+use crate::windows::video_editor::model::{self, FocusPoint, MusicTrack, VideoEditorState};
 use crate::windows::video_editor::panel_kit as kit;
 use crate::windows::video_editor::sidebar::SidebarTab;
 use crate::windows::video_editor::styles::{
@@ -37,18 +37,25 @@ pub fn render(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     match tab {
-        SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, cx),
-        SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, cx),
+        SidebarTab::Cursor => cursor_panel(view, state, has_cursor_data, theme, window, cx),
+        SidebarTab::Zoom => zoom_panel(view, state, has_cursor_data, theme, window, cx),
         SidebarTab::Drawing => drawing_panel(view, state, theme, window, cx),
-        SidebarTab::Camera => camera_panel(view, state, has_camera, theme, cx),
-        SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, cx),
-        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, cx),
-        SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, cx),
-        SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, cx),
-        SidebarTab::FirstFrame => first_frame_panel(view, state, theme, cx),
-        SidebarTab::Export => {
-            export_panel(view, state, is_exporting, export_progress, menu, theme, cx)
-        }
+        SidebarTab::Camera => camera_panel(view, state, has_camera, theme, window, cx),
+        SidebarTab::Audio => audio_panel(view, state, has_keyboard, menu, theme, window, cx),
+        SidebarTab::Wallpaper => wallpaper_panel(view, state, theme, window, cx),
+        SidebarTab::Keyboard => keyboard_panel(view, state, has_keyboard, theme, window, cx),
+        SidebarTab::Subtitle => subtitle_panel(view, state, has_mic, theme, window, cx),
+        SidebarTab::FirstFrame => first_frame_panel(view, state, theme, window, cx),
+        SidebarTab::Export => export_panel(
+            view,
+            state,
+            is_exporting,
+            export_progress,
+            menu,
+            theme,
+            window,
+            cx,
+        ),
     }
 }
 
@@ -57,13 +64,14 @@ fn cursor_panel(
     state: &VideoEditorState,
     has_cursor_data: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let cursor_data_summary = view
         .cursor_summary()
         .unwrap_or_else(|| SharedString::from("Edit or replace cursor movement data"));
     if !has_cursor_data {
-        return kit::panel(&view.panel_scroll, vec![
+        let children = vec![
             kit::header(
                 "Cursor Data",
                 "No cursor data available for this video",
@@ -99,7 +107,8 @@ fn cursor_panel(
                 "Cursor data is a JSON file containing mouse movement events with normalized coordinates (0-1). Each event has a timestamp, x/y position, and event type (move, down, up, scroll).",
                 theme,
             ),
-        ]);
+        ];
+        return kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx);
     }
 
     let style = state.cursor_style.clone();
@@ -120,7 +129,7 @@ fn cursor_panel(
             "Cursor overlay is disabled. Enable it to show cursor in your video.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx);
     }
 
     let has_custom = style.custom_cursor_image.is_some();
@@ -147,7 +156,8 @@ fn cursor_panel(
                         .child(
                             gpui::img(std::path::PathBuf::from(path))
                                 .size(px(40.0))
-                                .object_fit(gpui::ObjectFit::Contain),
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .when(crate::ui::chrome::is_macos(), |el| el.rounded(px(3.0))),
                         ),
                 )
                 .child(kit::tertiary_button(
@@ -328,7 +338,7 @@ fn cursor_panel(
         this.update_cursor(cx, |style| *style = CursorStyle::default());
     }));
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Cursor, &view.panel_scroll, children, window, cx)
 }
 
 fn format_card(title: &'static str, body: &'static str, theme: &ThemeVars) -> AnyElement {
@@ -369,6 +379,7 @@ fn zoom_panel(
     state: &VideoEditorState,
     has_cursor_data: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.zoom_settings.clone();
@@ -530,7 +541,7 @@ fn zoom_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Zoom, &view.panel_scroll, children, window, cx)
 }
 
 fn zoom_speed_label(value: f64) -> &'static str {
@@ -718,7 +729,13 @@ fn drawing_panel(
             "Select a drawing segment on the timeline to edit it.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Drawing,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     };
     children.push(
         div()
@@ -750,7 +767,13 @@ fn drawing_panel(
                 .into_any_element(),
         );
     }
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Drawing,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn drawing_tool_grid(
@@ -1111,6 +1134,7 @@ fn camera_panel(
     state: &VideoEditorState,
     has_camera: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     if !has_camera {
@@ -1145,7 +1169,7 @@ fn camera_panel(
     ];
 
     if !style.visible {
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(SidebarTab::Camera, &view.panel_scroll, children, window, cx);
     }
 
     children.extend([
@@ -1224,7 +1248,7 @@ fn camera_panel(
         }),
     ]);
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(SidebarTab::Camera, &view.panel_scroll, children, window, cx)
 }
 
 fn camera_position_grid(
@@ -1292,6 +1316,7 @@ fn audio_panel(
     has_keyboard: bool,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let style = state.audio_style.clone();
@@ -1330,12 +1355,13 @@ fn audio_panel(
         })
         .into_any_element()];
 
-    let groups = music_groups(&state.music_tracks);
+    let groups = model::music_groups(view.available_music_tracks());
     if groups.is_empty() {
         children.push(kit::hint("No audio tracks.", theme));
     }
-    for track in groups {
-        children.push(music_row(track, theme, cx));
+    for group in groups {
+        let enabled = group.iter().any(|track| track.enabled);
+        children.push(music_row(group[0], enabled, theme, cx));
     }
 
     if has_keyboard {
@@ -1433,37 +1459,20 @@ fn audio_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
-}
-
-fn music_groups(
-    tracks: &[crate::windows::video_editor::model::MusicTrack],
-) -> Vec<&crate::windows::video_editor::model::MusicTrack> {
-    let mut seen = Vec::new();
-    let mut groups = Vec::new();
-    for track in tracks {
-        let key = if track.group_id.is_empty() {
-            track.id.as_str()
-        } else {
-            track.group_id.as_str()
-        };
-        if seen.contains(&key) {
-            continue;
-        }
-        seen.push(key);
-        groups.push(track);
-    }
-    groups
+    kit::panel(SidebarTab::Audio, &view.panel_scroll, children, window, cx)
 }
 
 /// One music track: its name, an enable toggle, a volume slider and a remove
 /// button, mirroring the rows in `audio-settings-panel.tsx`.
 fn music_row(
-    track: &crate::windows::video_editor::model::MusicTrack,
+    track: &MusicTrack,
+    enabled: bool,
     theme: &ThemeVars,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let id = SharedString::from(track.id.clone());
+    let group_id = SharedString::from(model::group_key(track).to_owned());
+    let switch_id = SharedString::from(format!("music-enabled-{group_id}"));
     let volume = track.volume;
     let speed = track.speed;
     let removable = track.source == "music";
@@ -1515,18 +1524,30 @@ fn music_row(
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            crate::ui::rows::switch(
-                                SharedString::from(format!("music-enabled-{id}")),
-                                track.enabled,
-                                cx,
-                                {
-                                    let id = id.clone();
-                                    move |this, enabled, cx| {
-                                        this.set_music_enabled(id.clone(), enabled, cx)
-                                    }
-                                },
-                            )
-                            .size(herogpui::components::Size::Sm),
+                            div()
+                                .debug_selector({
+                                    let switch_id = switch_id.clone();
+                                    move || switch_id.to_string()
+                                })
+                                .child(
+                                    crate::ui::rows::switch(
+                                        switch_id,
+                                        enabled,
+                                        cx,
+                                        move |this, enabled, cx| {
+                                            this.set_music_group_enabled(
+                                                group_id.clone(),
+                                                enabled,
+                                                cx,
+                                            )
+                                        },
+                                    )
+                                    .aria_label(SharedString::from(format!(
+                                        "Enable {}",
+                                        track.name
+                                    )))
+                                    .size(herogpui::components::Size::Sm),
+                                ),
                         )
                         .when(removable, |el| {
                             el.child(
@@ -1606,6 +1627,7 @@ fn wallpaper_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let wallpaper = state.wallpaper.clone();
@@ -1716,7 +1738,13 @@ fn wallpaper_panel(
         ));
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Wallpaper,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn video_backgrounds(
@@ -1726,7 +1754,8 @@ fn video_backgrounds(
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     use crate::config::schema::CustomBackgroundData;
-    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile};
+    use crate::editor::background::PreviewState;
+    use crate::editor::wallpaper_sheet::{gradient_tile, icon_tile, image_tile, loading_tile};
     use crate::ui::chrome;
 
     let tile = chrome::wallpaper_tile_size(chrome::VIDEO_SIDEBAR_WIDTH, chrome::VIDEO_PANEL_PAD);
@@ -1773,37 +1802,25 @@ fn video_backgrounds(
         let select_desktop = move |_: &mut gpui::Window, cx: &mut gpui::App| {
             if let Some(entity) = desktop.upgrade() {
                 entity.update(cx, |this, cx| {
-                    let source = this.desktop_wallpaper_source.clone().or_else(|| {
-                        crate::editor::background::desktop_wallpaper(
-                            &crate::state::state(cx).daemon,
-                        )
-                    });
-                    if this.desktop_wallpaper_source.is_none() {
-                        this.desktop_wallpaper_source = source.clone();
+                    if this.desktop_wallpaper_source.is_some() {
+                        this.select_desktop_wallpaper(cx);
+                    } else if matches!(this.desktop_wallpaper_preview, Some(PreviewState::Failed)) {
+                        this.load_desktop_wallpaper(true, cx);
+                        cx.notify();
                     }
-                    this.update_wallpaper(cx, |wallpaper| {
-                        if let Some(source) = source.clone() {
-                            wallpaper.enabled = true;
-                            wallpaper.background_image = Some(source);
-                            wallpaper.gradient = None;
-                            if wallpaper.padding == 0.0 {
-                                wallpaper.padding = 50.0;
-                            }
-                        }
-                    });
                 });
             }
         };
-        tiles.push(match view.desktop_wallpaper_preview.clone() {
-            Some(image) => image_tile(
+        tiles.push(match view.desktop_wallpaper_preview.as_ref() {
+            Some(PreviewState::Ready(image)) => image_tile(
                 "video-wallpaper-desktop",
-                image,
+                image.clone(),
                 tile,
                 is_desktop,
                 theme,
                 select_desktop,
             ),
-            None => icon_tile(
+            Some(PreviewState::Failed) => icon_tile(
                 "video-wallpaper-desktop",
                 "Use Desktop Wallpaper",
                 "monitor",
@@ -1812,6 +1829,7 @@ fn video_backgrounds(
                 theme,
                 select_desktop,
             ),
+            _ => loading_tile("video-wallpaper-desktop", tile, theme),
         });
     }
 
@@ -1968,6 +1986,7 @@ fn keyboard_panel(
     state: &VideoEditorState,
     has_keyboard: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     if !has_keyboard {
@@ -2017,7 +2036,13 @@ fn keyboard_panel(
         ));
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Keyboard,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 fn subtitle_panel(
@@ -2025,6 +2050,7 @@ fn subtitle_panel(
     state: &VideoEditorState,
     has_mic: bool,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let (has_subtitles, count, is_transcribing, model) = {
@@ -2135,7 +2161,13 @@ fn subtitle_panel(
             "Subtitle data is a JSON file containing segments with start/end times (in seconds) and text content. You can also import standard SRT files.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Subtitle,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     }
 
     let style = state.subtitle_style.clone();
@@ -2153,7 +2185,13 @@ fn subtitle_panel(
             "Subtitles are disabled. Enable them to show subtitles in your video.",
             theme,
         ));
-        return kit::panel(&view.panel_scroll, children);
+        return kit::panel(
+            SidebarTab::Subtitle,
+            &view.panel_scroll,
+            children,
+            window,
+            cx,
+        );
     }
 
     children.extend([
@@ -2264,7 +2302,13 @@ fn subtitle_panel(
         },
     ));
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::Subtitle,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 /// `WHISPER_MODELS` in `types/subtitle.ts`.
@@ -2282,6 +2326,7 @@ fn first_frame_panel(
     view: &VideoEditorWindow,
     state: &VideoEditorState,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.first_frame.clone();
@@ -2319,7 +2364,8 @@ fn first_frame_panel(
                         gpui::img(std::path::PathBuf::from(path))
                             .w_full()
                             .h_full()
-                            .object_fit(gpui::ObjectFit::Cover),
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .when(crate::ui::chrome::is_macos(), |el| el.rounded(px(7.0))),
                     )
                     .into_any_element(),
             );
@@ -2364,7 +2410,13 @@ fn first_frame_panel(
         }
     }
 
-    kit::panel(&view.panel_scroll, children)
+    kit::panel(
+        SidebarTab::FirstFrame,
+        &view.panel_scroll,
+        children,
+        window,
+        cx,
+    )
 }
 
 /// Port of `formatExportTime`: `m:ss`.
@@ -2379,6 +2431,7 @@ fn export_panel(
     export_progress: f32,
     menu: &MenuHandle,
     theme: &ThemeVars,
+    window: &mut gpui::Window,
     cx: &mut Context<VideoEditorWindow>,
 ) -> AnyElement {
     let settings = state.export_settings.clone();
@@ -2666,22 +2719,24 @@ fn export_panel(
             |this, cx| this.cancel_export(cx),
         ));
     } else {
-        footer.push(
-            div()
-                .w_full()
-                .debug_selector(|| "video-export-start".to_string())
-                .child(
-                    Button::new("export-start")
-                        .variant(Variant::Tertiary)
-                        .recipe("compact")
-                        .label(if is_gif { "Export GIF" } else { "Export Video" })
-                        .full_width(true)
-                        .on_press(
-                            cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
-                        ),
-                )
-                .into_any_element(),
-        );
+        let start = div()
+            .w_full()
+            .debug_selector(|| "video-export-start".to_string())
+            .child(
+                Button::new("export-start")
+                    .variant(Variant::Tertiary)
+                    .recipe("compact")
+                    .label(if is_gif { "Export GIF" } else { "Export Video" })
+                    .full_width(true)
+                    .on_press(
+                        cx.listener(|this, _event, window, cx| this.start_export(window, cx)),
+                    ),
+            );
+        #[cfg(feature = "parity")]
+        let start = start.on_children_prepainted(|bounds, _, _| {
+            crate::ui::parity::record("video-export-start", bounds);
+        });
+        footer.push(start.into_any_element());
     }
     if let Some(error) = view.export_error() {
         footer.push(kit::error(error, theme));
@@ -2695,6 +2750,21 @@ fn export_panel(
         .border_color(theme.border)
         .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
         .children(footer);
+    let reveal = crate::ui::chrome::is_macos().then(|| {
+        crate::ui::focus_reveal::FocusReveal::vertical(
+            "video-export-field-scroll",
+            &view.export_scroll,
+            window,
+            cx,
+        )
+    });
+    let settings_children = settings_children
+        .into_iter()
+        .enumerate()
+        .map(|(index, field)| match &reveal {
+            Some(reveal) => reveal.wrap(format!("video-export-field-{index}"), field, window, cx),
+            None => field,
+        });
     let panel = div()
         .flex()
         .flex_col()

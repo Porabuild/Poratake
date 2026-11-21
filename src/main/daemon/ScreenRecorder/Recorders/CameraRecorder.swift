@@ -13,11 +13,14 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     private let writerQueue = DispatchQueue(label: "com.porabuild.poratake.camera-recorder.writer")
 
     private var sessionStarted = false
+    private var hasWrittenFrame = false
+    private var anchorWritten = false
     private var firstFrameTime: CMTime?
     private var lastFrameTime: CMTime = .zero
     private var lastOriginalTime: CMTime?
     private var accumulateGapOnNextFrame = false
     private var totalPauseDuration: CMTime = .zero
+    private var screenTimeline: (origin: CMTime, clock: CMClock, cameraClock: CMClock, pause: CMTime)?
 
     private(set) var isPaused = false
     private(set) var isSuspended = false
@@ -68,8 +71,34 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
             pendingBuffers.removeAll()
         }
     }
+
+    func syncWithScreenStart(origin: CMTime, clock: CMClock, pause: CMTime) -> Bool {
+        guard let cameraClock = captureSession?.synchronizationClock else { return false }
+        syncWithScreenStart(origin: origin, clock: clock, cameraClock: cameraClock, pause: pause)
+        return true
+    }
+
+    private func syncWithScreenStart(origin: CMTime, clock: CMClock, cameraClock: CMClock, pause: CMTime) {
+        syncQueue.sync {
+            guard !isSynced else { return }
+            screenTimeline = (origin, clock, cameraClock, pause)
+            isSynced = true
+            firstFrameTime = nil
+            lastFrameTime = .zero
+            accumulateGapOnNextFrame = false
+            pendingBuffers.removeAll()
+        }
+    }
+
+    func resumeWithScreenPause(_ pause: CMTime) {
+        syncQueue.sync {
+            guard isRecording, isPaused else { return }
+            screenTimeline?.pause = pause
+            isPaused = false
+        }
+    }
     
-    func start() throws {
+    func start(paused: Bool = false) throws {
         guard !isRecording else { return }
         guard let outputPath = outputPath else {
             throw RecorderError.configuration("Camera output path not configured")
@@ -80,41 +109,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
             try fileManager.removeItem(atPath: outputPath)
         }
 
-        var cameraDevice: AVCaptureDevice?
-
-        let discoverySession: AVCaptureDevice.DiscoverySession
-        if #available(macOS 14.0, *) {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
-                mediaType: .video,
-                position: .unspecified
-            )
-        } else {
-            discoverySession = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
-                mediaType: .video,
-                position: .unspecified
-            )
-        }
-
-        if let deviceName = deviceName {
-            cameraDevice = discoverySession.devices.first { $0.localizedName == deviceName }
-            if cameraDevice == nil {
-                cameraDevice = discoverySession.devices.first { device in
-                    deviceName.contains(device.localizedName) || device.localizedName.contains(deviceName)
-                }
-            }
-        }
-
-        if cameraDevice == nil, let deviceId = deviceId {
-            cameraDevice = discoverySession.devices.first { $0.uniqueID == deviceId }
-        }
-
-        if cameraDevice == nil {
-            cameraDevice = AVCaptureDevice.default(for: .video)
-        }
-
-        guard let camera = cameraDevice else {
+        guard let camera = CameraDeviceLookup.find(deviceId: deviceId, deviceName: deviceName) else {
             throw RecorderError.configuration("No camera device found")
         }
 
@@ -193,45 +188,60 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
             )
         }
 
-        captureSession?.startRunning()
-
         isRecording = true
-        isPaused = false
+        isPaused = paused
         isSuspended = false
         sessionStarted = false
+        hasWrittenFrame = false
+        anchorWritten = false
         firstFrameTime = nil
         lastFrameTime = .zero
         lastOriginalTime = nil
         accumulateGapOnNextFrame = false
         totalPauseDuration = .zero
+        screenTimeline = nil
         visibleRanges = []
 
         isSynced = false
         syncTime = nil
         pendingBuffers = []
         syncOffsetMs = 0
+
+        captureSession?.startRunning()
     }
 
     func pause() {
-        guard isRecording, !isPaused else { return }
-        isPaused = true
-        accumulateGapOnNextFrame = true
+        syncQueue.sync {
+            guard isRecording, !isPaused else { return }
+            isPaused = true
+            if screenTimeline == nil {
+                accumulateGapOnNextFrame = true
+            }
+        }
     }
 
     func resume() {
-        guard isRecording, isPaused else { return }
-        isPaused = false
+        syncQueue.sync {
+            guard isRecording, isPaused else { return }
+            isPaused = false
+        }
     }
 
     func suspend() {
-        guard isRecording, !isSuspended else { return }
-        isSuspended = true
-        accumulateGapOnNextFrame = true
+        syncQueue.sync {
+            guard isRecording, !isSuspended else { return }
+            isSuspended = true
+            if screenTimeline == nil {
+                accumulateGapOnNextFrame = true
+            }
+        }
     }
 
     func unsuspend() {
-        guard isRecording, isSuspended else { return }
-        isSuspended = false
+        syncQueue.sync {
+            guard isRecording, isSuspended else { return }
+            isSuspended = false
+        }
     }
 
     func setVisibleRanges(_ ranges: [(start: Double, end: Double)]) {
@@ -241,9 +251,11 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     func stop() -> (videoPath: String?, metadataPath: String?)? {
         guard isRecording else { return nil }
 
-        isRecording = false
-        isPaused = false
-        isSuspended = false
+        syncQueue.sync {
+            isRecording = false
+            isPaused = false
+            isSuspended = false
+        }
 
         if let session = captureSession {
             session.stopRunning()
@@ -259,21 +271,35 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         captureQueue.sync {}
         writerQueue.sync {}
 
+        if !hasWrittenFrame {
+            abort()
+            return (nil, nil)
+        }
+
+        guard assetWriter?.status == .writing else {
+            abort()
+            return (nil, nil)
+        }
+
         videoInput?.markAsFinished()
+
+        let duration = CMTimeGetSeconds(lastFrameTime)
+
+        let semaphore = DispatchSemaphore(value: 0)
+        assetWriter?.finishWriting {
+            semaphore.signal()
+        }
+        semaphore.wait()
+
+        guard assetWriter?.status == .completed else {
+            abort()
+            return (nil, nil)
+        }
 
         let finalOutputPath = outputPath
         let finalMetadataPath = metadataPath
         outputPath = nil
         metadataPath = nil
-        let duration = CMTimeGetSeconds(lastFrameTime)
-
-        if assetWriter?.status == .writing {
-            let semaphore = DispatchSemaphore(value: 0)
-            assetWriter?.finishWriting {
-                semaphore.signal()
-            }
-            semaphore.wait()
-        }
 
         if let metaPath = finalMetadataPath,
            let videoPath = finalOutputPath,
@@ -326,9 +352,11 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
     }
 
     func abort() {
-        isRecording = false
-        isPaused = false
-        isSuspended = false
+        syncQueue.sync {
+            isRecording = false
+            isPaused = false
+            isSuspended = false
+        }
 
         if let session = captureSession {
             session.stopRunning()
@@ -353,6 +381,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
         syncQueue.sync {
             isSynced = false
+            screenTimeline = nil
             syncTime = nil
             pendingBuffers.removeAll()
             syncOffsetMs = 0
@@ -373,11 +402,10 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard isRecording, !isPaused, !isSuspended else { return }
-
         let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         syncQueue.sync {
+            guard isRecording, !isPaused, !isSuspended else { return }
             if firstFrameTime == nil && !isSynced {
                 firstFrameTime = currentTime
             }
@@ -395,13 +423,7 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
     private func processBuffer(_ sampleBuffer: CMSampleBuffer, originalTime: CMTime) {
         let isFirstFrame = !sessionStarted
-        if isFirstFrame {
-            firstFrameTime = originalTime
-            assetWriter?.startSession(atSourceTime: .zero)
-            sessionStarted = true
-        }
-
-        guard let firstTime = firstFrameTime else { return }
+        let firstTime = firstFrameTime ?? originalTime
 
         if accumulateGapOnNextFrame, let lastOriginal = lastOriginalTime {
             let pauseDuration = CMTimeSubtract(originalTime, lastOriginal)
@@ -412,18 +434,26 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
         }
         lastOriginalTime = originalTime
 
-        var presentationTime = CMTimeSubtract(originalTime, firstTime)
-        presentationTime = CMTimeSubtract(presentationTime, totalPauseDuration)
+        var presentationTime: CMTime
+        if let timeline = screenTimeline {
+            let screenTime = CMSyncConvertTime(originalTime, from: timeline.cameraClock, to: timeline.clock)
+            presentationTime = CMTimeSubtract(CMTimeSubtract(screenTime, timeline.origin), timeline.pause)
+        } else {
+            presentationTime = CMTimeSubtract(originalTime, firstTime)
+            presentationTime = CMTimeSubtract(presentationTime, totalPauseDuration)
+        }
 
+        guard presentationTime.isNumeric else { return }
+        if CMTimeCompare(presentationTime, .zero) < 0 && screenTimeline != nil {
+            return
+        }
         if CMTimeCompare(presentationTime, .zero) < 0 {
             presentationTime = .zero
         }
 
-        if !isFirstFrame && CMTimeCompare(presentationTime, lastFrameTime) <= 0 {
+        if hasWrittenFrame && CMTimeCompare(presentationTime, lastFrameTime) <= 0 {
             return
         }
-
-        lastFrameTime = presentationTime
 
         guard let videoInput = videoInput,
               let pixelBufferAdaptor = pixelBufferAdaptor,
@@ -433,7 +463,29 @@ class CameraRecorder: NSObject, PausableRecorder, AVCaptureVideoDataOutputSample
 
         writerQueue.sync {
             guard assetWriter?.status == .writing else { return }
-            pixelBufferAdaptor.append(imageBuffer, withPresentationTime: presentationTime)
+            if isFirstFrame {
+                firstFrameTime = originalTime
+                assetWriter?.startSession(atSourceTime: .zero)
+                sessionStarted = true
+            }
+            if !hasWrittenFrame && !anchorWritten && CMTimeCompare(presentationTime, .zero) > 0 {
+                guard pixelBufferAdaptor.append(imageBuffer, withPresentationTime: .zero) else { return }
+                anchorWritten = true
+            }
+            if pixelBufferAdaptor.append(imageBuffer, withPresentationTime: presentationTime) {
+                hasWrittenFrame = true
+                lastFrameTime = presentationTime
+            }
         }
     }
+
+    #if RECORDING_TIMELINE_TEST
+    func testConfigureWriter(_ writer: AVAssetWriter, input: AVAssetWriterInput, path: String) {
+        assetWriter = writer
+        videoInput = input
+        outputPath = path
+        isRecording = true
+        hasWrittenFrame = true
+    }
+    #endif
 }

@@ -4,6 +4,9 @@ type Handler = (...args: unknown[]) => unknown;
 
 const ipcHandle: Record<string, Handler> = {};
 const ipcOn: Record<string, Handler> = {};
+const mockLease = { close: vi.fn(), abandon: vi.fn() };
+const mockSession = { lease: vi.fn(() => mockLease) };
+const mockSetWindowExporting = vi.fn();
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -14,6 +17,11 @@ vi.mock('electron', () => ({
       ipcOn[channel] = handler;
     },
   },
+}));
+
+vi.mock('@/main/capture/video/window-manager', () => ({
+  getWindowData: () => ({ musicSession: mockSession }),
+  setWindowExporting: (...args: unknown[]) => mockSetWindowExporting(...args),
 }));
 
 function createSender(id: number) {
@@ -32,6 +40,10 @@ describe('video export sessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    mockLease.close.mockReset();
+    mockLease.abandon.mockReset();
+    mockSession.lease.mockClear();
+    mockSetWindowExporting.mockReset();
     Object.keys(ipcHandle).forEach(channel => delete ipcHandle[channel]);
     Object.keys(ipcOn).forEach(channel => delete ipcOn[channel]);
   });
@@ -72,6 +84,7 @@ describe('video export sessions', () => {
       'destroyed',
       expect.any(Function)
     );
+    expect(mockLease.abandon).toHaveBeenCalledOnce();
   });
 
   it('releases a finished session without aborting it', async () => {
@@ -92,6 +105,8 @@ describe('video export sessions', () => {
       'destroyed',
       expect.any(Function)
     );
+    expect(mockSession.lease).toHaveBeenCalledOnce();
+    expect(mockLease.close).toHaveBeenCalledOnce();
   });
 
   it('ignores late cancellation and completion from a replaced session', async () => {
@@ -130,6 +145,8 @@ describe('video export sessions', () => {
 
     expect(signal?.aborted).toBe(true);
     expect(getExportAbortSignal(sender.id)).toBeUndefined();
+    expect(mockLease.close).not.toHaveBeenCalled();
+    expect(mockLease.abandon).not.toHaveBeenCalled();
   });
 
   it('allows only main-authorized export files and known scratch names', async () => {

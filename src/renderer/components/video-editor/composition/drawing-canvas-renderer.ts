@@ -356,19 +356,16 @@ function clampRegion(
   width: number,
   height: number
 ): DeviceRegion | null {
+  if (width <= 0 || height <= 0) return null;
   const scale = getDeviceScale(ctx);
   const flooredX = Math.floor(x * scale.x);
   const flooredY = Math.floor(y * scale.y);
   const clampedX = Math.max(0, flooredX);
   const clampedY = Math.max(0, flooredY);
-  const clampedWidth = Math.min(
-    Math.ceil(width * scale.x) - (clampedX - flooredX),
-    ctx.canvas.width - clampedX
-  );
-  const clampedHeight = Math.min(
-    Math.ceil(height * scale.y) - (clampedY - flooredY),
-    ctx.canvas.height - clampedY
-  );
+  const clampedWidth =
+    Math.min(Math.ceil((x + width) * scale.x), ctx.canvas.width) - clampedX;
+  const clampedHeight =
+    Math.min(Math.ceil((y + height) * scale.y), ctx.canvas.height) - clampedY;
 
   if (clampedWidth <= 0 || clampedHeight <= 0) return null;
 

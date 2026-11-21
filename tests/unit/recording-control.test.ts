@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type * as platform from '@/main/utils/platform';
+import type { DaemonEventHandler } from '@/types/daemon';
 
 const mockDaemonCall = vi.fn();
+const mockDaemonOnEvent = vi.fn<(handler: DaemonEventHandler) => void>();
+const mockDaemonOffEvent = vi.fn<(handler: DaemonEventHandler) => void>();
 const mockGetConfig = vi.fn();
 const mockUpdateConfig = vi.fn();
 const mockShowCameraPreview = vi.fn();
@@ -53,7 +57,14 @@ vi.mock('electron', () => ({
 vi.mock('@/main/daemon', () => ({
   daemon: {
     call: (...a: unknown[]) => mockDaemonCall(...a),
+    onEvent: mockDaemonOnEvent,
+    offEvent: mockDaemonOffEvent,
   },
+}));
+
+vi.mock('@/main/utils/platform', async importOriginal => ({
+  ...(await importOriginal<typeof platform>()),
+  isMac: true,
 }));
 
 vi.mock('@/main/capture/video/recording-control-window', () => ({
@@ -1064,6 +1075,51 @@ describe('recording-control', () => {
   });
 
   describe('recording countdown', () => {
+    it('cancels only for the selected native window', async () => {
+      vi.useFakeTimers();
+      try {
+        const m = await import('@/main/capture/video/recording-control');
+        const pending = m.startRecordingCountdown(3, 42);
+        const listener = mockDaemonOnEvent.mock.calls[0][0];
+        listener('recording-overlay:target-closed', { windowId: 43 });
+        listener('screen-recorder:error', { windowId: 42 });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(mockUpdateBrowserWindow).toHaveBeenLastCalledWith({
+          countdownSeconds: 2,
+        });
+
+        listener('recording-overlay:target-closed', { windowId: 42 });
+        await expect(pending).resolves.toBe('cancelled');
+        expect(mockDaemonOffEvent).toHaveBeenCalledWith(listener);
+        expect(mockGlobalShortcutUnregister).toHaveBeenCalledWith('Escape');
+        expect(mockUpdateBrowserWindow).toHaveBeenLastCalledWith({
+          countdownSeconds: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores callbacks from a replaced countdown', async () => {
+      vi.useFakeTimers();
+      try {
+        const m = await import('@/main/capture/video/recording-control');
+        const first = m.startRecordingCountdown(3, 42);
+        const stale = mockDaemonOnEvent.mock.calls[0][0];
+        const second = m.startRecordingCountdown(3, 42);
+        const current = mockDaemonOnEvent.mock.calls[1][0];
+        await expect(first).resolves.toBe('cancelled');
+        expect(mockDaemonOffEvent).toHaveBeenCalledWith(stale);
+
+        stale('recording-overlay:target-closed', { windowId: 42 });
+        await vi.advanceTimersByTimeAsync(3000);
+        await expect(second).resolves.toBe('completed');
+        expect(mockDaemonOffEvent).toHaveBeenCalledWith(current);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('ticks the countdown down and completes', async () => {
       vi.useFakeTimers();
       try {

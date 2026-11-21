@@ -310,8 +310,6 @@ pub fn begin_download(cell: &mut UpdateCell) -> Option<(String, Artifact, String
     Some((version, artifact, sha512, notes))
 }
 
-/// `autoUpdater.downloadUpdate()` after `update-available`. No-op unless the
-/// cell is `Available`.
 pub fn start_download(cx: &mut gpui::App) {
     let Some(state) = cx.try_global::<crate::state::UpdateState>() else {
         return;
@@ -326,23 +324,46 @@ pub fn start_download(cx: &mut gpui::App) {
     };
     sync_tray_status(cx);
     notify_about_status_changed(cx);
-    spawn_download_progress_poll(cx);
 
+    let (progress_tx, progress_rx) = smol::channel::bounded::<()>(1);
     let progress_cell = shared.clone();
     let result_cell = shared;
+    let ui_notify = cx.spawn(async move |cx| {
+        while progress_rx.recv().await.is_ok() {
+            let downloading = cx.update(|cx| {
+                let downloading = matches!(current_status(cx), Status::Downloading { .. });
+                if downloading {
+                    sync_tray_status(cx);
+                    notify_about_status_changed(cx);
+                }
+                downloading
+            });
+            if !downloading {
+                break;
+            }
+        }
+    });
+    ui_notify.detach();
+
     cx.spawn(async move |cx| {
         let version_for_progress = version.clone();
         let notes_for_progress = notes.clone();
+        let last_percent = std::sync::atomic::AtomicU32::new(u32::MAX);
         let result = cx
             .background_executor()
             .spawn(async move {
                 download(&artifact, &sha512, move |fraction| {
+                    let percent = (fraction * 100.0).round() as u32;
+                    let prev = last_percent.swap(percent, std::sync::atomic::Ordering::Relaxed);
                     if let Ok(mut cell) = progress_cell.lock() {
                         cell.publish(Status::Downloading {
                             version: version_for_progress.clone(),
                             progress: fraction,
                             notes: notes_for_progress.clone(),
                         });
+                    }
+                    if prev != percent {
+                        let _ = progress_tx.try_send(());
                     }
                 })
             })
@@ -361,28 +382,6 @@ pub fn start_download(cx: &mut gpui::App) {
             sync_tray_status(cx);
             notify_about_status_changed(cx);
         });
-    })
-    .detach();
-}
-
-/// The `update:download-progress` broadcast: while a download runs, About and
-/// the tray row repaint at 10Hz from the shared cell.
-fn spawn_download_progress_poll(cx: &mut gpui::App) {
-    cx.spawn(async move |cx| loop {
-        cx.background_executor()
-            .timer(std::time::Duration::from_millis(100))
-            .await;
-        let downloading = cx.update(|cx| {
-            let downloading = matches!(current_status(cx), Status::Downloading { .. });
-            if downloading {
-                sync_tray_status(cx);
-                notify_about_status_changed(cx);
-            }
-            downloading
-        });
-        if !downloading {
-            break;
-        }
     })
     .detach();
 }
@@ -1280,9 +1279,125 @@ pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+const MACOS_APPLY_SH: &str = r#"#!/bin/sh
+pid="$1"
+src="$2"
+dst="$3"
+staging="$4"
+i=0
+while kill -0 "$pid" 2>/dev/null; do
+  i=$((i + 1))
+  if [ "$i" -gt 300 ]; then
+    exit 1
+  fi
+  sleep 0.2
+done
+xattr -dr com.apple.quarantine "$src" >/dev/null 2>&1 || true
+backup="${dst}.backup.$$"
+rm -rf "$backup"
+if [ -e "$dst" ]; then
+  if ! mv "$dst" "$backup"; then
+    exit 1
+  fi
+fi
+if ! mv "$src" "$dst"; then
+  if [ -e "$backup" ]; then
+    mv "$backup" "$dst" >/dev/null 2>&1 || true
+  fi
+  exit 1
+fi
+rm -rf "$backup" "$staging"
+rm -f "$0"
+exec open "$dst"
+"#;
+
+#[cfg(any(target_os = "macos", test))]
+pub fn current_app_bundle_from_exe(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !path_is_packaged(exe) {
+        return None;
+    }
+    exe.ancestors()
+        .find(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
+        .map(std::path::Path::to_path_buf)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_team_identifier(codesign_output: &str) -> Option<String> {
+    codesign_output.lines().find_map(|line| {
+        let value = line.strip_prefix("TeamIdentifier=")?.trim();
+        (!value.is_empty() && value != "not set").then(|| value.to_string())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_team_identifier(bundle: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("codesign")
+        .args(["-dv", "--verbose=4"])
+        .arg(bundle)
+        .output()
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_team_identifier(&stderr)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_mac_update_signature(
+    staged: &std::path::Path,
+    installed: &std::path::Path,
+) -> Result<(), String> {
+    let Some(expected_team) = bundle_team_identifier(installed) else {
+        return Ok(());
+    };
+    let status = std::process::Command::new("codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(staged)
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err("the macOS update failed code signature verification".to_string());
+    }
+    let staged_team = bundle_team_identifier(staged);
+    if staged_team.as_deref() != Some(expected_team.as_str()) {
+        return Err("the macOS update was not signed by the expected developer team".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn launch_macos(path: &std::path::Path) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
     if path.extension().is_some_and(|ext| ext == "zip") {
-        if let Some(app) = extract_mac_app(path)? {
+        if let Some((staging, app)) = extract_mac_app(path)? {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(installed) = current_app_bundle_from_exe(&exe) {
+                    verify_mac_update_signature(&app, &installed)?;
+                    let script = std::env::temp_dir()
+                        .join(format!("poratake-apply-{}.sh", std::process::id()));
+                    let mut file =
+                        std::fs::File::create(&script).map_err(|error| error.to_string())?;
+                    file.write_all(MACOS_APPLY_SH.as_bytes())
+                        .map_err(|error| error.to_string())?;
+                    file.sync_all().map_err(|error| error.to_string())?;
+                    drop(file);
+                    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                        .map_err(|error| error.to_string())?;
+                    return std::process::Command::new("nohup")
+                        .arg("sh")
+                        .arg(&script)
+                        .arg(std::process::id().to_string())
+                        .arg(&app)
+                        .arg(&installed)
+                        .arg(&staging)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .map(|_| ())
+                        .map_err(|error| error.to_string());
+                }
+            }
             return std::process::Command::new("open")
                 .arg(app)
                 .spawn()
@@ -1298,7 +1413,9 @@ fn launch_macos(path: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn extract_mac_app(zip: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
+fn extract_mac_app(
+    zip: &std::path::Path,
+) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
     let dest = std::env::temp_dir().join(format!("poratake-update-{}", std::process::id()));
     if dest.exists() {
         std::fs::remove_dir_all(&dest).map_err(|error| error.to_string())?;
@@ -1313,7 +1430,7 @@ fn extract_mac_app(zip: &std::path::Path) -> Result<Option<std::path::PathBuf>, 
     if !status.success() {
         return Err("failed to unpack the macOS update".to_string());
     }
-    Ok(find_app_bundle(&dest))
+    Ok(find_app_bundle(&dest).map(|app| (dest, app)))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1543,5 +1660,27 @@ mod artifact_tests {
         );
         assert!(digest_matches(" abc ", "abc"));
         assert!(!digest_matches("abc", "abd"));
+    }
+
+    #[test]
+    fn resolves_packaged_macos_bundle_root_and_team_id() {
+        assert_eq!(
+            current_app_bundle_from_exe(std::path::Path::new(
+                "/Applications/Poratake.app/Contents/MacOS/poratake-gpui"
+            )),
+            Some(std::path::PathBuf::from("/Applications/Poratake.app"))
+        );
+        assert_eq!(
+            current_app_bundle_from_exe(std::path::Path::new(
+                "/repo/src/main/target/release/poratake-gpui"
+            )),
+            None
+        );
+        assert_eq!(
+            parse_team_identifier("Identifier=com.porabuild.poratake\nTeamIdentifier=ABC123XYZ0\n")
+                .as_deref(),
+            Some("ABC123XYZ0")
+        );
+        assert!(parse_team_identifier("TeamIdentifier=not set\n").is_none());
     }
 }

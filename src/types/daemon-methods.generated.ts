@@ -16,7 +16,7 @@ export const DAEMON_METHODS = {
   ocr: ['recognize'],
   print: ['image'],
   qrcode: ['detect'],
-  'recording-control': ['listIOSDevices'],
+  'recording-control': ['listIOSDevices', 'setTooltip'],
   'recording-overlay': ['show', 'showWindow', 'hide'],
   screenshot: ['capture-area', 'capture-window'],
   'screen-recorder': [

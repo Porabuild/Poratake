@@ -1,12 +1,13 @@
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
 use herogpui::components::TooltipPresentationRequest;
-use herogpui::gpui::Window;
+use herogpui::gpui::{Window, WindowId};
 use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 pub struct MacTooltip {
     view: id,
+    window_id: WindowId,
 }
 
 impl MacTooltip {
@@ -15,14 +16,22 @@ impl MacTooltip {
         unsafe {
             let _: id = msg_send![view, retain];
         }
-        Some(Self { view })
+        Some(Self {
+            view,
+            window_id: window.window_handle().window_id(),
+        })
     }
 
-    pub fn show(&mut self, _window: &Window, request: &TooltipPresentationRequest) {
+    pub fn show(&mut self, window: &Window, request: &TooltipPresentationRequest) {
+        if crate::system::macos_tooltip::is_initialized() {
+            crate::system::macos_tooltip::set(window, Some(&request.content));
+            return;
+        }
         unsafe { set_tooltip(self.view, Some(&request.content)) };
     }
 
     pub fn hide(&mut self) {
+        crate::system::macos_tooltip::hide_window(self.window_id);
         unsafe { set_tooltip(self.view, None) };
     }
 }
@@ -37,6 +46,10 @@ impl Drop for MacTooltip {
 }
 
 pub fn set_native_tooltip(window: &Window, tooltip: Option<&str>) {
+    if crate::system::macos_tooltip::is_initialized() {
+        crate::system::macos_tooltip::set(window, tooltip);
+        return;
+    }
     if let Some(view) = native_view(window) {
         unsafe { set_tooltip(view, tooltip) };
     }

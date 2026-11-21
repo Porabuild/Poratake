@@ -10,7 +10,26 @@ import {
 } from '@/main/system/permissions.ts';
 import { isMac, isWindows } from '@/main/utils/platform';
 
-export async function showRecordingError(error: Error): Promise<void> {
+export async function showCameraRecordingWarning(): Promise<void> {
+  const options = {
+    type: 'warning' as const,
+    title: 'Camera recording unavailable',
+    message:
+      'The recording was saved, but the camera video could not be saved.',
+    buttons: ['OK'],
+  };
+  const win = BrowserWindow.getFocusedWindow();
+  if (win) {
+    await dialog.showMessageBox(win, options);
+  } else {
+    await dialog.showMessageBox(options);
+  }
+}
+
+export async function showRecordingError(
+  error: Error,
+  partialOutputPath?: string | null
+): Promise<void> {
   const isPermissionError =
     isMac &&
     (error.message.includes('permission') ||
@@ -18,6 +37,9 @@ export async function showRecordingError(error: Error): Promise<void> {
       error.message.includes('declined'));
 
   const win = BrowserWindow.getFocusedWindow();
+  const partialRecording = partialOutputPath
+    ? `\n\nA partial recording may be available at:\n${partialOutputPath}`
+    : '';
 
   if (isPermissionError) {
     const options = {
@@ -30,7 +52,8 @@ export async function showRecordingError(error: Error): Promise<void> {
         '1. Open System Settings > Privacy & Security > Screen Recording\n' +
         '2. Toggle OFF Poratake, then toggle it back ON\n' +
         '3. Restart Poratake\n\n' +
-        'If the issue persists, try restarting your Mac.',
+        'If the issue persists, try restarting your Mac.' +
+        partialRecording,
       buttons: ['Open Settings', 'OK'],
       defaultId: 0,
     };
@@ -47,7 +70,7 @@ export async function showRecordingError(error: Error): Promise<void> {
       type: 'error' as const,
       title: 'Recording Failed',
       message: 'Recording failed.',
-      detail: error.message,
+      detail: error.message + partialRecording,
       buttons: ['OK'],
     };
 

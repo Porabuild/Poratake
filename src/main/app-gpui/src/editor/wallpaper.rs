@@ -106,22 +106,16 @@ impl WallpaperSettings {
             || self.background_image.is_some()
             || self.padding > 0.0
             || (!self.balance && self.inset <= 0.0 && (self.corners > 0.0 || self.shadow > 0.0))
-            || (!has_layers
-                && self.balance
-                && self.inset <= 0.0
-                && self.corners <= 0.0
-                && self.shadow <= 0.0)
+            || (!has_layers && self.balance && self.inset <= 0.0)
             || (!has_layers
                 && self.inset > 0.0
-                && (!self.balance || (self.corners <= 0.0 && self.shadow <= 0.0))
                 && crate::render::window_frame::theme(&self.window_frame.style).is_none())
             || self.layer_inset(has_layers) > 0.0
             || crate::render::window_frame::theme(&self.window_frame.style).is_some()
     }
 
     pub fn layer_inset(&self, has_layers: bool) -> f64 {
-        let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
-        if has_layers && (!self.balance || framed || (self.corners <= 0.0 && self.shadow <= 0.0)) {
+        if has_layers {
             self.inset.max(0.0)
         } else {
             0.0
@@ -130,11 +124,11 @@ impl WallpaperSettings {
 
     pub fn supports_edge_preview(&self, has_layers: bool) -> bool {
         let framed = crate::render::window_frame::theme(&self.window_frame.style).is_some();
-        if has_layers && self.balance {
-            return !framed && self.corners <= 0.0 && self.shadow <= 0.0;
+        if has_layers {
+            return !framed;
         }
-        if has_layers && !framed {
-            return true;
+        if self.balance && framed && !has_layers {
+            return self.inset <= 0.0 && self.corners <= 0.0;
         }
         !self.balance
             && self.inset <= 0.0
@@ -386,12 +380,7 @@ pub fn layout(
     frame_scale: f64,
     has_layers: bool,
 ) -> ((f64, f64), (f64, f64, f64, f64)) {
-    let inset = if !has_layers
-        && (!settings.balance
-            || (settings.corners <= 0.0
-                && settings.shadow <= 0.0
-                && crate::render::window_frame::theme(&settings.window_frame.style).is_none()))
-    {
+    let inset = if !has_layers {
         settings.inset.max(0.0)
     } else {
         0.0
@@ -425,9 +414,33 @@ pub fn layout(
     )
 }
 
+pub(super) fn centered_raster_offset(canvas: (f64, f64), offset: (f64, f64)) -> (f64, f64) {
+    (
+        offset.0 + (canvas.0.round() - canvas.0) / 2.0,
+        offset.1 + (canvas.1.round() - canvas.1) / 2.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn balanced_single_frames_use_the_edge_preview() {
+        let mut settings = WallpaperSettings {
+            balance: true,
+            window_frame: WindowFrameSettings {
+                style: "macos-light".into(),
+            },
+            ..Default::default()
+        };
+        assert!(settings.supports_edge_preview(false));
+        assert!(!settings.supports_edge_preview(true));
+        settings.shadow = 50.;
+        assert!(settings.supports_edge_preview(false));
+        settings.inset = 8.;
+        assert!(!settings.supports_edge_preview(false));
+    }
 
     #[test]
     fn zero_padding_effects_activate_single_image_inset() {
@@ -437,7 +450,7 @@ mod tests {
         };
         assert!(settings.is_active(false));
         settings.balance = true;
-        assert!(!settings.is_active(false));
+        assert!(settings.is_active(false));
         settings.balance = false;
         settings.inset = 10.0;
         assert!(settings.is_active(false));

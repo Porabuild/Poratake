@@ -10,18 +10,18 @@ class ScreenRecorderModule: Module {
     @MainActor private var recorderLifecycle = RecorderModuleLifecycle()
     @MainActor private var startTask: Task<Void, Never>?
     @MainActor private var startTaskSessionID: RecorderSessionID?
+    @MainActor private var startupErrors: [(RecorderBackend, RecorderSessionID, Error)] = []
     @MainActor private let stopCoordinator = RecorderStopCoordinator()
+    #if RECORDING_TIMELINE_TEST
+    @MainActor private(set) var testErrorEvents: [String] = []
+    #endif
 
     init() {
         screenRecorder.onError = { [weak self] sessionID, error in
-            Task { @MainActor in
-                await self?.handleRecorderError(.screen, sessionID: sessionID, error: error)
-            }
+            self?.receiveRecorderError(.screen, sessionID: sessionID, error: error)
         }
         iosRecorder.onError = { [weak self] sessionID, error in
-            Task { @MainActor in
-                await self?.handleRecorderError(.ios, sessionID: sessionID, error: error)
-            }
+            self?.receiveRecorderError(.ios, sessionID: sessionID, error: error)
         }
     }
     
@@ -65,10 +65,14 @@ class ScreenRecorderModule: Module {
             respondError(
                 id: requestId,
                 code: "INVALID_PARAMS",
-                message: "\(field) has an invalid type"
+                message: "\(field) has an invalid value"
             )
             return
         }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         let coordinates = [
             params["x"]?.int(),
@@ -112,7 +116,7 @@ class ScreenRecorderModule: Module {
             width: params["width"]?.int(),
             height: params["height"]?.int(),
             displayID: params["displayId"]?.int().map { CGDirectDisplayID($0) },
-            windowID: params["windowId"]?.int().map { CGWindowID($0) },
+            windowID: params["windowId"]?.int().flatMap(CGWindowID.init(exactly:)),
             excludedWindowIDs: (params["excludedWindowIds"]?.array() ?? [])
                 .compactMap { $0 as? Int }
                 .map(Int64.init),
@@ -167,6 +171,7 @@ class ScreenRecorderModule: Module {
         outputPath: String,
         requestId: String
     ) async {
+        defer { clearStartupErrors(sessionID) }
         do {
             switch backend {
             case .ios:
@@ -196,6 +201,7 @@ class ScreenRecorderModule: Module {
                 ])
             }
             emit(event: "started", data: ["outputPath": outputPath])
+            flushStartupErrors(sessionID)
         } catch let error as RecorderError {
             recorderLifecycle.finishStart(sessionID, success: false)
             respondError(id: requestId, code: error.code, message: error.localizedDescription)
@@ -217,14 +223,17 @@ class ScreenRecorderModule: Module {
                 return "displayId"
             }
         }
-        if let value = params["windowId"], !(value.value is NSNull), !(value.value is Int) {
-            return "windowId"
+        if let value = params["windowId"], !(value.value is NSNull) {
+            guard let integer = value.value as? Int,
+                  let windowID = CGWindowID(exactly: integer), windowID != kCGNullWindowID else {
+                return "windowId"
+            }
         }
         if let value = params["excludedWindowIds"], !(value.value is NSNull) {
             guard let windowIDs = value.array(),
                   windowIDs.allSatisfy({
-                      guard let windowID = $0 as? Int else { return false }
-                      return CGWindowID(exactly: windowID) != nil
+                      guard let number = $0 as? Int, let windowID = CGWindowID(exactly: number) else { return false }
+                      return windowID != kCGNullWindowID
                   }) else {
                 return "excludedWindowIds"
             }
@@ -325,6 +334,7 @@ class ScreenRecorderModule: Module {
                     "outputPath": result.outputPath,
                     "cursorPath": result.cursorPath as Any,
                     "cameraPath": result.cameraPath as Any,
+                    "cameraTrackMissing": result.cameraTrackMissing,
                     "keysPath": result.keysPath as Any,
                     "systemAudioPath": result.systemAudioPath as Any,
                     "micAudioPath": result.micAudioPath as Any,
@@ -343,7 +353,8 @@ class ScreenRecorderModule: Module {
         guard recorderLifecycle.isCurrent(sessionID) else {
             throw RecorderError.invalidState("Recording session is no longer active")
         }
-        return try await stopCoordinator.stop(sessionID: sessionID) {
+        let startup = startTaskSessionID == sessionID ? startTask : nil
+        return try await stopCoordinator.stop(sessionID: sessionID, startup: startup) {
             guard let backend = self.recorderLifecycle.beginStop(sessionID) else {
                 throw RecorderError.invalidState("Recording session is no longer active")
             }
@@ -359,6 +370,7 @@ class ScreenRecorderModule: Module {
                 "outputPath": result.outputPath,
                 "cursorPath": result.cursorPath as Any,
                 "cameraPath": result.cameraPath as Any,
+                "cameraTrackMissing": result.cameraTrackMissing,
                 "keysPath": result.keysPath as Any,
                 "systemAudioPath": result.systemAudioPath as Any,
                 "micAudioPath": result.micAudioPath as Any,
@@ -369,24 +381,112 @@ class ScreenRecorderModule: Module {
     }
 
     @MainActor
-    private func handleRecorderError(
+    private func receiveRecorderError(
         _ backend: RecorderBackend,
         sessionID: RecorderSessionID,
         error: Error
-    ) async {
-        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else {
+    ) {
+        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else { return }
+        if case .starting = recorderLifecycle.phase {
+            startupErrors.append((backend, sessionID, error))
             return
         }
-        if startTaskSessionID == sessionID {
-            await startTask?.value
+        deliverRecorderError(backend, sessionID: sessionID, error: error)
+    }
+
+    @MainActor
+    private func deliverRecorderError(
+        _ backend: RecorderBackend,
+        sessionID: RecorderSessionID,
+        error: Error
+    ) {
+        guard recorderLifecycle.isCurrent(sessionID), recorderLifecycle.currentBackend == backend else { return }
+        if emitRecorderError(error) { return }
+        Task { @MainActor in
+            _ = try? await self.stopRecording(sessionID)
         }
-        guard recorderLifecycle.isCurrent(sessionID) else { return }
+    }
+
+    @MainActor
+    private func flushStartupErrors(_ sessionID: RecorderSessionID) {
+        let errors = startupErrors.filter { $0.1 == sessionID }
+        clearStartupErrors(sessionID)
+        for (backend, id, error) in errors {
+            deliverRecorderError(backend, sessionID: id, error: error)
+        }
+    }
+
+    @MainActor
+    private func clearStartupErrors(_ sessionID: RecorderSessionID) {
+        startupErrors.removeAll { $0.1 == sessionID }
+    }
+
+    @MainActor
+    private func emitRecorderError(_ error: Error) -> Bool {
+        let targetClosed: Bool
+        if case RecorderError.targetClosed = error {
+            targetClosed = true
+        } else {
+            targetClosed = false
+        }
+        let code = targetClosed ? RecorderError.targetClosed.code : "CAPTURE_ERROR"
+        #if RECORDING_TIMELINE_TEST
+        testErrorEvents.append(code)
+        #endif
         emit(event: "error", data: [
-            "code": "CAPTURE_ERROR",
+            "code": code,
             "message": error.localizedDescription
         ])
-        _ = try? await stopRecording(sessionID)
+        return targetClosed
     }
+
+    #if RECORDING_TIMELINE_TEST
+    @MainActor
+    func testBeginRecordingSession(backend: RecorderBackend = .screen) -> RecorderSessionID {
+        let sessionID = recorderLifecycle.beginStart(backend)!
+        precondition(recorderLifecycle.finishStart(sessionID, success: true))
+        return sessionID
+    }
+
+    @MainActor
+    func testBeginStartingSession() -> RecorderSessionID {
+        recorderLifecycle.beginStart(.screen)!
+    }
+
+    @MainActor
+    func testFinishStartingSession(_ sessionID: RecorderSessionID, success: Bool) {
+        precondition(recorderLifecycle.finishStart(sessionID, success: success))
+        if success {
+            flushStartupErrors(sessionID)
+        } else {
+            clearStartupErrors(sessionID)
+        }
+    }
+
+    @MainActor
+    func testRaiseRecorderError(sessionID: RecorderSessionID, error: Error, backend: RecorderBackend = .screen) {
+        switch backend {
+        case .screen: screenRecorder.onError?(sessionID, error)
+        case .ios: iosRecorder.onError?(sessionID, error)
+        }
+    }
+
+    @MainActor
+    func testFinishRecordingSession(_ sessionID: RecorderSessionID) {
+        precondition(recorderLifecycle.beginStop(sessionID) != nil)
+        recorderLifecycle.finishStop(sessionID)
+    }
+
+    @MainActor
+    func testBeginStoppingSession(_ sessionID: RecorderSessionID) {
+        precondition(recorderLifecycle.beginStop(sessionID) != nil)
+    }
+
+    @MainActor
+    func testFinishStoppingSession(_ sessionID: RecorderSessionID) {
+        recorderLifecycle.finishStop(sessionID)
+    }
+    #endif
     
     private func handleStatus(requestId: String) {
         Task { @MainActor in

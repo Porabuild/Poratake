@@ -30,7 +30,7 @@ describe('EditorSidebarTabs', () => {
     vi.clearAllMocks();
   });
 
-  it('keeps the Zoom tab enabled before a zoom segment exists', async () => {
+  it('names the sidebar buttons and keeps Zoom enabled before a segment exists', async () => {
     const React = await import('react');
     vi.stubGlobal('React', React);
     const { renderToStaticMarkup } = await import('react-dom/server');
@@ -44,6 +44,21 @@ describe('EditorSidebarTabs', () => {
       })
     );
 
+    const labels = [
+      ...markup.matchAll(/<button[^>]*aria-label="([^"]+)"/g),
+    ].map(match => match[1]);
+    expect(labels).toEqual([
+      'Cursor',
+      'Zoom',
+      'Drawing',
+      'Camera',
+      'Audio',
+      'Wallpaper',
+      'Keyboard',
+      'Subtitles',
+      'First Frame',
+      'Export',
+    ]);
     expect(markup).not.toMatch(/<button[^>]*disabled(?:=|>)/);
   });
 

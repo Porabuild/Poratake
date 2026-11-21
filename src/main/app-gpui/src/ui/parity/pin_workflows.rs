@@ -18,7 +18,8 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         px(decoded.width() as f32 / scale),
         px(decoded.height() as f32 / scale),
     );
-    cx.update(|cx| PinWindow::open(cx, std::fs::read(&source).unwrap()));
+    cx.update(|cx| PinWindow::open_file(cx, source.clone()));
+    cx.run_until_parked();
     let pin = cx.update(|cx| {
         cx.windows()
             .into_iter()

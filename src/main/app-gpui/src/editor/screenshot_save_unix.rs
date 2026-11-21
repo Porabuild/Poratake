@@ -6,6 +6,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::util::file_identity::from_file as file_identity;
+
 static NEXT_BACKUP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(target_os = "linux")]
@@ -189,8 +191,7 @@ fn write_new_with(
             ),
         });
     }
-    let current_identity =
-        fs::metadata(selected_path).map(|metadata| (metadata.dev(), metadata.ino()))?;
+    let current_identity = crate::util::file_identity::from_metadata(selected_path)?;
     if current_identity != identity {
         return Err(io::Error::other(format!(
             "screenshot destination changed while saving; completed output may remain at {}",
@@ -592,18 +593,13 @@ fn restore_content(target: &mut File, backup: &mut File, expected_length: u64) -
 
 fn verify_selected_path(path: &Path, target: &File) -> io::Result<()> {
     let target_identity = file_identity(target)?;
-    let path_identity = fs::metadata(path).map(|metadata| (metadata.dev(), metadata.ino()))?;
+    let path_identity = crate::util::file_identity::from_path(path)?;
     if target_identity != path_identity {
         return Err(io::Error::other(
             "screenshot destination changed during save; no overwrite was made",
         ));
     }
     Ok(())
-}
-
-fn file_identity(file: &File) -> io::Result<(u64, u64)> {
-    let metadata = file.metadata()?;
-    Ok((metadata.dev(), metadata.ino()))
 }
 
 fn cleanup_backup_error(error: io::Error, parent: &File, backup_path: &Path) -> io::Error {
@@ -741,6 +737,21 @@ mod tests {
             .contains("injected backup failure"));
         assert_eq!(fs::read(&path).unwrap(), b"original screenshot");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn new_output_verification_does_not_require_read_permission() {
+        let directory = TestDir::new();
+        let path = directory.path().join("capture.png");
+        let result = write_new_with(&path, &path, b"screenshot", |file, bytes| {
+            file.write_all(bytes)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o200))?;
+            file.sync_all()
+        });
+
+        assert!(result.is_ok());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"screenshot");
     }
 
     #[test]

@@ -42,6 +42,24 @@ describe('recording permissions', () => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
+  it('warns about a missing camera track without changing privacy settings', async () => {
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { showCameraRecordingWarning } =
+      await import('@/main/capture/video/permissions');
+    await showCameraRecordingWarning();
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('recording was saved'),
+        buttons: ['OK'],
+      })
+    );
+    expect(mockRequestCameraPermission).not.toHaveBeenCalled();
+    expect(mockRequestMicPermission).not.toHaveBeenCalled();
+    expect(mockOpenScreenRecordingPreferences).not.toHaveBeenCalled();
+    expect(mockOpenCameraPreferences).not.toHaveBeenCalled();
+  });
+
   describe('showRecordingError', () => {
     it('opens screen recording preferences when user clicks Open Settings on permission error', async () => {
       mockShowMessageBox.mockResolvedValue({ response: 0 });
@@ -83,6 +101,35 @@ describe('recording permissions', () => {
       expect(dialogArgs.buttons).toEqual(['OK']);
       expect(dialogArgs.detail).toBe('disk full');
       expect(dialogArgs.message).toBe('Recording failed.');
+    });
+
+    it('reports the possible partial recording location', async () => {
+      mockShowMessageBox.mockResolvedValue({ response: 0 });
+      const { showRecordingError } =
+        await import('@/main/capture/video/permissions');
+      await showRecordingError(
+        new Error('capture failed'),
+        '/tmp/take/recording.mov'
+      );
+      const options = mockShowMessageBox.mock.calls[0][0] as { detail: string };
+      expect(options.detail).toContain('capture failed');
+      expect(options.detail).toContain('/tmp/take/recording.mov');
+      expect(options.detail).toContain('may be available');
+    });
+
+    it('includes the partial recording location in a permission error', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      vi.resetModules();
+      mockShowMessageBox.mockResolvedValue({ response: 1 });
+      const { showRecordingError } =
+        await import('@/main/capture/video/permissions');
+      await showRecordingError(
+        new Error('TCC violation'),
+        '/tmp/take/recording.mov'
+      );
+      const options = mockShowMessageBox.mock.calls[0][0] as { detail: string };
+      expect(options.detail).toContain('/tmp/take/recording.mov');
+      expect(mockOpenScreenRecordingPreferences).not.toHaveBeenCalled();
     });
 
     it('uses focused window if available', async () => {

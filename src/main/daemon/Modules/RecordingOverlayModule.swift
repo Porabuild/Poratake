@@ -1,5 +1,6 @@
 import Cocoa
 import Foundation
+import QuartzCore
 
 class RecordingOverlayModule: Module {
     let name = DaemonContract.RecordingOverlay.module
@@ -7,7 +8,7 @@ class RecordingOverlayModule: Module {
     private var overlayViews: [NSScreen: RecordingOverlayView] = [:]
     private var highlightWindow: RecordingOverlayWindow?
     private var highlightTimer: Timer?
-    private var highlightWindowID: CGWindowID?
+    private var highlightTarget: RecordingWindowTarget?
     private var presentationGeneration = WindowPresentationGeneration()
 
     private static let highlightThickness: CGFloat = 1
@@ -35,10 +36,16 @@ class RecordingOverlayModule: Module {
     }
 
     private func handleShowWindow(params: [String: AnyCodable]?, requestId: String) {
-        guard let windowId = params?["windowId"]?.int() else {
+        guard let rawWindowId = params?["windowId"]?.value as? Int,
+              let windowId = CGWindowID(exactly: rawWindowId),
+              windowId != kCGNullWindowID else {
             respondError(id: requestId, code: "INVALID_PARAMS", message: "showWindow requires windowId")
             return
         }
+#if WINDOW_ID_VALIDATION_TEST
+        respond(id: requestId, result: ["validated": true])
+        return
+#endif
 
         let color = themeColor(params?["color"]?.string()) ?? Self.highlightFallback
 
@@ -47,7 +54,7 @@ class RecordingOverlayModule: Module {
             Task { @MainActor in
                 do {
                     let visible = try await self.showWindowHighlight(
-                        windowID: CGWindowID(windowId),
+                        windowID: windowId,
                         color: color
                     )
                     self.respond(id: requestId, result: ["visible": visible])
@@ -85,8 +92,12 @@ class RecordingOverlayModule: Module {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
-                await self.hideOverlay()
+                self.hideOverlay()
+                #if RECORDING_OUTLINE_TEST
+                self.testHideReplies.append(requestId)
+                #endif
                 self.respond(id: requestId, result: ["visible": false])
+                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             }
         }
     }
@@ -100,7 +111,16 @@ class RecordingOverlayModule: Module {
         await RecordingCaptureWindowRegistry.shared.waitForCaptureStartIfNeeded()
         guard presentationGeneration.isCurrent(generation) else { return false }
 
-        guard windowBounds(of: windowID) != nil else { return false }
+        guard let target = RecordingWindowTarget(id: windowID) else { return false }
+        switch target.observe() {
+        case .visible:
+            break
+        case .hidden:
+            return false
+        case .absent:
+            emitTargetClosed(windowID)
+            return false
+        }
 
         let window = RecordingOverlayWindow(
             contentRect: .zero,
@@ -124,21 +144,21 @@ class RecordingOverlayModule: Module {
         window.alphaValue = 0
 
         highlightWindow = window
-        highlightWindowID = windowID
+        highlightTarget = target
         window.orderFrontRegardless()
         guard RecordingCaptureWindowRegistry.shared.register(window) != nil else {
             highlightWindow = nil
-            highlightWindowID = nil
+            highlightTarget = nil
             window.orderOut(nil)
             throw RecordingCaptureFilterError.unavailableWindowNumber
         }
         do {
-            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
         } catch {
             guard presentationGeneration.isCurrent(generation), highlightWindow === window else { return false }
             RecordingCaptureWindowRegistry.shared.unregister(window)
             highlightWindow = nil
-            highlightWindowID = nil
+            highlightTarget = nil
             window.orderOut(nil)
             try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
             throw error
@@ -151,8 +171,12 @@ class RecordingOverlayModule: Module {
             }
             return false
         }
-        window.alphaValue = 1
         followHighlight()
+        guard highlightTarget != nil else {
+            removeOverlayWindows()
+            try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            return false
+        }
 
         // AppKit has no cross-application window-move notification without the
         // accessibility permission, so the frame is sampled instead.
@@ -160,7 +184,7 @@ class RecordingOverlayModule: Module {
             withTimeInterval: Self.highlightInterval,
             repeats: true
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.followHighlight()
             }
         }
@@ -170,17 +194,20 @@ class RecordingOverlayModule: Module {
 
     @MainActor
     private func followHighlight() {
-        guard let window = highlightWindow, let windowID = highlightWindowID else { return }
-
-        guard let bounds = windowBounds(of: windowID) else {
-            window.orderOut(nil)
-            RecordingCaptureWindowRegistry.shared.unregister(window)
-            highlightWindow = nil
-            highlightWindowID = nil
+        guard let window = highlightWindow, let target = highlightTarget else { return }
+        let bounds: CGRect
+        switch target.observe() {
+        case let .visible(rect):
+            bounds = rect
+        case .absent:
             highlightTimer?.invalidate()
             highlightTimer = nil
-            Task { @MainActor in
-                try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            highlightTarget = nil
+            emitTargetClosed(target.id)
+            fallthrough
+        case .hidden:
+            if window.alphaValue != 0 {
+                window.alphaValue = 0
             }
             return
         }
@@ -194,25 +221,24 @@ class RecordingOverlayModule: Module {
             height: bounds.height + inset * 2
         )
 
-        window.setFrame(frame, display: true)
-        window.contentView?.frame = NSRect(origin: .zero, size: frame.size)
-        window.contentView?.needsDisplay = true
-        window.orderFrontRegardless()
+        if window.frame != frame {
+            window.setFrame(frame, display: true)
+            window.contentView?.frame = NSRect(origin: .zero, size: frame.size)
+            window.contentView?.needsDisplay = true
+        }
+        if window.alphaValue != 1 || !window.isVisible {
+            window.alphaValue = 1
+            window.orderFrontRegardless()
+        }
     }
 
     @MainActor
-    private func windowBounds(of windowID: CGWindowID) -> CGRect? {
-        guard let windows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID)
-                as? [[String: Any]],
-              windows.first?[kCGWindowIsOnscreen as String] as? Bool == true,
-              let boundsDict = windows.first?[kCGWindowBounds as String] as? [String: Any],
-              let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
-              rect.width > 0, rect.height > 0
-        else {
-            return nil
-        }
-
-        return rect
+    private func emitTargetClosed(_ id: CGWindowID) {
+        let event = Event(event: "\(name):target-closed", data: ["windowId": Int(id)])
+        #if RECORDING_OUTLINE_TEST
+        testClosedTargetEvents.append(event)
+        #endif
+        sendEvent(event)
     }
 
     @MainActor
@@ -281,7 +307,7 @@ class RecordingOverlayModule: Module {
         overlayViews = newOverlayViews
 
         do {
-            try await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+            try await RecordingCaptureWindowRegistry.shared.waitForWindowPresentation()
         } catch {
             guard presentationGeneration.isCurrent(generation), windows.elementsEqual(newWindows, by: { $0 === $1 }) else { return false }
             removeOverlayWindows()
@@ -306,14 +332,16 @@ class RecordingOverlayModule: Module {
     }
     
     @MainActor
-    private func hideOverlay() async {
+    private func hideOverlay() {
         presentationGeneration.cancel()
         removeOverlayWindows()
-        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
     }
 
     @MainActor
     private func removeOverlayWindows() {
+        for window in windows { window.alphaValue = 0 }
+        highlightWindow?.alphaValue = 0
+        if !windows.isEmpty || highlightWindow != nil { CATransaction.flush() }
         for window in windows {
             window.orderOut(nil)
             RecordingCaptureWindowRegistry.shared.unregister(window)
@@ -328,13 +356,66 @@ class RecordingOverlayModule: Module {
             RecordingCaptureWindowRegistry.shared.unregister(highlightWindow)
         }
         highlightWindow = nil
-        highlightWindowID = nil
+        highlightTarget = nil
     }
+
+    #if RECORDING_OUTLINE_TEST
+    private(set) var testHideReplies: [String] = []
+    private(set) var testClosedTargetEvents: [Event] = []
+
+    @MainActor
+    var testHighlightWindow: NSWindow? { highlightWindow }
+
+    @MainActor
+    var testIsTrackingHighlight: Bool { highlightTimer?.isValid == true }
+
+    @MainActor
+    var testHighlightUpdates: (frames: Int, orders: Int)? {
+        highlightWindow.map { ($0.testFrameUpdates, $0.testFrontOrders) }
+    }
+
+    @MainActor
+    var testOverlayWindows: [NSWindow] { windows }
+
+    @MainActor
+    func testShowWindow(_ windowID: CGWindowID) async throws -> Bool {
+        try await showWindowHighlight(windowID: windowID, color: .systemPurple)
+    }
+
+    @MainActor
+    func testFollowHighlight() { followHighlight() }
+
+    @MainActor
+    func testShowArea(x: Int, y: Int, width: Int, height: Int) async throws -> Bool {
+        try await showOverlay(x: x, y: y, width: width, height: height)
+    }
+
+    @MainActor
+    func testHideOverlay() async {
+        hideOverlay()
+        try? await RecordingCaptureWindowRegistry.shared.updateFilterIfNeeded()
+    }
+    #endif
 }
 
 private class RecordingOverlayWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    #if RECORDING_OUTLINE_TEST
+    private(set) var testFrameUpdates = 0
+    private(set) var testFrontOrders = 0
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        testFrameUpdates += 1
+        super.setFrame(frameRect, display: flag)
+    }
+
+    override func orderFrontRegardless() {
+        testFrontOrders += 1
+        super.orderFrontRegardless()
+    }
+    #endif
 }
 
 private class RecordingHighlightView: NSView {

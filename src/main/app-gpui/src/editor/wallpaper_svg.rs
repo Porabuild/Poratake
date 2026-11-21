@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use tiny_skia::Pixmap;
@@ -287,10 +287,50 @@ const VIEW_WIDTH: f32 = 800.0;
 const VIEW_HEIGHT: f32 = 600.0;
 const MAX_DIMENSION: u32 = 8192;
 const CACHE_LIMIT: usize = 48;
+const MAX_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const TILE_SCALE: f32 = 2.0;
 
-type PixmapCache = HashMap<(&'static str, u32, u32), Option<Arc<Pixmap>>>;
+type PixmapKey = (&'static str, u32, u32);
 type ImageCache = HashMap<(&'static str, u32), Option<Arc<gpui::RenderImage>>>;
+
+struct PixmapCache {
+    entries: VecDeque<(PixmapKey, Arc<Pixmap>)>,
+    bytes: usize,
+    max_bytes: usize,
+}
+
+impl PixmapCache {
+    const fn new(max_bytes: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn pixmap(&mut self, key: PixmapKey, source: &str) -> Option<Arc<Pixmap>> {
+        if let Some(index) = self.entries.iter().position(|(cached, _)| *cached == key) {
+            let entry = self.entries.remove(index)?;
+            let pixmap = entry.1.clone();
+            self.entries.push_front(entry);
+            return Some(pixmap);
+        }
+
+        let (_, width, height) = key;
+        let pixmap = Arc::new(rasterize(source, width, height)?);
+        let bytes = pixmap.data().len();
+        let remaining = self.max_bytes.saturating_sub(bytes);
+        while self.bytes > remaining || self.entries.len() >= CACHE_LIMIT {
+            let Some((_, stale)) = self.entries.pop_back() else {
+                break;
+            };
+            self.bytes -= stale.data().len();
+        }
+        self.bytes += bytes;
+        self.entries.push_front((key, pixmap.clone()));
+        Some(pixmap)
+    }
+}
 
 fn entry(id: &str) -> Option<(&'static str, &'static str)> {
     PRESETS
@@ -321,21 +361,11 @@ pub fn cover_size(width: f32, height: f32) -> (u32, u32) {
 }
 
 pub fn pixmap(id: &str, width: u32, height: u32) -> Option<Arc<Pixmap>> {
-    static CACHE: Mutex<Option<PixmapCache>> = Mutex::new(None);
+    static CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
     let (id, source) = entry(id)?;
     let width = width.clamp(1, MAX_DIMENSION);
     let height = height.clamp(1, MAX_DIMENSION);
-    let mut guard = CACHE.lock().ok()?;
-    let cache = guard.get_or_insert_with(HashMap::new);
-    if let Some(cached) = cache.get(&(id, width, height)) {
-        return cached.clone();
-    }
-    if cache.len() >= CACHE_LIMIT {
-        cache.clear();
-    }
-    let rendered = rasterize(source, width, height).map(Arc::new);
-    cache.insert((id, width, height), rendered.clone());
-    rendered
+    CACHE.lock().ok()?.pixmap((id, width, height), source)
 }
 
 pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
@@ -348,7 +378,7 @@ pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
 
 pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
     static CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
-    let (id, _) = entry(id)?;
+    let (id, source) = entry(id)?;
     let height = dimension(size * TILE_SCALE);
     let mut guard = CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
@@ -359,8 +389,8 @@ pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
         cache.clear();
     }
     let width = dimension(height as f32 * VIEW_WIDTH / VIEW_HEIGHT);
-    let image = pixmap(id, width, height).map(|source| {
-        let mut buffer = crate::editor::export::to_rgba(source.as_ref());
+    let image = rasterize(source, width, height).map(|source| {
+        let mut buffer = crate::editor::export::to_rgba(&source);
         for pixel in buffer.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
@@ -468,6 +498,59 @@ mod tests {
                 assert!(varied, "{id}");
             }
         }
+    }
+
+    #[test]
+    fn full_rasters_evict_by_bytes_and_keep_recent_hits() {
+        let mut cache = PixmapCache::new(128);
+        let hot = ("crimson-wave", 4, 4);
+        let cold = ("forest-glow", 4, 4);
+        let recent = cache.pixmap(hot, CRIMSON_WAVE).unwrap();
+        let earlier = cache.pixmap(cold, FOREST_GLOW).unwrap();
+        let earlier_pixels = earlier.data().to_owned();
+        let earlier = {
+            let weak = Arc::downgrade(&earlier);
+            drop(earlier);
+            weak
+        };
+
+        assert!(Arc::ptr_eq(
+            &recent,
+            &cache.pixmap(hot, CRIMSON_WAVE).unwrap()
+        ));
+        cache.pixmap(("violet-dune", 4, 4), VIOLET_DUNE).unwrap();
+        assert_eq!(cache.bytes, 128);
+        assert!(earlier.upgrade().is_none());
+        assert!(Arc::ptr_eq(
+            &recent,
+            &cache.pixmap(hot, CRIMSON_WAVE).unwrap()
+        ));
+
+        let rerendered = cache.pixmap(cold, FOREST_GLOW).unwrap();
+        assert_eq!(rerendered.data(), earlier_pixels);
+    }
+
+    #[test]
+    fn an_oversized_raster_is_reused_until_it_is_replaced() {
+        let mut cache = PixmapCache::new(128);
+        let small = ("crimson-wave", 4, 4);
+        let large = ("forest-glow", 8, 8);
+        cache.pixmap(small, CRIMSON_WAVE).unwrap();
+
+        let oversized = cache.pixmap(large, FOREST_GLOW).unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.bytes, 256);
+        assert!(Arc::ptr_eq(
+            &oversized,
+            &cache.pixmap(large, FOREST_GLOW).unwrap()
+        ));
+        let retained = Arc::downgrade(&oversized);
+        drop(oversized);
+
+        cache.pixmap(small, CRIMSON_WAVE).unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.bytes, 64);
+        assert!(retained.upgrade().is_none());
     }
 
     #[test]

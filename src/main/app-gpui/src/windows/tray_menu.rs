@@ -130,6 +130,22 @@ pub struct TrayMenuWindow {
     window_handle: AnyWindowHandle,
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn dismiss_open_for_capture(cx: &mut App) {
+    if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
+        let _ = handle.update(cx, |_, window, cx| dismiss_for_capture(window, cx));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn dismiss_for_capture(window: &mut Window, cx: &mut App) {
+    #[cfg(not(test))]
+    crate::system::window_visibility::disable_macos_transitions(window);
+    crate::system::window_visibility::hide(window);
+    window.remove_window();
+    registry::forget(RegistryKind::TrayMenu, cx);
+}
+
 impl TrayMenuWindow {
     fn new(
         menu: Entity<MenuView>,
@@ -188,8 +204,14 @@ impl TrayMenuWindow {
                 .timer(std::time::Duration::from_millis(OVERLAY_EXIT_MS))
                 .await;
             cx.update(|cx| {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
-                registry::forget(RegistryKind::TrayMenu, cx);
+                let _ = handle.update(cx, |_, window, _| {
+                    #[cfg(all(target_os = "macos", not(test)))]
+                    crate::system::window_visibility::disable_macos_transitions(window);
+                    window.remove_window();
+                });
+                if registry::handle(RegistryKind::TrayMenu, cx) == Some(handle) {
+                    registry::forget(RegistryKind::TrayMenu, cx);
+                }
             });
         })
         .detach();
@@ -255,6 +277,12 @@ impl TrayMenuWindow {
             tray_menu_cache(cx).handle = opened;
         }
 
+        #[cfg(all(target_os = "macos", not(test)))]
+        if let Some(handle) = registry::handle(RegistryKind::TrayMenu, cx) {
+            let _ = handle.update(cx, |_, window, _| {
+                crate::system::window_visibility::disable_macos_transitions(window);
+            });
+        }
         #[cfg(not(windows))]
         registry::toggle(RegistryKind::TrayMenu, cx, |cx| {
             Self::open(tray_rect, true, cx).map(Into::into)
@@ -291,13 +319,14 @@ impl TrayMenuWindow {
                 initial_bounds,
                 super::PopupWindowConfig {
                     focus: visible,
-                    show: !cfg!(windows) || !visible,
+                    show: !cfg!(any(target_os = "macos", windows)),
                     display_id: geometry.display_id,
                     ..Default::default()
                 },
             ),
             |window, cx| {
                 window.set_window_title("Poratake tray menu");
+                super::remove_popup_frame(window);
                 configure_tray_menu_window(window);
                 #[cfg(windows)]
                 if let Some(hwnd) = crate::windows::window_hwnd(window) {
@@ -325,6 +354,10 @@ impl TrayMenuWindow {
                 }
                 let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
                 *owner.borrow_mut() = Some(view.downgrade());
+                #[cfg(target_os = "macos")]
+                if visible {
+                    window.activate_window();
+                }
                 #[cfg(windows)]
                 if visible {
                     let generation = view.read(cx).reveal_generation;
@@ -425,6 +458,16 @@ fn build_menu(
 impl Render for TrayMenuWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = crate::ui::font::root().w_full().child(self.menu.clone());
+        #[cfg(target_os = "macos")]
+        let content = content.on_children_prepainted(|bounds, window, _| {
+            let height = bounds[0].size.height;
+            if ((height - window.viewport_size().height) * window.scale_factor()).abs() < px(0.01) {
+                return;
+            }
+            window.on_next_frame(move |window, _| {
+                window.resize(size(window.viewport_size().width, height));
+            });
+        });
         #[cfg(windows)]
         let content = {
             let weak = cx.entity().downgrade();
@@ -778,7 +821,7 @@ mod tests {
         assert_eq!(origin.y, work_area.top() + px(SCREEN_GAP));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn tray_window_fits_the_painted_menu_at_each_scale(cx: &mut gpui::TestAppContext) {
         let scratch = tempfile::tempdir().unwrap();

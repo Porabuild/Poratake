@@ -59,6 +59,14 @@ vi.mock('electron', () => ({
   },
   dialog: {
     showOpenDialog: (...a: unknown[]) => mockShowOpenDialog(...a),
+    showErrorBox: vi.fn(),
+    showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+  },
+}));
+
+vi.mock('@/main/capture/video/music-retention', () => ({
+  MusicRetentionSession: {
+    open: vi.fn(() => null),
   },
 }));
 
@@ -112,6 +120,19 @@ describe('window-manager', () => {
         'http://localhost:5173/?window=video-editor'
       );
       expect(mockProbeVideo).toHaveBeenCalledWith('/path/video.mov');
+    });
+
+    it('keeps the editor open while an export is reading project assets', async () => {
+      mockExistsSync.mockReturnValue(true);
+      const m = await import('@/main/capture/video/window-manager');
+      const win = m.createVideoEditorWindow('/path/video.mov')!;
+      const preventDefault = vi.fn();
+      m.setWindowExporting(win.webContents.id, true);
+      win.windowHandlers.close[0]({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(win.webContents.send).not.toHaveBeenCalledWith(
+        'video-editor:prepare-close'
+      );
     });
 
     it('uses project recording path when path is a project folder', async () => {
@@ -234,14 +255,55 @@ describe('window-manager', () => {
       expect(win.show).toHaveBeenCalled();
     });
 
-    it('close handler marks closing confirmed', async () => {
+    it('waits for the renderer to save before closing', async () => {
       mockExistsSync.mockReturnValue(true);
       const m = await import('@/main/capture/video/window-manager');
       m.createVideoEditorWindow('/p/video.mov');
       const win = browserWindows[0];
       const data = m.getWindowData(win.webContents.id);
-      (win.windowHandlers['close'] || []).forEach(cb => cb());
-      expect(data?.isClosingConfirmed).toBe(true);
+      if (!data) throw new Error('missing editor');
+      data.closeHandlerReady = true;
+      const event = { preventDefault: vi.fn() };
+      (win.windowHandlers['close'] || []).forEach(cb => cb(event));
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(data.closeSavePending).toBe(true);
+      expect(win.webContents.send).toHaveBeenCalledWith(
+        'video-editor:prepare-close'
+      );
+      (win.windowHandlers['close'] || []).forEach(cb => cb(event));
+      expect(win.webContents.send).toHaveBeenCalledTimes(1);
+      data.isClosingConfirmed = true;
+      event.preventDefault.mockClear();
+      (win.windowHandlers['close'] || []).forEach(cb => cb(event));
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it('allows an editor that has not initialized to close', async () => {
+      mockExistsSync.mockReturnValue(true);
+      const m = await import('@/main/capture/video/window-manager');
+      m.createVideoEditorWindow('/p/video.mov');
+      const win = browserWindows[0];
+      const event = { preventDefault: vi.fn() };
+      (win.windowHandlers['close'] || []).forEach(cb => cb(event));
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it('finishes a pending close if the renderer exits', async () => {
+      mockExistsSync.mockReturnValue(true);
+      const m = await import('@/main/capture/video/window-manager');
+      m.createVideoEditorWindow('/p/video.mov');
+      const win = browserWindows[0];
+      const data = m.getWindowData(win.webContents.id);
+      if (!data) throw new Error('missing editor');
+      data.closeHandlerReady = true;
+      (win.windowHandlers['close'] || []).forEach(cb =>
+        cb({ preventDefault: vi.fn() })
+      );
+      (win.windowHandlers['wc:render-process-gone'] || []).forEach(cb => cb());
+      expect(data.closeHandlerReady).toBe(false);
+      expect(data.closeSavePending).toBe(false);
+      expect(data.isClosingConfirmed).toBe(true);
+      expect(win.close).toHaveBeenCalledOnce();
     });
 
     it('closed handler removes from registry', async () => {

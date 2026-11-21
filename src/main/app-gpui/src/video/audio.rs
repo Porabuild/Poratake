@@ -3,6 +3,7 @@
 //! encoder can take. This replaces the FFmpeg filter graph the Electron shell
 //! uses for timeline composition.
 
+use std::ops::Range;
 use std::path::Path;
 
 use crate::video::encoder::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
@@ -85,28 +86,43 @@ impl Placement {
             speed: track.speed,
         }
     }
+
+    pub(super) fn source_range(&self, samples: &[i16]) -> Range<usize> {
+        let available = frames(samples);
+        let start = frames_for(self.trim_start).min(available);
+        let end =
+            frames_for(self.original_duration.max(0.0) - self.trim_end).clamp(start, available);
+        start * FRAME_SIZE..end * FRAME_SIZE
+    }
+
+    pub(super) fn changes_speed(&self) -> bool {
+        (self.speed - 1.0).abs() > f64::EPSILON
+    }
+
+    pub(super) fn output_lengths(&self, samples: usize) -> (usize, usize) {
+        let silence = frames_for(self.start_time) * FRAME_SIZE;
+        let limit = frames_for(self.end_time) * FRAME_SIZE;
+        if limit == 0 {
+            return (silence, samples);
+        }
+        let silence = silence.min(limit);
+        (silence, samples.min(limit - silence))
+    }
 }
 
 pub fn place(samples: &[i16], placement: &Placement) -> Pcm {
-    let available = frames(samples);
-    let start = frames_for(placement.trim_start).min(available);
-    let end = frames_for(placement.original_duration.max(0.0) - placement.trim_end)
-        .clamp(start, available);
-
-    let mut slice: Pcm = samples[start * FRAME_SIZE..end * FRAME_SIZE].to_vec();
-    if (placement.speed - 1.0).abs() > f64::EPSILON {
-        slice = time_stretch(&slice, placement.speed);
-    }
-
-    let offset = frames_for(placement.start_time);
-    let mut placed: Pcm = vec![0; offset * FRAME_SIZE];
-    placed.extend_from_slice(&slice);
-
-    // does not bleed past where the timeline places it.
-    let limit = frames_for(placement.end_time) * FRAME_SIZE;
-    if limit > 0 && placed.len() > limit {
-        placed.truncate(limit);
-    }
+    let source = &samples[placement.source_range(samples)];
+    let stretched;
+    let source = if placement.changes_speed() {
+        stretched = time_stretch(source, placement.speed);
+        &stretched
+    } else {
+        source
+    };
+    let (silence, length) = placement.output_lengths(source.len());
+    let mut placed = Vec::with_capacity(silence + length);
+    placed.resize(silence, 0);
+    placed.extend_from_slice(&source[..length]);
     placed
 }
 
@@ -444,7 +460,7 @@ mod backend {
                 ])
                 .stdin(Stdio::null()),
             std::time::Duration::from_secs(120),
-            &|| false,
+            None,
             |stdout| {
                 let mut stdout = BufReader::new(stdout);
                 let mut samples = Vec::new();

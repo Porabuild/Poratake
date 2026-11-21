@@ -1,0 +1,44 @@
+macOS isolated GPUI recording/editor verification, 2026-11-17
+
+The parity fixture used an isolated profile, its fake daemon, and the same
+1280x720 generated checker video for area, window and screen handoffs. The
+video was upscaled from the repository's 320x180 capture.mov fixture with
+FFmpeg's nearest-neighbor filter and encoded with h264_videotoolbox. Its SHA-256
+in this run was 16f6b9f228a62082ffa240669aa5c065fa2c5aac37c2f5badbcee30193236ec4.
+The encoder output is not expected to be byte-identical on other machines.
+
+For each target the fixture simulates drawing a filled rectangle and then
+pixelation across its bottom-right corner, verifies both saved annotations,
+reopens the project, and initiates a scrub. The resulting 640x360 composition
+must exactly match the editor's preview image bytes and the pixelation must
+change at least 20 pixels. At 1 second, the captured Metal-rendered preview is
+compared to the scaled composition, an unredacted control and the decoded
+1280x720 H.264 export. The affected rectangle is measured separately.
+
+Three target fixtures produced identical measurements because they used the
+same source and edits:
+
+                                      Dark, host 2x   Light, simulated 1.25x
+Full displayed/composed mean RGB       0.000           0.000
+Full displayed/composed max channel    1               1
+Redaction ROI displayed/composed mean  0.000           0.000
+ROI vs unredacted control mean         8.723           8.723
+ROI displayed/decoded mean             1.275           1.174
+ROI displayed/decoded max channel      62              42
+Full displayed/decoded mean            0.665           0.702
+
+The area, window and screen fixture paths passed in both runs. The original
+recording-only fixture also passed with its default source and without the new
+redaction option. Some expected error messages are emitted while the fixture
+checks recovery from fake recording failures.
+
+The dark and light screenshots are video-rectangle-pixelation-gpui-dark-20261117.png
+and video-rectangle-pixelation-gpui-light-20261117.png. The representative
+video-rectangle-pixelation-decoded-20261117.png is an FFmpeg-decoded frame at
+one second; numerical comparisons use the app's VideoDecoder.
+
+The setup and commands are in scripts/parity/README.md. The fixture uses a fake
+daemon and generated media; it does not verify physical capture, actual target
+movement or closure, microphone, camera, system audio, overlay exclusion, or a
+physical multi-display transition. The screenshots are GPUI test-renderer
+outputs, not captures of the macOS desktop.

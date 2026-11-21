@@ -249,7 +249,7 @@ pub const OVERLAY_DIM: f32 = 0.5;
 pub const OVERLAY_PROMPT_TOP: f32 = 32.0;
 pub const OVERLAY_PROMPT_TOP_MAC: f32 = 48.0;
 pub const OVERLAY_PROMPT_TOOLBAR_TOP: f32 = 96.0;
-pub const OVERLAY_PROMPT_TOOLBAR_TOP_MAC: f32 = 112.0;
+pub const OVERLAY_PROMPT_TOOLBAR_TOP_MAC: f32 = 128.0;
 
 pub fn overlay_prompt_top(toolbar: bool) -> f32 {
     if toolbar {
@@ -315,6 +315,7 @@ pub fn recording_bar_origin(
     (x, y)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn display_containing(
     displays: &[(f32, f32, f32, f32)],
     point_x: f32,
@@ -369,13 +370,15 @@ pub fn editor_window_size(
     work_height: f32,
     stored: Option<(f32, f32)>,
 ) -> (f32, f32) {
-    let max_width = (work_width - EDITOR_SCREEN_PAD * 2.0).max(EDITOR_MIN_WIDTH);
-    let max_height = (work_height - EDITOR_SCREEN_PAD * 2.0).max(EDITOR_MIN_HEIGHT);
+    let max_width = (work_width - EDITOR_SCREEN_PAD * 2.0).max(1.0);
+    let max_height = (work_height - EDITOR_SCREEN_PAD * 2.0).max(1.0);
+    let min_width = EDITOR_MIN_WIDTH.min(max_width);
+    let min_height = EDITOR_MIN_HEIGHT.min(max_height);
     let mut width = image_width;
     let mut height = image_height + TITLE_BAR_HEIGHT;
     if width > max_width || height > max_height {
         let scale_x = max_width / image_width.max(1.0);
-        let scale_y = (max_height - TITLE_BAR_HEIGHT) / image_height.max(1.0);
+        let scale_y = (max_height - TITLE_BAR_HEIGHT).max(0.0) / image_height.max(1.0);
         let scale = scale_x.min(scale_y);
         width = (image_width * scale).floor();
         height = (image_height * scale).floor() + TITLE_BAR_HEIGHT;
@@ -384,7 +387,10 @@ pub fn editor_window_size(
         width = stored_width.min(max_width);
         height = stored_height.min(max_height);
     }
-    (width.max(EDITOR_MIN_WIDTH), height.max(EDITOR_MIN_HEIGHT))
+    (
+        width.clamp(min_width, max_width),
+        height.clamp(min_height, max_height),
+    )
 }
 
 pub fn pin_window_size(
@@ -561,6 +567,16 @@ mod tests {
     }
 
     #[test]
+    fn editor_fits_small_work_areas_with_and_without_a_saved_size() {
+        for stored in [None, Some((1656.0, 976.0)), Some((300.0, 200.0))] {
+            let (width, height) = editor_window_size(1200.0, 800.0, 800.0, 600.0, stored);
+            assert_eq!((width, height), (720.0, 520.0));
+        }
+        let (width, height) = editor_window_size(1200.0, 800.0, 50.0, 30.0, None);
+        assert_eq!((width, height), (1.0, 1.0));
+    }
+
+    #[test]
     fn capture_preview_geometry_matches_design() {
         assert_eq!(PREVIEW_WIDTH, 200.0);
         assert_eq!(PREVIEW_HEIGHT, 140.0);
@@ -598,12 +614,12 @@ mod tests {
             assert_eq!(overlay_toolbar_top(), OVERLAY_TOOLBAR_TOP);
         }
         assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP, 96.0);
-        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 112.0);
+        assert_eq!(OVERLAY_PROMPT_TOOLBAR_TOP_MAC, 128.0);
         if is_macos() {
-            assert_eq!(overlay_prompt_top(true), 112.0);
+            assert_eq!(overlay_prompt_top(true), OVERLAY_PROMPT_TOOLBAR_TOP_MAC);
             assert_eq!(overlay_prompt_top(false), 48.0);
         } else {
-            assert_eq!(overlay_prompt_top(true), 96.0);
+            assert_eq!(overlay_prompt_top(true), OVERLAY_PROMPT_TOOLBAR_TOP);
             assert_eq!(overlay_prompt_top(false), 32.0);
         }
         assert_eq!(RECORDING_TARGET_CHIP_MAX_W, 128.0);

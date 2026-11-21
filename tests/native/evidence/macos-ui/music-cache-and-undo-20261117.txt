@@ -1,0 +1,25 @@
+macOS GPUI video editor music tests, generated WAV sources
+
+Two scratch files named sound.wav contained different constant PCM values. The
+editor imported the first, retained its decoded preview cache, removed the track,
+and imported the second under the reused project filename. Before the fix, a
+sample in the preview stem was 3535 while the replacement file decoded to
+-10606 at the same position. After the fix, the replacement samples matched the
+newly decoded file; the test also requires an audio rebuild when track settings
+and duration are unchanged. Both files and the project were in a temporary
+directory, and no audio device was opened by the comparison.
+
+Three further generated files, mix-1.wav, mix 1.wav and mix_1.wav, produced
+colliding sanitized track IDs before the fix. An isolated editor test failed
+because the first two IDs were identical. After the fix, the three tracks had
+distinct IDs, their volumes could be changed independently, save/reopen kept
+the IDs, and removing one left the other tracks and files intact.
+
+A separate isolated editor check added a synthetic music-track reference,
+removed it, then invoked Undo. Undo restored the track metadata, but the
+referenced file was missing: the test failed with "undo must restore the
+referenced music file". The current removal path deletes the file while undo
+history can still reference it. The check used a throwaway file and did not
+access the user's editor. A safe lifetime and cleanup policy remains open.
+
+These tests do not establish physical audio playback or live recording behavior.

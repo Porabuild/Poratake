@@ -1,0 +1,37 @@
+macOS GPUI oversized screenshot preview, 2026-11-17, source d01f3d7a
+
+An isolated Metal editor fixture loaded an opaque generated 17,000x100 PNG
+with red, green and blue bands. Before tiling, the sample at 15% of its width
+was the dark editor background [7, 7, 9, 255] instead of the source red
+[220, 30, 40, 255]. This first reproduction used an artificial 2.5% zoom,
+below the editor's supported 25% minimum, to display the complete image.
+
+After tiling, the fixture passed for both 17,000x100 and 100x17,000 sources,
+light and dark appearances, and simulated 1x, 1.25x and 2x display scale. At
+the supported 25% zoom it checked visible source colors, simulated command-drag
+panning, samples at and either side of the first tile seam, export PNG pixels,
+and the same checks after reopening that PNG. At the artificial 2.5% zoom it
+also checked colors around both tile boundaries and near each end. All sampled
+RGB channels were within two levels of the generated source. This is not a
+whole-image comparison, a native scroll capture, physical input, a display-scale
+transition, or an interactive performance measurement.
+
+Reproduction for each appearance, scale and zoom:
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-oversized-check PORATAKE_PARITY_LARGE_TEXTURE_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.25 PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
+
+PORATAKE_PARITY_LARGE_DPI was 1, 1.25 and 2; zoom was 0.025 and 0.25; theme
+was dark and light. Each combination exited successfully with a scratch profile.
+
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui editor:: -- --nocapture
+346 passed, 4 ignored. This includes byte-for-byte overlapping tile checks
+with varying alpha in both orientations and a crop/undo test that checks the
+old tiles are queued for retirement and new tiles restore the original source.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the pre-existing unrelated editor/window.rs lint suppressed.
+
+The generated framed attachment and redaction fixture passed in both themes,
+and the scaled blackout fixture passed in dark mode after the tile fit change.
+These do not cover large two-dimensional GPU compositions or real capture.

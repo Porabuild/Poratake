@@ -1,0 +1,54 @@
+existing scroll checks: start
+{"event":"scroll-capture:done"}
+{"event":"scroll-capture:cancelled"}
+{"event":"scroll-capture:cancelled"}
+{"event":"scroll-capture:cancelled"}
+{"id":"scroll-retry-start","success":true,"result":{"started":true}}
+{"event":"scroll-capture:started","data":{"y":0,"height":160,"width":80,"x":0,"displayId":1}}
+{"event":"scroll-capture:scroll-ended","data":{"frameCount":1,"reason":"no-overlap"}}
+{"event":"scroll-capture:scroll-ended","data":{"frameCount":1,"reason":"no-overlap"}}
+{"event":"scroll-capture:scroll-ended","data":{"frameCount":1,"reason":"no-overlap"}}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"error":{"message":"Not in capture mode","code":"NOT_CAPTURING"},"success":false,"id":"stale-auto-scroll-start"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"result":{"autoScrolling":false},"success":true,"id":"stale-auto-scroll-stop"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"result":{"autoScrolling":false},"success":true,"id":"stale-auto-scroll-stop"}
+{"error":{"message":"Not in capture mode","code":"NOT_CAPTURING"},"success":false,"id":"stale-auto-scroll-start"}
+{"event":"scroll-capture:cancelled"}
+{"result":{"cancelled":true},"success":true,"id":"cancel-stale-scroll-start"}
+{"error":{"message":"Scroll capture was cancelled","code":"NOT_CAPTURING"},"success":false,"id":"stale-scroll-start"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"data":{"scrolling":false},"event":"scroll-capture:auto-scroll"}
+{"event":"scroll-capture:auto-scroll","data":{"scrolling":false}}
+{"event":"scroll-capture:frame","data":{"frameCount":1,"preview":"preview","previewHeight":160,"previewWidth":640,"estimatedHeight":160}}
+{"event":"scroll-capture:auto-scroll","data":{"scrolling":false}}
+{"event":"scroll-capture:scroll-ended","data":{"reason":"no-overlap","frameCount":1}}
+existing scroll checks: complete
+SKIP ScreenCaptureKit exclusion check: pass --screen-capture-exclusion to opt in
+recording stop coordinator: start
+recording stop coordinator: complete
+capture filter startup: start
+capture filter startup: complete
+capture screenshot barrier: start
+capture screenshot barrier: complete
+direct screenshot coordination: start
+direct screenshot coordination: complete
+protected tooltip lifecycle: start
+2026-11-16 13:50:27.645 poratake-protected-tooltip-test[20926:5465209] [tooltip] failed to update capture exclusions: ScreenCaptureKit could not resolve recording window IDs: 1
+protected tooltip lifecycle: complete
+capture filter serial refresh: start
+capture filter serial refresh: complete
+capture filter coalescing: start
+capture filter coalescing: complete
+capture filter restart: start
+capture filter restart: complete
+capture filter failure: start
+capture filter failure: complete
+macOS scroll captures match saved pixels for nominal and measured overlap and suppress stale previews

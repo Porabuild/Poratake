@@ -1,0 +1,19 @@
+macOS GPUI video editor close guard, 2026-11-17
+
+cargo test --offline --locked --manifest-path src/main/Cargo.toml
+  -p poratake-gpui close_save_
+  2 passed. The GPUI test platform simulates a window close that fails to
+  save, confirms the edit remains in memory, then retries successfully. A
+  separate test saves an in-progress gesture to a temporary project.
+cargo test --offline --locked --manifest-path src/main/Cargo.toml
+  -p poratake-gpui closing_before_the_debounce_saves_the_restored_music
+  1 passed.
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml
+  -p poratake-gpui --all-targets --features parity -- -D warnings
+  -A clippy::chunks_exact_to_as_chunks
+  passed; the vendored rfd crate emitted existing compiler warnings.
+cargo fmt --manifest-path src/main/Cargo.toml --all -- --check passed.
+
+The test substitutes the error notification and uses GPUI's test platform.
+It does not exercise a native error dialog, actual window close, system quit,
+live capture or an existing user project.

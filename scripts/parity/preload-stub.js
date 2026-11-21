@@ -4,6 +4,26 @@
 // Loaded by `vite.renderer.mts` before the renderer entrypoint.
 //
 const query = new URLSearchParams(location.search);
+if (query.has('traceMedia') || query.has('skipLoadedData')) {
+  window.parityMediaEvents = [];
+  for (const type of ['loadeddata', 'error']) {
+    document.addEventListener(
+      type,
+      event => {
+        if (event.target instanceof HTMLVideoElement) {
+          window.parityMediaEvents.push({
+            type,
+            readyState: event.target.readyState,
+          });
+          if (type === 'loadeddata' && query.has('skipLoadedData')) {
+            event.stopImmediatePropagation();
+          }
+        }
+      },
+      true
+    );
+  }
+}
 window.appPlatform = query.get('platform') || 'win32';
 
 const APPEARANCE = {
@@ -16,6 +36,21 @@ const TYPE = query.get('window') || 'settings';
 /// `?image=/@fs/C:/path/to/capture.png` for the windows that show one.
 const IMAGE = query.get('image');
 const FILE = query.has('file') ? query.get('file') : 'C:\\parity.mp4';
+const BLACKOUT_ORDER_FIXTURE = query.get('fixture') === 'blackout-order';
+const BLACKOUT_SCALE_FIXTURE =
+  query.get('fixture') === 'blackout-scale' || BLACKOUT_ORDER_FIXTURE;
+const BLACKOUT_REOPEN_FIXTURE = query.get('fixture') === 'blackout-reopen';
+const ORDER_SHAPE = {
+  id: 'parity-shape',
+  type: 'rectangle',
+  x: 10,
+  y: 6,
+  width: 8,
+  height: 8,
+  stroke: '#ff0000',
+  strokeWidth: 1,
+  fill: '#ff0000',
+};
 const isList = channel => /list$|:list/.test(channel);
 
 const windowParams = async () => {
@@ -24,6 +59,70 @@ const windowParams = async () => {
       return {
         filePath: FILE,
         imageUrl: IMAGE,
+        ...(BLACKOUT_SCALE_FIXTURE || BLACKOUT_REOPEN_FIXTURE
+          ? {
+              width: Number(query.get('displayWidth') || 100),
+              height: Number(query.get('displayHeight') || 80),
+              ...(BLACKOUT_SCALE_FIXTURE
+                ? {
+                    editorState: {
+                      wallpaper: {
+                        aspectRatio: query.get('aspectRatio') || 'auto',
+                        inset: Number(query.get('inset') || 0),
+                        windowFrame: { style: query.get('frame') || 'none' },
+                        noise: Number(query.get('noise') || 0),
+                        gradient: query.has('noise')
+                          ? {
+                              id: 'parity-noise',
+                              colors: ['#5080b0', '#5080b0'],
+                              angle: 0,
+                            }
+                          : null,
+                      },
+                      layers: query.has('attachment')
+                        ? [
+                            {
+                              id: 'parity-attachment',
+                              base64: query.get('attachment'),
+                              naturalWidth: 40,
+                              naturalHeight: 22,
+                              edge: query.get('attachmentEdge') || 'right',
+                            },
+                          ]
+                        : [],
+                      annotations: [
+                        ...(BLACKOUT_ORDER_FIXTURE &&
+                        query.get('shapeAfter') !== '1'
+                          ? [
+                              query.has('brokenSvg')
+                                ? { ...ORDER_SHAPE, fill: '#ff0000" invalid<' }
+                                : ORDER_SHAPE,
+                            ]
+                          : []),
+                        {
+                          id: 'parity-blackout',
+                          type: 'redact',
+                          x: 8.8,
+                          y: 3.8,
+                          width: 12.3,
+                          height: 12.3,
+                          style: query.get('redactStyle') || 'blackout',
+                          intensity: 5,
+                        },
+                        ...(BLACKOUT_ORDER_FIXTURE &&
+                        query.get('shapeAfter') === '1'
+                          ? [
+                              query.has('brokenSvg')
+                                ? { ...ORDER_SHAPE, fill: '#ff0000" invalid<' }
+                                : ORDER_SHAPE,
+                            ]
+                          : []),
+                      ],
+                    },
+                  }
+                : {}),
+            }
+          : {}),
         initialPreferences: { lastTool: 'pen', color: '#f43f5e' },
         screenshotSettings: {
           closeOnCopy: false,
@@ -36,7 +135,8 @@ const windowParams = async () => {
     case 'capture-preview':
       return {
         filePath: FILE,
-        contentType: 'screenshot',
+        contentType:
+          query.get('contentType') === 'video' ? 'video' : 'screenshot',
         imageUrl: IMAGE,
       };
     case 'recording-control':
@@ -108,7 +208,12 @@ window.ipcRenderer = {
     };
   },
   off: () => {},
-  send: channel => {
+  send: (channel, ...args) => {
+    if (BLACKOUT_SCALE_FIXTURE && channel === 'screenshot:save-edited') {
+      window.dispatchEvent(
+        new CustomEvent('parity:screenshot-saved', { detail: args })
+      );
+    }
     const reply = REPLIES[channel];
     if (!reply) return;
     // Asynchronously, like the real IPC round trip.

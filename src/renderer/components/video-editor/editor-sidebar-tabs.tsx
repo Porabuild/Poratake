@@ -96,6 +96,7 @@ export default function EditorSidebarTabs({
               <Button
                 variant={activeTab === tab.id ? 'tertiary' : 'ghost'}
                 size="icon-sm"
+                aria-label={tab.label}
                 className="size-8!"
                 onMouseEnter={() => preloadEditorSidebarTab(tab.id)}
                 onFocus={() => preloadEditorSidebarTab(tab.id)}

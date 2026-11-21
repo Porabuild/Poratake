@@ -64,6 +64,8 @@ export interface ShapeRenderProps<T extends Annotation> {
   offsetY: number;
   isSelected: boolean;
   isPreview: boolean;
+  decorationOnly?: boolean;
+  hitOnly?: boolean;
   onMouseDown?: (e: React.MouseEvent, id: string) => void;
 }
 

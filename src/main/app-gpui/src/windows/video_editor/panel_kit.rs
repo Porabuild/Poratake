@@ -9,8 +9,8 @@ use gpui::{div, prelude::*, px, AnyElement, Context, ElementId, SharedString, St
 use crate::theme::vars::ThemeVars;
 use crate::ui::menu::MenuHandle;
 use crate::ui::rows;
-use crate::windows::video_editor::styles;
 use crate::windows::video_editor::VideoEditorWindow;
+use crate::windows::video_editor::{sidebar::SidebarTab, styles};
 use herogpui::components::SliderSize;
 use herogpui::components::{Button, PickerItem, Select, Size, TabItem, Tabs, TabsVariant, Variant};
 
@@ -23,7 +23,32 @@ pub fn scoped_id(key: &'static str, scope: Option<&str>) -> ElementId {
     }
 }
 
-pub fn panel(scroll: &gpui::ScrollHandle, children: Vec<AnyElement>) -> AnyElement {
+pub fn panel(
+    tab: SidebarTab,
+    scroll: &gpui::ScrollHandle,
+    children: Vec<AnyElement>,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> AnyElement {
+    let reveal = crate::ui::chrome::is_macos().then(|| {
+        crate::ui::focus_reveal::FocusReveal::vertical("video-sidebar-focus", scroll, window, cx)
+    });
+    let children = children.into_iter().enumerate().map(|(index, child)| {
+        if let Some(reveal) = &reveal {
+            reveal.wrap(
+                format!("video-sidebar-{}-{index}", tab.id()),
+                child,
+                window,
+                cx,
+            )
+        } else {
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .child(child)
+                .into_any_element()
+        }
+    });
     div()
         .relative()
         .size_full()
@@ -39,11 +64,7 @@ pub fn panel(scroll: &gpui::ScrollHandle, children: Vec<AnyElement>) -> AnyEleme
                 .min_w_0()
                 .overflow_y_scroll()
                 .p(px(crate::ui::chrome::VIDEO_PANEL_PAD))
-                .children(
-                    children
-                        .into_iter()
-                        .map(|child| div().w_full().flex_shrink_0().child(child)),
-                ),
+                .children(children),
         )
         .child(crate::windows::scrollbars::app_vertical(
             "video-panel-scrollbar",

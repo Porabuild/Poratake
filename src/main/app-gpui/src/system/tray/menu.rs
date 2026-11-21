@@ -353,7 +353,14 @@ pub fn entries(
                 if let Some(accelerator) = accelerator {
                     item = item.shortcut(accelerator::display(&appkit_order(&accelerator)));
                 }
-                item = item.on_select(move |_window, cx| {
+                item = item.on_select(move |window, cx| {
+                    #[cfg(target_os = "macos")]
+                    if intent.starts_capture() {
+                        crate::windows::tray_menu::dismiss_for_capture(window, cx);
+                        cx.defer(move |cx| crate::intents::dispatch(intent, tray_rect, cx));
+                        return;
+                    }
+                    let _ = window;
                     crate::intents::dispatch(intent, tray_rect, cx);
                 });
                 MenuEntry::Item(item)

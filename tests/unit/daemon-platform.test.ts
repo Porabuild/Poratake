@@ -246,9 +246,9 @@ describe('native recording startup', () => {
       'utf8'
     );
 
-    expect(source).toContain(
-      'pauseStartTime = videoFrameCount > 0 ? lastFrameTime : nil'
-    );
+    expect(source).toContain('if sessionStarted {');
+    expect(source).toContain('pauseStartTime = currentTime');
+    expect(source).toContain('pauseStartTime = lastFrameTime');
     expect(source.indexOf('videoFrameCount = 0')).toBeLessThan(
       source.indexOf('try await stream?.startCapture()')
     );

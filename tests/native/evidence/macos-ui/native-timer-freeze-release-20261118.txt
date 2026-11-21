@@ -1,0 +1,32 @@
+macOS native frozen timer release, 2026-11-18
+
+GPUI development probe, generated AppKit backdrop, one built-in
+Retina display, and an authorized screen-only daemon. App-local
+pointer events confirmed the timer area. The bridge held a successful
+freeze-screen Release reply for 650 ms and continued reading requests.
+It saw no countdown Show before releasing the reply.
+
+Observed app-local status replies during the hold:
+Baseline dfcb7e9e, light               652.31 ms (blocked)
+Revised light                          21.94 ms
+Revised dark                            0.12 ms
+Revised dark cancellation               0.21 ms
+Revised light replacement screenshot    0.10 ms
+
+The revised countdown appeared 678.6 ms in light and 678.3 ms in
+dark after confirmation, inclusive of the held reply. The countdown
+then ran for about five seconds. Both captures saved 600×320 PNGs
+whose RGB channels were uniform over the generated backdrop. Preview
+and editor opening passed with the timer controls gone. Cancelling
+during Release left no selector, countdown, or output. Switching to
+a normal screenshot replaced the selection after release and did
+not start a stale countdown.
+
+The baseline offscreen timer workflow stalled during the Release
+barrier. The revised light and dark workflows check that the app
+can process events while the held reply is pending, the timer Show
+request waits, and the completed screenshot still saves. All 1,173
+runnable GPUI tests and 33 Electron timer/freeze reference tests passed.
+
+These measurements use individual app-local status replies on one
+display. They do not measure physical input or compositor scan-out.

@@ -28,6 +28,8 @@
     "dev": "bun scripts/dev.mjs",
     "dev:gpui": "bun scripts/dev-gpui.mjs",
     "build:gpui:mac": "bun run build-native-mac && bash scripts/build-gpui-mac.sh",
+    "package:gpui:mac": "bash scripts/package-gpui-mac.sh",
+    "package:gpui:win": "node scripts/package-gpui-win.mjs",
     "build:gpui:linux": "bun run check:daemon-contract && cargo build --release --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --package poratake-gpui",
     "package:gpui:linux": "bash scripts/package-gpui-linux.sh",
     "build-mac": "bun run build-native-mac && bun run package-mac",

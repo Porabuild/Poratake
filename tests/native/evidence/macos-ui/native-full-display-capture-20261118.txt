@@ -1,0 +1,50 @@
+Native GPUI full-display screenshots, macOS, 2026-11-18
+
+Build based on 3e8c7b60 plus the native smoke command for CaptureScreen.
+The test used a generated opaque AppKit backdrop, the already authorized
+screen-only daemon, app-local controls, and the 1728×1117-point built-in
+Retina display at 2×. Every successful request covered the full display
+with cached=false and saved one 3456×2234 PNG. The preview appeared and
+opened the PNG in the native screenshot editor. Test windows closed
+cleanly afterward.
+
+Scenario                   Preview visible   Screenshot RPC   Dominant sRGB
+Direct, light              339.7 ms          152.3 ms         (30, 86, 147)
+Direct, dark               330.0 ms          150.5 ms         (32, 86, 147)
+Frozen area to screen,
+  light, reply held        795.1 ms           78.5 ms         (194, 77, 30)
+Frozen area to screen,
+  dark, reply held         789.1 ms           77.4 ms         (194, 77, 30)
+
+Durations are individual observations. The first direct light and dark
+runs reached visible previews in 160.7 and 143.1 ms. Each final PNG had
+at least 99.996% backdrop-color pixels after ColorSync conversion to
+sRGB. In sampled nonuniform frames, deviations were confined to an
+18×18-pixel patch near the upper right. The recording toolbar, selector
+and freeze window were absent from the saved images.
+
+For the frozen handoff, the daemon physically cleared the frozen
+window before the bridge held its successful release acknowledgement
+for 650 ms. The GPUI area selector also cleared. During the hold, the
+moving fixture changed the generated backdrop from blue to orange and
+the app processed an independent status request. The bridge continued
+reading requests and saw no screenshot call until the acknowledgement
+was released. Both saved colors matched the new orange backdrop.
+
+In a separate dark run, a timer request replaced the pending display
+capture during that same hold. The timer selector appeared after
+release and closed when cancelled. The superseded capture sent no
+screenshot request and left no file.
+
+The light comparison replayed the shipped Electron macOS
+captureDisplayToFile request using display bounds and cached=false,
+without GPUI's explicit display ID and scale. Both used the same real
+daemon and generated blue backdrop. At 3456×2234, 7,720,464 of
+7,720,704 pixels matched exactly and 7,720,472 were within two RGB
+levels of one another after ColorSync conversion. Electron's 53
+screenshot and native-capture unit tests also passed, including its
+single-display picker bypass. The RPC replay covers native capture
+parameters and pixels. It does not exercise the live Electron shell.
+
+GPUI's capture test filter passed 32 tests. The native runs used one
+physical display, with app-local input and no new privacy grants.

@@ -57,8 +57,10 @@ class FloatingPanel: NSPanel, ThemeObserver {
     }
     
     func setPosition(x: Int, y: Int) {
-        let mainScreenHeight = NSScreen.main?.frame.height ?? 0
-        let cocoaY = mainScreenHeight - CGFloat(y) - frame.height
+        let cocoaY = DisplayCoordinates.cocoaY(
+            topLeftY: CGFloat(y), height: frame.height,
+            primaryHeight: DisplayCoordinates.primaryHeight
+        )
         setFrameOrigin(NSPoint(x: CGFloat(x), y: cocoaY))
     }
     

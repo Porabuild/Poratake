@@ -1,4 +1,7 @@
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use gpui::{AnyElement, App, ElementId, IntoElement, ParentElement, SharedString, Window};
 use herogpui::components::{Tooltip, TooltipPresentationRequest, TooltipPresenter};
@@ -17,6 +20,7 @@ struct Presentation {
 #[derive(Default)]
 pub struct NativeTooltipPresenter {
     active: RefCell<Option<Presentation>>,
+    suppressed: Cell<bool>,
     #[cfg(windows)]
     surface: RefCell<Option<crate::system::native_tooltip::WindowsTooltip>>,
     #[cfg(all(target_os = "macos", not(test)))]
@@ -76,10 +80,59 @@ impl NativeTooltipPresenter {
             .as_ref()
             .map(|active| active.content.clone())
     }
+
+    #[cfg(all(target_os = "macos", test))]
+    pub fn show_for_test(&self, key: ElementId, content: SharedString, window: &mut Window) {
+        crate::windows::scroll_capture::set_native_tooltip(window, Some(&content));
+        *self.active.borrow_mut() = Some(Presentation {
+            key,
+            content,
+            bounds: gpui::Bounds::default(),
+            scale: 1.0,
+            size: None,
+            placement: herogpui::components::TooltipPlacement::Top,
+            offset: gpui::px(6.0),
+        });
+    }
+
+    pub fn set_hover_suppressed(&self, suppressed: bool) {
+        self.suppressed.set(suppressed);
+    }
+
+    pub fn dismiss_active(&self, window: Option<&mut Window>) {
+        let key = self
+            .active
+            .borrow()
+            .as_ref()
+            .map(|active| active.key.clone());
+        let Some(key) = key else {
+            return;
+        };
+        let mut active = self.active.borrow_mut();
+        if !active.as_ref().is_some_and(|item| item.key == key) {
+            return;
+        }
+        active.take();
+        #[cfg(all(target_os = "macos", test))]
+        if let Some(window) = window {
+            crate::windows::scroll_capture::set_native_tooltip(window, None);
+        }
+        #[cfg(not(all(target_os = "macos", test)))]
+        let _ = window;
+        #[cfg(all(test, windows))]
+        crate::system::native_tooltip::record_test_hide(self.owner);
+        #[cfg(any(windows, all(target_os = "macos", not(test))))]
+        if let Some(surface) = self.surface.borrow_mut().as_mut() {
+            surface.hide();
+        }
+    }
 }
 
 impl TooltipPresenter for NativeTooltipPresenter {
     fn present(&self, request: &TooltipPresentationRequest, _window: &mut Window, _cx: &mut App) {
+        if self.suppressed.get() {
+            return;
+        }
         let mut active = self.active.borrow_mut();
         if active.as_ref().is_some_and(|active| {
             active.key == request.key

@@ -2,6 +2,39 @@ import AppKit
 import CoreMedia
 import Foundation
 
+struct RecordingWindowTarget {
+    enum Observation {
+        case visible(CGRect)
+        case hidden
+        case absent
+    }
+
+    let id: CGWindowID
+    private let identifiers: CFArray
+
+    init?(id: CGWindowID) {
+        guard id != 0 else { return nil }
+        var identifier = UnsafeRawPointer(bitPattern: UInt(id))
+        guard let identifiers = CFArrayCreate(nil, &identifier, 1, nil) else { return nil }
+        self.id = id
+        self.identifiers = identifiers
+    }
+
+    func observe() -> Observation {
+        guard let descriptions = CGWindowListCreateDescriptionFromArray(identifiers) as? [[String: Any]] else {
+            return .hidden
+        }
+        guard let window = descriptions.first(where: { $0[kCGWindowNumber as String] as? CGWindowID == id }) else {
+            return .absent
+        }
+        guard window[kCGWindowIsOnscreen as String] as? Bool == true,
+              let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              rect.width > 0, rect.height > 0 else { return .hidden }
+        return .visible(rect)
+    }
+}
+
 @MainActor
 final class RecordingCaptureWindowRegistry {
     static let shared = RecordingCaptureWindowRegistry()
@@ -17,6 +50,8 @@ final class RecordingCaptureWindowRegistry {
     private var refreshWaiters: [CheckedContinuation<Void, Error>] = []
     private var captureStartInProgress = false
     private var captureStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var activeScreenshots = 0
+    private var screenshotWaiters: [CheckedContinuation<Void, Never>] = []
     #if SCROLL_CAPTURE_TEST
     var testOnRefreshCleared: (@MainActor () async -> Void)?
     #endif
@@ -52,11 +87,39 @@ final class RecordingCaptureWindowRegistry {
         return windowIDs.sorted()
     }
 
-    func setFilterUpdater(_ updater: FilterUpdater?) {
+    func beginScreenshot() -> Set<CGWindowID> {
+        activeScreenshots += 1
+        return windowIDs
+    }
+
+    func finishScreenshot() {
+        precondition(activeScreenshots > 0)
+        activeScreenshots -= 1
+        guard activeScreenshots == 0 else { return }
+        let waiters = screenshotWaiters
+        screenshotWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func waitForScreenshots() async {
+        while activeScreenshots > 0 {
+            await withCheckedContinuation { screenshotWaiters.append($0) }
+        }
+    }
+
+    func waitForWindowPresentation() async throws {
+        repeat {
+            try await updateFilterIfNeeded()
+            await waitForScreenshots()
+        } while activeScreenshots > 0 || captureStartInProgress
+            || (filterUpdater != nil && appliedRevision != revision)
+    }
+
+    func setFilterUpdater(initiallyExcluding windowIDs: [CGWindowID]? = nil, _ updater: FilterUpdater?) {
         invalidateRefresh()
         filterUpdater = updater
         revision &+= 1
-        appliedRevision = nil
+        appliedRevision = windowIDs == currentWindowIDs() ? revision : nil
     }
 
     func beginCaptureStart() {
@@ -77,22 +140,15 @@ final class RecordingCaptureWindowRegistry {
     }
 
     func waitForCaptureStartIfNeeded() async {
-        if captureStartInProgress {
-            await withCheckedContinuation { continuation in
-                if captureStartInProgress {
-                    captureStartWaiters.append(continuation)
-                    return
-                }
-                continuation.resume()
-            }
+        while captureStartInProgress {
+            await withCheckedContinuation { captureStartWaiters.append($0) }
         }
     }
 
     func updateFilterIfNeeded() async throws {
-        await waitForCaptureStartIfNeeded()
-
-        while appliedRevision != revision {
-            guard let updater = filterUpdater else { return }
+        while true {
+            await waitForCaptureStartIfNeeded()
+            guard appliedRevision != revision, let updater = filterUpdater else { return }
             if refreshID == nil {
                 let refreshID = nextRefreshID
                 nextRefreshID &+= 1
@@ -134,10 +190,11 @@ final class RecordingCaptureWindowRegistry {
         #if SCROLL_CAPTURE_TEST
         await testOnRefreshCleared?()
         #endif
+        let currentResult = revision == self.revision ? result : .success(())
         let waiters = refreshWaiters
         refreshWaiters.removeAll()
         for waiter in waiters.reversed() {
-            waiter.resume(with: result)
+            waiter.resume(with: currentResult)
         }
     }
 
@@ -157,6 +214,10 @@ final class RecordingCaptureWindowRegistry {
 
     var testPendingCaptureStartWaiterCount: Int {
         captureStartWaiters.count
+    }
+
+    var testPendingScreenshotWaiterCount: Int {
+        screenshotWaiters.count
     }
     #endif
 }
@@ -274,10 +335,11 @@ final class RecorderStopCoordinator {
     @MainActor private var task: Task<RecordingResult, Error>?
     #if SCROLL_CAPTURE_TEST
     @MainActor private(set) var testWaiterCount = 0
+    @MainActor private(set) var testWaitingForStart = false
     #endif
 
     @MainActor
-    func stop(sessionID: RecorderSessionID, operation: @escaping Operation) async throws -> RecordingResult {
+    func stop(sessionID: RecorderSessionID, startup: Task<Void, Never>? = nil, operation: @escaping Operation) async throws -> RecordingResult {
         if let task {
             guard self.sessionID == sessionID else {
                 throw RecorderStopCoordinatorError.differentSessionIsStopping
@@ -291,6 +353,15 @@ final class RecorderStopCoordinator {
 
         let task = Task { @MainActor in
             do {
+                if let startup = startup {
+                    #if SCROLL_CAPTURE_TEST
+                    self.testWaitingForStart = true
+                    #endif
+                    await startup.value
+                    #if SCROLL_CAPTURE_TEST
+                    self.testWaitingForStart = false
+                    #endif
+                }
                 let result = try await operation()
                 self.clear(sessionID: sessionID)
                 return result
@@ -440,6 +511,7 @@ struct RecordingResult: Sendable {
     let outputPath: String
     let cursorPath: String?
     let cameraPath: String?
+    let cameraTrackMissing: Bool
     let keysPath: String?
     let systemAudioPath: String?
     let micAudioPath: String?

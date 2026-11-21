@@ -9,12 +9,20 @@ mod macos;
 mod windows;
 
 #[cfg(target_os = "macos")]
-pub fn configure_app() {
-    macos::configure_app();
+pub fn configure_app(cx: &mut gpui::App) {
+    macos::configure_app(cx);
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn configure_app() {}
+pub fn configure_app(_cx: &mut gpui::App) {}
+
+#[cfg(target_os = "macos")]
+pub fn register_dock_window(window_id: gpui::WindowId, cx: &mut gpui::App) {
+    macos::register_dock_window(window_id, cx);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn register_dock_window(_window_id: gpui::WindowId, _cx: &mut gpui::App) {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrayRect {
@@ -24,6 +32,7 @@ pub struct TrayRect {
     pub height: f32,
 }
 
+#[cfg(not(target_os = "macos"))]
 impl From<tray_icon::Rect> for TrayRect {
     fn from(rect: tray_icon::Rect) -> Self {
         Self {
@@ -131,6 +140,12 @@ struct Shell {
 impl Shell {
     fn tray_rect(&self) -> Option<TrayRect> {
         let rect = self.tray.as_ref()?.rect()?;
+        #[cfg(target_os = "macos")]
+        return Some(macos::logical_tray_rect(
+            rect,
+            macos::tray_scale_factor(self.tray.as_ref()),
+        ));
+        #[cfg(not(target_os = "macos"))]
         Some(TrayRect {
             x: rect.position.x as f32,
             y: rect.position.y as f32,

@@ -26,6 +26,8 @@ pub struct Settings {
     pub has_audio: bool,
 }
 
+const ENCODER_QUEUE_CAPACITY: usize = 3;
+
 enum Command {
     Video {
         bgra: Vec<u8>,
@@ -43,7 +45,8 @@ enum Command {
 }
 
 pub struct Encoder {
-    commands: Option<Sender<Command>>,
+    commands: Option<mpsc::SyncSender<Command>>,
+    spare_rx: Receiver<Vec<u8>>,
     settings: Settings,
     frames_written: u64,
     cancelled: Arc<AtomicBool>,
@@ -54,10 +57,9 @@ pub struct Encoder {
 type ChildSlot = Arc<Mutex<Option<std::process::Child>>>;
 
 impl Encoder {
-    /// Creates the output file. Blocking, so callers run it on the background
-    /// executor.
     pub fn create(path: &Path, settings: Settings) -> Result<Self, String> {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::sync_channel(ENCODER_QUEUE_CAPACITY);
+        let (spare_tx, spare_rx) = mpsc::sync_channel(ENCODER_QUEUE_CAPACITY + 1);
         let (ready_tx, ready_rx) = mpsc::channel();
         let owned = path.to_path_buf();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -72,6 +74,7 @@ impl Encoder {
                     owned,
                     settings,
                     command_rx,
+                    spare_tx,
                     ready_tx,
                     worker_cancelled,
                     worker_child,
@@ -81,6 +84,7 @@ impl Encoder {
 
         let encoder = Self {
             commands: Some(command_tx),
+            spare_rx,
             settings,
             frames_written: 0,
             cancelled,
@@ -92,6 +96,10 @@ impl Encoder {
             .map_err(|_| "the encoder did not start".to_string())??;
 
         Ok(encoder)
+    }
+
+    pub fn take_reusable_buffer(&self) -> Vec<u8> {
+        self.spare_rx.try_recv().unwrap_or_default()
     }
 
     /// Appends one composed frame. `bgra` must be `width * height * 4` bytes.
@@ -139,7 +147,7 @@ impl Encoder {
 
     /// Finalizes the file. Consuming the encoder guarantees no frame can be
     /// appended after the container is closed.
-    #[cfg(all(test, windows))]
+    #[cfg(all(test, any(windows, target_os = "macos")))]
     pub fn finish(self) -> Result<(), String> {
         self.finish_cancellable(&|| false)
     }
@@ -254,6 +262,7 @@ mod backend {
         path: PathBuf,
         settings: Settings,
         commands: Receiver<Command>,
+        spare_tx: mpsc::SyncSender<Vec<u8>>,
         ready: Sender<Result<(), String>>,
         cancelled: Arc<AtomicBool>,
         _child: ChildSlot,
@@ -269,7 +278,14 @@ mod backend {
             match open_writer(&path, settings) {
                 Ok((writer, video_stream, audio_stream)) => {
                     let _ = ready.send(Ok(()));
-                    pump(writer, video_stream, audio_stream, commands, &cancelled);
+                    pump(
+                        writer,
+                        video_stream,
+                        audio_stream,
+                        commands,
+                        spare_tx,
+                        &cancelled,
+                    );
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -286,6 +302,7 @@ mod backend {
         video_stream: u32,
         audio_stream: Option<u32>,
         commands: Receiver<Command>,
+        spare_tx: mpsc::SyncSender<Vec<u8>>,
         cancelled: &AtomicBool,
     ) {
         let mut failure = None;
@@ -302,6 +319,7 @@ mod backend {
                     if failure.is_none() {
                         failure = write_video(&writer, video_stream, &bgra, time, duration).err();
                     }
+                    let _ = spare_tx.try_send(bgra);
                 }
                 Command::Audio {
                     pcm,
@@ -526,6 +544,7 @@ mod backend {
         path: PathBuf,
         settings: Settings,
         commands: Receiver<Command>,
+        spare_tx: mpsc::SyncSender<Vec<u8>>,
         ready: Sender<Result<(), String>>,
         cancelled: Arc<AtomicBool>,
         child: ChildSlot,
@@ -546,6 +565,7 @@ mod backend {
         let _ = ready.send(Ok(()));
 
         let mut input = None;
+        let mut audio_file: Option<(std::fs::File, u64)> = None;
         let mut failure = None;
         while let Ok(command) = commands.recv() {
             if cancelled.load(Ordering::Acquire) {
@@ -559,7 +579,7 @@ mod backend {
                 } => {
                     let _ = duration;
                     if failure.is_none() {
-                        failure = write_audio(&audio_path, &pcm, time).err();
+                        failure = write_audio_file(&audio_path, &mut audio_file, &pcm, time).err();
                     }
                 }
                 Command::Video {
@@ -569,9 +589,11 @@ mod backend {
                 } => {
                     let _ = (time, duration);
                     if failure.is_some() {
+                        let _ = spare_tx.try_send(bgra);
                         continue;
                     }
                     if input.is_none() {
+                        drop(audio_file.take());
                         match start(
                             &ffmpeg,
                             &path,
@@ -581,12 +603,14 @@ mod backend {
                             Ok((process, stdin)) => {
                                 if let Err(error) = register_child(&child, process, &cancelled) {
                                     failure = Some(error);
+                                    let _ = spare_tx.try_send(bgra);
                                     continue;
                                 }
                                 input = Some(stdin);
                             }
                             Err(error) => {
                                 failure = Some(error);
+                                let _ = spare_tx.try_send(bgra);
                                 continue;
                             }
                         }
@@ -602,9 +626,11 @@ mod backend {
                     {
                         failure = Some(error);
                     }
+                    let _ = spare_tx.try_send(bgra);
                 }
                 Command::Finish { reply } => {
                     drop(input.take());
+                    drop(audio_file.take());
                     let has_child = child.lock().unwrap().is_some();
                     let result = match (failure.take(), has_child) {
                         (Some(error), _) => {
@@ -620,24 +646,49 @@ mod backend {
                 }
             }
         }
+        drop(audio_file.take());
         stop_child(&child);
         let _ = std::fs::remove_file(audio_path);
     }
 
-    fn write_audio(path: &Path, pcm: &[u8], time: i64) -> Result<(), String> {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|error| format!("audio staging failed: {error}"))?;
-        if time > 0 && file.metadata().map(|metadata| metadata.len()).unwrap_or(0) == 0 {
-            let bytes = time as u64 * AUDIO_SAMPLE_RATE as u64 * AUDIO_CHANNELS as u64 * 2
-                / UNITS_PER_SECOND as u64;
-            std::io::copy(&mut std::io::repeat(0).take(bytes), &mut file)
+    fn write_audio_file(
+        path: &Path,
+        handle: &mut Option<(std::fs::File, u64)>,
+        pcm: &[u8],
+        time: i64,
+    ) -> Result<(), String> {
+        if handle.is_none() {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|error| format!("audio staging failed: {error}"))?;
+            let existing_len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            *handle = Some((file, existing_len));
+        }
+        let Some((file, written_len)) = handle.as_mut() else {
+            return Err("audio staging failed".to_string());
+        };
+        if time > 0 && *written_len == 0 {
+            let frames = (time as u128 * u128::from(AUDIO_SAMPLE_RATE)
+                + UNITS_PER_SECOND as u128 / 2)
+                / UNITS_PER_SECOND as u128;
+            let bytes = u64::try_from(frames * u128::from(AUDIO_CHANNELS) * 2)
+                .map_err(|_| "audio padding is too large".to_string())?;
+            std::io::copy(&mut std::io::repeat(0).take(bytes), file)
                 .map_err(|error| format!("audio padding failed: {error}"))?;
+            *written_len += bytes;
         }
         file.write_all(pcm)
-            .map_err(|error| format!("audio staging failed: {error}"))
+            .map_err(|error| format!("audio staging failed: {error}"))?;
+        *written_len += pcm.len() as u64;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn write_audio(path: &Path, pcm: &[u8], time: i64) -> Result<(), String> {
+        let mut handle = None;
+        write_audio_file(path, &mut handle, pcm, time)
     }
 
     fn start(
@@ -732,6 +783,33 @@ mod backend {
         } else {
             detail
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn intro_silence_preserves_stereo_sample_alignment() {
+            let directory = tempfile::tempdir().unwrap();
+            let samples = [1_u8, 2, 3, 4, 5, 6, 7, 8];
+            for (time, frames) in [
+                (833_333, 4_000),
+                (666_667, 3_200),
+                (416_667, 2_000),
+                (400_000, 1_920),
+                (333_333, 1_600),
+                (166_667, 800),
+            ] {
+                let path = directory.path().join(format!("{time}.pcm"));
+                write_audio(&path, &samples, time).unwrap();
+                write_audio(&path, &samples, time).unwrap();
+                let audio = std::fs::read(path).unwrap();
+                let offset = frames * AUDIO_CHANNELS as usize * 2;
+                assert!(audio[..offset].iter().all(|sample| *sample == 0));
+                assert_eq!(&audio[offset..], [samples, samples].concat());
+            }
+        }
     }
 }
 
@@ -986,6 +1064,7 @@ mod backend {
         path: PathBuf,
         settings: Settings,
         commands: Receiver<Command>,
+        spare_tx: mpsc::SyncSender<Vec<u8>>,
         ready: Sender<Result<(), String>>,
         cancelled: Arc<AtomicBool>,
         child: ChildSlot,
@@ -1012,15 +1091,15 @@ mod backend {
                 break;
             }
             let outcome = match command {
-                // Raw-video timestamps come from the frame rate, so the
-                // timeline offsets the other platforms use are not needed.
                 Command::Video {
                     bgra,
                     time,
                     duration,
                 } => {
                     let _ = (time, duration);
-                    session.write_video(&bgra)
+                    let res = session.write_video(&bgra);
+                    let _ = spare_tx.try_send(bgra);
+                    res
                 }
                 Command::Audio {
                     pcm,
@@ -1146,9 +1225,11 @@ mod backend {
                     session.abort();
                 })
                 .unwrap();
-            let (commands, _receiver) = mpsc::channel();
+            let (commands, _receiver) = mpsc::sync_channel(4);
+            let (_spare_tx, spare_rx) = mpsc::sync_channel(1);
             let encoder = Encoder {
                 commands: Some(commands),
+                spare_rx,
                 settings,
                 frames_written: 0,
                 cancelled,
@@ -1233,7 +1314,8 @@ mod backend {
                 Session::start(fake, &output, settings, child.clone(), &cancelled).unwrap();
             session.write_video(&[0; 16]).unwrap();
             session.write_audio(&[0; 8]).unwrap();
-            let (commands, receiver) = mpsc::channel();
+            let (commands, receiver) = mpsc::sync_channel(4);
+            let (_spare_tx, spare_rx) = mpsc::sync_channel(1);
             let worker_cancelled = cancelled.clone();
             let worker = std::thread::spawn(move || {
                 if let Ok(Command::Finish { reply }) = receiver.recv() {
@@ -1244,6 +1326,7 @@ mod backend {
             });
             let encoder = Encoder {
                 commands: Some(commands),
+                spare_rx,
                 settings,
                 frames_written: 0,
                 cancelled,
@@ -1295,46 +1378,55 @@ mod backend {
 mod tests {
     use super::*;
 
+    fn test_encoder(
+        settings: Settings,
+        cancelled: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    ) -> (Encoder, Receiver<Command>, mpsc::SyncSender<Vec<u8>>) {
+        let (commands, receiver) = mpsc::sync_channel(8);
+        let (spare_tx, spare_rx) = mpsc::sync_channel(4);
+        let encoder = Encoder {
+            commands: Some(commands),
+            spare_rx,
+            settings,
+            frames_written: 0,
+            cancelled,
+            child: Arc::new(Mutex::new(None)),
+            worker,
+        };
+        (encoder, receiver, spare_tx)
+    }
+
     #[test]
     fn a_frame_of_the_wrong_size_is_rejected() {
-        // The size check runs before anything is sent, so it does not need a
-        // live encoder thread.
-        let (commands, _receiver) = mpsc::channel();
-        let mut encoder = Encoder {
-            commands: Some(commands),
-            settings: Settings {
+        let (mut encoder, _receiver, _) = test_encoder(
+            Settings {
                 width: 4,
                 height: 4,
                 frame_rate: 30,
                 bitrate: 1_000_000,
                 has_audio: false,
             },
-            frames_written: 0,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-            worker: None,
-        };
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
         assert!(encoder.write_frame(vec![0; 8]).is_err());
         assert!(encoder.write_frame(vec![0; 64]).is_ok());
     }
 
     #[test]
     fn frame_times_advance_by_the_frame_duration() {
-        let (commands, receiver) = mpsc::channel();
-        let mut encoder = Encoder {
-            commands: Some(commands),
-            settings: Settings {
+        let (mut encoder, receiver, _) = test_encoder(
+            Settings {
                 width: 2,
                 height: 2,
                 frame_rate: 25,
                 bitrate: 1_000_000,
                 has_audio: false,
             },
-            frames_written: 0,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-            worker: None,
-        };
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
         encoder.write_frame(vec![0; 16]).expect("first");
         encoder.write_frame(vec![0; 16]).expect("second");
 
@@ -1347,22 +1439,17 @@ mod tests {
 
     #[test]
     fn audio_durations_follow_the_sample_count() {
-        let (commands, receiver) = mpsc::channel();
-        let encoder = Encoder {
-            commands: Some(commands),
-            settings: Settings {
+        let (encoder, receiver, _) = test_encoder(
+            Settings {
                 width: 2,
                 height: 2,
                 frame_rate: 25,
                 bitrate: 1_000_000,
                 has_audio: true,
             },
-            frames_written: 0,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-            worker: None,
-        };
-        // One second of stereo 16-bit at 48 kHz.
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
         let pcm = vec![0u8; AUDIO_SAMPLE_RATE as usize * 4];
         encoder.write_audio(pcm, 0).expect("audio");
         match receiver.try_recv() {
@@ -1376,34 +1463,31 @@ mod tests {
 
     #[test]
     fn empty_audio_is_dropped() {
-        let (commands, receiver) = mpsc::channel();
-        let encoder = Encoder {
-            commands: Some(commands),
-            settings: Settings {
+        let (encoder, receiver, _) = test_encoder(
+            Settings {
                 width: 2,
                 height: 2,
                 frame_rate: 25,
                 bitrate: 1_000_000,
                 has_audio: true,
             },
-            frames_written: 0,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            child: Arc::new(Mutex::new(None)),
-            worker: None,
-        };
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
         encoder.write_audio(Vec::new(), 0).expect("empty");
         assert!(receiver.try_recv().is_err());
     }
 
     #[test]
     fn cancellation_waits_for_the_encoder_worker_to_release_its_output() {
-        let (commands, receiver) = mpsc::channel();
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let (stopping_tx, stopping_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
+        let (commands, receiver) = mpsc::sync_channel(8);
+        let (_spare_tx, spare_rx) = mpsc::sync_channel(4);
         let worker = std::thread::spawn(move || {
             let Command::Finish { reply } = receiver.recv().unwrap() else {
                 panic!("expected finish");
@@ -1418,6 +1502,7 @@ mod tests {
         });
         let encoder = Encoder {
             commands: Some(commands),
+            spare_rx,
             settings: Settings {
                 width: 2,
                 height: 2,
@@ -1454,5 +1539,29 @@ mod tests {
             .unwrap_err()
             .contains("cancelled"));
         caller.join().unwrap();
+    }
+
+    #[test]
+    fn encoder_reclaims_reusable_frame_buffers() {
+        let (mut encoder, receiver, spare_tx) = test_encoder(
+            Settings {
+                width: 2,
+                height: 2,
+                frame_rate: 25,
+                bitrate: 1_000_000,
+                has_audio: false,
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
+        assert!(encoder.take_reusable_buffer().is_empty());
+        encoder.write_frame(vec![7u8; 16]).expect("write");
+        let Command::Video { bgra, .. } = receiver.recv().unwrap() else {
+            panic!("expected video");
+        };
+        let ptr = bgra.as_ptr();
+        spare_tx.try_send(bgra).unwrap();
+        let recycled = encoder.take_reusable_buffer();
+        assert_eq!(recycled.as_ptr(), ptr);
     }
 }

@@ -131,12 +131,49 @@ describe('dialog handlers', () => {
     mockGetWindowData.mockReturnValue({
       window: { isDestroyed: () => false, close },
       isClosingConfirmed: false,
+      closeSavePending: true,
     });
     const { registerDialogHandlers } =
       await import('@/main/capture/video/ipc/dialog-handlers');
     registerDialogHandlers();
     ipcOnHandlers['video-editor:close-confirmed']({ sender: { id: 1 } });
     expect(close).toHaveBeenCalled();
+  });
+
+  it('marks the close handler ready and keeps the window open after a failed save', async () => {
+    const close = vi.fn();
+    const data = {
+      window: { isDestroyed: () => false, close },
+      closeHandlerReady: false,
+      closeSavePending: true,
+    };
+    mockGetWindowData.mockReturnValue(data);
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    ipcOnHandlers['video-editor:close-handler-ready']({ sender: { id: 1 } });
+    expect(data.closeHandlerReady).toBe(true);
+    ipcOnHandlers['video-editor:close-save-failed']({ sender: { id: 1 } });
+    expect(data.closeSavePending).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(mockShowMessageBox).toHaveBeenCalledOnce();
+  });
+
+  it('notifies the editor when reset is interrupted by a new edit', async () => {
+    const window = { isDestroyed: () => false };
+    mockGetWindowData.mockReturnValue({ window });
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    ipcOnHandlers['video-editor:reset-conflict']({ sender: { id: 1 } });
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({
+        message: 'Reset was interrupted by a new edit.',
+      })
+    );
   });
 
   it('confirmDelete delegates to confirmVideoDelete', async () => {
@@ -183,6 +220,29 @@ describe('dialog handlers', () => {
     await ipcOnHandlers['video-editor:delete']({ sender: { id: 1 } });
     expect(close).toHaveBeenCalled();
     expect(mockDeleteVideo).toHaveBeenCalledWith('/p/video.mov');
+  });
+
+  it('does not delete project assets while an export is reading them', async () => {
+    const window = { isDestroyed: () => false, close: vi.fn() };
+    mockGetWindowData.mockReturnValue({
+      window,
+      filePath: '/p/video.mov',
+      isExporting: true,
+    });
+    mockShowMessageBox.mockResolvedValue({ response: 0 });
+    const { registerDialogHandlers } =
+      await import('@/main/capture/video/ipc/dialog-handlers');
+    registerDialogHandlers();
+    await ipcOnHandlers['video-editor:delete']({ sender: { id: 1 } });
+    expect(window.close).not.toHaveBeenCalled();
+    expect(mockDeleteVideo).not.toHaveBeenCalled();
+    expect(mockShowMessageBox).toHaveBeenCalledWith(
+      window,
+      expect.objectContaining({
+        message:
+          'Wait for the video export to finish before deleting the recording.',
+      })
+    );
   });
 
   it('delete is a no-op when window data missing', async () => {

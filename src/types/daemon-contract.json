@@ -189,13 +189,16 @@
     },
     "recording-control": {
       "platforms": ["macos", "windows"],
-      "shared": ["listIOSDevices"],
+      "shared": ["listIOSDevices", "setTooltip"],
       "linux": []
     },
     "recording-overlay": {
       "platforms": ["macos", "windows"],
       "shared": ["show", "showWindow", "hide"],
       "linux": [],
+      "events": {
+        "macos": ["recording-overlay:target-closed"]
+      },
       "methodRequests": {
         "show": "show",
         "showWindow": "showWindow"

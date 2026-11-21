@@ -1,0 +1,29 @@
+macOS countdown window-server handoff — 2026-11-16
+
+The native timer lifecycle fixture uses the production timer panel with mocked
+transport. At each completion, cancellation and explicit-hide response it checks
+the panel's Core Graphics window metadata, without requesting screen recording
+or reading screen pixels. It restores the previously focused application.
+
+Before the change, the countdown completion event was emitted while the panel
+was still listed as on-screen at alpha 1; the regression fixture failed with:
+  timer remained opaque in the window server after completed
+
+After setting the panel alpha to zero before ordering it out, three consecutive
+runs passed. The completion and explicit-hide events observed the still-listed
+panel with alpha 0; cancellation observed no on-screen panel.
+
+The final source was also built using the CI command and run at two positions:
+left visible at x=0 y=128 size=140x52
+cancel: timer absent from on-screen window list
+cancel: timer hidden
+right visible at x=100 y=128 size=140x52
+completed: timer window server alpha is zero
+completed: timer hidden
+cleanup visible at x=0 y=128 size=140x52
+hide: timer window server alpha is zero
+hide: timer hidden
+
+This establishes the reported window-server state at the handoff, not the pixels
+of an actual screenshot. The fixture uses synthetic cancellation and mocked
+transport; real timer capture and compositor output remain unverified.

@@ -63,17 +63,26 @@ pub fn upload(config: &CloudConfig, path: &Path) -> anyhow::Result<String> {
     if !config.enabled {
         anyhow::bail!("cloud upload is turned off in settings");
     }
-    let bytes = std::fs::read(path)?;
+    upload_bytes(config, path, std::fs::read(path)?)
+}
+
+pub(crate) fn upload_bytes(
+    config: &CloudConfig,
+    path: &Path,
+    bytes: Vec<u8>,
+) -> anyhow::Result<String> {
+    if !config.enabled {
+        anyhow::bail!("cloud upload is turned off in settings");
+    }
     let filename = path
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or("capture.png")
-        .to_string();
+        .unwrap_or("capture.png");
     let content_type = content_type_for(path);
 
     match config.active_provider.as_str() {
-        "s3" => s3::upload(&config.s3, &filename, content_type, bytes),
-        _ => rest::upload(&config.rest, &filename, content_type, bytes),
+        "s3" => s3::upload(&config.s3, filename, content_type, bytes),
+        _ => rest::upload(&config.rest, filename, content_type, bytes),
     }
 }
 

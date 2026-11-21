@@ -1,0 +1,65 @@
+macOS GPUI live smoke, 2026-11-17
+
+Environment
+- Built and launched the un-packaged GPUI development binary with the parity feature. No dependencies were installed.
+- Used temporary GPUI profiles and generated images. No capture or media device was opened; no privacy setting changed and no permission dialog appeared.
+- The Mac has one built-in Liquid Retina XDR display at 3456x2234 pixels. It is the main online display. The GPUI work area is 1728x1117 points.
+- The visible Electron window belonged to the Poracode workspace. It was left untouched; the user-supplied Electron control screenshot was the qualitative reference.
+
+Appearance and windows
+- Opened GPUI Settings at 880x700 points in Dark, changed Appearance to Light, captured both appearances, then restored Dark in the temporary profile.
+- The screenshot editor rendered at 950x650 points, its minimum size. The 960x540 source image fit inside the editor with its toolbar and zoom controls visible.
+- The native recording control measured 276x44 points and appeared as one bordered pill in both themes. Its accessible buttons were Start recording, Select camera, Select microphone, Turn system sounds on, Select iPhone or iPad, and Close.
+- The capture preview measured 208x148 points. Its frame was 20 points from the right and bottom edges of the 1728x1117-point work area. Idle screenshots are available in both themes.
+- A single click on the generated Light-theme preview image exposed the Close preview, Delete screenshot, Edit, Copy and Upload to Cloud controls. Dark synthetic hover states covered Close and Delete. Tooltip status was Close preview, Delete screenshot and Start recording; simulated exit cleared each status. A native tooltip bubble was not visible in the window-only screenshots, so physical tooltip painting and capture exclusion remain unverified.
+
+Annotation, save and reopen
+- In the live screenshot editor, drew a red arrow over a generated 960x540 test image. Undo removed it and Redo restored it. Saved to the temporary directory and reopened the saved PNG; the arrow remained visible.
+- FFmpeg decoded the original and saved PNGs at 960x540 with 2,073,600 RGBA bytes each. They differed at 774 pixels. The saved file contains the image dimensions, not the editor toolbar; this proves editor export behavior, not real capture-overlay exclusion.
+- In the native UI probe, a generated 640x360 checkerboard received a rectangle annotation. The editor export changed 1,790 pixels; save-to-fixture, decoded output and reopen matched the editor export exactly. The saved generated image is retained beside this report.
+- The direct screenshot-editor output is retained beside this report.
+
+Other checks and limits
+- The native probe positioned the timer for narrow areas at both display edges: left x=0, right x=1588, y=128; the 140-point timer control stayed within the 1728-point display width. This is geometry only, not a countdown or capture.
+- At the time of this initial pass, the GPUI Screen Recording grant was not confirmed. The follow-up below supersedes its capture and recording status.
+- Microphone and camera menus were not opened because their GPUI grants were not confirmed. Multi-display placement could not be checked on this single-display Mac.
+- No new visual defect was confirmed in the initial settings, preview, recording-control or screenshot-editor states. Physical tooltip paint remained open; the follow-up below verifies that Poratake controls and overlays were excluded from saved screen, area and window recordings.
+
+Retained images
+- native-settings-appearance-dark-live-20261117.png
+- native-settings-appearance-light-live-20261117.png
+- native-recording-control-dark-live-20261117.png
+- native-recording-control-light-live-20261117.png
+- native-capture-preview-dark-live-20261117.png
+- native-capture-preview-light-live-20261117.png
+- native-capture-preview-light-physical-hover-20261117.png
+- native-capture-preview-close-hover-dark-live-20261117.png
+- native-capture-preview-delete-hover-dark-live-20261117.png
+- macos-screenshot-editor-arrow-save-reopen-20261117.png
+- macos-native-ui-probe-annotation-save-reopen-20261117.png
+
+Follow-up, 2026-11-17
+
+Permission and capture
+- `native-permission-status-onboarding-20261117.png` shows Screen Recording and Accessibility granted for the GPUI development app. No privacy setting changed and no permission dialog appeared.
+- A real full-screen take decoded as H.264, 3456x2234, 199 frames, 19.987 seconds. The saved screen contained macOS notification banners and a purple system status dot, but no Poratake recording controls or capture overlay. The frame was left in the scratch directory because the notifications are unsuitable repository evidence.
+- A real preselected area take of the generated QuickTime pattern decoded as H.264, 1216x720, 179 frames, 29.145 seconds. Its decoded frame contains only the generated pattern and embedded timecode, without capture controls or selector UI.
+- A real window take followed the generated QuickTime window from `(108,141)` to `(250,220)` and decoded as H.264, 1280x720, 1590 frames, 159.773 seconds. Its decoded frame contains only the test pattern. A second take finalized after the generated QuickTime target process closed: H.264, 1280x720, 1592 frames, 160.083 seconds. Both takes preserved their recorded content.
+- An area recording with `PORATAKE_NATIVE_SMOKE_SYSTEM_AUDIO=1` captured a generated 997 Hz tone. The `system.m4a` sidecar is AAC, 48 kHz stereo, 29.163 seconds; the 997 Hz signal is present from 10.5 to 13.5 seconds. No microphone or camera was enabled.
+
+Editor and export
+- The existing `drawing_tool_ui_edit_survives_reopen_and_matches_export` GPUI editor test used each real captured movie, applied a drawing edit, saved and reopened the editor project, exported, decoded the output, and compared it with the reopened preview. It passed for screen, window, and area inputs.
+- Mean preview/export channel error was 0.92/0.38 at the first/later screen frames, 0.69/0.40 for the window-close take, and 0.77/0.38 for the area take. The area export retained the generated 997 Hz tone in its AAC track.
+- The native Export Video button opened the Save sheet, but the background computer-control helper could not target that AppKit sheet. The actual Save-button interaction remains unverified; the editor's direct export path passed with the same captured recordings.
+- Area and window source frames, editor previews, decoded export frames, and metrics are retained in `video-recording-editor-smoke-20261117/`. The full-screen recording evidence remains temporary because it contains OS notifications.
+
+Remaining checks
+- Microphone and camera capture remain untested because authorization for this GPUI identity was not confirmed. No permission prompts or privacy changes were made.
+- This Mac has one built-in display. Multi-display placement remains unverified.
+- The scroll-capture UI was exercised, but produced no saved scroll image or history item. The fixed-header scroll-stitch issue remains open.
+- Hover statuses were visible, but a native tooltip bubble was not captured. Physical tooltip paint and capture exclusion remain unverified.
+
+Regression fixture
+- `PORATAKE_TEST_NONINTERLEAVED_SYSTEM_AUDIO=1` builds and runs the planar CoreMedia audio fixture. The output was `Non-interleaved system audio normalized and trimmed at a sample boundary`.
+- Reproduce from the repository root with `find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 | xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings tests/native/recording-timeline.swift -o /tmp/poratake-noninterleaved-audio-test`, then run `PORATAKE_TEST_NONINTERLEAVED_SYSTEM_AUDIO=1 /tmp/poratake-noninterleaved-audio-test`.
+- `bun scripts/build-daemon-dev.mjs` and `cargo build --offline --locked --manifest-path src/main/Cargo.toml --package poratake-gpui --bin poratake-gpui --features poratake-gpui/parity` succeeded. Cargo emitted existing warnings from the vendored macOS `rfd` backend.

@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZero;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,15 +35,69 @@ fn sample_rate() -> SampleRate {
     NonZero::new(AUDIO_SAMPLE_RATE).expect("audio sample rate")
 }
 
+#[derive(Clone)]
+pub struct SharedPcm {
+    samples: Arc<audio::Pcm>,
+    range: Range<usize>,
+    silence: usize,
+}
+
+impl SharedPcm {
+    fn placed(samples: Arc<audio::Pcm>, placement: &audio::Placement) -> Self {
+        let range = placement.source_range(&samples);
+        let (samples, range) = if placement.changes_speed() {
+            let stretched = audio::time_stretch(&samples[range], placement.speed);
+            let range = 0..stretched.len();
+            (Arc::new(stretched), range)
+        } else {
+            (samples, range)
+        };
+        let (silence, length) = placement.output_lengths(range.len());
+        Self {
+            samples,
+            range: range.start..range.start + length,
+            silence,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.silence + self.range.len()
+    }
+
+    fn get(&self, position: usize) -> Option<i16> {
+        if position < self.silence {
+            return Some(0);
+        }
+        self.samples[self.range.clone()]
+            .get(position - self.silence)
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = i16> + '_ {
+        std::iter::repeat_n(0, self.silence).chain(self.samples[self.range.clone()].iter().copied())
+    }
+}
+
+impl From<Arc<audio::Pcm>> for SharedPcm {
+    fn from(samples: Arc<audio::Pcm>) -> Self {
+        Self {
+            range: 0..samples.len(),
+            samples,
+            silence: 0,
+        }
+    }
+}
+
 /// Interleaved stereo 16-bit samples as a seekable rodio source, converting
 /// to float on the fly so long timelines do not pay the `f32` copy.
 struct PcmSource {
-    samples: Arc<Vec<i16>>,
+    samples: SharedPcm,
     position: usize,
 }
 
 impl PcmSource {
-    fn at(samples: Arc<Vec<i16>>, offset: Duration) -> Self {
+    fn at(samples: SharedPcm, offset: Duration) -> Self {
         let mut source = Self {
             samples,
             position: 0,
@@ -56,7 +111,7 @@ impl Iterator for PcmSource {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Sample> {
-        let sample = *self.samples.get(self.position)?;
+        let sample = self.samples.get(self.position)?;
         self.position += 1;
         Some(sample as f32 / 32768.0)
     }
@@ -118,8 +173,13 @@ impl RebuildInputs {
         project: &Path,
         state: &VideoEditorState,
         cache: &HashMap<PathBuf, Arc<Vec<i16>>>,
+        include_embedded_audio: bool,
     ) -> Self {
-        let sources = audio_tracks::Sources::resolve(project);
+        let mut sources = audio_tracks::Sources::resolve(project);
+        if sources.system_is_embedded && !include_embedded_audio {
+            sources.system = None;
+            sources.system_is_embedded = false;
+        }
         let duration = timeline_duration(state);
         let keyboard = state
             .audio_style
@@ -149,7 +209,7 @@ fn timeline_duration(state: &VideoEditorState) -> f64 {
 pub struct BuiltStem {
     pub volume: VolumeSource,
     pub program: bool,
-    pub samples: Arc<Vec<i16>>,
+    pub samples: SharedPcm,
 }
 
 /// Decoded stems ready to install, plus the source cache the next rebuild reuses.
@@ -209,7 +269,7 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
         stems.push(BuiltStem {
             volume: stem.volume,
             program: stem.program,
-            samples: Arc::new(audio::place(&samples, &stem.placement)),
+            samples: SharedPcm::placed(samples, &stem.placement),
         });
     }
 
@@ -226,7 +286,7 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
             stems.push(BuiltStem {
                 volume: VolumeSource::Keyboard,
                 program: false,
-                samples: Arc::new(samples),
+                samples: Arc::new(samples).into(),
             });
         }
     }
@@ -240,13 +300,23 @@ pub fn build_stems(inputs: RebuildInputs) -> BuiltStems {
 
 struct Stem {
     player: Player,
+    samples: SharedPcm,
 }
 
 impl Stem {
+    fn seek(&self, offset: f64) {
+        let position = Duration::from_secs_f64(offset.max(0.0));
+        if !self.player.empty() {
+            let _ = self.player.try_seek(position);
+        }
+        if self.player.empty() {
+            self.player
+                .append(PcmSource::at(self.samples.clone(), position));
+        }
+    }
+
     fn play_from(&self, offset: f64) {
-        let _ = self
-            .player
-            .try_seek(Duration::from_secs_f64(offset.max(0.0)));
+        self.seek(offset);
         self.player.play();
     }
 }
@@ -257,11 +327,27 @@ struct Playing {
     stem: Stem,
 }
 
+enum OutputDevice {
+    Native(MixerDeviceSink),
+    #[cfg(test)]
+    Software(rodio::mixer::Mixer),
+}
+
+impl OutputDevice {
+    fn mixer(&self) -> &rodio::mixer::Mixer {
+        match self {
+            Self::Native(device) => device.mixer(),
+            #[cfg(test)]
+            Self::Software(mixer) => mixer,
+        }
+    }
+}
+
 struct Output {
     stems: Vec<Playing>,
     anchor: Option<(Instant, f64)>,
     playing: bool,
-    device: MixerDeviceSink,
+    device: OutputDevice,
 }
 
 impl Output {
@@ -286,6 +372,11 @@ impl PreviewAudio {
 
     pub fn cache(&self) -> &HashMap<PathBuf, Arc<Vec<i16>>> {
         &self.cache
+    }
+
+    pub fn invalidate(&mut self, path: &Path) {
+        self.cache.remove(path);
+        self.built_once = false;
     }
 
     pub fn needs_rebuild(&self, state: &VideoEditorState) -> bool {
@@ -316,6 +407,7 @@ impl PreviewAudio {
             self.output = None;
             return;
         }
+        let playing = self.output.as_ref().is_some_and(|output| output.playing);
         let device = match self.take_or_open_device() {
             Some(device) => device,
             None => {
@@ -326,7 +418,6 @@ impl PreviewAudio {
         self.cache = built.cache;
         self.signature = built.signature;
         self.built_once = true;
-        let playing = self.output.as_ref().is_some_and(|output| output.playing);
         let mut output = Output {
             stems: Vec::new(),
             anchor: None,
@@ -429,10 +520,7 @@ impl PreviewAudio {
         };
         output.anchor = Some((Instant::now(), offset.max(0.0)));
         for stem in &output.stems {
-            let _ = stem
-                .stem
-                .player
-                .try_seek(Duration::from_secs_f64(offset.max(0.0)));
+            stem.stem.seek(offset);
         }
     }
 
@@ -450,7 +538,7 @@ impl PreviewAudio {
         }
     }
 
-    fn has_samples(&self) -> bool {
+    pub(crate) fn has_samples(&self) -> bool {
         self.output
             .as_ref()
             .is_some_and(|output| !output.stems.is_empty())
@@ -462,12 +550,12 @@ impl PreviewAudio {
             .is_some_and(|output| output.program().next().is_some())
     }
 
-    fn take_or_open_device(&mut self) -> Option<MixerDeviceSink> {
+    fn take_or_open_device(&mut self) -> Option<OutputDevice> {
         if let Some(output) = self.output.take() {
             return Some(output.device);
         }
         match rodio::DeviceSinkBuilder::open_default_sink() {
-            Ok(device) => Some(device),
+            Ok(device) => Some(OutputDevice::Native(device)),
             Err(error) => {
                 if !self.device_error_logged {
                     self.device_error_logged = true;
@@ -479,16 +567,90 @@ impl PreviewAudio {
     }
 }
 
-fn connect(device: &MixerDeviceSink, samples: Arc<Vec<i16>>) -> Stem {
+fn connect(device: &OutputDevice, samples: SharedPcm) -> Stem {
     let player = Player::connect_new(device.mixer());
-    player.append(PcmSource::at(samples, Duration::ZERO));
+    player.append(PcmSource::at(samples.clone(), Duration::ZERO));
     player.pause();
-    Stem { player }
+    Stem { player, samples }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installing_new_stems_preserves_playing_and_paused_transport() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct MixerThread {
+            stop: Arc<AtomicBool>,
+            worker: Option<std::thread::JoinHandle<()>>,
+        }
+
+        impl Drop for MixerThread {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                if let Some(worker) = self.worker.take() {
+                    worker.join().unwrap();
+                }
+            }
+        }
+
+        let (mixer, mut source) = rodio::mixer::mixer(channels(), sample_rate());
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let _worker = MixerThread {
+            stop,
+            worker: Some(std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    let _ = source.next();
+                    std::thread::yield_now();
+                }
+            })),
+        };
+        let state = VideoEditorState::default();
+        let build = || BuiltStems {
+            stems: vec![BuiltStem {
+                volume: VolumeSource::SystemAudio,
+                program: true,
+                samples: Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]).into(),
+            }],
+            cache: HashMap::new(),
+            signature: StemSignature::capture(&state),
+        };
+        let device = OutputDevice::Software(mixer);
+        let original = connect(
+            &device,
+            Arc::new(vec![0; AUDIO_SAMPLE_RATE as usize * 2]).into(),
+        );
+        original.player.play();
+        let mut preview = PreviewAudio {
+            output: Some(Output {
+                stems: vec![Playing {
+                    volume: VolumeSource::SystemAudio,
+                    program: true,
+                    stem: original,
+                }],
+                anchor: None,
+                playing: true,
+                device,
+            }),
+            ..PreviewAudio::default()
+        };
+
+        preview.install(build(), &state, 0.25);
+        let output = preview.output.as_ref().unwrap();
+        assert!(output.playing);
+        assert_eq!(output.anchor.unwrap().1, 0.25);
+        assert!(!output.stems[0].stem.player.is_paused());
+
+        preview.pause_all();
+        preview.install(build(), &state, 0.5);
+        let output = preview.output.as_ref().unwrap();
+        assert!(!output.playing);
+        assert!(output.anchor.is_none());
+        assert!(output.stems[0].stem.player.is_paused());
+    }
 
     #[test]
     fn a_stem_volume_follows_the_model_it_came_from() {
@@ -502,7 +664,7 @@ mod tests {
     #[test]
     fn pcm_source_converts_and_seeks_on_frame_boundaries() {
         let samples = Arc::new(vec![0i16, 32767, -32768, 16384]);
-        let mut source = PcmSource::at(samples, Duration::ZERO);
+        let mut source = PcmSource::at(samples.into(), Duration::ZERO);
         assert_eq!(source.channels(), channels());
         assert_eq!(source.sample_rate(), sample_rate());
         assert_eq!(source.next(), Some(0.0));
@@ -513,6 +675,147 @@ mod tests {
         assert_eq!(source.next(), Some(-1.0));
         assert_eq!(source.next(), Some(0.5));
         assert_eq!(source.next(), None);
+    }
+
+    #[test]
+    fn preview_pcm_matches_export_through_silence_trims_and_speed_changes() {
+        let source = Arc::new(
+            (0..9600)
+                .map(|n| (n * 11 - 30_000) as i16)
+                .collect::<Vec<_>>(),
+        );
+        let placement = audio::Placement {
+            start_time: 0.01,
+            end_time: 0.05,
+            original_duration: 0.1,
+            trim_start: 0.02,
+            trim_end: 0.01,
+            speed: 1.0,
+        };
+        for (speed, end_time) in [(1.0, 0.05), (1.0, 0.005), (1.0, 0.0), (1.5, 0.05)] {
+            let placement = audio::Placement {
+                speed,
+                end_time,
+                ..placement
+            };
+            let expected = audio::place(&source, &placement);
+            let shared = SharedPcm::placed(source.clone(), &placement);
+            assert_eq!(Arc::ptr_eq(&shared.samples, &source), speed == 1.0);
+            assert!(shared.iter().eq(expected.iter().copied()));
+            let length = expected.len() / 2;
+            for frame in [0, 479, 480, length, length + 1] {
+                let offset = Duration::from_secs_f64(frame as f64 / f64::from(AUDIO_SAMPLE_RATE));
+                let preview = PcmSource::at(shared.clone(), offset);
+                let first = frame.min(length) * 2;
+                assert!(preview.eq(expected[first..]
+                    .iter()
+                    .map(|&sample| sample as f32 / 32768.0)));
+            }
+        }
+    }
+
+    #[test]
+    fn an_ended_stem_can_play_again_from_a_seek() {
+        let (mixer, mut output) = rodio::mixer::mixer(channels(), sample_rate());
+        let device = OutputDevice::Software(mixer);
+        let stem = connect(&device, Arc::new(vec![16384; 4800]).into());
+        stem.player.play();
+        let mut heard_initial = false;
+        for _ in 0..100_000 {
+            heard_initial |= output.next().is_some_and(|sample| sample > 0.1);
+            if stem.player.empty() {
+                break;
+            }
+        }
+        assert!(heard_initial && stem.player.empty());
+        stem.play_from(0.0);
+        assert!(!stem.player.empty(), "a finished stem must be requeued");
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 0.1)));
+    }
+
+    #[test]
+    fn scrubbing_and_replay_restore_ended_program_and_music_stems() {
+        let (mixer, mut output) = rodio::mixer::mixer(channels(), sample_rate());
+        let device = OutputDevice::Software(mixer);
+        let mut samples = vec![8192; 2400];
+        samples.extend(vec![24576; 2400]);
+        let samples = Arc::new(samples);
+        let program = connect(&device, samples.clone().into());
+        let music = connect(&device, samples.into());
+        program.player.play();
+        music.player.play();
+        let mut preview = PreviewAudio {
+            output: Some(Output {
+                stems: vec![
+                    Playing {
+                        volume: VolumeSource::SystemAudio,
+                        program: true,
+                        stem: program,
+                    },
+                    Playing {
+                        volume: VolumeSource::Track("music".into()),
+                        program: false,
+                        stem: music,
+                    },
+                ],
+                anchor: None,
+                playing: false,
+                device,
+            }),
+            ..PreviewAudio::default()
+        };
+        for _ in 0..100_000 {
+            let _ = output.next();
+            if preview
+                .output
+                .as_ref()
+                .unwrap()
+                .stems
+                .iter()
+                .all(|stem| stem.stem.player.empty())
+            {
+                break;
+            }
+        }
+        assert!(preview
+            .output
+            .as_ref()
+            .unwrap()
+            .stems
+            .iter()
+            .all(|stem| stem.stem.player.empty()));
+        for _ in 0..100 {
+            let _ = output.next();
+        }
+        preview.scrub_to(0.025);
+        let stems = &preview.output.as_ref().unwrap().stems;
+        assert!(!stems[0].stem.player.empty());
+        assert!(stems[1].stem.player.empty());
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 0.7)));
+        for _ in 0..100_000 {
+            let _ = output.next();
+            if preview.output.as_ref().unwrap().stems[0]
+                .stem
+                .player
+                .empty()
+            {
+                break;
+            }
+        }
+        assert!(preview.output.as_ref().unwrap().stems[0]
+            .stem
+            .player
+            .empty());
+        preview.stop_scrub();
+        preview.transport(true, 0.025);
+        assert!(preview
+            .output
+            .as_ref()
+            .unwrap()
+            .stems
+            .iter()
+            .all(|stem| !stem.stem.player.empty()));
+        assert!((0..100_000).any(|_| output.next().is_some_and(|sample| sample > 1.0)));
     }
 
     fn project_with_every_source() -> (tempfile::TempDir, PathBuf, VideoEditorState) {
@@ -545,7 +848,7 @@ mod tests {
         let (_directory, project, mut state) = project_with_every_source();
         state.audio_style.keyboard_sound_enabled = true;
 
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         let sources = audio_tracks::Sources::resolve(&project);
         let expected = audio_tracks::stems(&sources, &state, 4.0);
 
@@ -570,7 +873,7 @@ mod tests {
     fn a_muted_music_track_leaves_the_preview_as_it_leaves_the_export() {
         let (_directory, project, mut state) = project_with_every_source();
         state.music_tracks[0].enabled = false;
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         assert!(inputs
             .stems
             .iter()
@@ -583,26 +886,53 @@ mod tests {
         std::fs::remove_file(project.join("system.m4a")).expect("remove system stem");
         std::fs::remove_file(project.join("mic.m4a")).expect("remove mic stem");
 
-        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new());
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), true);
         let program: Vec<_> = inputs.stems.iter().filter(|stem| stem.program).collect();
         assert_eq!(program.len(), 1);
         assert!(program[0].path.ends_with("recording.mov"));
     }
 
     #[test]
+    fn absent_embedded_audio_skips_only_the_recording_fallback() {
+        let (_directory, project, state) = project_with_every_source();
+        let sidecar = project.join("system.m4a");
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), false);
+        assert!(inputs.stems.iter().any(|stem| stem.path == sidecar));
+
+        std::fs::remove_file(sidecar).unwrap();
+        let inputs = RebuildInputs::capture(&project, &state, &HashMap::new(), false);
+        assert_eq!(inputs.stems.len(), 2);
+        assert!(inputs
+            .stems
+            .iter()
+            .any(|stem| stem.path.ends_with("mic.m4a")));
+        assert!(inputs.stems.iter().any(|stem| !stem.program));
+        assert!(inputs
+            .stems
+            .iter()
+            .all(|stem| !stem.path.ends_with("recording.mov")));
+    }
+
+    #[test]
     fn the_keyboard_click_track_follows_its_setting() {
         let (_directory, project, mut state) = project_with_every_source();
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_none());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_none()
+        );
         state.audio_style.keyboard_sound_enabled = true;
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_some());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_some()
+        );
         state.audio_style.keyboard_sound_volume = 0.0;
-        assert!(RebuildInputs::capture(&project, &state, &HashMap::new())
-            .keyboard
-            .is_some());
+        assert!(
+            RebuildInputs::capture(&project, &state, &HashMap::new(), true)
+                .keyboard
+                .is_some()
+        );
     }
 
     #[test]

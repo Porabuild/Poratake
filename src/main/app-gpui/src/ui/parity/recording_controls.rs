@@ -4,6 +4,28 @@ use super::{
 };
 use herogpui::gpui;
 
+#[cfg(target_os = "macos")]
+fn assert_recording_action_contrast(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    index: usize,
+    action: &str,
+) {
+    let button = measured("recording-controls", index);
+    let scale = cx
+        .update_window(window, |_, window, _| window.scale_factor())
+        .unwrap();
+    let pixel = |point: gpui::Pixels| (f32::from(point) * scale).round() as u32;
+    let image = cx.capture_screenshot(window).unwrap();
+    let y = pixel(button.center().y);
+    let contrast = super::pixel_contrast(
+        image.get_pixel(pixel(button.center().x), y),
+        image.get_pixel(pixel(button.right() - px(4.)), y),
+    );
+    assert!(contrast >= 3., "{action} glyph contrast: {contrast:.2}:1");
+    println!("{action} glyph contrast: {contrast:.2}:1");
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     use crate::video::recorder::{self, RecorderState, RecordingTarget};
     use crate::windows::recording_control::RecordingControl;
@@ -77,45 +99,45 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         };
         capture(cx, window, output, &format!("{prefix}-default"));
         if area {
+            #[cfg(target_os = "macos")]
+            assert_recording_action_contrast(cx, window, 0, "Start recording");
             let image = cx.capture_screenshot(window).unwrap();
-            let button = measured("recording-controls", 3);
             let bounds = measured("microphone-icon", 0);
-            assert_eq!(bounds.size.width, px(crate::ui::chrome::TOOL_BUTTON_ICON));
-            assert_eq!(bounds.size.height, px(crate::ui::chrome::TOOL_BUTTON_ICON));
-            assert!(bounds.left() >= button.left() && bounds.right() <= button.right());
-            assert!(bounds.top() >= button.top() && bounds.bottom() <= button.bottom());
             let x = (f32::from(bounds.left()) * scale).round() as u32;
             let y = (f32::from(bounds.top()) * scale).round() as u32;
-            let luminance = |pixel: &image::Rgba<u8>| {
-                let linear = |value: u8| {
-                    let value = f32::from(value) / 255.;
-                    if value <= 0.04045 {
-                        value / 12.92
-                    } else {
-                        ((value + 0.055) / 1.055).powf(2.4)
-                    }
-                };
-                0.2126 * linear(pixel[0]) + 0.7152 * linear(pixel[1]) + 0.0722 * linear(pixel[2])
-            };
-            let background = luminance(image.get_pixel(
-                (f32::from(button.left()) * scale).round() as u32 + 2,
-                (f32::from(button.top()) * scale).round() as u32 + 2,
-            ));
-            let mut visible = 0;
-            for row in y..y + (f32::from(bounds.size.height) * scale).round() as u32 {
-                for column in x..x + (f32::from(bounds.size.width) * scale).round() as u32 {
-                    let foreground = luminance(image.get_pixel(column, row));
-                    let contrast =
-                        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
-                    if contrast >= 3. {
-                        visible += 1;
+            for (name, index) in [
+                ("camera-icon", 2),
+                ("microphone-icon", 3),
+                ("system-audio-icon", 4),
+                ("ios-device-icon", 5),
+            ] {
+                let button = measured("recording-controls", index);
+                let icon = measured(name, 0);
+                assert_eq!(icon.size.width, px(crate::ui::chrome::TOOL_BUTTON_ICON));
+                assert_eq!(icon.size.height, px(crate::ui::chrome::TOOL_BUTTON_ICON));
+                assert!(icon.left() >= button.left() && icon.right() <= button.right());
+                assert!(icon.top() >= button.top() && icon.bottom() <= button.bottom());
+                let background = image.get_pixel(
+                    (f32::from(button.left()) * scale).round() as u32 + 2,
+                    (f32::from(button.top()) * scale).round() as u32 + 2,
+                );
+                let mut visible = 0;
+                let left = (f32::from(icon.left()) * scale).round() as u32;
+                let top = (f32::from(icon.top()) * scale).round() as u32;
+                for row in top..top + (f32::from(icon.size.height) * scale).round() as u32 {
+                    for column in left..left + (f32::from(icon.size.width) * scale).round() as u32 {
+                        let contrast =
+                            super::pixel_contrast(image.get_pixel(column, row), background);
+                        if contrast >= 3. {
+                            visible += 1;
+                        }
                     }
                 }
+                assert!(
+                    visible as f32 >= 8. * scale * scale,
+                    "{name} must contrast with the toolbar: {visible} visible pixels"
+                );
             }
-            assert!(
-                visible as f32 >= 8. * scale * scale,
-                "the microphone glyph must contrast with the toolbar: {visible} visible pixels"
-            );
             let mic = measured("recording-controls", 3).center();
             hover(cx, window, f32::from(mic.x), f32::from(mic.y));
             #[cfg(any(windows, target_os = "macos"))]
@@ -197,15 +219,16 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             capture(cx, window, output, "record-control-microphone-open");
             escape(cx, window);
             #[cfg(any(windows, target_os = "macos"))]
-            {
+            let tooltip = |cx: &mut HeadlessAppContext| {
                 let control = window.downcast::<RecordingControl>().unwrap();
-                let tooltip = |cx: &mut HeadlessAppContext| {
-                    cx.update(|cx| {
-                        control
-                            .update(cx, |control, _, _| control.parity_hovered_tooltip())
-                            .unwrap()
-                    })
-                };
+                cx.update(|cx| {
+                    control
+                        .update(cx, |control, _, _| control.parity_hovered_tooltip())
+                        .unwrap()
+                })
+            };
+            #[cfg(any(windows, target_os = "macos"))]
+            {
                 let audio = measured("recording-controls", 4).center();
                 hover(cx, window, f32::from(audio.x), f32::from(audio.y));
                 assert_eq!(tooltip(cx).as_deref(), Some("Turn system sounds off"));
@@ -279,6 +302,45 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 key(cx, window, "tab");
                 assert_focus_tooltip(cx, label);
             }
+            #[cfg(target_os = "macos")]
+            {
+                let focused = cx
+                    .update_window(window, |_, window, cx| window.focused(cx))
+                    .unwrap()
+                    .expect("recording button should keep keyboard focus");
+                let camera = measured("recording-controls", 2).center();
+                hover(cx, window, f32::from(camera.x), f32::from(camera.y));
+                assert_eq!(tooltip(cx).as_deref(), Some("Select camera"));
+                assert!(
+                    focus_tips(cx).is_empty(),
+                    "hover should replace the keyboard tooltip"
+                );
+                cx.update_window(window, |_, window, cx| {
+                    assert_eq!(window.focused(cx), Some(focused));
+                    assert!(herogpui::extend::focus_visible(cx));
+                })
+                .unwrap();
+                hover(cx, window, 1., 1.);
+                assert!(tooltip(cx).is_none());
+
+                click_measured(cx, window, "recording-controls", 1);
+                settle(cx, window);
+                let width = cx.update(|cx| {
+                    let handle = window.downcast::<RecordingControl>().unwrap();
+                    handle
+                        .update(cx, |control, window, _| {
+                            (
+                                control.parity_bar_width().unwrap(),
+                                f32::from(window.viewport_size().width),
+                            )
+                        })
+                        .unwrap()
+                });
+                assert!(
+                    (width.0 - width.1).abs() <= 0.5,
+                    "toolbar did not shrink after pointer input: {width:?}"
+                );
+            }
             click_measured(cx, window, "recording-controls", 0);
             capture(cx, window, output, "record-control-cancel-countdown");
             escape(cx, window);
@@ -315,6 +377,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 output,
                 &format!("record-control-{name}-keyboard-focused"),
             );
+            #[cfg(target_os = "macos")]
+            if name == "camera" {
+                check_held_setting(cx, window, output, "show", |cx| key(cx, window, "enter"));
+                wait_for_camera_change(cx, window);
+                continue;
+            }
             key(cx, window, "enter");
             settle(cx, window);
         }
@@ -335,15 +403,72 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             cx.advance_clock(std::time::Duration::from_secs(1));
             settle(cx, window);
         }
+        #[cfg(target_os = "macos")]
+        super::workflows::wait_for_recording_start(cx);
         assert_eq!(recorder::state(), RecorderState::Recording);
         capture(cx, window, output, "record-control-active");
+        #[cfg(target_os = "macos")]
+        assert_recording_action_contrast(cx, window, 3, "Stop recording");
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 2);
+        #[cfg(target_os = "macos")]
+        check_held_setting(cx, window, output, "pause", |cx| {
+            click_measured(cx, window, "recording-controls", 2);
+        });
         assert_eq!(recorder::state(), RecorderState::Paused);
         capture(cx, window, output, "record-control-paused");
+        #[cfg(target_os = "macos")]
+        assert_recording_action_contrast(cx, window, 3, "Stop paused recording");
         escape(cx, window);
         assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 2);
+        #[cfg(target_os = "macos")]
+        check_held_setting(cx, window, output, "resume", |cx| {
+            click_measured(cx, window, "recording-controls", 2);
+        });
         assert_eq!(recorder::state(), RecorderState::Recording);
+        cx.update(|cx| {
+            let daemon = crate::state::state(cx).daemon;
+            daemon.emit_parity_event(
+                "camera-preview:position-changed",
+                &serde_json::json!({"x": -315, "y": 240}),
+            );
+            daemon.emit_parity_event(
+                "camera-preview:position-changed",
+                &serde_json::json!({"x": "invalid", "y": 1}),
+            );
+        });
+        let fixture_path = output.join("capture-fixture.json");
+        let previous_fixture = std::fs::read(&fixture_path).ok();
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_vec(&serde_json::json!({"recordingCameraDisableFails": true})).unwrap(),
+        )
+        .unwrap();
+        let before_failed_toggle = super::daemon_fixture::calls(output).len();
+        click_measured(cx, window, "recording-controls", 6);
+        key(cx, window, "home");
+        key(cx, window, "enter");
+        settle(cx, window);
+        #[cfg(target_os = "macos")]
+        wait_for_camera_change(cx, window);
+        let calls = super::daemon_fixture::calls(output);
+        let failed_toggle = &calls[before_failed_toggle..];
+        assert!(failed_toggle
+            .iter()
+            .any(|call| { call["module"] == "screen-recorder" && call["method"] == "setCamera" }));
+        assert!(
+            !failed_toggle
+                .iter()
+                .any(|call| { call["module"] == "camera-preview" && call["method"] == "hide" }),
+            "a rejected camera disable must leave its preview visible"
+        );
+        if let Some(contents) = previous_fixture {
+            std::fs::write(&fixture_path, contents).unwrap();
+        } else {
+            std::fs::remove_file(&fixture_path).unwrap();
+        }
         for (index, name) in [(7, "microphone"), (6, "camera-locked")] {
             click_measured(cx, window, "recording-controls", index);
             assert!(menu_painted(cx, window));
@@ -353,11 +478,45 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 output,
                 &format!("record-control-{name}-active-open"),
             );
+            let disable = |cx: &mut HeadlessAppContext| {
+                key(cx, window, "home");
+                key(cx, window, "enter");
+                settle(cx, window);
+            };
+            #[cfg(target_os = "macos")]
+            if name == "microphone" {
+                check_held_setting(cx, window, output, "setMicrophone", disable);
+                continue;
+            }
+            #[cfg(target_os = "macos")]
+            check_held_setting(cx, window, output, "setCamera", disable);
+            #[cfg(not(target_os = "macos"))]
+            disable(cx);
+            #[cfg(target_os = "macos")]
+            wait_for_camera_change(cx, window);
+            if name == "camera-locked" {
+                cx.update(|cx| {
+                    crate::state::state(cx).daemon.emit_parity_event(
+                        "camera-preview:position-changed",
+                        &serde_json::json!({"x": 700, "y": 800}),
+                    );
+                });
+            }
+        }
+        for _ in 0..2 {
+            click_measured(cx, window, "recording-controls", 6);
             key(cx, window, "home");
             key(cx, window, "enter");
             settle(cx, window);
+            #[cfg(target_os = "macos")]
+            wait_for_camera_change(cx, window);
         }
+        #[cfg(not(target_os = "macos"))]
         click_measured(cx, window, "recording-controls", 8);
+        #[cfg(target_os = "macos")]
+        check_held_setting(cx, window, output, "setSystemAudio", |cx| {
+            click_measured(cx, window, "recording-controls", 8);
+        });
         cx.update(|cx| {
             assert_eq!(
                 serde_json::to_value(crate::state::state(cx).config.get().recording).unwrap(),
@@ -391,6 +550,68 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         .unwrap();
     assert_eq!(started["params"]["cameraEnabled"], true);
     assert_eq!(started["params"]["micEnabled"], true);
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let start = requests
+            .iter()
+            .position(|request| {
+                request["module"] == "screen-recorder" && request["method"] == "start"
+            })
+            .unwrap();
+        let protected = requests[..start]
+            .iter()
+            .rposition(|request| {
+                request["module"] == "camera-preview"
+                    && request["method"] == "setContentProtection"
+                    && request["params"]["enabled"] == true
+            })
+            .expect("camera preview must be protected before recording starts");
+        let stop = requests
+            .iter()
+            .position(|request| {
+                request["module"] == "screen-recorder" && request["method"] == "stop"
+            })
+            .unwrap();
+        assert!(!requests[protected + 1..stop].iter().any(|request| {
+            request["module"] == "camera-preview"
+                && request["method"] == "setContentProtection"
+                && request["params"]["enabled"] == false
+        }));
+    }
+    let camera_calls: Vec<_> = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| {
+            request["module"] == "screen-recorder" && request["method"] == "setCamera"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(camera_calls.len(), 4);
+    assert_eq!(
+        camera_calls
+            .iter()
+            .map(|index| requests[*index]["params"]["enabled"].as_bool().unwrap())
+            .collect::<Vec<_>>(),
+        [false, false, true, false]
+    );
+    let stop = requests
+        .iter()
+        .position(|request| request["module"] == "screen-recorder" && request["method"] == "stop")
+        .unwrap();
+    assert!(requests[camera_calls[1] + 1..stop]
+        .iter()
+        .any(|request| { request["module"] == "camera-preview" && request["method"] == "hide" }));
+    assert!(
+        requests[camera_calls[1] + 1..camera_calls[2]]
+            .iter()
+            .any(|request| {
+                request["module"] == "camera-preview"
+                    && request["method"] == "show"
+                    && request["params"]["x"] == -315
+                    && request["params"]["y"] == 240
+            }),
+        "re-enabling the camera must restore its dragged position"
+    );
     for method in [
         "start",
         "pause",
@@ -404,13 +625,85 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             .iter()
             .filter(|request| request["module"] == "screen-recorder" && request["method"] == method)
             .collect();
-        assert_eq!(
-            calls.len(),
-            1,
-            "the recording workflow must call {method} exactly once"
-        );
-        if method.starts_with("set") {
+        let expected = if method == "setCamera" { 4 } else { 1 };
+        assert_eq!(calls.len(), expected, "unexpected {method} call count");
+        if method.starts_with("set") && method != "setCamera" {
             assert_eq!(calls[0]["params"]["enabled"], false);
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let fixture_path = output.join("capture-fixture.json");
+        let previous_fixture = std::fs::read(&fixture_path).ok();
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_vec(&serde_json::json!({"recordingProtectionFails": true})).unwrap(),
+        )
+        .unwrap();
+        let window = cx.update(|cx| {
+            crate::state::state(cx).config.update(|config| {
+                config.recording.start_delay = 0.;
+                config.recording.camera.enabled = false;
+            });
+            RecordingControl::open(
+                cx,
+                RecordingTarget::Window,
+                crate::capture::overlay::ScreenRect {
+                    x: 40,
+                    y: 80,
+                    width: 640,
+                    height: 360,
+                },
+                None,
+                Some(1),
+                Some("Fixture capture window".into()),
+                crate::windows::recording_control::PreferenceScope::Global,
+            );
+            registry::handle(WindowKind::RecordingControl, cx).unwrap()
+        });
+        settle(cx, window);
+        let before = super::daemon_fixture::calls(output).len();
+        click_measured(cx, window, "recording-controls", 2);
+        settle(cx, window);
+        #[cfg(target_os = "macos")]
+        {
+            super::workflows::wait_for_recording_start(cx);
+            let started = std::time::Instant::now();
+            while !super::daemon_fixture::calls(output)[before..]
+                .iter()
+                .any(|call| {
+                    call["module"] == "camera-preview"
+                        && call["method"] == "setContentProtection"
+                        && call["params"]["enabled"] == false
+                })
+            {
+                cx.run_until_parked();
+                assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::yield_now();
+            }
+        }
+        let calls = super::daemon_fixture::calls(output);
+        let calls = &calls[before..];
+        let protection: Vec<_> = calls
+            .iter()
+            .filter(|call| {
+                call["module"] == "camera-preview" && call["method"] == "setContentProtection"
+            })
+            .map(|call| call["params"]["enabled"].as_bool().unwrap())
+            .collect();
+        assert_eq!(protection, [true, false]);
+        assert!(!calls
+            .iter()
+            .any(|call| { call["module"] == "screen-recorder" && call["method"] == "start" }));
+        assert_eq!(recorder::state(), RecorderState::Idle);
+        assert!(cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        assert!(std::fs::read_dir(&recordings).unwrap().next().is_none());
+        escape(cx, window);
+        if let Some(contents) = previous_fixture {
+            std::fs::write(&fixture_path, contents).unwrap();
+        } else {
+            std::fs::remove_file(&fixture_path).unwrap();
         }
     }
 
@@ -466,8 +759,19 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                     && line.contains("\"method\":\"hide\"")
             })
             .count();
-        click_measured(cx, window, "recording-controls", 6);
+        let close_index =
+            super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
+        click_measured(cx, window, "recording-controls", close_index);
         assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(target_os = "macos")]
+        {
+            let started = std::time::Instant::now();
+            while cx.update(|cx| crate::intents::recording_cleanup_is_pending(cx)) {
+                cx.run_until_parked();
+                assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::yield_now();
+            }
+        }
         let hides_after = std::fs::read_to_string(output.join("daemon-fixture.jsonl"))
             .unwrap()
             .lines()
@@ -478,4 +782,262 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             .count();
         assert_eq!(hides_after, hides_before + 1);
     }
+    #[cfg(target_os = "macos")]
+    check_disconnected_ios_device(cx, output, scale);
+    #[cfg(target_os = "macos")]
+    check_camera_hide_handoff(cx, output);
+}
+
+#[cfg(target_os = "macos")]
+fn check_disconnected_ios_device(cx: &mut HeadlessAppContext, output: &Path, scale: f32) {
+    use crate::config::schema::IosDeviceSettings;
+    use crate::video::recorder::RecordingTarget;
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+    use std::time::{Duration, Instant};
+
+    let window = cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.recording.ios_device = Some(IosDeviceSettings {
+                id: "disconnected-ipad".into(),
+                name: Some("Fixture iPad".into()),
+            });
+            config.recording.camera.enabled = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            crate::capture::overlay::ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        registry::handle(WindowKind::RecordingControl, cx).unwrap()
+    });
+    cx.update_window(window, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, window);
+    click_measured(cx, window, "recording-controls", 5);
+    let started = Instant::now();
+    while cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .get()
+            .recording
+            .ios_device
+            .is_some()
+    }) {
+        cx.run_until_parked();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a successful empty iOS device list must clear the disconnected selection"
+        );
+        std::thread::yield_now();
+    }
+    settle(cx, window);
+    capture(cx, window, output, "record-control-ios-device-disconnected");
+    escape(cx, window);
+    let close_index =
+        super::GEOMETRY.with_borrow(|geometry| geometry["recording-controls"].len() - 1);
+    click_measured(cx, window, "recording-controls", close_index);
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+}
+
+#[cfg(target_os = "macos")]
+fn check_camera_hide_handoff(cx: &mut HeadlessAppContext, output: &Path) {
+    use crate::capture::overlay::{self, ScreenRect};
+    use crate::system::tray::Intent;
+    use crate::video::recorder::RecordingTarget;
+    use crate::windows::recording_control::{PreferenceScope, RecordingControl};
+    use crate::windows::registry::{self, WindowKind};
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ready = super::workflows::accept_fixture_barrier(&listener);
+    let fixture = output.join("capture-fixture.json");
+    let previous = std::fs::read(&fixture).ok();
+    std::fs::write(
+        &fixture,
+        serde_json::to_vec(&serde_json::json!({
+            "freeze": "live",
+            "recordingCameraHideBarrier": true,
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (window, original) = cx.update(|cx| {
+        let config = crate::state::state(cx).config;
+        let original = config.get();
+        config.update(|config| {
+            config.recording.camera.enabled = true;
+            config.screenshot.freeze_screen = false;
+            config.screenshot.hide_desktop_icons = false;
+        });
+        RecordingControl::open(
+            cx,
+            RecordingTarget::Area,
+            ScreenRect {
+                x: 40,
+                y: 80,
+                width: 640,
+                height: 360,
+            },
+            None,
+            None,
+            None,
+            PreferenceScope::Global,
+        );
+        (
+            registry::handle(WindowKind::RecordingControl, cx).unwrap(),
+            original,
+        )
+    });
+    wait_for_camera_change(cx, window);
+    cx.update_window(window, |root, _, cx| {
+        root.downcast::<RecordingControl>()
+            .unwrap()
+            .update(cx, |control, cx| {
+                assert!(control.set_camera(false, cx));
+                assert_eq!(control.parity_camera_status(), (true, true));
+            });
+    })
+    .unwrap();
+    cx.update(|cx| crate::intents::dispatch(Intent::CaptureArea, None, cx));
+    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+    assert!(!cx.update(overlay::parity_is_active));
+    connection.write_all(&[1]).unwrap();
+    let started = Instant::now();
+    while !cx.update(overlay::parity_is_active) {
+        cx.run_until_parked();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    let picker = super::workflows::area_picker(cx);
+    escape(cx, picker);
+    cx.update(|cx| {
+        crate::state::state(cx)
+            .config
+            .update(|config| *config = original)
+    });
+    if let Some(contents) = previous {
+        std::fs::write(&fixture, contents).unwrap();
+    } else {
+        std::fs::remove_file(&fixture).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn check_held_setting(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    output: &Path,
+    method: &str,
+    change: impl FnOnce(&mut HeadlessAppContext),
+) {
+    use crate::windows::recording_control::RecordingControl;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let index = match method {
+        "pause" | "resume" => 2,
+        "show" => 4,
+        "setCamera" => 6,
+        "setMicrophone" => 7,
+        "setSystemAudio" => 8,
+        _ => unreachable!(),
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ready = super::workflows::accept_fixture_barrier(&listener);
+    let fixture_path = output.join("capture-fixture.json");
+    let previous = std::fs::read(&fixture_path).ok();
+    std::fs::write(
+        &fixture_path,
+        serde_json::to_vec(&serde_json::json!({
+            "recordingSettingBarrier": method,
+            "barrier": listener.local_addr().unwrap().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let setting_is_on = |cx: &mut HeadlessAppContext| {
+        cx.update_window(window, |root, _, cx| {
+            let view = root.downcast::<RecordingControl>().unwrap();
+            let control = view.read(cx);
+            match method {
+                "pause" | "resume" => {
+                    use crate::video::recorder::{self, RecorderState};
+                    recorder::state() == RecorderState::Paused
+                }
+                "show" | "setCamera" => control.parity_camera_status().0,
+                "setMicrophone" => control.parity_microphone(),
+                "setSystemAudio" => control.parity_system_audio(),
+                _ => unreachable!(),
+            }
+        })
+        .unwrap()
+    };
+    let before = setting_is_on(cx);
+    change(cx);
+    let mut connection = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        setting_is_on(cx),
+        before,
+        "control state must await the daemon reply"
+    );
+    if method == "show" {
+        assert!(
+            !cx.update_window(window, |root, _, cx| {
+                root.downcast::<RecordingControl>()
+                    .unwrap()
+                    .read(cx)
+                    .start_enabled(cx)
+            })
+            .unwrap(),
+            "Start must wait for the camera preview"
+        );
+    }
+    click_measured(cx, window, "recording-controls", index);
+    assert_eq!(setting_is_on(cx), before);
+    connection.write_all(&[1]).unwrap();
+    let acknowledged = Instant::now();
+    while setting_is_on(cx) == before {
+        cx.run_until_parked();
+        assert!(acknowledged.elapsed() < Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    if let Some(contents) = previous {
+        std::fs::write(&fixture_path, contents).unwrap();
+    } else {
+        std::fs::remove_file(&fixture_path).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_camera_change(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
+    use crate::windows::recording_control::RecordingControl;
+    let started = std::time::Instant::now();
+    while cx
+        .update_window(window, |root, _, cx| {
+            root.downcast::<RecordingControl>()
+                .unwrap()
+                .read(cx)
+                .parity_camera_status()
+                .1
+        })
+        .unwrap()
+    {
+        cx.run_until_parked();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::yield_now();
+    }
+    settle(cx, window);
 }

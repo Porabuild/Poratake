@@ -1,0 +1,36 @@
+macOS isolated GPUI native UI probe, 2026-11-16
+
+The probe uses generated imagery and an isolated configuration. No daemon,
+screen capture, recording or device enumeration was started. The existing editor
+was left open. The computer-use helper's own screen access was already granted;
+that does not establish Poratake's screen-capture authorization.
+
+Default popup level, dark and light:
+  Recording control: AppKit level 101, visible, borderless, native shadow false.
+  Preview: AppKit level 101, visible, borderless, native shadow false.
+  Preview frame: 208 x 148 points; bottom and right work-area margins 20 points.
+  Recording control after layout: 276 x 44 points; bar width 276 points,
+  side margin 0, center error 0. The center hit the control and a point just
+  outside reached another window. Initial creation frame was 284 x 44 points.
+  The computer-use helper did not list these floating windows as targets.
+
+Normal-level control, dark:
+  Recording control and preview: AppKit level 0, visible, borderless,
+  native shadow false; preview margins 20 points.
+
+Timer geometry on the available display:
+  Display bounds: 0,0 1728 x 1117 capture pixels.
+  Left and right edge timer positions: 0,128 and 1588,128 respectively.
+  This is a placement calculation, not a timed capture.
+
+The dark and light PNGs are GPUI render_to_image scene captures at level 101.
+They show one scene border but exclude the macOS compositor, so they cannot
+resolve the outer wrapper visible in the user's screenshot. Physical hover,
+tooltip presentation, real capture and output exclusion were not tested here.
+
+Verification: cargo fmt --check and strict clippy on the parity executable
+passed. Strict clippy with --all-targets and --features parity failed in the
+test target on existing unused parity-only imports and helper methods; it did
+not report an error in the executable target. A follow-up gated those helpers
+to the standalone probe, and strict clippy then passed with --all-targets and
+--features parity on macOS.

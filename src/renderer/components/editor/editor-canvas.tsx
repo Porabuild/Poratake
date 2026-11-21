@@ -7,6 +7,7 @@ import React, {
 } from 'react';
 import type {
   Annotation,
+  AnnotationExportGeometry,
   ArrowStyle,
   HighlightColor,
   HighlightOpacity,
@@ -29,8 +30,11 @@ import SvgAnnotationsOverlay, {
   type SvgAnnotationsOverlayHandle,
 } from '@/renderer/components/editor/svg-annotations-overlay';
 import SvgCropOverlay from '@/renderer/components/editor/svg-crop-overlay';
-import RedactOverlay from '@/renderer/components/editor/redact/redact-overlay';
 import { useTextEditing } from '@/renderer/hooks/useTextEditing';
+import {
+  useScreenshotComposition,
+  type ScreenshotCompositionRenderer,
+} from '@/renderer/hooks/useScreenshotComposition';
 import { useAnnotationSelection } from '@/renderer/hooks/useAnnotationSelection';
 import { useCropTool } from '@/renderer/hooks/useCropTool';
 import { useDrawingTools } from '@/renderer/hooks/useDrawingTools';
@@ -70,6 +74,7 @@ interface EditorCanvasProps {
   extraLayers?: ImageLayer[];
   extraLayerImages?: Record<string, HTMLImageElement>;
   wallpaper: WallpaperSettings;
+  renderToCanvas: ScreenshotCompositionRenderer;
   zoom?: number;
   textBackground?: boolean;
   textFontSize?: TextFontSize;
@@ -81,7 +86,11 @@ interface EditorCanvasProps {
 
 export interface EditorCanvasHandle {
   getCanvas: () => HTMLCanvasElement | null;
-  getSvgForExport: (scale: number) => string;
+  getSvgForExport: (
+    scale: number,
+    annotations?: Annotation[],
+    geometry?: AnnotationExportGeometry
+  ) => string;
   selectAnnotations: (ids: string[]) => void;
 }
 
@@ -112,6 +121,7 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       extraLayers,
       extraLayerImages,
       wallpaper,
+      renderToCanvas,
       zoom = 1,
       textBackground = true,
       textFontSize = 20,
@@ -126,7 +136,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
     const canvasRef = useRef<CanvasRendererHandle>(null);
     const svgRef = useRef<SvgAnnotationsOverlayHandle>(null);
     const interactionLayerRef = useRef<HTMLDivElement>(null);
-
     const imgWidth = imageWidth || image?.width || 0;
     const imgHeight = imageHeight || image?.height || 0;
 
@@ -164,8 +173,11 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       ref,
       () => ({
         getCanvas: () => canvasRef.current?.getCanvas() ?? null,
-        getSvgForExport: (scale: number) =>
-          svgRef.current?.getSvgForExport(scale) ?? '',
+        getSvgForExport: (
+          scale: number,
+          selected?: Annotation[],
+          geometry?: AnnotationExportGeometry
+        ) => svgRef.current?.getSvgForExport(scale, selected, geometry) ?? '',
         selectAnnotations: selectMultiple,
       }),
       [selectMultiple]
@@ -196,6 +208,19 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       redactIntensity,
       shapeFillMode,
       onAnnotationAdd,
+    });
+
+    const {
+      canvasRef: compositionRef,
+      hasPreview: hasComposition,
+      ready: compositionReady,
+      failed: compositionFailed,
+    } = useScreenshotComposition({
+      image,
+      annotations,
+      currentAnnotation,
+      editingTextId,
+      renderToCanvas,
     });
 
     const brushCursor = useBrushCursor({
@@ -401,7 +426,6 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
       canvasHeight,
       contentOffsetX,
       contentOffsetY,
-      balanceCrop,
       nativeBalanceCrop,
       aspectRatioPaddingX,
       aspectRatioPaddingY,
@@ -432,41 +456,56 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
             onMouseUp={handleMouseUp}
           >
             {}
-            <CanvasRenderer
-              ref={canvasRef}
-              image={image}
-              padding={padding}
-              inset={wallpaper.inset}
-              cornerRadius={wallpaper.corners}
-              shadow={wallpaper.shadow}
-              gradient={wallpaper.gradient}
-              backgroundImage={wallpaper.backgroundImage}
-              backgroundBlur={wallpaper.backgroundBlur ?? 0}
-              noise={wallpaper.noise ?? 0}
-              windowFrame={wallpaper.windowFrame?.style}
-              aspectRatioPaddingX={aspectRatioPaddingX}
-              aspectRatioPaddingY={aspectRatioPaddingY}
-              extraLayers={extraLayers}
-              extraLayerImages={extraLayerImages}
-              layerRects={layerRects}
-              primaryRect={primaryRect}
-              nativeBalanceCrop={nativeBalanceCrop}
-              primaryInsetColor={primaryInsetColor}
-              layerInsetColors={layerInsetColors}
-            />
+            <div
+              style={{
+                visibility:
+                  hasComposition || compositionFailed ? 'hidden' : 'visible',
+              }}
+            >
+              <CanvasRenderer
+                ref={canvasRef}
+                image={image}
+                padding={padding}
+                inset={wallpaper.inset}
+                cornerRadius={wallpaper.corners}
+                shadow={wallpaper.shadow}
+                gradient={wallpaper.gradient}
+                backgroundImage={wallpaper.backgroundImage}
+                backgroundBlur={wallpaper.backgroundBlur ?? 0}
+                noise={wallpaper.noise ?? 0}
+                windowFrame={wallpaper.windowFrame?.style}
+                aspectRatioPaddingX={aspectRatioPaddingX}
+                aspectRatioPaddingY={aspectRatioPaddingY}
+                extraLayers={extraLayers}
+                extraLayerImages={extraLayerImages}
+                layerRects={layerRects}
+                primaryRect={primaryRect}
+                nativeBalanceCrop={nativeBalanceCrop}
+                primaryInsetColor={primaryInsetColor}
+                layerInsetColors={layerInsetColors}
+              />
+            </div>
 
-            {}
-            <RedactOverlay
-              image={image}
-              imageWidth={contentWidth}
-              imageHeight={contentHeight}
-              canvasWidth={canvasWidth}
-              canvasHeight={canvasHeight}
-              offsetX={contentOffsetX}
-              offsetY={contentOffsetY}
-              balanceCrop={balanceCrop}
-              annotations={annotations}
-              currentAnnotation={currentAnnotation}
+            <canvas
+              ref={compositionRef}
+              data-composition-preview
+              data-composition-state={
+                compositionReady
+                  ? 'ready'
+                  : compositionFailed
+                    ? 'failed'
+                    : 'pending'
+              }
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: canvasWidth,
+                height: canvasHeight,
+                visibility:
+                  hasComposition && !compositionFailed ? 'visible' : 'hidden',
+                pointerEvents: 'none',
+              }}
             />
 
             {}
@@ -489,7 +528,24 @@ const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(
               zoom={zoom}
               activeTool={activeTool}
               showBlackoutFill
+              hidePaint
+              showDraft={!compositionReady && !compositionFailed}
             />
+
+            {!compositionReady && !compositionFailed && (
+              <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-background/90 px-2 py-1 text-xs text-foreground">
+                Updating preview…
+              </div>
+            )}
+
+            {compositionFailed && (
+              <div
+                role="alert"
+                className="absolute inset-0 flex items-center justify-center bg-background p-4 text-center text-sm text-foreground"
+              >
+                Preview unavailable. Try changing the image or settings.
+              </div>
+            )}
 
             {}
             {cropRect && activeTool === 'crop' && (

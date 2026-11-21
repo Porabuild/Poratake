@@ -372,6 +372,10 @@ pub fn normalize_loaded_state(
             changes.camera_segments_changed = !state.camera_segments.is_empty();
         }
     }
+    let total =
+        super::first_frame_duration(state) + total_duration(&state.segments, source_duration);
+    changes.camera_segments_changed |=
+        super::timeline::edit::bound_ranges(&mut state.camera_segments, total);
     Some(changes)
 }
 
@@ -384,34 +388,38 @@ pub fn save_state_with_camera_segments_presence(
     project_or_video: &Path,
     state: &VideoEditorState,
     camera_segments_present: bool,
-) {
+) -> bool {
     let path = project::editor_state_path(project_or_video);
     let Some(parent) = path.parent() else {
-        return;
+        return false;
     };
     if !parent.is_dir() {
-        return;
+        return false;
     }
-    match serde_json::to_value(state) {
-        Ok(mut value) => {
-            if !camera_segments_present {
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("cameraSegments");
-                }
-            }
-            match serde_json::to_string_pretty(&value) {
-                Ok(contents) => {
-                    if let Err(error) = std::fs::write(&path, contents) {
-                        eprintln!("[video-editor] failed to save {}: {error}", path.display());
-                    }
-                }
-                Err(error) => eprintln!("[video-editor] failed to serialize state: {error}"),
-            }
-        }
+    let mut value = match serde_json::to_value(state) {
+        Ok(value) => value,
         Err(error) => {
             eprintln!("[video-editor] failed to serialize state: {error}");
+            return false;
+        }
+    };
+    if !camera_segments_present {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("cameraSegments");
         }
     }
+    let contents = match serde_json::to_vec_pretty(&value) {
+        Ok(contents) => contents,
+        Err(error) => {
+            eprintln!("[video-editor] failed to serialize state: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = crate::util::atomic_file::write(&path, &contents) {
+        eprintln!("[video-editor] failed to save {}: {error}", path.display());
+        return false;
+    }
+    true
 }
 
 /// `getFileNameFromPath` in `video-editor/utils.ts`: a recording inside a
@@ -456,9 +464,11 @@ pub fn music_display_end(tracks: &[MusicTrack]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-pub fn music_groups(tracks: &[MusicTrack]) -> Vec<Vec<&MusicTrack>> {
+pub fn music_groups<'a>(
+    tracks: impl IntoIterator<Item = &'a MusicTrack>,
+) -> Vec<Vec<&'a MusicTrack>> {
     let mut groups: Vec<Vec<&MusicTrack>> = Vec::new();
-    for track in tracks.iter().filter(|track| track.enabled) {
+    for track in tracks {
         let key = group_key(track);
         match groups
             .iter_mut()
@@ -488,6 +498,62 @@ pub fn total_duration(segments: &[Segment], fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_camera_ranges_follow_video_duration_and_keep_valid_ranges() {
+        let camera = |id: &str, start_time, end_time| CameraSegment {
+            id: id.into(),
+            start_time,
+            end_time,
+        };
+        let mut state = VideoEditorState {
+            source_duration: Some(8.0),
+            segments: vec![Segment {
+                speed: Some(2.0),
+                ..Segment::spanning(8.0)
+            }],
+            camera_segments: vec![
+                camera("valid", 1.0, 2.0),
+                camera("crossing", 3.0, 6.0),
+                camera("too-short", 3.95, 5.0),
+                camera("after", 6.0, 7.0),
+            ],
+            ..VideoEditorState::default()
+        };
+        let original = state.clone();
+        assert!(normalize_loaded_state(None, &mut state, 0.0, false).is_none());
+        assert_eq!(state, original);
+        let changes = normalize_loaded_state(None, &mut state, 8.0, false).unwrap();
+        assert!(changes.camera_segments_changed);
+        assert_eq!(
+            state.camera_segments,
+            vec![camera("valid", 1.0, 2.0), camera("crossing", 3.0, 4.0)]
+        );
+        assert!(
+            !normalize_loaded_state(None, &mut state, 8.0, false)
+                .unwrap()
+                .camera_segments_changed
+        );
+    }
+
+    #[test]
+    fn camera_range_boundary_includes_enabled_first_frame() {
+        let mut state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![Segment::spanning(4.0)],
+            camera_segments: vec![CameraSegment {
+                id: "camera".into(),
+                start_time: 3.0,
+                end_time: 5.0,
+            }],
+            ..VideoEditorState::default()
+        };
+        state.first_frame.enabled = true;
+        state.first_frame.image_data = Some("image".into());
+        state.export_settings.frame_rate = "30".into();
+        normalize_loaded_state(None, &mut state, 4.0, false).unwrap();
+        assert_eq!(state.camera_segments[0].end_time, 4.0 + 1.0 / 30.0);
+    }
 
     #[test]
     fn timeline_duration_accounts_for_speed() {
@@ -533,15 +599,16 @@ mod music_tests {
     }
 
     #[test]
-    fn a_disabled_group_has_no_lane_and_no_reach() {
+    fn a_disabled_group_does_not_extend_timeline_reach() {
         let tracks = vec![
             track("a", "g1", true, 4.0),
             track("b", "g1", true, 8.0),
             track("c", "g2", false, 30.0),
         ];
         let groups = music_groups(&tracks);
-        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].len(), 2);
+        assert!(!groups[1][0].enabled);
         assert_eq!(music_display_end(&tracks), 8.0);
     }
 

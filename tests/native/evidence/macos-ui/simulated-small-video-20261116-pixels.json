@@ -1,0 +1,21 @@
+{
+  "width": 1440,
+  "height": 1040,
+  "region": [48, 144, 736, 552],
+  "samples": {
+    "light": {
+      "sha256": "7bb5fe499c514352fdaaf2fa97ecc192beafd6ed5687fc702d28294905b65fac",
+      "red_pixels": 14600,
+      "blue_pixels": 105898,
+      "annotation_rgb": [224, 64, 64],
+      "video_rgb": [64, 112, 192]
+    },
+    "dark": {
+      "sha256": "6e2abca949e8db23ce1da7cad7239309427a2e36fc6627f1326a0c50d72dd7e2",
+      "red_pixels": 14600,
+      "blue_pixels": 105898,
+      "annotation_rgb": [224, 64, 64],
+      "video_rgb": [64, 112, 192]
+    }
+  }
+}

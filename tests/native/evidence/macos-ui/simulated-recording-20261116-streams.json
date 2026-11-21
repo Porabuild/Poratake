@@ -1,0 +1,35 @@
+{
+  "area": {
+    "video_sha256": "eaf14fbcc75536c9b9e229b700c5347af7e732ed63bc61c573b7edf17903c756",
+    "preview_sha256": "2885ab7955d9ea8c44c26a9eee1b8e8d9c7947ef70d888267a414147cfee3119",
+    "stream": {
+      "codec_name": "h264",
+      "width": 320,
+      "height": 180,
+      "duration": "2.000000",
+      "nb_frames": "60"
+    }
+  },
+  "window": {
+    "video_sha256": "3372f9094d96c0bebadaafb3402474c0a83045a30b6af85a4b34b4ab76992156",
+    "preview_sha256": "4a5889d2145a596d1ef5f1a5120ff9b7821ce6d689b83b002923593d70a3711b",
+    "stream": {
+      "codec_name": "h264",
+      "width": 320,
+      "height": 180,
+      "duration": "2.000000",
+      "nb_frames": "60"
+    }
+  },
+  "screen": {
+    "video_sha256": "03895365331a6c20273a02f3e73600ae32d71f4fa3230a1729882aa3cc3303dd",
+    "preview_sha256": "4fce826977bc8027cf1cfe4410580f739548fcfdd3ace81a88b84c246d47a455",
+    "stream": {
+      "codec_name": "h264",
+      "width": 320,
+      "height": 180,
+      "duration": "2.000000",
+      "nb_frames": "60"
+    }
+  }
+}

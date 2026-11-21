@@ -52,6 +52,24 @@ const INTENT_IDS: &[(Intent, &str)] = &[
 ];
 
 impl Intent {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn starts_capture(self) -> bool {
+        matches!(
+            self,
+            Self::AllInOne
+                | Self::CaptureArea
+                | Self::CaptureScreen
+                | Self::CaptureWindow
+                | Self::CaptureText
+                | Self::ScanQrCode
+                | Self::TimerCapture
+                | Self::ScrollCapture
+                | Self::RecordArea
+                | Self::RecordScreen
+                | Self::RecordWindow
+        )
+    }
+
     #[cfg(any(target_os = "linux", test))]
     pub fn id(self) -> &'static str {
         INTENT_IDS

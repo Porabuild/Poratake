@@ -3,7 +3,9 @@
 //! reports `scroll-capture:done` / `:cancelled`, so the app only picks the
 //! area, starts the session and finalizes the stitched image.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use poratake_daemon_common::contract::{ScrollCaptureFinishRequest, ScrollCaptureStartRequest};
 
@@ -26,26 +28,86 @@ pub enum ScrollSessionSignal {
     CursorOutside(bool),
 }
 
+pub struct ScrollProgressSender {
+    pending: Arc<Mutex<VecDeque<ScrollSessionSignal>>>,
+    wake: smol::channel::Sender<()>,
+}
+
+pub struct ScrollProgressReceiver {
+    pending: Arc<Mutex<VecDeque<ScrollSessionSignal>>>,
+    ready: smol::channel::Receiver<()>,
+}
+
+pub fn scroll_progress_channel() -> (ScrollProgressSender, ScrollProgressReceiver) {
+    let pending = Arc::new(Mutex::new(VecDeque::new()));
+    let (wake, ready) = smol::channel::bounded(1);
+    (
+        ScrollProgressSender {
+            pending: pending.clone(),
+            wake,
+        },
+        ScrollProgressReceiver { pending, ready },
+    )
+}
+
+impl ScrollProgressSender {
+    fn send(&self, signal: ScrollSessionSignal) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let kind = std::mem::discriminant(&signal);
+        if let Some(previous) = pending
+            .iter_mut()
+            .find(|previous| std::mem::discriminant(*previous) == kind)
+        {
+            *previous = signal;
+        } else {
+            pending.push_back(signal);
+        }
+        let _ = self.wake.try_send(());
+    }
+}
+
+impl ScrollProgressReceiver {
+    async fn receive(&self) -> Option<ScrollSessionSignal> {
+        loop {
+            let next = self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front();
+            if next.is_some() {
+                return next;
+            }
+            self.ready.recv().await.ok()?;
+        }
+    }
+}
+
 impl ScrollSessionSignal {
-    pub fn send(
-        self,
-        control: &smol::channel::Sender<Self>,
-        progress: &smol::channel::Sender<Self>,
-    ) {
+    pub fn send(self, control: &smol::channel::Sender<Self>, progress: &ScrollProgressSender) {
+        #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
+        if matches!(&self, Self::Frame { preview: None }) {
+            return;
+        }
         let is_progress = match &self {
             #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
             Self::Frame { .. } | Self::AutoScrolling(_) | Self::CursorOutside(_) => true,
             _ => false,
         };
-        let sender = if is_progress { progress } else { control };
-        let _ = sender.try_send(self);
+        if is_progress {
+            progress.send(self);
+        } else {
+            let _ = control.try_send(self);
+        }
     }
 
     pub async fn receive(
         control: &smol::channel::Receiver<Self>,
-        progress: &smol::channel::Receiver<Self>,
+        progress: &ScrollProgressReceiver,
     ) -> Option<Self> {
-        smol::future::or(control.recv(), progress.recv()).await.ok()
+        smol::future::or(async { control.recv().await.ok() }, progress.receive()).await
     }
 
     pub fn from_daemon_event(event: &str, payload: &serde_json::Value) -> Option<Self> {
@@ -67,9 +129,21 @@ impl ScrollSessionSignal {
                     Some("no-overlap") => Some(Self::Stopped(
                         "The latest frame could not be aligned. You can save the captured portion.",
                     )),
+                    Some("capture-error")
+                        if payload.get("frameCount").and_then(|v| v.as_u64()) == Some(0) =>
+                    {
+                        Some(Self::Stopped(
+                            "The first frame could not be captured. Try auto-scroll again.",
+                        ))
+                    }
                     Some("capture-error") => Some(Self::Stopped(
                         "A frame could not be captured. You can save the captured portion.",
                     )),
+                    Some("input-error")
+                        if payload.get("frameCount").and_then(|v| v.as_u64()) == Some(0) =>
+                    {
+                        Some(Self::Stopped("Auto Scroll could not send input."))
+                    }
                     Some("input-error") => Some(Self::Stopped(
                         "Scrolling could not be continued. You can save the captured portion.",
                     )),
@@ -185,7 +259,7 @@ mod tests {
         ] {
             for from_daemon in [false, true] {
                 let (control, control_rx) = smol::channel::unbounded();
-                let (progress, progress_rx) = smol::channel::bounded(16);
+                let (progress, progress_rx) = scroll_progress_channel();
                 for index in 0..32 {
                     let signal = match index % 3 {
                         0 => ScrollSessionSignal::Frame {
@@ -196,6 +270,9 @@ mod tests {
                     };
                     signal.send(&control, &progress);
                 }
+                ScrollSessionSignal::AutoScrolling(false).send(&control, &progress);
+                ScrollSessionSignal::CursorOutside(false).send(&control, &progress);
+                ScrollSessionSignal::Frame { preview: None }.send(&control, &progress);
                 for _ in 0..20 {
                     ScrollSessionSignal::Stopped("stopped").send(&control, &progress);
                 }
@@ -208,7 +285,7 @@ mod tests {
                     control.try_send(terminal).unwrap();
                 }
 
-                assert_eq!(progress_rx.len(), 16);
+                assert_eq!(progress_rx.pending.lock().unwrap().len(), 3);
                 for _ in 0..20 {
                     assert!(matches!(
                         smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
@@ -222,13 +299,80 @@ mod tests {
                 } else {
                     assert!(matches!(received, Some(ScrollSessionSignal::Cancel)));
                 }
-                assert_eq!(progress_rx.len(), 16);
+                assert_eq!(progress_rx.pending.lock().unwrap().len(), 3);
                 assert!(matches!(
                     smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
-                    Some(ScrollSessionSignal::Frame { preview: Some(value) }) if value == "0"
+                    Some(ScrollSessionSignal::Frame { preview: Some(value) }) if value == "30"
                 ));
+                assert!(matches!(
+                    smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+                    Some(ScrollSessionSignal::AutoScrolling(false))
+                ));
+                assert!(matches!(
+                    smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+                    Some(ScrollSessionSignal::CursorOutside(false))
+                ));
+                assert!(progress_rx.pending.lock().unwrap().is_empty());
             }
         }
+    }
+
+    #[test]
+    fn scroll_progress_retains_each_latest_state_during_a_frame_burst() {
+        let (control, control_rx) = smol::channel::unbounded();
+        let (progress, progress_rx) = scroll_progress_channel();
+        ScrollSessionSignal::AutoScrolling(true).send(&control, &progress);
+        ScrollSessionSignal::CursorOutside(true).send(&control, &progress);
+        ScrollSessionSignal::Frame {
+            preview: Some("old".into()),
+        }
+        .send(&control, &progress);
+        for index in 0..1000 {
+            ScrollSessionSignal::Frame {
+                preview: Some(index.to_string()),
+            }
+            .send(&control, &progress);
+        }
+        ScrollSessionSignal::AutoScrolling(false).send(&control, &progress);
+        ScrollSessionSignal::CursorOutside(false).send(&control, &progress);
+        for index in 1000..2000 {
+            ScrollSessionSignal::Frame {
+                preview: Some(index.to_string()),
+            }
+            .send(&control, &progress);
+        }
+        assert_eq!(progress_rx.pending.lock().unwrap().len(), 3);
+        assert!(matches!(
+            smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+            Some(ScrollSessionSignal::AutoScrolling(false))
+        ));
+        ScrollSessionSignal::AutoScrolling(true).send(&control, &progress);
+        assert!(matches!(
+            smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+            Some(ScrollSessionSignal::CursorOutside(false))
+        ));
+        assert!(matches!(
+            smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+            Some(ScrollSessionSignal::Frame { preview: Some(value) }) if value == "1999"
+        ));
+        assert!(matches!(
+            smol::block_on(ScrollSessionSignal::receive(&control_rx, &progress_rx)),
+            Some(ScrollSessionSignal::AutoScrolling(true))
+        ));
+        assert!(progress_rx.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn scroll_progress_drains_before_reporting_producer_closure() {
+        let (progress, progress_rx) = scroll_progress_channel();
+        progress.send(ScrollSessionSignal::AutoScrolling(false));
+        drop(progress);
+        assert!(matches!(
+            smol::block_on(progress_rx.receive()),
+            Some(ScrollSessionSignal::AutoScrolling(false))
+        ));
+        assert!(progress_rx.ready.is_closed());
+        assert!(smol::block_on(progress_rx.receive()).is_none());
     }
 
     #[test]
@@ -267,6 +411,24 @@ mod tests {
             )
             .is_none());
         }
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                &serde_json::json!({ "reason": "capture-error", "frameCount": 0 }),
+            ),
+            Some(ScrollSessionSignal::Stopped(
+                "The first frame could not be captured. Try auto-scroll again."
+            ))
+        ));
+        assert!(matches!(
+            ScrollSessionSignal::from_daemon_event(
+                SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
+                &serde_json::json!({ "reason": "input-error", "frameCount": 0 }),
+            ),
+            Some(ScrollSessionSignal::Stopped(
+                "Auto Scroll could not send input."
+            ))
+        ));
         assert!(ScrollSessionSignal::from_daemon_event(
             SCROLL_CAPTURE_SCROLL_ENDED_EVENT,
             &serde_json::Value::Null,

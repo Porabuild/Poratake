@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::{
@@ -27,15 +28,8 @@ use crate::ui::colors::Tool;
 use crate::ui::icon_button;
 use herogpui::components::{Button, InputState, TextField, Variant};
 
-fn report_screenshot_save_failure(
-    cx: &mut App,
-    path: Option<&Path>,
-    error: &dyn std::fmt::Display,
-) {
-    let message = match path {
-        Some(path) => format!("{}: {error}", path.display()),
-        None => error.to_string(),
-    };
+fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fmt::Display) {
+    let message = format!("{}: {error}", path.display());
     eprintln!("[editor] screenshot save failed: {message}");
     crate::windows::toast::Toast::show(cx, "Screenshot Save Failed", message);
 }
@@ -49,6 +43,39 @@ pub(crate) struct PersistedEditorState {
     wallpaper: crate::editor::wallpaper::WallpaperSettings,
     #[serde(default)]
     layers: Vec<crate::editor::layers::ImageLayer>,
+}
+
+impl PersistedEditorState {
+    pub(crate) fn load_for_screenshot(path: &str) -> Self {
+        crate::history_store::editor_state_for_path(std::path::Path::new(path))
+            .and_then(|state| serde_json::from_value(state).ok())
+            .unwrap_or_default()
+    }
+}
+
+struct EditorStateWriter {
+    revision: AtomicU64,
+    persisted: parking_lot::Mutex<Option<Arc<serde_json::Value>>>,
+}
+
+impl EditorStateWriter {
+    fn next_revision(&self) -> u64 {
+        self.revision
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+    }
+
+    fn write(&self, path: &Path, state: Arc<serde_json::Value>, revision: u64) -> bool {
+        let mut persisted = self.persisted.lock();
+        if self.revision.load(Ordering::Relaxed) != revision || persisted.as_ref() == Some(&state) {
+            return true;
+        }
+        if !crate::history_store::update_editor_state_by_path(path, (*state).clone()) {
+            return false;
+        }
+        *persisted = Some(state);
+        true
+    }
 }
 
 struct PreCropState {
@@ -356,6 +383,9 @@ pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
     pub base_image: Option<Arc<image::DynamicImage>>,
     pub is_copied: bool,
+    copy_pending: bool,
+    pin_pending: bool,
+    copy_task: Option<gpui::Task<()>>,
     pub image_width: f32,
     pub image_height: f32,
     pub file_path: String,
@@ -436,7 +466,10 @@ pub struct EditorWindow {
     /// so it is only re-rendered when the wallpaper actually changes.
     backdrop: Option<Arc<gpui::RenderImage>>,
     backdrop_composite: bool,
+    rounded_matte: Option<Arc<gpui::RenderImage>>,
+    backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
+    image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     retired_preview_edges: Vec<Arc<gpui::RenderImage>>,
     backdrop_key: Option<(
         crate::editor::wallpaper::WallpaperSettings,
@@ -455,8 +488,8 @@ pub struct EditorWindow {
     /// Pointer position and scroll offset a pan started from.
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
-    persisted_editor_state: RefCell<Option<serde_json::Value>>,
-    pending_editor_state: Option<serde_json::Value>,
+    editor_state_writer: Arc<EditorStateWriter>,
+    requested_editor_state: Option<Arc<serde_json::Value>>,
     editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
     save_dialog_open: bool,
@@ -471,32 +504,62 @@ struct PresetDraft {
 
 pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
-impl EditorWindow {
-    pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let persisted = crate::history_store::editor_state_for_path(std::path::Path::new(path))
-            .and_then(|state| serde_json::from_value::<PersistedEditorState>(state).ok())
-            .unwrap_or_default();
-        Self::from_file_with_state(path, persisted, window, cx)
+pub(crate) struct PreparedScreenshot {
+    base: Arc<image::DynamicImage>,
+    image: Arc<gpui::RenderImage>,
+    tiles: Vec<crate::editor::export::PreviewEdgeImage>,
+}
+
+impl PreparedScreenshot {
+    pub(crate) fn open(path: &str) -> image::ImageResult<Self> {
+        let decoded = crate::render::images::open_rgba8(path)?;
+        let base = Arc::new(image::DynamicImage::ImageRgba8(decoded));
+        let image = render_image_from_base(&base);
+        let tiles = crate::editor::image_tiles::create(&image);
+        Ok(Self { base, image, tiles })
     }
 
+    pub(crate) fn dimensions(&self) -> (f32, f32) {
+        (self.base.width() as f32, self.base.height() as f32)
+    }
+}
+
+impl EditorWindow {
+    #[cfg(any(test, feature = "parity"))]
+    pub fn from_file(path: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::from_prepared(path, None, load_editor_image(path), window, cx)
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_file_with_state(
         path: &str,
         persisted: PersistedEditorState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (image, base, width, height) = match load_image(path) {
-            Ok(result) => result,
-            Err(error) => {
-                eprintln!("[editor] failed to load {path}: {error}");
-                (None, None, 0.0, 0.0)
-            }
-        };
+        Self::from_prepared(path, Some(persisted), load_editor_image(path), window, cx)
+    }
 
+    pub(crate) fn from_prepared(
+        path: &str,
+        persisted: Option<PersistedEditorState>,
+        prepared: Option<PreparedScreenshot>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let persisted =
+            persisted.unwrap_or_else(|| PersistedEditorState::load_for_screenshot(path));
+        let (width, height) = prepared
+            .as_ref()
+            .map_or((0., 0.), PreparedScreenshot::dimensions);
+        let (base_image, image, image_tiles) = prepared.map_or_else(
+            || (None, None, Vec::new()),
+            |prepared| (Some(prepared.base), Some(prepared.image), prepared.tiles),
+        );
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
-        let persisted_value = serde_json::to_value(&persisted).ok();
+        let persisted_value = serde_json::to_value(&persisted).ok().map(Arc::new);
         let next_id = persisted
             .annotations
             .iter()
@@ -506,7 +569,7 @@ impl EditorWindow {
             .unwrap_or(0);
         let mut editor = Self {
             image,
-            base_image: base.map(Arc::new),
+            base_image,
             layers: persisted.layers,
             capture_mode: false,
             meta_held: false,
@@ -520,7 +583,10 @@ impl EditorWindow {
             annotation_clipboard: Vec::new(),
             backdrop: None,
             backdrop_composite: false,
+            rounded_matte: None,
+            backdrop_tiles: Vec::new(),
             preview_edges: Vec::new(),
+            image_tiles,
             retired_preview_edges: Vec::new(),
             backdrop_key: None,
             backdrop_generation: 0,
@@ -529,6 +595,9 @@ impl EditorWindow {
             stage_scroll: gpui::ScrollHandle::new(),
             pan_origin: None,
             is_copied: false,
+            copy_pending: false,
+            pin_pending: false,
+            copy_task: None,
             image_width: width,
             image_height: height,
             file_path: path.to_string(),
@@ -582,6 +651,7 @@ impl EditorWindow {
             redact_patches: std::collections::HashMap::new(),
             snapshot: Rc::new(RefCell::new(CanvasSnapshot {
                 image: None,
+                image_tiles: Vec::new(),
                 redact_patches: std::collections::HashMap::new(),
                 image_width: width,
                 image_height: height,
@@ -598,6 +668,8 @@ impl EditorWindow {
                 frame_scale: 1.0,
                 backdrop: None,
                 backdrop_composite: false,
+                rounded_matte: None,
+                backdrop_tiles: Vec::new(),
                 preview_edges: Vec::new(),
                 selected: Vec::new(),
                 editing_text: None,
@@ -608,8 +680,11 @@ impl EditorWindow {
             })),
             bounds: Rc::new(RefCell::new(None)),
             next_id,
-            persisted_editor_state: RefCell::new(persisted_value),
-            pending_editor_state: None,
+            editor_state_writer: Arc::new(EditorStateWriter {
+                revision: 0.into(),
+                persisted: parking_lot::Mutex::new(persisted_value.clone()),
+            }),
+            requested_editor_state: persisted_value,
             editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
             save_dialog_open: false,
@@ -642,8 +717,54 @@ impl EditorWindow {
         }
         editor.refresh_raster_patches();
         editor.sync_snapshot(cx);
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = weak.update(cx, |editor, _| {
+                editor.force_persist_editor_state();
+                editor.release_gpu_resources(window);
+            });
+            crate::system::memory::reclaim_idle_memory();
+            true
+        });
         window.focus(&editor.focus_handle, cx);
         editor
+    }
+
+    fn release_gpu_resources(&mut self, window: &mut Window) {
+        if let Some(image) = self.image.take() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(image) = self.backdrop.take() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(image) = self.rounded_matte.take() {
+            let _ = window.drop_image(image);
+        }
+        for edge in self.preview_edges.drain(..) {
+            let _ = window.drop_image(edge.image);
+        }
+        for image in self.retired_preview_edges.drain(..) {
+            let _ = window.drop_image(image);
+        }
+        for tile in self.backdrop_tiles.drain(..) {
+            let _ = window.drop_image(tile.image);
+        }
+        for tile in self.image_tiles.drain(..) {
+            let _ = window.drop_image(tile.image);
+        }
+        for (_, patch) in self.redact_patches.drain() {
+            let _ = window.drop_image(patch.image);
+        }
+        self.base_image = None;
+        self.pre_crop = None;
+        let mut snapshot = self.snapshot.borrow_mut();
+        snapshot.image = None;
+        snapshot.backdrop = None;
+        snapshot.rounded_matte = None;
+        snapshot.preview_edges.clear();
+        snapshot.backdrop_tiles.clear();
+        snapshot.image_tiles.clear();
+        snapshot.redact_patches.clear();
     }
 
     /// Rasterizes the redacted pixels for every committed redaction once, so
@@ -736,7 +857,11 @@ impl EditorWindow {
         let Some(base) = self.base_image.as_ref() else {
             return;
         };
-        let crop = crate::editor::export::balance_bounds(&base.to_rgba8()).map(|bounds| {
+        let bounds = match base.as_rgba8() {
+            Some(rgba) => crate::editor::export::balance_bounds(rgba),
+            None => crate::editor::export::balance_bounds(&base.to_rgba8()),
+        };
+        let crop = bounds.map(|bounds| {
             (
                 bounds.left as f32,
                 bounds.top as f32,
@@ -755,11 +880,25 @@ impl EditorWindow {
             .extend(self.preview_edges.drain(..).map(|edge| edge.image));
     }
 
+    fn replace_image(&mut self, image: Arc<gpui::RenderImage>) {
+        self.retired_preview_edges
+            .extend(self.image_tiles.drain(..).map(|tile| tile.image));
+        if let Some(previous) = self.image.replace(image.clone()) {
+            self.retired_preview_edges.push(previous);
+        }
+        self.image_tiles = crate::editor::image_tiles::create(&image);
+    }
+
     fn retire_backdrop(&mut self) {
         if let Some(backdrop) = self.backdrop.take() {
             self.retired_preview_edges.push(backdrop);
         }
+        if let Some(matte) = self.rounded_matte.take() {
+            self.retired_preview_edges.push(matte);
+        }
         self.backdrop_composite = false;
+        self.retired_preview_edges
+            .extend(self.backdrop_tiles.drain(..).map(|tile| tile.image));
         self.retire_preview_edges();
     }
 
@@ -816,6 +955,16 @@ impl EditorWindow {
             width.round().max(1.0) as u32,
             height.round().max(1.0) as u32,
         );
+        #[cfg(target_os = "macos")]
+        let rounded_preview = (size.0 > 16384 || size.1 > 16384)
+            && self.layers.is_empty()
+            && !wallpaper.balance
+            && wallpaper.corners > 0.0
+            && wallpaper.shadow <= 0.0
+            && wallpaper.inset <= 0.0
+            && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none();
+        #[cfg(not(target_os = "macos"))]
+        let rounded_preview = false;
         let background = gpui::Rgba::from(active_theme(cx).background);
         let stage_background = [background.r, background.g, background.b]
             .map(|channel| (channel * 255.0).round() as u8);
@@ -827,10 +976,16 @@ impl EditorWindow {
             self.native_scale,
             (!wallpaper.has_background()
                 || wallpaper.supports_edge_preview(!self.layers.is_empty())
-                || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers))
-            .then_some(stage_background),
-            (wallpaper.inset > 0.0
                 || crate::editor::export::composites_wallpaper_effects(&wallpaper, &self.layers)
+                || ((size.0 > 16384 || size.1 > 16384)
+                    && crate::editor::export::composites_primary_backdrop(
+                        &wallpaper,
+                        &self.layers,
+                    )))
+            .then_some(stage_background),
+            (rounded_preview
+                || wallpaper.inset > 0.0
+                || crate::editor::export::composites_primary_backdrop(&wallpaper, &self.layers)
                 || (!self.layers.is_empty() && wallpaper.supports_edge_preview(true))
                 || (!self.layers.is_empty()
                     && crate::render::window_frame::theme(&wallpaper.window_frame.style)
@@ -877,13 +1032,13 @@ impl EditorWindow {
         let task = cx.background_executor().spawn(async move {
             background.timer(std::time::Duration::from_millis(16)).await;
             let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
-                base_image.as_ref().and_then(|base| {
-                    let base = base.to_rgba8();
-                    let pixmap = crate::editor::export::from_rgba(&base)?;
-                    crate::render::color_detection::dominant_inset_color(
-                        pixmap.as_ref(),
-                        balance_crop,
-                    )
+                use crate::render::color_detection;
+                base_image.as_ref().and_then(|base| match base.as_rgba8() {
+                    Some(rgba) => color_detection::dominant_inset_color_rgba(rgba, balance_crop),
+                    None => {
+                        let pixmap = crate::editor::export::from_dynamic_image(base)?;
+                        color_detection::dominant_inset_color(pixmap.as_ref(), balance_crop)
+                    }
                 })
             } else {
                 inset_color
@@ -900,10 +1055,40 @@ impl EditorWindow {
                 frame_scale,
                 stage_background,
             );
-            (rendered, inset_color)
+            #[cfg(target_os = "macos")]
+            let (rendered, rounded_matte) = {
+                let mut rendered = rendered;
+                let matte = if rounded_preview {
+                    match (rendered.as_mut(), base_image.as_ref()) {
+                        (Some((backdrop, edges, false)), Some(base)) if !edges.is_empty() => {
+                            crate::editor::export::render_rounded_preview(
+                                base,
+                                &wallpaper,
+                                frame_scale,
+                            )
+                            .map(|composed| std::mem::replace(backdrop, composed))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                (rendered, matte)
+            };
+            #[cfg(not(target_os = "macos"))]
+            let rounded_matte = None;
+            #[cfg(target_os = "macos")]
+            let backdrop_tiles = rendered
+                .as_ref()
+                .filter(|(_, _, composite)| !composite)
+                .map(|(backdrop, _, _)| crate::editor::image_tiles::create(backdrop))
+                .unwrap_or_default();
+            #[cfg(not(target_os = "macos"))]
+            let backdrop_tiles = Vec::new();
+            (rendered, inset_color, backdrop_tiles, rounded_matte)
         });
         self.backdrop_task = Some(cx.spawn(async move |entity, cx| {
-            let (rendered, inset_color) = task.await;
+            let (rendered, inset_color, backdrop_tiles, rounded_matte) = task.await;
             let _ = entity.update(cx, |editor, cx| {
                 if editor.backdrop_generation != generation {
                     return;
@@ -914,6 +1099,8 @@ impl EditorWindow {
                 editor.retire_backdrop();
                 editor.backdrop = backdrop;
                 editor.backdrop_composite = composite;
+                editor.rounded_matte = rounded_matte;
+                editor.backdrop_tiles = backdrop_tiles;
                 editor.preview_edges = preview_edges;
                 editor.inset_color = inset_color;
                 editor.backdrop_task = None;
@@ -932,6 +1119,8 @@ impl EditorWindow {
             snap.frame_scale = self.native_scale;
             snap.backdrop = self.backdrop.clone();
             snap.backdrop_composite = self.backdrop_composite;
+            snap.rounded_matte = self.rounded_matte.clone();
+            snap.backdrop_tiles = self.backdrop_tiles.clone();
             snap.preview_edges = self.preview_edges.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
@@ -946,6 +1135,7 @@ impl EditorWindow {
             snap.layers = self.layers.clone();
             snap.spacing = wallpaper.spacing;
             snap.image = self.image.clone();
+            snap.image_tiles = self.image_tiles.clone();
             snap.image_width = self.image_width;
             snap.image_height = self.image_height;
             snap.zoom = self.zoom;
@@ -965,28 +1155,26 @@ impl EditorWindow {
         let Some(state) = self.editor_state_value() else {
             return;
         };
-        if self.persisted_editor_state.borrow().as_ref() == Some(&state) {
-            self.pending_editor_state = None;
-            self.editor_state_write_task.take();
+        if self.requested_editor_state.as_deref() == Some(&state) {
             return;
         }
 
-        if self.pending_editor_state.as_ref() == Some(&state)
-            && self
-                .editor_state_write_task
-                .as_ref()
-                .is_some_and(|task| !task.is_ready())
-        {
-            return;
-        }
-
-        self.editor_state_write_task.take();
-        self.pending_editor_state = Some(state);
+        let state = Arc::new(state);
+        self.requested_editor_state = Some(state.clone());
+        let writer = self.editor_state_writer.clone();
+        let revision = writer.next_revision();
+        let path = std::path::PathBuf::from(&self.file_path);
         self.editor_state_write_task = Some(cx.spawn(async move |editor, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(500))
                 .await;
-            let _ = editor.update(cx, |editor, _| editor.flush_pending_editor_state());
+            let written = cx
+                .background_executor()
+                .spawn(async move { writer.write(&path, state, revision) })
+                .await;
+            if !written {
+                let _ = editor.update(cx, |editor, _| editor.requested_editor_state = None);
+            }
         }));
     }
 
@@ -1026,31 +1214,32 @@ impl EditorWindow {
         .ok()
     }
 
-    fn flush_pending_editor_state(&mut self) {
-        let Some(state) = self.pending_editor_state.take() else {
-            return;
-        };
-        self.write_editor_state(state);
-    }
-
-    fn write_editor_state(&mut self, state: serde_json::Value) {
-        if crate::history_store::update_editor_state_by_path(
-            std::path::Path::new(&self.file_path),
-            state.clone(),
-        ) {
-            *self.persisted_editor_state.borrow_mut() = Some(state);
-        }
-    }
-
     fn force_persist_editor_state(&mut self) {
         self.editor_state_write_task.take();
-        self.pending_editor_state = None;
         let Some(state) = self.editor_state_value() else {
             return;
         };
-        if self.persisted_editor_state.borrow().as_ref() != Some(&state) {
-            self.write_editor_state(state);
-        }
+        let revision = self.editor_state_writer.next_revision();
+        self.editor_state_writer
+            .write(Path::new(&self.file_path), Arc::new(state), revision);
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn add_annotation_for_parity(&mut self, cx: &mut Context<Self>) {
+        let mut annotations = self.history.current().to_vec();
+        annotations.push(Annotation::Rectangle {
+            id: self.annotation_id(),
+            x: 24.,
+            y: 24.,
+            width: 80.,
+            height: 60.,
+            stroke: "#ff0000".into(),
+            stroke_width: 3.,
+            fill: None,
+        });
+        self.push_annotations(annotations, cx);
+        self.sync_snapshot(cx);
+        cx.notify();
     }
 
     fn annotation_id(&mut self) -> String {
@@ -1862,7 +2051,7 @@ impl EditorWindow {
             self.image_height = cropped.height() as f32;
 
             let base = image::DynamicImage::ImageRgba8(cropped);
-            self.image = Some(render_image_from_base(&base));
+            self.replace_image(render_image_from_base(&base));
             self.base_image = Some(Arc::new(base));
             self.inset_color = None;
             self.balance_crop = None;
@@ -2162,6 +2351,9 @@ fn render_redact_patch(
 ) -> Option<crate::editor::canvas::RedactPatch> {
     let (x, y, width, height) = rect;
     let (x, y, width, height) = crate::editor::annotations::normalize_rect(x, y, width, height);
+    if width <= 0. || height <= 0. {
+        return None;
+    }
     let left = x.floor();
     let top = y.floor();
     let x0 = left.max(0.0) as u32;
@@ -2169,17 +2361,20 @@ fn render_redact_patch(
     if x0 >= base.width() || y0 >= base.height() {
         return None;
     }
-    let w = (width.ceil() - (f64::from(x0) - left))
+    let w = ((x + width).ceil() - f64::from(x0))
         .max(0.0)
         .min(f64::from(base.width() - x0)) as u32;
-    let h = (height.ceil() - (f64::from(y0) - top))
+    let h = ((y + height).ceil() - f64::from(y0))
         .max(0.0)
         .min(f64::from(base.height() - y0)) as u32;
     if w == 0 || h == 0 {
         return None;
     }
 
-    let mut patch = image::imageops::crop_imm(&base.to_rgba8(), x0, y0, w, h).to_image();
+    let mut patch = match base.as_rgba8() {
+        Some(rgba) => image::imageops::crop_imm(rgba, x0, y0, w, h).to_image(),
+        None => image::imageops::crop_imm(&base.to_rgba8(), x0, y0, w, h).to_image(),
+    };
     crate::editor::export::redact_region(
         &mut patch,
         (0, 0, w as i64, h as i64),
@@ -2758,6 +2953,8 @@ impl Render for EditorWindow {
                 can_undo: self.history.can_undo(),
                 can_redo: self.history.can_redo(),
                 is_copied: self.is_copied,
+                is_copying: self.copy_pending,
+                is_pinning: self.pin_pending,
                 is_uploading: self.cloud_upload == crate::cloud::UploadState::Uploading,
                 is_upload_done: self.cloud_upload == crate::cloud::UploadState::Success,
                 is_capture_mode: self.capture_mode,
@@ -3008,6 +3205,7 @@ impl Render for EditorWindow {
 impl Drop for EditorWindow {
     fn drop(&mut self) {
         self.force_persist_editor_state();
+        crate::system::memory::reclaim_idle_memory();
     }
 }
 
@@ -3042,26 +3240,6 @@ fn build_handlers(weak: &gpui::WeakEntity<EditorWindow>) -> EditorHandlers {
             let Some(entity) = action_entity.upgrade() else {
                 return;
             };
-            if action == EditorAction::Pin {
-                let editor = entity.read(cx);
-                let png = editor.export_png().ok();
-                let file_path = editor.file_path.clone();
-                if let Some(bytes) = png {
-                    let restore_state = PersistedEditorState {
-                        annotations: editor.history.current().to_vec(),
-                        wallpaper: editor.wallpaper.clone(),
-                        layers: editor.layers.clone(),
-                    };
-                    crate::windows::pin::PinWindow::open_for_editor(
-                        cx,
-                        bytes,
-                        file_path,
-                        restore_state,
-                    );
-                    window.remove_window();
-                }
-                return;
-            }
             entity.update(cx, |editor, cx| {
                 editor.apply_action(action, window, cx);
                 cx.notify();
@@ -3548,7 +3726,7 @@ impl EditorWindow {
                     );
                     draft.draft_type = BackgroundDraftType::Image;
                     draft.image_url = Some(data.image_url.clone());
-                    draft.preview = draft_preview_image(&data.image_url)
+                    draft.preview = crate::render::images::load_source(&data.image_url)
                         .map(|image| render_image_from_base(&image));
                     self.background_editor = Some(draft);
                     return;
@@ -3583,7 +3761,8 @@ impl EditorWindow {
                 let path = path.clone();
                 cx.background_executor()
                     .spawn(async move {
-                        draft_preview_image(&path).map(|image| render_image_from_base(&image))
+                        crate::render::images::load_source(&path)
+                            .map(|image| render_image_from_base(&image))
                     })
                     .await
             } else {
@@ -3772,7 +3951,7 @@ impl EditorWindow {
             EditorAction::Save => self.save_as(window, cx),
             EditorAction::CloudUpload => self.upload_to_cloud(cx),
             EditorAction::CaptureToggle => self.toggle_capture_mode(cx),
-            EditorAction::Pin => {}
+            EditorAction::Pin => self.pin_screenshot(window, cx),
         }
     }
 
@@ -3824,7 +4003,7 @@ impl EditorWindow {
         if let Some(pre) = self.pre_crop.take() {
             self.image_width = pre.width;
             self.image_height = pre.height;
-            self.image = Some(render_image_from_base(&pre.base_image));
+            self.replace_image(render_image_from_base(&pre.base_image));
             self.base_image = Some(pre.base_image);
             self.inset_color = None;
             self.balance_crop = None;
@@ -3886,34 +4065,14 @@ impl EditorWindow {
         self.history.push(annotations);
     }
 }
-fn load_image(
-    path: &str,
-) -> anyhow::Result<(
-    Option<Arc<gpui::RenderImage>>,
-    Option<image::DynamicImage>,
-    f32,
-    f32,
-)> {
-    let bytes = std::fs::read(path)?;
-    let decoded = image::load_from_memory(&bytes)?;
-    let (width, height) = (decoded.width() as f32, decoded.height() as f32);
-
-    let base = image::DynamicImage::ImageRgba8(decoded.to_rgba8());
-    let render_image = render_image_from_base(&base);
-
-    Ok((Some(render_image), Some(base), width, height))
-}
-
-fn draft_preview_image(source: &str) -> Option<image::DynamicImage> {
-    if let Some(encoded) = source.split_once("base64,").map(|(_, tail)| tail) {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded.trim())
-            .ok()?;
-        image::load_from_memory(&bytes).ok()
-    } else {
-        let bytes = std::fs::read(source).ok()?;
-        image::load_from_memory(&bytes).ok()
+#[cfg(any(test, feature = "parity"))]
+fn load_editor_image(path: &str) -> Option<PreparedScreenshot> {
+    match PreparedScreenshot::open(path) {
+        Ok(image) => Some(image),
+        Err(error) => {
+            eprintln!("[editor] failed to load {path}: {error}");
+            None
+        }
     }
 }
 
@@ -3928,9 +4087,95 @@ fn render_image_from_base(base: &image::DynamicImage) -> Arc<gpui::RenderImage> 
     ]))
 }
 
+#[derive(Default)]
+struct EditorCopyGeneration(u64);
+
+impl gpui::Global for EditorCopyGeneration {}
+
+struct ScreenshotComposition {
+    base_image: Option<Arc<image::DynamicImage>>,
+    width: u32,
+    height: u32,
+    annotations: Vec<Annotation>,
+    wallpaper: crate::editor::wallpaper::WallpaperSettings,
+    layers: Vec<crate::editor::layers::ImageLayer>,
+    scale: f64,
+}
+
+impl ScreenshotComposition {
+    fn render(self) -> image::RgbaImage {
+        crate::editor::export::compose_with_layers(
+            self.base_image.as_deref(),
+            self.width,
+            self.height,
+            &self.annotations,
+            &self.wallpaper.for_scale(self.scale),
+            &self.layers,
+            self.scale,
+        )
+    }
+
+    fn encode(self, jpeg: bool) -> anyhow::Result<Vec<u8>> {
+        if !jpeg {
+            return match self.opaque_png_source() {
+                Some(source) => crate::render::images::encode_srgb_png(source),
+                None => crate::render::images::encode_srgb_png(&self.render()),
+            };
+        }
+        let image = self.render();
+        let image = image::DynamicImage::ImageRgba8(image).into_rgb8();
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92).encode_image(&image)?;
+        Ok(bytes)
+    }
+
+    fn opaque_png_source(&self) -> Option<&image::RgbaImage> {
+        if !self.annotations.is_empty()
+            || !self.layers.is_empty()
+            || self.wallpaper.is_active(false)
+            || self.wallpaper.for_scale(self.scale).is_active(false)
+        {
+            return None;
+        }
+        let image = self.base_image.as_deref()?.as_rgba8()?;
+        if image.width() == 0 || image.height() == 0 {
+            return None;
+        }
+        image
+            .as_raw()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255)
+            .then_some(image)
+    }
+
+    fn write(self, path: &Path, jpeg: bool) -> anyhow::Result<Option<String>> {
+        let bytes = self.encode(jpeg)?;
+        #[cfg(windows)]
+        let warning = crate::editor::screenshot_save::write(path, &bytes)?;
+        #[cfg(unix)]
+        let warning = crate::editor::screenshot_save_unix::write(path, &bytes)?;
+        Ok(warning)
+    }
+}
+
 impl EditorWindow {
+    fn composition(&self) -> ScreenshotComposition {
+        ScreenshotComposition {
+            base_image: self.base_image.clone(),
+            width: self.image_width as u32,
+            height: self.image_height as u32,
+            annotations: self.history.current().to_vec(),
+            wallpaper: self.wallpaper.clone(),
+            layers: self.layers.clone(),
+            scale: self.native_scale,
+        }
+    }
+
     /// Renders the current composition (base + annotations) to PNG bytes at
     /// natural size.
+    #[cfg(any(test, feature = "parity"))]
     pub fn export_png(&self) -> anyhow::Result<Vec<u8>> {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
         let canvas = crate::editor::export::compose_with_layers(
@@ -3942,40 +4187,112 @@ impl EditorWindow {
             &self.layers,
             self.native_scale,
         );
-        crate::editor::export::encode_png(&canvas)
+        crate::render::images::encode_srgb_png(&canvas)
+    }
+
+    fn pin_screenshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::windows::pin::PinWindow;
+
+        if self.pin_pending {
+            return;
+        }
+
+        self.pin_pending = true;
+        let composition = self.composition();
+        let handle = window.window_handle();
+        cx.spawn(async move |editor, cx| {
+            let image = cx
+                .background_executor()
+                .spawn(async move { PinWindow::prepare_image(composition.render()) })
+                .await;
+            let Ok((path, state)) = editor.update(cx, |editor, cx| {
+                editor.pin_pending = false;
+                cx.notify();
+                (
+                    editor.file_path.clone(),
+                    PersistedEditorState {
+                        annotations: editor.history.current().to_vec(),
+                        wallpaper: editor.wallpaper.clone(),
+                        layers: editor.layers.clone(),
+                    },
+                )
+            }) else {
+                return;
+            };
+            cx.update(|cx| {
+                if PinWindow::open_for_editor(cx, image, path, state) {
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                } else {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Pin failed",
+                        "Could not open the pinned screenshot",
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.export_png() {
-            Ok(png) => {
-                crate::system::clipboard::ClipboardService::write_png(cx, png);
-                self.is_copied = true;
-                if crate::state::state(cx)
-                    .config
-                    .get()
-                    .screenshot
-                    .close_on_copy
-                {
-                    window.remove_window();
-                    return;
-                }
-                cx.notify();
-                let entity = cx.entity().downgrade();
-                cx.spawn(async move |_entity, cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(2))
-                        .await;
-                    if let Some(entity) = entity.upgrade() {
-                        entity.update(cx, |editor, cx| {
-                            editor.is_copied = false;
-                            cx.notify();
-                        });
-                    }
-                })
-                .detach();
-            }
-            Err(error) => eprintln!("[editor] copy failed: {error}"),
+        if self.copy_pending {
+            return;
         }
+
+        let generation = cx.default_global::<EditorCopyGeneration>();
+        generation.0 = generation.0.wrapping_add(1);
+        let generation = generation.0;
+        let composition = self.composition();
+        let close_on_copy = crate::state::state(cx)
+            .config
+            .get()
+            .screenshot
+            .close_on_copy;
+        let handle = window.window_handle();
+        self.copy_pending = true;
+        self.is_copied = false;
+        cx.notify();
+
+        self.copy_task = Some(cx.spawn(async move |editor, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { composition.encode(false) })
+                .await;
+            let Ok(copied) = editor.update(cx, |editor, cx| {
+                editor.copy_pending = false;
+                cx.notify();
+                if cx.global::<EditorCopyGeneration>().0 != generation {
+                    return false;
+                }
+                match result {
+                    Ok(png) => {
+                        crate::system::clipboard::ClipboardService::write_png(cx, png);
+                        editor.is_copied = true;
+                        true
+                    }
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(cx, "Copy failed", error.to_string());
+                        false
+                    }
+                }
+            }) else {
+                return;
+            };
+            if !copied {
+                return;
+            }
+            if close_on_copy {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                return;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let _ = editor.update(cx, |editor, cx| {
+                editor.is_copied = false;
+                cx.notify();
+            });
+        }));
     }
 
     /// Uploads the composed image to the user's own provider and copies the
@@ -3991,15 +4308,8 @@ impl EditorWindow {
             crate::intents::open_settings(crate::windows::settings::registry::Category::Cloud, cx);
             return;
         }
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                eprintln!("[cloud] export failed: {error}");
-                return;
-            }
-        };
+        let composition = self.composition();
         let name = crate::editor::filename::generate_screenshot_export_name("png");
-        let path = std::env::temp_dir().join(&name);
 
         self.cloud_upload = UploadState::Uploading;
         cx.notify();
@@ -4008,10 +4318,8 @@ impl EditorWindow {
             let uploaded = cx
                 .background_executor()
                 .spawn(async move {
-                    std::fs::write(&path, png)?;
-                    let url = crate::cloud::upload(&config, &path);
-                    let _ = std::fs::remove_file(&path);
-                    url
+                    let png = composition.encode(false)?;
+                    crate::cloud::upload_bytes(&config, Path::new(&name), png)
                 })
                 .await;
 
@@ -4043,8 +4351,10 @@ impl EditorWindow {
                 .timer(std::time::Duration::from_secs(2))
                 .await;
             let _ = entity.update(cx, |editor, cx| {
-                editor.cloud_upload = UploadState::Idle;
-                cx.notify();
+                if editor.cloud_upload == state {
+                    editor.cloud_upload = UploadState::Idle;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -4062,19 +4372,16 @@ impl EditorWindow {
             );
             return;
         }
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                eprintln!("[print] export failed: {error}");
-                return;
-            }
-        };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let composition = self.composition();
         let daemon = crate::state::state(cx).daemon;
-        let background = cx.background_executor().clone();
         cx.spawn(async move |_, cx| {
-            let result = background
-                .spawn(async move { daemon.print().image(encoded) })
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let png = composition.encode(false)?;
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+                    daemon.print().image(encoded)
+                })
                 .await;
             if let Err(error) = result {
                 cx.update(|cx| {
@@ -4158,40 +4465,31 @@ impl EditorWindow {
         }
     }
 
+    #[cfg(all(not(test), target_os = "macos", feature = "parity"))]
+    pub(crate) fn parity_save_pending(&self) -> bool {
+        self.save_dialog_open
+    }
+
+    #[cfg(all(not(test), target_os = "macos", feature = "parity"))]
+    pub(crate) fn parity_save_to(
+        &self,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> gpui::Task<anyhow::Result<Option<String>>> {
+        let composition = self.composition();
+        cx.background_executor()
+            .spawn(async move { composition.write(&path, false) })
+    }
+
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.save_dialog_open {
             return;
         }
 
-        let png = match self.export_png() {
-            Ok(png) => png,
-            Err(error) => {
-                report_screenshot_save_failure(cx, None, &error);
-                return;
-            }
-        };
-
+        let composition = self.composition();
         let settings = crate::state::state(cx).config.get();
         let jpeg = settings.screenshot.format == "jpeg";
         let extension = if jpeg { "jpg" } else { "png" };
-        let bytes = if jpeg {
-            let decoded = match image::load_from_memory(&png) {
-                Ok(image) => image.to_rgb8(),
-                Err(error) => {
-                    report_screenshot_save_failure(cx, None, &error);
-                    return;
-                }
-            };
-            let mut bytes = Vec::new();
-            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 92);
-            if let Err(error) = encoder.encode_image(&decoded) {
-                report_screenshot_save_failure(cx, None, &error);
-                return;
-            }
-            bytes
-        } else {
-            png
-        };
         let default_name = crate::editor::filename::generate_screenshot_export_name(extension);
         let saved_directory = std::path::PathBuf::from(&settings.save_locations.screenshot);
         let directory = if saved_directory.is_dir() {
@@ -4220,12 +4518,9 @@ impl EditorWindow {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    #[cfg(windows)]
-                    let cleanup_warning = crate::editor::screenshot_save::write(&path, &bytes)?;
-                    #[cfg(unix)]
-                    let cleanup_warning =
-                        crate::editor::screenshot_save_unix::write(&path, &bytes)?;
-                    Ok::<_, std::io::Error>((path, cleanup_warning))
+                    composition
+                        .write(&path, jpeg)
+                        .map(|warning| (path, warning))
                 })
                 .await;
 
@@ -4249,10 +4544,7 @@ impl EditorWindow {
                     }
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    cx.update(|cx| {
-                        report_screenshot_save_failure(cx, Some(&failure_path), &message)
-                    });
+                    cx.update(|cx| report_screenshot_save_failure(cx, &failure_path, &error));
                     let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
                 }
             }
@@ -4266,15 +4558,282 @@ mod tests {
     use super::*;
     use herogpui::test::TestWindowExt;
 
+    #[test]
+    fn opaque_png_save_can_use_the_source_and_matches_the_composition() {
+        for alpha in [255, 128] {
+            let source = image::RgbaImage::from_fn(33, 25, |x, y| {
+                image::Rgba([x as u8 * 7, y as u8 * 9, 140, alpha])
+            });
+            let snapshot = || ScreenshotComposition {
+                base_image: Some(Arc::new(image::DynamicImage::ImageRgba8(source.clone()))),
+                width: 33,
+                height: 25,
+                annotations: Vec::new(),
+                wallpaper: Default::default(),
+                layers: Vec::new(),
+                scale: 2.0,
+            };
+            assert_eq!(snapshot().opaque_png_source().is_some(), alpha == 255);
+            let composed = crate::render::images::encode_srgb_png(&snapshot().render()).unwrap();
+            assert_eq!(snapshot().encode(false).unwrap(), composed);
+
+            let mut framed = snapshot();
+            framed.wallpaper.padding = 5.0;
+            assert!(framed.opaque_png_source().is_none());
+        }
+    }
+
+    #[test]
+    fn jpeg_save_matches_the_png_based_encoding() {
+        let base = Arc::new(image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(
+            32,
+            24,
+            |x, y| image::Rgba([x as u8 * 8, y as u8 * 10, 140, (x + y) as u8 * 4]),
+        )));
+        let snapshot = || ScreenshotComposition {
+            base_image: Some(base.clone()),
+            width: 32,
+            height: 24,
+            annotations: Vec::new(),
+            wallpaper: Default::default(),
+            layers: Vec::new(),
+            scale: 1.0,
+        };
+        let png = snapshot().encode(false).unwrap();
+        let rgb = image::load_from_memory(&png).unwrap().into_rgb8();
+        let mut expected = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut expected, 92)
+            .encode_image(&rgb)
+            .unwrap();
+        assert_eq!(snapshot().encode(true).unwrap(), expected);
+    }
+
+    #[test]
+    fn blackout_patch_covers_fractional_extents_and_clips_to_image() {
+        let source = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            32,
+            24,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        for (rect, expected) in [
+            ((8.8, 3.8, 12.3, 12.3), (8., 3., 14., 14.)),
+            ((21.1, 16.1, -12.3, -12.3), (8., 3., 14., 14.)),
+            ((-2.5, 3.8, 12.3, 12.3), (0., 3., 10., 14.)),
+            ((28.8, 20.8, 12.3, 12.3), (28., 20., 4., 4.)),
+        ] {
+            let patch = render_redact_patch(&source, rect, "blackout", 5., 1.).unwrap();
+            assert_eq!((patch.x, patch.y, patch.width, patch.height), expected);
+            assert!(patch
+                .image
+                .as_bytes(0)
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255]));
+        }
+        assert!(render_redact_patch(&source, (8.8, 3.8, 0., 4.), "blackout", 5., 1.).is_none());
+        assert!(render_redact_patch(&source, (8.8, 3.8, 4., 0.), "blackout", 5., 1.).is_none());
+    }
+
     #[cfg(windows)]
     #[herogpui::test]
     fn screenshot_save_failure_is_visible_to_the_user(cx: &mut gpui::TestAppContext) {
         let notifications = crate::system::notification::capture_for_test();
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected failure");
         cx.update(|cx| {
-            report_screenshot_save_failure(cx, Some(Path::new("capture.png")), &error);
+            report_screenshot_save_failure(cx, Path::new("capture.png"), &error);
         });
         assert_eq!(&*notifications.borrow(), &["Screenshot Save Failed"]);
+    }
+
+    #[herogpui::test]
+    fn oversized_tiles_follow_edits_and_backdrop_retirement(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("long.png");
+        image::RgbaImage::from_pixel(17_000, 4, image::Rgba([220, 40, 60, 128]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let old: Vec<_> = editor
+                    .image_tiles
+                    .iter()
+                    .map(|tile| tile.image.id)
+                    .collect();
+                assert_eq!(old.len(), 3);
+                editor.crop = Some((100., 0., 5_000., 4.));
+                editor.apply_crop(cx);
+                assert!(editor.image_tiles.is_empty());
+                assert!(old.iter().all(|id| editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == *id)));
+                assert_eq!(editor.image_width, 5_000.);
+                editor.undo(cx);
+                assert_eq!(editor.image_width, 17_000.);
+                assert_eq!(editor.image_tiles.len(), 3);
+                assert!(editor
+                    .image_tiles
+                    .iter()
+                    .all(|tile| !old.contains(&tile.image.id)));
+                assert_eq!(
+                    editor
+                        .base_image
+                        .as_ref()
+                        .unwrap()
+                        .to_rgba8()
+                        .get_pixel(0, 0)
+                        .0,
+                    [220, 40, 60, 128]
+                );
+                editor.backdrop_tiles =
+                    crate::editor::image_tiles::create(editor.image.as_ref().unwrap());
+                let backdrop_ids: Vec<_> = editor
+                    .backdrop_tiles
+                    .iter()
+                    .map(|tile| tile.image.id)
+                    .collect();
+                assert_eq!(backdrop_ids.len(), 3);
+                let matte = Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                    image::Frame::new(image::RgbaImage::new(1, 1))
+                ]));
+                let matte_id = matte.id;
+                editor.rounded_matte = Some(matte);
+                editor.retire_backdrop();
+                assert!(editor.backdrop_tiles.is_empty());
+                assert!(editor.rounded_matte.is_none());
+                assert!(editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == matte_id));
+                assert!(backdrop_ids.iter().all(|id| editor
+                    .retired_preview_edges
+                    .iter()
+                    .any(|image| image.id == *id)));
+            });
+        });
+    }
+
+    #[herogpui::test]
+    fn simple_backdrop_refreshes_when_source_changes_at_same_size(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 20.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        let original = cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop_composite);
+            editor.backdrop.as_ref().unwrap().id
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    8,
+                    8,
+                    image::Rgba([64, 80, 240, 255]),
+                ));
+                editor.image = Some(render_image_from_base(&base));
+                editor.base_image = Some(Arc::new(base));
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop_composite);
+            assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn oversized_rounded_backdrop_refreshes_when_source_changes(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(17_000, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 20.;
+                editor.wallpaper.corners = 4.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        let original = cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.rounded_matte.is_some());
+            editor.backdrop.as_ref().unwrap().id
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                let base = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    17_000,
+                    8,
+                    image::Rgba([64, 80, 240, 255]),
+                ));
+                editor.replace_image(render_image_from_base(&base));
+                editor.base_image = Some(Arc::new(base));
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.rounded_matte.is_some());
+            assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
+        });
     }
 
     #[herogpui::test]
@@ -4456,6 +5015,164 @@ mod tests {
                 Some(source_path.as_str())
             );
         });
+    }
+
+    #[herogpui::test]
+    fn editor_copy_publishes_the_requested_composition(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([72, 104, 224, 255]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_str().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config.clone()));
+
+        for close_on_copy in [false, true] {
+            config.update(|config| config.screenshot.close_on_copy = close_on_copy);
+            let (handle, expected) = cx.update(|cx| {
+                use crate::system::clipboard::ClipboardService;
+                ClipboardService::write_text(cx, String::new());
+                assert!(crate::open_editor_with_state(
+                    cx,
+                    path,
+                    Some(Default::default())
+                ));
+                let handle = cx
+                    .windows()
+                    .into_iter()
+                    .find_map(|handle| handle.downcast::<EditorWindow>())
+                    .unwrap();
+                let expected = handle
+                    .update(cx, |editor, window, cx| {
+                        editor.wallpaper.padding = 20.;
+                        let expected = editor.export_png().unwrap();
+                        editor.copy_to_clipboard(window, cx);
+                        assert!(editor.copy_pending);
+                        assert!(ClipboardService::read_image(cx).is_none());
+                        editor.wallpaper.padding = 40.;
+                        expected
+                    })
+                    .unwrap();
+                (handle, expected)
+            });
+
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let copied = crate::system::clipboard::ClipboardService::read_image(cx).unwrap();
+                assert_eq!(copied.bytes, expected);
+                if close_on_copy {
+                    assert!(handle.update(cx, |_, _, _| ()).is_err());
+                } else {
+                    handle
+                        .update(cx, |editor, window, _| {
+                            assert!(!editor.copy_pending);
+                            assert!(editor.is_copied);
+                            window.remove_window();
+                        })
+                        .unwrap();
+                }
+            });
+        }
+    }
+
+    #[herogpui::test]
+    fn cloud_upload_sends_the_requested_composition(cx: &mut gpui::TestAppContext) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}/screenshot.png");
+        let response_url = url.clone();
+        let receiver = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = BufReader::new(stream);
+            let mut line = String::new();
+            request.read_line(&mut line).unwrap();
+            assert!(line.starts_with("POST /upload "));
+            let mut length = None;
+            loop {
+                line.clear();
+                assert!(request.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("Content-Length") {
+                        length = Some(value.trim().parse().unwrap());
+                    }
+                }
+            }
+            let mut payload = vec![0; length.unwrap()];
+            request.read_exact(&mut payload).unwrap();
+            write!(
+                request.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_url}",
+                response_url.len(),
+            )
+            .unwrap();
+            payload
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(160, 100, image::Rgba([72, 104, 224, 255]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_str().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|config| {
+            config.cloud.enabled = true;
+            config.cloud.active_provider = "rest".into();
+            config.cloud.rest.url = format!("http://{address}/upload");
+            config.cloud.rest.response_is_plain_text = true;
+        });
+        let (handle, expected) = cx.update(|cx| {
+            crate::state::set_test_state(cx, config);
+            assert!(crate::open_editor_with_state(
+                cx,
+                path,
+                Some(Default::default())
+            ));
+            let handle = cx
+                .windows()
+                .into_iter()
+                .find_map(|handle| handle.downcast::<EditorWindow>())
+                .unwrap();
+            let expected = handle
+                .update(cx, |editor, _, cx| {
+                    editor.wallpaper.padding = 20.;
+                    let expected = editor.export_png().unwrap();
+                    editor.upload_to_cloud(cx);
+                    assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Uploading);
+                    editor.wallpaper.padding = 40.;
+                    expected
+                })
+                .unwrap();
+            (handle, expected)
+        });
+        cx.run_until_parked();
+        handle
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.cloud_upload, crate::cloud::UploadState::Success);
+            })
+            .unwrap();
+        cx.update(|cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(url.as_str())
+            );
+        });
+        let payload = receiver.join().unwrap();
+        assert!(payload.windows(expected.len()).any(|part| part == expected));
     }
 
     #[herogpui::test]

@@ -156,9 +156,7 @@ export function createProjectFolder(projectPath: string): string {
     throw new Error(`Project path must end with ${PROJECT_EXTENSION}`);
   }
 
-  if (!existsSync(projectPath)) {
-    mkdirSync(projectPath, { recursive: true });
-  }
+  mkdirSync(projectPath);
 
   return path.join(projectPath, PROJECT_FILES.RECORDING);
 }

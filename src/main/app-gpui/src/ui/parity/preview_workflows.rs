@@ -53,8 +53,131 @@ impl Render for MultiDisplayPreview {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn assert_rounded_card_corners(
+    image: &image::RgbaImage,
+    card: gpui::Bounds<gpui::Pixels>,
+    scale: f32,
+) {
+    let backdrop = *image.get_pixel(0, 0);
+    let left = (f32::from(card.left()) * scale).round() as u32;
+    let top = (f32::from(card.top()) * scale).round() as u32;
+    let right = ((f32::from(card.right()) * scale).round() as u32).saturating_sub(1);
+    let bottom = ((f32::from(card.bottom()) * scale).round() as u32).saturating_sub(1);
+    for (corner, x, y) in [
+        ("top-left", left, top),
+        ("top-right", right, top),
+        ("bottom-left", left, bottom),
+        ("bottom-right", right, bottom),
+    ] {
+        let pixel = *image.get_pixel(x, y);
+        assert_eq!(
+            pixel, backdrop,
+            "preview {corner} outer corner ({x}, {y}) must match backdrop {backdrop:?}: {pixel:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn video_thumbnail_edge_energy(image: &image::RgbaImage, scale: f32) -> f64 {
+    let mut difference = 0u64;
+    let mut count = 0u64;
+    for y in 42..105 {
+        for x in 12..70 {
+            let pixel = image.get_pixel(
+                (x as f32 * scale).round() as u32,
+                (y as f32 * scale).round() as u32,
+            );
+            let next = image.get_pixel(
+                ((x + 1) as f32 * scale).round() as u32,
+                (y as f32 * scale).round() as u32,
+            );
+            for channel in 0..3 {
+                difference += u64::from(pixel[channel].abs_diff(next[channel]));
+                count += 1;
+            }
+        }
+    }
+    difference as f64 / count as f64
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn video_blur(cx: &mut HeadlessAppContext, output: &Path, video: &Path, scale: f32) {
+    assert!(video.is_file());
+    cx.update(|cx| {
+        crate::state::state(cx).config.update(|config| {
+            config.preview.corner = "bottom-right".into();
+            config.preview.auto_dismiss = false;
+        });
+        CapturePreviewWindow::open_video(cx, video.to_owned(), None);
+    });
+    let preview = cx
+        .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+        .unwrap();
+    cx.update_window(preview, |_, window, _| window.set_scale_factor(scale))
+        .unwrap();
+    settle(cx, preview);
+    cx.run_until_parked();
+    let view = cx
+        .update_window(preview, |view, _, _| {
+            view.downcast::<CapturePreviewWindow>().unwrap()
+        })
+        .unwrap();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((false, true, false)),
+        "idle video should decode without blur"
+    );
+    capture(cx, preview, output, "video-thumbnail-idle");
+    let idle = video_thumbnail_edge_energy(&cx.capture_screenshot(preview).unwrap(), scale);
+    let hovered = cx
+        .open_window(size(px(208.), px(148.)), |window, cx| {
+            window.set_scale_factor(scale);
+            cx.new(|_| HoveredPreview {
+                preview: view.clone(),
+            })
+        })
+        .unwrap()
+        .into();
+    settle(cx, hovered);
+    hover(cx, hovered, 45., 70.);
+    settle(cx, hovered);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((true, true, true)),
+        "hovered video should decode a blurred frame"
+    );
+    capture(cx, hovered, output, "video-thumbnail-hover");
+    let blurred = video_thumbnail_edge_energy(&cx.capture_screenshot(hovered).unwrap(), scale);
+    assert!(blurred < idle / 4., "hover {blurred}, idle {idle}");
+    hover(cx, hovered, 207., 147.);
+    settle(cx, hovered);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.video_thumbnail_status_for_parity()),
+        Some((false, true, false)),
+        "video blur should stop when controls close"
+    );
+    capture(cx, hovered, output, "video-thumbnail-exit");
+    let exited = video_thumbnail_edge_energy(&cx.capture_screenshot(hovered).unwrap(), scale);
+    assert!(exited > idle / 2., "exit {exited}, idle {idle}");
+    println!("video thumbnail edge energy: idle={idle:.3}, hover={blurred:.3}, exit={exited:.3}");
+    cx.update_window(hovered, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|cx| registry::close(WindowKind::CapturePreview, cx));
+}
+
 pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, scale: f32) {
     let native_tooltips = cfg!(any(windows, target_os = "macos"));
+    let single_window_size = size(
+        px(208.),
+        px(if cfg!(target_os = "macos") {
+            148.
+        } else {
+            604.
+        }),
+    );
     let config = cx.update(|cx| crate::state::state(cx).config.get().preview);
     let wallpaper = cx.update(|cx| crate::state::state(cx).config.get().wallpaper);
     let history: Vec<_> = crate::history_store::load_history()
@@ -100,14 +223,18 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         assert_eq!(single.left(), px(4.));
         assert_eq!(
             single.top(),
-            px(if corner.starts_with("bottom") {
-                460.
-            } else {
-                4.
-            })
+            px(
+                if corner.starts_with("bottom") && !cfg!(target_os = "macos") {
+                    460.
+                } else {
+                    4.
+                }
+            )
         );
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-single"));
+            #[cfg(target_os = "macos")]
+            assert_rounded_card_corners(&cx.capture_screenshot(preview).unwrap(), single, scale);
         }
         {
             let view = cx
@@ -116,7 +243,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 })
                 .unwrap();
             let hovered = cx
-                .open_window(size(px(208.), px(604.)), |window, cx| {
+                .open_window(single_window_size, |window, cx| {
                     window.set_scale_factor(scale);
                     cx.new(|_| HoveredPreview {
                         preview: view.clone(),
@@ -146,6 +273,12 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                         hovered,
                         output,
                         &format!("preview-{corner}-hover-{name}"),
+                    );
+                    #[cfg(target_os = "macos")]
+                    assert_rounded_card_corners(
+                        &cx.capture_screenshot(hovered).unwrap(),
+                        single,
+                        scale,
                     );
                 }
                 if native_tooltips {
@@ -231,7 +364,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
                 })
                 .unwrap();
             let hovered = cx
-                .open_window(size(px(208.), px(604.)), |window, cx| {
+                .open_window(single_window_size, |window, cx| {
                     window.set_scale_factor(scale);
                     cx.new(|_| MultiDisplayPreview { preview: view })
                 })
@@ -393,6 +526,10 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         for path in &paths[1..] {
             cx.update(|cx| CapturePreviewWindow::open(cx, path.clone()));
             settle(cx, preview);
+            cx.update_window(preview, |_, window, _| {
+                assert_eq!(window.scale_factor(), scale);
+            })
+            .unwrap();
         }
         await_preview_thumbnails(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 4));
@@ -420,19 +557,72 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         if corner.ends_with("right") {
             capture(cx, preview, output, &format!("preview-{corner}-stack"));
         }
+        #[cfg(target_os = "macos")]
+        if corner == "bottom-right" {
+            let viewport = cx
+                .update_window(preview, |_, window, _| window.viewport_size())
+                .unwrap();
+            let resize = |cx: &mut HeadlessAppContext, height| {
+                cx.update_window(preview, |_, window, cx| {
+                    window.resize(size(viewport.width, height));
+                    window.bounds_changed(cx);
+                    window.set_scale_factor(scale);
+                })
+                .unwrap();
+                settle(cx, preview);
+            };
+            resize(cx, px(480.));
+            assert_eq!(measured("capture-previews", 0).bottom(), px(476.));
+            capture(cx, preview, output, "preview-short-work-area");
+
+            event(
+                cx,
+                preview,
+                PlatformInput::Scroll(gpui::ScrollEvent {
+                    position: point(px(100.), px(240.)),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), px(240.))),
+                    touch_phase: gpui::TouchPhase::Moved,
+                    ..Default::default()
+                }),
+            );
+            settle(cx, preview);
+            let newest = measured("capture-previews", 3);
+            assert_eq!(newest.origin, point(px(4.), px(4.)));
+            let center = newest.center();
+            let rendered = cx.capture_screenshot(preview).unwrap();
+            assert_eq!(
+                rendered
+                    .get_pixel(
+                        (f32::from(center.x) * scale).round() as u32,
+                        (f32::from(center.y) * scale).round() as u32,
+                    )
+                    .0,
+                colors[4]
+            );
+            capture(cx, preview, output, "preview-short-work-area-scrolled");
+            resize(cx, viewport.height);
+        }
         let before = cx.update(|cx| cx.windows());
         let position = measured("capture-previews", 3).center();
-        event(
-            cx,
-            preview,
-            PlatformInput::MouseDown(MouseDownEvent {
+        cx.update_window(preview, |_, window, cx| {
+            let press = MouseDownEvent {
                 position,
                 button: MouseButton::Left,
                 click_count: 2,
                 modifiers: Modifiers::none(),
                 first_mouse: false,
-            }),
-        );
+            };
+            window.dispatch_event(PlatformInput::MouseDown(press.clone()), cx);
+            window.dispatch_event(PlatformInput::MouseDown(press), cx);
+            assert!(
+                cx.windows()
+                    .iter()
+                    .all(|handle| before.contains(handle)
+                        || handle.downcast::<EditorWindow>().is_none()),
+                "preview clicks must return before decoding and opening the editor"
+            );
+        })
+        .unwrap();
         event(
             cx,
             preview,
@@ -446,12 +636,17 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         settle(cx, preview);
         GEOMETRY.with_borrow(|geometry| assert_eq!(geometry["capture-previews"].len(), 3));
         let editor = cx.update(|cx| {
-            cx.windows()
-                .into_iter()
-                .find(|handle| {
-                    !before.contains(handle) && handle.downcast::<EditorWindow>().is_some()
-                })
-                .expect("double-click must open the selected capture in the editor")
+            let mut opened = cx.windows().into_iter().filter(|handle| {
+                !before.contains(handle) && handle.downcast::<EditorWindow>().is_some()
+            });
+            let editor = opened
+                .next()
+                .expect("double-click must open the selected capture in the editor");
+            assert!(
+                opened.next().is_none(),
+                "repeated edit requests opened duplicate editors"
+            );
+            editor
         });
         let saved = cx
             .update_window(editor, |view, _, cx| {
@@ -505,7 +700,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             })
             .unwrap();
         let hovered = cx
-            .open_window(size(px(208.), px(604.)), |window, cx| {
+            .open_window(single_window_size, |window, cx| {
                 window.set_scale_factor(scale);
                 cx.new(|_| HoveredPreview {
                     preview: view.clone(),
@@ -598,7 +793,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         crate::state::state(cx)
             .config
             .update(|config| config.wallpaper = wallpaper);
-        CapturePreviewWindow::open_video(cx, scratch.join("preview-video.poratake"));
+        CapturePreviewWindow::open_video(cx, scratch.join("preview-video.poratake"), None);
     });
     let preview = cx
         .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
@@ -640,7 +835,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         "idle video fallback film icon must remain visible, found {visible_pixels} contrasting pixels"
     );
     let hovered = cx
-        .open_window(size(px(208.), px(604.)), |window, cx| {
+        .open_window(single_window_size, |window, cx| {
             window.set_scale_factor(scale);
             cx.new(|_| HoveredPreview {
                 preview: view.clone(),

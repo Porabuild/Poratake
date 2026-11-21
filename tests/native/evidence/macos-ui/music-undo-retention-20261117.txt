@@ -1,0 +1,30 @@
+Music removal and undo retention, macOS, 2026-11-17
+
+Before this change, an isolated GPUI editor removed a generated music track and
+immediately found that its file had been deleted. A renderer hook test also
+showed that Electron sent an unlink request as soon as a music group was
+removed, before Undo restored its metadata.
+
+Both editors now remove track references without immediately deleting the
+source. The GPUI temporary-project regression checks file contents through
+remove, Undo, Redo and a second Undo. A split music group is removed in one
+history step and both clips return on Undo. Reimporting a different generated
+WAV with the same original name now uses a distinct project filename, keeps
+the first file for Undo, and rebuilds preview audio from the new WAV. The
+Electron hook regression checks its real editor history through remove, Undo,
+Redo and Undo without an unlink request. The obsolete direct-delete IPC method
+was removed.
+
+Cargo music tests passed 17 with two ignored. The reimport/audio regression
+passed separately with PORATAKE_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg and
+--ignored. The two Electron test files passed 15 tests; TypeScript typecheck
+passed. These used temporary projects and generated data, not a physical audio
+device or the user's open editor.
+
+Safe collection of no-longer-reachable files is not implemented yet. Retained
+files can accumulate; cleanup must account for persisted state, undo/redo,
+concurrent editors and interrupted writes before any deletion is enabled.
+
+This was the undo-retention checkpoint before collection was implemented. The
+later cleanup implementation and verification are in
+music-retention-cleanup-20261117.txt.

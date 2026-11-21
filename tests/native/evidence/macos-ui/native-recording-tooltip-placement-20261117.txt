@@ -1,0 +1,36 @@
+macOS recording tooltip placement, 2026-11-17
+
+The user-provided [before image](native-recording-tooltip-before-owner-frame-20261117.png)
+shows the protected tooltip positioned from the pointer. Its top edge overlaps
+the recording bar by about four points and covers part of the adjacent controls.
+
+With the same pointer and recording control, a direct native daemon request using
+the measured owner frame produced the [same-pointer after image](native-recording-tooltip-same-pointer-after-20261117.png).
+Core Graphics reported the panel at (760,105), 100×22 points; it now sits below
+the toolbar with a four-point gap.
+
+The un-packaged GPUI native UI probe opened the recording controls with a
+temporary profile. Its synthetic `record-hover` command passed through the
+GPUI tooltip dispatcher to the development daemon; `record-tooltip-status`
+reported `Start recording`. The measured control window was 276×44 points at
+screen bounds (726,57), with AppKit frame (726,1016,276,44). The
+[GPUI after image](native-recording-tooltip-after-owner-frame-20261117.png)
+shows the full synthetic hover-to-daemon path. Core Graphics reported the
+tooltip panel at (1081,105), 101×22 points. A synthetic exit cleared the
+tooltip status and removed the panel; the
+[hidden image](native-recording-tooltip-hidden-owner-frame-20261117.png) and a
+subsequent window-list query show no tooltip window.
+
+The native `SCROLL_CAPTURE_TEST` fixture checks that tooltips do not intersect a
+toolbar and that a tooltip for a bottom-edge control flips above it. The dev
+daemon build and GPUI development build both passed. This probe used synthetic
+hover/exit events; physical pointer delivery and tooltip pixels in a live
+ScreenCaptureKit recording remain unverified. No capture or media device was
+started, and no permission prompt or privacy setting was touched.
+
+Reproduce the native geometry fixture from the repository root with:
+
+```sh
+swiftc -O -target "$(uname -m)-apple-macosx13.0" -D SCROLL_CAPTURE_TEST -suppress-warnings -framework ScreenCaptureKit -framework QuartzCore -o /tmp/poratake-scroll-tooltip-placement-test src/main/daemon/Core/Protocol.swift src/main/daemon/Core/ModuleProtocol.swift src/main/daemon/Core/DaemonContract.generated.swift src/main/daemon/Core/ScreenshotCaptureGeometry.swift src/main/daemon/Core/ExcludedWindowCapture.swift src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift src/main/daemon/UI/ProtectedTooltip.swift src/main/daemon/Modules/ScrollCaptureModule.swift tests/native/scroll-capture-preview.swift
+/tmp/poratake-scroll-tooltip-placement-test
+```

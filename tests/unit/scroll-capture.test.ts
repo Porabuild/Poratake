@@ -32,6 +32,7 @@ const mockPrewarmScrollCaptureControl = vi.fn();
 const mockShowScrollCaptureOverlay = vi.fn();
 const mockUpdateScrollCaptureState = vi.fn();
 const mockHideScrollCaptureOverlay = vi.fn();
+const mockGetScrollCaptureExclusionWindowIds = vi.fn();
 const mockShowNotification = vi.fn();
 
 vi.mock('electron', () => ({
@@ -133,6 +134,8 @@ vi.mock('@/main/capture/scroll-capture/scroll-capture-window', () => ({
     mockUpdateScrollCaptureState(...a),
   hideScrollCaptureOverlay: (...a: unknown[]) =>
     mockHideScrollCaptureOverlay(...a),
+  getScrollCaptureExclusionWindowIds: () =>
+    mockGetScrollCaptureExclusionWindowIds(),
 }));
 
 vi.mock('@/main/utils/notification', () => ({
@@ -163,6 +166,7 @@ describe('scroll-capture', () => {
     mockReleaseSelection.mockResolvedValue(undefined);
     mockConfirmAreaSelection.mockResolvedValue({ status: 'confirmed' });
     mockShowScrollCaptureOverlay.mockReturnValue(true);
+    mockGetScrollCaptureExclusionWindowIds.mockReturnValue([11, 22]);
     mockPrepareCapturePreview.mockReturnValue({
       dispose: mockDisposeCapturePreview,
     });
@@ -200,6 +204,84 @@ describe('scroll-capture', () => {
   });
 
   describe('startScrollCapture', () => {
+    it.each([true, false])(
+      'excludes macOS control windows before scrolling (IDs available: %s)',
+      async idsAvailable => {
+        vi.doMock('@/main/utils/platform', () => ({
+          isMac: true,
+          isWindows: false,
+          isLinux: false,
+        }));
+        try {
+          mockGetScrollCaptureExclusionWindowIds.mockReturnValue(
+            idsAvailable ? [11, 22] : null
+          );
+          mockDaemonCall.mockResolvedValue({});
+          const areaSelector = await import('@/main/capture/area-selector');
+          vi.mocked(areaSelector.startAreaSelection).mockImplementation(
+            ((opts: { onSelected?: (selection: unknown) => Promise<void> }) => {
+              setImmediate(() =>
+                opts.onSelected?.({
+                  status: 'selected',
+                  x: 10,
+                  y: 20,
+                  width: 200,
+                  height: 100,
+                })
+              );
+              return undefined;
+            }) as never
+          );
+          const { startScrollCapture } =
+            await import('@/main/capture/scroll-capture');
+          const capture = startScrollCapture();
+          await vi.waitFor(() =>
+            expect(mockShowScrollCaptureOverlay).toHaveBeenCalled()
+          );
+          const action = mockShowScrollCaptureOverlay.mock.calls[0][1] as (
+            action: 'toggle-auto-scroll' | 'cancel'
+          ) => Promise<void>;
+          await action('toggle-auto-scroll');
+          expect(
+            mockDaemonCall.mock.calls.filter(
+              ([module, method]) =>
+                module === 'scroll-capture' && method === 'startAutoScroll'
+            )
+          ).toEqual(
+            idsAvailable
+              ? [
+                  [
+                    'scroll-capture',
+                    'startAutoScroll',
+                    { excludedWindowIds: [11, 22] },
+                  ],
+                ]
+              : []
+          );
+          expect(mockShowNotification.mock.calls).toEqual(
+            idsAvailable
+              ? []
+              : [
+                  [
+                    'Scroll Capture Stopped',
+                    'Capture controls could not be excluded. You can retry or save the captured portion.',
+                  ],
+                ]
+          );
+          expect(
+            mockDaemonCall.mock.calls.filter(
+              ([module, method]) =>
+                module === 'scroll-capture' && method === 'cancel'
+            )
+          ).toEqual([]);
+          await action('cancel');
+          await capture;
+        } finally {
+          vi.doUnmock('@/main/utils/platform');
+        }
+      }
+    );
+
     it('hides desktop icons when configured', async () => {
       mockGetConfig.mockReturnValue({
         screenshot: { hideDesktopIcons: true },
@@ -662,6 +744,22 @@ describe('scroll-capture', () => {
               'Scrolling could not be continued. You can save the captured portion.',
             ],
           ]);
+          daemonHandler?.('scroll-capture:scroll-ended', {
+            reason: 'capture-error',
+            frameCount: 0,
+          });
+          expect(mockShowNotification).toHaveBeenLastCalledWith(
+            'Scroll Capture Stopped',
+            'The first frame could not be captured. Try auto-scroll again.'
+          );
+          daemonHandler?.('scroll-capture:scroll-ended', {
+            reason: 'input-error',
+            frameCount: 0,
+          });
+          expect(mockShowNotification).toHaveBeenLastCalledWith(
+            'Scroll Capture Stopped',
+            'Auto Scroll could not send input.'
+          );
           expect(mockDaemonCall).not.toHaveBeenCalledWith(
             'scroll-capture',
             'cancel'
@@ -685,7 +783,7 @@ describe('scroll-capture', () => {
           daemonHandler?.('scroll-capture:scroll-ended', {
             reason: 'no-overlap',
           });
-          expect(mockShowNotification).toHaveBeenCalledTimes(3);
+          expect(mockShowNotification).toHaveBeenCalledTimes(5);
           finish({ success: true });
           await capture;
           expect(mockPublishScreenshot).toHaveBeenCalled();

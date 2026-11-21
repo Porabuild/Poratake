@@ -42,7 +42,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, div, img, prelude::*, px, size, App, Bounds, Context, DispatchPhase, Entity,
@@ -51,6 +51,7 @@ use gpui::{
 use herogpui::gpui;
 
 use crate::editor::annotations::Annotation;
+use crate::editor::background::{self, PreviewState};
 use crate::editor::options::EditorOption;
 use crate::system::desktop;
 use crate::theme::vars::active_theme;
@@ -131,6 +132,18 @@ enum TranscriptionEvent {
     Finished(Result<usize, String>),
 }
 
+#[derive(Clone, Copy)]
+struct PlaybackClock {
+    started: Instant,
+    playhead: f64,
+}
+
+impl PlaybackClock {
+    fn position(self, now: Instant) -> f64 {
+        self.playhead + now.saturating_duration_since(self.started).as_secs_f64()
+    }
+}
+
 pub struct VideoEditorWindow {
     path: Option<PathBuf>,
     state: VideoEditorState,
@@ -148,9 +161,11 @@ pub struct VideoEditorWindow {
     selected_clip: Option<SharedString>,
     menu: MenuHandle,
     save_generation: u64,
+    saved_generation: u64,
     ruler_scroll: ScrollHandle,
     tracks_scroll: ScrollHandle,
     pane_scroll: ScrollHandle,
+    sidebar_scroll_tab: SidebarTab,
     panel_scroll: ScrollHandle,
     export_scroll: ScrollHandle,
     timeline_height: f32,
@@ -158,17 +173,23 @@ pub struct VideoEditorWindow {
     focus_handle: FocusHandle,
     source: Option<preview::Handle>,
     source_frame_rate: f64,
+    has_system_audio: Option<bool>,
     preview_status: PreviewStatus,
     preview_image: Option<Arc<gpui::RenderImage>>,
     /// One compose runs at a time; a request that arrives while one is in
     /// flight replaces the queued position rather than piling up.
     compose_in_flight: bool,
+    preview_frame_cancellation: Option<smol::channel::Sender<()>>,
+    preview_camera_wait: Option<smol::channel::Sender<()>>,
     queued_frame: Option<f64>,
+    preview_frame_generation: u64,
     preview_quality: usize,
     preview_fast_frames: u16,
     preview_state_in_flight: bool,
     preview_state_queued: bool,
-    playback_generation: u64,
+    preview_commit_pending: bool,
+    playback_clock: Option<PlaybackClock>,
+    playback_task: Option<gpui::Task<()>>,
     preview_audio: crate::video::preview_audio::PreviewAudio,
     audio_generation: u64,
     scrub_audio_generation: u64,
@@ -206,7 +227,7 @@ pub struct VideoEditorWindow {
     uploaded_url: Option<String>,
     drawing_tools: styles::DrawingToolSettings,
     drawing_stroke: Option<drawing_overlay::Stroke>,
-    drawing_id_seed: u64,
+    timeline_id_seed: u64,
     drawing_text_field: Entity<herogpui::components::InputState>,
     preview_bounds: drawing_overlay::BoundsCell,
     composition_size: Option<(f64, f64)>,
@@ -215,16 +236,50 @@ pub struct VideoEditorWindow {
     sidebar_animation_generation: u64,
     sidebar_closing: bool,
     bounds_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_visibility_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_activation_sub: Option<gpui::Subscription>,
+    #[cfg(target_os = "macos")]
+    preview_window_active: bool,
+    #[cfg(target_os = "macos")]
+    preview_window_hidden: bool,
+    #[cfg(target_os = "macos")]
+    refresh_preview_on_show: bool,
     desktop_wallpaper_source: Option<String>,
-    desktop_wallpaper_preview: Option<Arc<gpui::RenderImage>>,
+    desktop_wallpaper_preview: Option<PreviewState>,
     keyboard_demo: Option<std::sync::Arc<AtomicBool>>,
     /// The state a drag started from, pushed onto the undo stack when it ends.
     gesture_snapshot: Option<VideoEditorState>,
+    music_session: Option<crate::video::music_retention::MusicRetentionSession>,
 }
 
 impl VideoEditorWindow {
     pub fn open(cx: &mut App, path: Option<String>) {
+        Self::open_with_focus(cx, path, true);
+    }
+
+    pub fn open_with_focus(cx: &mut App, path: Option<String>, focus: bool) {
+        if !focus && registry::is_open(RegistryKind::VideoEditor, cx) {
+            return;
+        }
         registry::open_or_activate(RegistryKind::VideoEditor, cx, move |cx| {
+            let music_session = match path.as_deref() {
+                Some(path) => match crate::video::music_retention::MusicRetentionSession::open(
+                    PathBuf::from(path).as_path(),
+                ) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        crate::windows::toast::Toast::show(
+                            cx,
+                            "Could not open recording",
+                            format!("The recording's music files are in use: {error}"),
+                        );
+                        return None;
+                    }
+                },
+                None => None,
+            };
             let display = cx
                 .primary_display()
                 .or_else(|| cx.displays().into_iter().next());
@@ -249,16 +304,41 @@ impl VideoEditorWindow {
                 })
                 .unwrap_or(bounds);
             let mut options = crate::windows::app_window_options(bounds, Some(min_size));
+            options.focus = focus;
             options.display_id = display.map(|display| display.id());
             cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| {
-                    let mut editor = Self::new(path.map(PathBuf::from), cx);
+                    let mut editor = Self::new(path.map(PathBuf::from), music_session, cx);
                     editor.load_preview(cx);
-                    editor.load_desktop_wallpaper(cx);
                     editor.request_audio_sync(cx);
                     editor
                 });
+                Self::guard_close(window, cx, view.downgrade(), || {
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("Could not close video editor")
+                        .set_description("Finish the open file dialog and check that the recording folder is writable, then try closing again.")
+                        .show();
+                });
                 view.update(cx, |editor, cx| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        editor.preview_window_hidden = !window.is_visible();
+                        editor.preview_window_active = window.is_window_active();
+                        editor.preview_activation_sub = Some(cx.observe_window_activation(
+                            window,
+                            |editor, window, _| {
+                                editor.preview_window_active = window.is_window_active();
+                                editor.release_inactive_preview_buffers();
+                            },
+                        ));
+                        editor.preview_visibility_sub = Some(cx.observe_window_visibility(
+                            window,
+                            |editor, visibility, _, cx| {
+                                editor.set_preview_window_hidden(!visibility.is_visible(), cx);
+                            },
+                        ));
+                    }
                     let mut last_size = window.bounds().size;
                     editor.bounds_sub =
                         Some(cx.observe_window_bounds(window, move |_, window, _| {
@@ -279,6 +359,7 @@ impl VideoEditorWindow {
                 });
                 let focus = view.read(cx).focus_handle.clone();
                 window.focus(&focus, cx);
+                crate::system::native::register_dock_window(window.window_handle().window_id(), cx);
                 view
             })
             .ok()
@@ -286,7 +367,11 @@ impl VideoEditorWindow {
         });
     }
 
-    fn new(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        path: Option<PathBuf>,
+        music_session: Option<crate::video::music_retention::MusicRetentionSession>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let has_saved_state = path
             .as_deref()
             .is_some_and(|path| crate::video::project::editor_state_path(path).is_file());
@@ -324,7 +409,11 @@ impl VideoEditorWindow {
             .map(|value| timeline::clamp_pane_height(value as f32))
             .unwrap_or_else(timeline::default_pane_height);
         if let Some(project) = path.as_deref() {
-            materialize_builtin_audio_tracks(&mut state, project);
+            materialize_builtin_audio_tracks(
+                &mut state,
+                project,
+                !cfg!(any(target_os = "macos", target_os = "linux")),
+            );
         }
         let initial_name = path
             .as_deref()
@@ -332,6 +421,7 @@ impl VideoEditorWindow {
             .unwrap_or_else(|| "Untitled".to_string());
         let rename_field =
             cx.new(|cx| herogpui::components::InputState::with_value(cx, initial_name));
+        let sidebar_scroll_tab = SidebarTab::parse(&state.ui.sidebar_tab);
         Self {
             path,
             state,
@@ -349,9 +439,11 @@ impl VideoEditorWindow {
             selected_clip: None,
             menu: MenuHandle::new(),
             save_generation: 0,
+            saved_generation: 0,
             ruler_scroll: ScrollHandle::new(),
             tracks_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
+            sidebar_scroll_tab,
             panel_scroll: ScrollHandle::new(),
             export_scroll: ScrollHandle::new(),
             timeline_height,
@@ -359,15 +451,21 @@ impl VideoEditorWindow {
             focus_handle: cx.focus_handle(),
             source: None,
             source_frame_rate: 60.0,
+            has_system_audio: None,
             preview_status: PreviewStatus::Idle,
             preview_image: None,
             compose_in_flight: false,
+            preview_frame_cancellation: None,
+            preview_camera_wait: None,
             queued_frame: None,
+            preview_frame_generation: 0,
             preview_quality: INITIAL_PREVIEW_QUALITY,
             preview_fast_frames: 0,
             preview_state_in_flight: false,
             preview_state_queued: false,
-            playback_generation: 0,
+            preview_commit_pending: false,
+            playback_clock: None,
+            playback_task: None,
             preview_audio: crate::video::preview_audio::PreviewAudio::new(),
             audio_generation: 0,
             scrub_audio_generation: 0,
@@ -400,7 +498,7 @@ impl VideoEditorWindow {
             uploaded_url: None,
             drawing_tools: styles::DrawingToolSettings::default(),
             drawing_stroke: None,
-            drawing_id_seed: 0,
+            timeline_id_seed: 0,
             drawing_text_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             preview_bounds: Rc::new(RefCell::new(None)),
             composition_size: None,
@@ -409,9 +507,20 @@ impl VideoEditorWindow {
             sidebar_animation_generation: 0,
             sidebar_closing: false,
             bounds_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_visibility_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_activation_sub: None,
+            #[cfg(target_os = "macos")]
+            preview_window_active: true,
+            #[cfg(target_os = "macos")]
+            preview_window_hidden: false,
+            #[cfg(target_os = "macos")]
+            refresh_preview_on_show: false,
             desktop_wallpaper_source: None,
             desktop_wallpaper_preview: None,
             keyboard_demo: None,
+            music_session,
         }
     }
 
@@ -537,6 +646,20 @@ impl VideoEditorWindow {
         if self.is_exporting {
             return;
         }
+        let music_lease = match &self.music_session {
+            Some(session) => match session.lease() {
+                Ok(lease) => Some(lease),
+                Err(error) => {
+                    crate::windows::toast::Toast::show(
+                        cx,
+                        "Could not export video",
+                        format!("The recording's music files are in use: {error}"),
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
         self.is_exporting = true;
         self.export_error = None;
         self.export_completed_at = None;
@@ -556,6 +679,7 @@ impl VideoEditorWindow {
 
         self.poll_export_progress(cx);
         cx.spawn(async move |entity, cx| {
+            let _music_lease = music_lease;
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -731,18 +855,30 @@ impl VideoEditorWindow {
             return;
         };
         let state = self.state.clone();
+        self.invalidate_preview_frames();
         self.preview_status = PreviewStatus::Loading;
         self.refresh_subtitle_count();
         cx.notify();
 
         cx.spawn(async move |entity, cx| {
+            let opening_path = path.clone();
             let opened = cx
                 .background_executor()
-                .spawn(async move { preview::Source::open(&path, state) })
+                .spawn(async move {
+                    let source = preview::Source::open(&opening_path, state)?;
+                    let has_system_audio = source.info().has_embedded_audio.map(|embedded| {
+                        embedded || project::system_audio_path(&opening_path).is_file()
+                    });
+                    Some((source, has_system_audio))
+                })
                 .await;
             let _ = entity.update(cx, |this, cx| {
+                if this.path.as_ref() != Some(&path) {
+                    return;
+                }
+                let mut refresh_audio = this.waits_for_embedded_audio_metadata(&path);
                 match opened {
-                    Some(source) => {
+                    Some((source, has_system_audio)) => {
                         // `handleBootstrapMetadata` takes the duration off the
                         // `<video>` element's `loadedmetadata`. Nothing did that
                         // here, so a recording with no saved project sat at a
@@ -751,13 +887,27 @@ impl VideoEditorWindow {
                         let info = source.info();
                         let duration = info.duration;
                         this.source_frame_rate = info.frame_rate();
+                        if this.has_system_audio.is_some()
+                            && this.has_system_audio != has_system_audio
+                        {
+                            this.preview_audio
+                                .invalidate(&project::recording_video_path(&path));
+                            refresh_audio = true;
+                        }
+                        this.has_system_audio = has_system_audio;
                         this.composition_size = Some(source.composition_size());
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
                         this.adopt_source_duration(duration, cx);
                         this.preview_status = PreviewStatus::Ready;
                         this.request_frame(cx);
                     }
-                    None => this.preview_status = PreviewStatus::Unavailable,
+                    None => {
+                        this.has_system_audio = None;
+                        this.preview_status = PreviewStatus::Unavailable;
+                    }
+                }
+                if refresh_audio {
+                    this.request_audio_sync(cx);
                 }
                 cx.notify();
             });
@@ -765,37 +915,127 @@ impl VideoEditorWindow {
         .detach();
     }
 
-    fn load_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+    fn load_desktop_wallpaper(&mut self, select: bool, cx: &mut Context<Self>) {
         if !crate::system::capabilities::is_supported(
             crate::system::capabilities::Feature::DesktopWallpaper,
         ) {
             return;
         }
+        self.desktop_wallpaper_preview = Some(PreviewState::Loading);
+        let previous = select.then(|| self.state.wallpaper.clone());
+        let size = crate::ui::chrome::wallpaper_tile_size(
+            crate::ui::chrome::VIDEO_SIDEBAR_WIDTH,
+            crate::ui::chrome::VIDEO_PANEL_PAD,
+        );
         let daemon = crate::state::state(cx).daemon.clone();
         cx.spawn(async move |entity, cx| {
             let wallpaper = cx
                 .background_executor()
                 .spawn(async move {
-                    let source = crate::editor::background::desktop_wallpaper(&daemon)?;
-                    let image = crate::render::gradient::load_image(&source)
-                        .as_ref()
-                        .and_then(preview::to_render_image)?;
+                    let source = background::desktop_wallpaper(&daemon)?;
+                    let image = background::preview_image(&source, size);
                     Some((source, image))
                 })
                 .await;
             let _ = entity.update(cx, |this, cx| {
-                if let Some((source, image)) = wallpaper {
-                    this.desktop_wallpaper_source = Some(source);
-                    this.desktop_wallpaper_preview = Some(image);
-                    cx.notify();
+                let (source, image) = wallpaper.unzip();
+                this.desktop_wallpaper_source = source;
+                this.desktop_wallpaper_preview = Some(
+                    image
+                        .flatten()
+                        .map_or(PreviewState::Failed, PreviewState::Ready),
+                );
+                if previous.as_ref() == Some(&this.state.wallpaper) {
+                    this.select_desktop_wallpaper(cx);
                 }
+                cx.notify();
             });
         })
         .detach();
     }
 
+    fn select_desktop_wallpaper(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.desktop_wallpaper_source.clone() else {
+            return;
+        };
+        self.update_wallpaper(cx, |wallpaper| {
+            wallpaper.enabled = true;
+            wallpaper.background_image = Some(source);
+            wallpaper.gradient = None;
+            if wallpaper.padding == 0.0 {
+                wallpaper.padding = 50.0;
+            }
+        });
+    }
+
+    fn invalidate_preview_frames(&mut self) {
+        self.preview_frame_generation = self.preview_frame_generation.wrapping_add(1);
+        if let Some(cancellation) = self.preview_frame_cancellation.take() {
+            cancellation.close();
+        }
+    }
+
+    fn supersede_camera_wait(&mut self) {
+        if let Some(wait) = self.preview_camera_wait.take() {
+            wait.close();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_preview_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.preview_window_hidden == hidden {
+            return;
+        }
+        self.preview_window_hidden = hidden;
+        if hidden {
+            let frame_queued = self.queued_frame.take().is_some();
+            if self.compose_in_flight || frame_queued {
+                self.invalidate_preview_frames();
+                self.refresh_preview_on_show = true;
+            }
+            self.release_inactive_preview_buffers();
+            if self.defer_covered_playback() {
+                self.schedule_playback(cx);
+            }
+            return;
+        }
+        let refresh = std::mem::take(&mut self.refresh_preview_on_show);
+        if self.is_playing {
+            self.advance_playback(cx);
+            self.schedule_playback(cx);
+        } else if refresh {
+            self.autoscroll_timeline();
+            self.request_frame(cx);
+            cx.notify();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_inactive_preview_buffers(&mut self) {
+        let paused_in_background = !self.preview_window_active
+            && !self.is_playing
+            && !self.is_scrubbing
+            && self.gesture_snapshot.is_none();
+        if self.compose_in_flight || (!self.preview_window_hidden && !paused_in_background) {
+            return;
+        }
+        if let Some(mut source) = self.source.as_ref().and_then(|source| source.try_lock()) {
+            if self.preview_window_hidden {
+                source.release_buffered_frames();
+            } else {
+                source.park_decoders();
+            }
+        }
+    }
+
     /// Queues a compose at the current playhead.
     fn request_frame(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "macos")]
+        if self.preview_window_hidden {
+            self.refresh_preview_on_show = true;
+            self.release_inactive_preview_buffers();
+            return;
+        }
         let Some(source) = self.source.clone() else {
             return;
         };
@@ -803,49 +1043,123 @@ impl VideoEditorWindow {
         let max_dimensions =
             (self.is_playing || self.is_scrubbing || self.gesture_snapshot.is_some())
                 .then_some(ACTIVE_PREVIEW_SIZES[self.preview_quality]);
-        if self.compose_in_flight {
+        let camera_visible_in_playback = self.is_playing
+            && crate::video::sidecars::editor_camera_visible_at(
+                &self.state,
+                time,
+                first_frame_duration(&self.state),
+            );
+        if self.compose_in_flight || self.preview_commit_pending {
             self.queued_frame = Some(time);
+            if self.is_playing && !camera_visible_in_playback {
+                self.supersede_camera_wait();
+            }
             return;
         }
+        let (cancellation, cancelled) = smol::channel::bounded(1);
+        self.preview_frame_cancellation = Some(cancellation);
+        let interruptible_camera_wait = !self.is_playing
+            || self.is_scrubbing
+            || (camera_visible_in_playback
+                && source
+                    .try_lock()
+                    .is_none_or(|source| source.has_camera_decoder()));
+        let (camera_wait, camera_wait_superseded) = interruptible_camera_wait
+            .then(|| smol::channel::bounded(1))
+            .unzip();
+        self.preview_camera_wait = camera_wait;
         self.compose_in_flight = true;
+        self.queued_frame = None;
+        let generation = self.preview_frame_generation;
+        #[cfg(target_os = "macos")]
+        let park_after_first_preview = self.preview_image.is_none() && max_dimensions.is_none();
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let release_at_end = max_dimensions.is_none()
+            && self.preview_playhead.is_none()
+            && time > 0.0
+            && time >= self.total_duration();
 
+        let executor = cx.background_executor().clone();
         cx.spawn(async move |entity, cx| {
-            let (composed, elapsed) = cx
+            let (composed, elapsed, decode_wait) = cx
                 .background_executor()
                 .spawn(async move {
                     let started = std::time::Instant::now();
+                    let mut decode_wait = Duration::ZERO;
                     let mut guard = source.lock();
                     let image = guard
-                        .compose(time, max_dimensions)
+                        .compose_measured(
+                            time,
+                            max_dimensions,
+                            &mut decode_wait,
+                            Some(&cancelled),
+                            camera_wait_superseded
+                                .as_ref()
+                                .map(|wait| (wait, &executor)),
+                        )
                         .as_ref()
                         .and_then(preview::to_render_image_opaque);
-                    (image, started.elapsed())
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if release_at_end && !cancelled.is_closed() {
+                        guard.release_buffered_frames();
+                    }
+                    #[cfg(target_os = "macos")]
+                    if park_after_first_preview
+                        && !release_at_end
+                        && image.is_some()
+                        && !cancelled.is_closed()
+                    {
+                        guard.park_decoders();
+                    }
+                    (image, started.elapsed(), decode_wait)
                 })
                 .await;
 
             let _ = entity.update(cx, |this, cx| {
                 this.compose_in_flight = false;
-                if max_dimensions.is_some() {
-                    (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
-                        this.preview_quality,
-                        this.preview_fast_frames,
-                        elapsed,
-                        active_preview_budget(this.source_frame_rate),
-                    );
-                }
-                if let Some(image) = composed {
-                    // Every composed frame is a new texture, so the previous
-                    // one has to leave the sprite atlas with it.
-                    if let Some(previous) = this.preview_image.replace(image) {
-                        cx.drop_image(previous, None);
+                this.preview_frame_cancellation = None;
+                this.preview_camera_wait = None;
+                if this.preview_frame_generation == generation {
+                    if max_dimensions.is_some() && composed.is_some() {
+                        (this.preview_quality, this.preview_fast_frames) = adjust_preview_quality(
+                            this.preview_quality,
+                            this.preview_fast_frames,
+                            elapsed,
+                            decode_wait,
+                            active_preview_budget(this.source_frame_rate),
+                        );
+                    } else if max_dimensions.is_some() {
+                        this.preview_fast_frames = 0;
                     }
+                    #[cfg(all(feature = "parity", target_os = "macos"))]
+                    if std::env::var_os("PORATAKE_NATIVE_SMOKE_VIDEO_PLAYBACK").is_some() {
+                        let size = composed
+                            .as_ref()
+                            .map(|image| image.size(0))
+                            .unwrap_or_default();
+                        println!(
+                            "VIDEO_SMOKE update {time:.6} {:.3} {} {}",
+                            elapsed.as_secs_f64() * 1000.,
+                            size.width.0,
+                            size.height.0,
+                        );
+                    }
+                    if let Some(image) = composed {
+                        // Every composed frame is a new texture, so the previous
+                        // one has to leave the sprite atlas with it.
+                        if let Some(previous) = this.preview_image.replace(image) {
+                            cx.drop_image(previous, None);
+                        }
+                    }
+                    cx.notify();
                 }
-                cx.notify();
                 // A position queued while this compose ran is already the
                 // playhead's, so the follow-up only has to be scheduled.
                 if this.queued_frame.take().is_some() {
                     this.request_frame(cx);
                 }
+                #[cfg(target_os = "macos")]
+                this.release_inactive_preview_buffers();
             });
         })
         .detach();
@@ -853,9 +1167,16 @@ impl VideoEditorWindow {
 
     /// Pushes edited state into the composition engine and recomposes.
     fn sync_preview_state(&mut self, cx: &mut Context<Self>) {
+        if self.defer_covered_playback() {
+            self.schedule_playback(cx);
+        }
         let Some(source) = self.source.clone() else {
             return;
         };
+        if self.gesture_snapshot.is_none() {
+            self.invalidate_preview_frames();
+            self.preview_commit_pending = true;
+        }
         if self.preview_state_in_flight {
             self.preview_state_queued = true;
             return;
@@ -878,53 +1199,77 @@ impl VideoEditorWindow {
                     this.sync_preview_state(cx);
                     return;
                 }
+                this.preview_commit_pending = false;
                 this.request_frame(cx);
             });
         })
         .detach();
     }
 
-    /// Advances the playhead in wall-clock time while playing. Each run is
-    /// tagged so a pause or a second play stops the previous loop.
     fn drive_playback(&mut self, cx: &mut Context<Self>) {
-        self.playback_generation += 1;
-        let generation = self.playback_generation;
-        let tick = playback_tick(self.source_frame_rate);
-        let started = cx.background_executor().now();
-        let initial_playhead = self.playhead;
+        self.playback_clock = Some(PlaybackClock {
+            started: cx.background_executor().now(),
+            playhead: self.playhead,
+        });
+        self.schedule_playback(cx);
+    }
 
-        cx.spawn(async move |entity, cx| loop {
-            cx.background_executor().timer(tick).await;
-            let advanced = entity.update(cx, |this, cx| {
-                if !this.is_playing || this.playback_generation != generation {
-                    return false;
-                }
-                let total = this.total_duration();
-                let next = initial_playhead
-                    + cx.background_executor()
-                        .now()
-                        .saturating_duration_since(started)
-                        .as_secs_f64();
-                if next >= total {
-                    this.playhead = total;
-                    this.is_playing = false;
-                    this.preview_audio.pause_all();
-                    this.request_frame(cx);
-                    cx.notify();
-                    return false;
-                }
-                this.playhead = next;
-                this.sync_audio_transport();
-                this.autoscroll_timeline();
-                this.request_frame(cx);
-                cx.notify();
-                true
-            });
+    fn defer_covered_playback(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        return self.is_playing && self.preview_window_hidden && !self.preview_audio.has_samples();
+        #[cfg(not(target_os = "macos"))]
+        false
+    }
+
+    fn schedule_playback(&mut self, cx: &mut Context<Self>) {
+        self.playback_task = None;
+        let Some(clock) = self.playback_clock else {
+            return;
+        };
+        let tick = playback_tick(self.source_frame_rate);
+        let covered_end = self.defer_covered_playback().then(|| self.total_duration());
+
+        self.playback_task = Some(cx.spawn(async move |entity, cx| loop {
+            let executor = cx.background_executor();
+            let now = executor.now();
+            let elapsed = now.saturating_duration_since(clock.started);
+            let elapsed_in_tick = Duration::from_nanos_u128(elapsed.as_nanos() % tick.as_nanos());
+            let delay = covered_end
+                .and_then(|end| {
+                    Duration::try_from_secs_f64((end - clock.position(now)).max(0.)).ok()
+                })
+                .unwrap_or(tick - elapsed_in_tick);
+            executor.timer(delay).await;
+            let advanced = entity.update(cx, |this, cx| this.advance_playback(cx));
             if !matches!(advanced, Ok(true)) {
                 break;
             }
-        })
-        .detach();
+        }));
+    }
+
+    fn advance_playback(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(clock) = self.playback_clock else {
+            return false;
+        };
+        let total = self.total_duration();
+        let next = clock.position(cx.background_executor().now());
+        self.playhead = next.min(total);
+        if next >= total {
+            self.is_playing = false;
+            self.playback_clock = None;
+            self.preview_audio.pause_all();
+            self.invalidate_preview_frames();
+        } else {
+            self.sync_audio_transport();
+            #[cfg(target_os = "macos")]
+            if self.preview_window_hidden {
+                return true;
+            }
+            self.autoscroll_timeline();
+        }
+        self.request_frame(cx);
+        cx.notify();
+        self.is_playing
     }
 
     /// Records the decoded duration, unless the project already carries one --
@@ -945,13 +1290,14 @@ impl VideoEditorWindow {
             return;
         };
         self.camera_segments_initialized = true;
-        let tracks_changed = if changes.source_duration_changed {
-            self.path
-                .as_deref()
-                .is_some_and(|project| materialize_builtin_audio_tracks(&mut self.state, project))
-        } else {
-            false
-        };
+        let include_embedded = self
+            .has_system_audio
+            .unwrap_or(!cfg!(any(target_os = "macos", target_os = "linux")));
+        let tracks_changed = (changes.source_duration_changed
+            || self.has_system_audio == Some(true))
+            && self.path.as_deref().is_some_and(|project| {
+                materialize_builtin_audio_tracks(&mut self.state, project, include_embedded)
+            });
         if !changes.source_duration_changed
             && !changes.segments_changed
             && !changes.camera_segments_changed
@@ -970,15 +1316,26 @@ impl VideoEditorWindow {
     }
 
     fn total_duration(&self) -> f64 {
-        first_frame_duration(&self.state)
-            + model::total_duration(
-                &self.state.segments,
-                self.state.source_duration.unwrap_or(0.0),
-            )
+        Self::state_duration(&self.state)
+    }
+
+    fn state_duration(state: &VideoEditorState) -> f64 {
+        first_frame_duration(state)
+            + model::total_duration(&state.segments, state.source_duration.unwrap_or(0.0))
     }
 
     fn active_tab(&self) -> SidebarTab {
         SidebarTab::parse(&self.state.ui.sidebar_tab)
+    }
+
+    fn record_removed_music(&self, before: &VideoEditorState) {
+        if let Some(path) = self.path.as_deref() {
+            crate::video::music_retention::record_removed(
+                path,
+                &before.music_tracks,
+                &self.state.music_tracks,
+            );
+        }
     }
 
     fn commit<F>(&mut self, cx: &mut Context<Self>, mutate: F)
@@ -987,10 +1344,15 @@ impl VideoEditorWindow {
     {
         let before = self.state.clone();
         mutate(&mut self.state);
+        let duration = Self::state_duration(&self.state);
+        if duration != Self::state_duration(&before) {
+            edit::bound_overlay_ranges(&mut self.state, duration);
+        }
         self.camera_segments_initialized |= before.camera_segments != self.state.camera_segments;
         if self.state == before {
             return;
         }
+        self.record_removed_music(&before);
         if self.gesture_snapshot.is_some() {
             self.sync_preview_state(cx);
             self.request_audio_sync(cx);
@@ -1064,15 +1426,74 @@ impl VideoEditorWindow {
                 };
                 let mut written = this.state.clone();
                 written.saved_at = chrono::Utc::now().to_rfc3339();
-                model::save_state_with_camera_segments_presence(
+                if model::save_state_with_camera_segments_presence(
                     &path,
                     &written,
                     this.camera_segments_initialized,
-                );
-                this.state.saved_at = written.saved_at;
+                ) {
+                    this.state.saved_at = written.saved_at;
+                    this.saved_generation = generation;
+                }
             });
         })
         .detach();
+    }
+
+    fn guard_close(
+        window: &Window,
+        cx: &App,
+        editor: gpui::WeakEntity<Self>,
+        on_failure: impl Fn() + 'static,
+    ) {
+        window.on_window_should_close(cx, move |window, cx| {
+            let (saved, should_report_failure) = editor
+                .update(cx, |editor, _| {
+                    if editor.is_file_dialog_open {
+                        return (false, false);
+                    }
+                    let saved = editor.flush_pending_state();
+                    if saved {
+                        if let Some(image) = editor.preview_image.take() {
+                            let _ = window.drop_image(image);
+                        }
+                        editor.source = None;
+                    }
+                    (saved, !saved)
+                })
+                .unwrap_or((true, false));
+            if saved {
+                crate::system::memory::reclaim_idle_memory();
+            }
+            if should_report_failure {
+                on_failure();
+            }
+            saved
+        });
+    }
+
+    fn flush_pending_state(&mut self) -> bool {
+        let gesture_changed = self
+            .gesture_snapshot
+            .as_ref()
+            .is_some_and(|before| before != &self.state);
+        if self.save_generation == self.saved_generation && !gesture_changed {
+            return true;
+        }
+        let Some(path) = self.path.as_deref() else {
+            return true;
+        };
+        let mut written = self.state.clone();
+        written.saved_at = chrono::Utc::now().to_rfc3339();
+        if !model::save_state_with_camera_segments_presence(
+            path,
+            &written,
+            self.camera_segments_initialized,
+        ) {
+            return false;
+        }
+        self.state.saved_at = written.saved_at;
+        self.saved_generation = self.save_generation;
+        true
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
@@ -1081,8 +1502,9 @@ impl VideoEditorWindow {
         };
         previous.export_settings = self.state.export_settings.clone();
         self.camera_segments_initialized |= previous.camera_segments != self.state.camera_segments;
-        self.future
-            .push(std::mem::replace(&mut self.state, previous));
+        let before = std::mem::replace(&mut self.state, previous);
+        self.record_removed_music(&before);
+        self.future.push(before);
         self.persist(cx);
         self.sync_preview_state(cx);
         self.request_audio_sync(cx);
@@ -1095,7 +1517,9 @@ impl VideoEditorWindow {
         };
         next.export_settings = self.state.export_settings.clone();
         self.camera_segments_initialized |= next.camera_segments != self.state.camera_segments;
-        self.history.push(std::mem::replace(&mut self.state, next));
+        let before = std::mem::replace(&mut self.state, next);
+        self.record_removed_music(&before);
+        self.history.push(before);
         self.persist(cx);
         self.sync_preview_state(cx);
         self.request_audio_sync(cx);
@@ -1131,7 +1555,8 @@ impl VideoEditorWindow {
                 }
             }
         }
-        self.state = state;
+        let before = std::mem::replace(&mut self.state, state);
+        self.record_removed_music(&before);
         self.camera_segments_initialized = true;
         self.history.clear();
         self.future.clear();
@@ -1160,7 +1585,12 @@ impl VideoEditorWindow {
     /// Builds the window without opening one, for the headless render tests.
     #[cfg(any(test, feature = "parity"))]
     pub fn new_for_test(path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
-        Self::new(path, cx)
+        let session = path.as_deref().and_then(|path| {
+            crate::video::music_retention::MusicRetentionSession::open(path)
+                .ok()
+                .flatten()
+        });
+        Self::new(path, session, cx)
     }
 
     /// Opens `tab` unconditionally. `select_tab` toggles, which would close the
@@ -1180,8 +1610,18 @@ impl VideoEditorWindow {
     }
 
     pub fn toggle_playback(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_preview_frames();
+        if let Some(clock) = self
+            .playback_clock
+            .filter(|_| self.defer_covered_playback())
+        {
+            self.playhead = clock
+                .position(cx.background_executor().now())
+                .min(self.total_duration());
+        }
         self.is_playing = !self.is_playing;
         if self.is_playing {
+            self.playhead = self.preview_playhead.take().unwrap_or(self.playhead);
             if self.playhead >= self.total_duration() {
                 self.playhead = 0.0;
             }
@@ -1189,6 +1629,8 @@ impl VideoEditorWindow {
             self.sync_audio_transport();
             self.drive_playback(cx);
         } else {
+            self.playback_clock = None;
+            self.playback_task = None;
             self.preview_audio.pause_all();
             self.request_frame(cx);
         }
@@ -1231,7 +1673,15 @@ impl VideoEditorWindow {
     /// scrub path.
     pub fn set_playhead(&mut self, time: f64, cx: &mut Context<Self>) {
         let total = self.total_duration();
-        self.playhead = time.clamp(0.0, total);
+        let time = time.clamp(0.0, total);
+        if self.playhead != time || self.preview_playhead.is_some() {
+            if self.is_scrubbing {
+                self.supersede_camera_wait();
+            } else {
+                self.invalidate_preview_frames();
+            }
+        }
+        self.playhead = time;
         self.preview_playhead = None;
         self.autoscroll_timeline();
         self.request_frame(cx);
@@ -1247,13 +1697,16 @@ impl VideoEditorWindow {
     }
 
     pub fn begin_scrub(&mut self) {
-        self.is_scrubbing = true;
+        if !std::mem::replace(&mut self.is_scrubbing, true) {
+            self.invalidate_preview_frames();
+        }
     }
 
     fn end_scrub(&mut self, cx: &mut Context<Self>) {
         if !std::mem::take(&mut self.is_scrubbing) {
             return;
         }
+        self.invalidate_preview_frames();
         self.request_frame(cx);
     }
 
@@ -1288,6 +1741,12 @@ impl VideoEditorWindow {
         .detach();
     }
 
+    fn waits_for_embedded_audio_metadata(&self, project: &std::path::Path) -> bool {
+        cfg!(any(target_os = "macos", target_os = "linux"))
+            && self.preview_status == PreviewStatus::Loading
+            && project::embedded_audio_path(project).is_some()
+    }
+
     /// Applies volumes live and rebuilds the stems on the background executor
     /// when the structure changed. Called from every state mutation; the
     /// signature check keeps volume-only commits free.
@@ -1297,6 +1756,9 @@ impl VideoEditorWindow {
             return;
         };
         self.audio_generation += 1;
+        if self.waits_for_embedded_audio_metadata(&project) {
+            return;
+        }
         if !self.preview_audio.needs_rebuild(&self.state) {
             return;
         }
@@ -1305,18 +1767,24 @@ impl VideoEditorWindow {
             &project,
             &self.state,
             self.preview_audio.cache(),
+            self.has_system_audio != Some(false),
         );
         let task = cx
             .background_executor()
             .spawn(async move { crate::video::preview_audio::build_stems(inputs) });
         cx.spawn(async move |entity, cx| {
             let built = task.await;
-            let _ = entity.update(cx, |this, _| {
+            let _ = entity.update(cx, |this, cx| {
                 if this.audio_generation != generation {
                     return;
                 }
+                let deferred = this.defer_covered_playback();
                 let offset = this.playhead - first_frame_duration(&this.state);
                 this.preview_audio.install(built, &this.state, offset);
+                if deferred != this.defer_covered_playback() {
+                    this.advance_playback(cx);
+                    this.schedule_playback(cx);
+                }
             });
         })
         .detach();
@@ -1326,6 +1794,11 @@ impl VideoEditorWindow {
         self.is_cut_tool_active = !self.is_cut_tool_active;
         self.selected_clip = None;
         cx.notify();
+    }
+
+    #[cfg(feature = "parity")]
+    pub(crate) fn parity_cut_tool_active(&self) -> bool {
+        self.is_cut_tool_active
     }
 
     pub fn set_scrub_audio(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -1436,10 +1909,9 @@ impl VideoEditorWindow {
         let Some(index) = self.selected_segment_index() else {
             return;
         };
+        let total_duration = self.total_duration();
         self.commit(cx, move |state| {
-            if let Some(segment) = state.segments.get_mut(index) {
-                segment.speed = Some(speed);
-            }
+            edit::set_video_speed(state, index, speed, total_duration);
         });
     }
 
@@ -1584,6 +2056,11 @@ impl VideoEditorWindow {
     }
 
     /// The composed frame under the playhead, which the focus picker draws.
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn playback_active_for_parity(&self) -> bool {
+        self.is_playing
+    }
+
     pub fn preview_image(&self) -> Option<Arc<gpui::RenderImage>> {
         self.preview_image.clone()
     }
@@ -1650,12 +2127,25 @@ impl VideoEditorWindow {
     /// Adds a clip to a track, which is what dragging on an empty lane does.
     pub fn add_clip(&mut self, kind: TrackKind, start: f64, end: f64, cx: &mut Context<Self>) {
         let total = self.total_duration();
+        if !total.is_finite() || total <= 0.0 || !start.is_finite() || !end.is_finite() {
+            return;
+        }
         let start = start.clamp(0.0, total);
-        let end = end.clamp(
-            start + edit::MIN_SPLIT_DURATION,
-            total.max(start + edit::MIN_SPLIT_DURATION),
-        );
-        let id = format!("{}-{}", kind.id(), (start * 1000.0).round() as i64);
+        let end = end.clamp(0.0, total);
+        if end - start < edit::MIN_SPLIT_DURATION {
+            return;
+        }
+        let available = match kind {
+            TrackKind::Zoom => edit::range_available(&self.state.zoom_segments, start, end, None),
+            TrackKind::Camera => {
+                edit::range_available(&self.state.camera_segments, start, end, None)
+            }
+            TrackKind::Drawing | TrackKind::Video | TrackKind::Music => true,
+        };
+        if !available {
+            return;
+        }
+        let id = self.next_timeline_id(kind.id());
         let composition = self.composition_size.unwrap_or_default();
         self.selected_clip = Some(SharedString::from(id.clone()));
         self.commit(cx, move |state| match kind {
@@ -1919,8 +2409,7 @@ impl VideoEditorWindow {
         self.choose_file(dialog, cx, move |this, source, cx| {
             match crate::video::music::add(&project, &source, timeline_start) {
                 Ok(track) => {
-                    this.selected_clip = Some(SharedString::from(track.id.clone()));
-                    this.commit(cx, move |state| state.music_tracks.push(track));
+                    this.accept_music_track(&project, track, cx);
                 }
                 Err(error) => {
                     crate::windows::toast::Toast::show(cx, "Could not add music", &error);
@@ -1930,20 +2419,44 @@ impl VideoEditorWindow {
         });
     }
 
-    /// Removes a music track, deleting its file once nothing else uses it.
-    pub fn remove_music_track(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        let Some(project) = self.path.clone() else {
-            return;
-        };
-        let Some(file_name) = self
+    fn accept_music_track(
+        &mut self,
+        project: &std::path::Path,
+        mut track: model::MusicTrack,
+        cx: &mut Context<Self>,
+    ) {
+        let base = track.id.clone();
+        let mut id = base.clone();
+        let mut suffix = 1;
+        while self
             .state
             .music_tracks
             .iter()
-            .find(|track| track.id.as_str() == id.as_ref())
-            .map(|track| track.file_name.clone())
-        else {
+            .any(|existing| existing.id == id || model::group_key(existing) == id)
+        {
+            id = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        track.id = id.clone();
+        track.group_id = id;
+        if let Some(folder) = crate::video::project::music_folder(project) {
+            self.preview_audio
+                .invalidate(&folder.join(&track.file_name));
+        }
+        self.selected_clip = Some(SharedString::from(track.id.clone()));
+        self.commit(cx, move |state| state.music_tracks.push(track));
+    }
+
+    pub fn remove_music_track(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        if self.path.is_none()
+            || !self
+                .state
+                .music_tracks
+                .iter()
+                .any(|track| track.id.as_str() == id.as_ref())
+        {
             return;
-        };
+        }
 
         self.commit(cx, {
             let id = id.clone();
@@ -1953,13 +2466,6 @@ impl VideoEditorWindow {
                     .retain(|track| track.id.as_str() != id.as_ref());
             }
         });
-
-        let still_referenced = self
-            .state
-            .music_tracks
-            .iter()
-            .any(|track| track.file_name == file_name);
-        crate::video::music::remove(&project, &file_name, still_referenced);
     }
 
     pub fn set_music_volume(&mut self, id: SharedString, volume: f64, cx: &mut Context<Self>) {
@@ -1986,12 +2492,17 @@ impl VideoEditorWindow {
         });
     }
 
-    pub fn set_music_enabled(&mut self, id: SharedString, enabled: bool, cx: &mut Context<Self>) {
+    pub fn set_music_group_enabled(
+        &mut self,
+        group: SharedString,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.commit(cx, move |state| {
-            if let Some(track) = state
+            for track in state
                 .music_tracks
                 .iter_mut()
-                .find(|track| track.id.as_str() == id.as_ref())
+                .filter(|track| model::group_key(track) == group.as_ref())
             {
                 track.enabled = enabled;
             }
@@ -2184,13 +2695,19 @@ impl VideoEditorWindow {
         };
         let total = self.total_duration();
         let id = drag.id.to_string();
+        let time = time - drag.grab_offset;
+        if drag.kind == TrackKind::Video {
+            if let Some(before) = &self.gesture_snapshot {
+                self.state.segments.clone_from(&before.segments);
+            }
+        }
         let state = &mut self.state;
 
         macro_rules! apply {
             ($items:expr) => {{
                 match drag.mode {
                     DragMode::Move => {
-                        edit::move_range($items, &id, time - drag.grab_offset, total);
+                        edit::move_range($items, &id, time, total);
                     }
                     DragMode::ResizeStart => {
                         let end = $items
@@ -2226,6 +2743,21 @@ impl VideoEditorWindow {
                 }
                 DragMode::Move => {}
             },
+        }
+        if drag.kind == TrackKind::Video {
+            if let Some(before) = &self.gesture_snapshot {
+                self.state.zoom_segments.clone_from(&before.zoom_segments);
+                self.state
+                    .camera_segments
+                    .clone_from(&before.camera_segments);
+                self.state
+                    .drawing_segments
+                    .clone_from(&before.drawing_segments);
+                let duration = Self::state_duration(&self.state);
+                if duration != Self::state_duration(before) {
+                    edit::bound_overlay_ranges(&mut self.state, duration);
+                }
+            }
         }
         self.sync_preview_state(cx);
         cx.notify();
@@ -2348,6 +2880,11 @@ impl VideoEditorWindow {
         if self.preview_playhead == time {
             return;
         }
+        if time.is_none() {
+            self.invalidate_preview_frames();
+        } else {
+            self.supersede_camera_wait();
+        }
         self.preview_playhead = time;
         self.request_frame(cx);
         cx.notify();
@@ -2404,7 +2941,13 @@ impl VideoEditorWindow {
     }
 
     pub fn begin_timeline_resize(&mut self, y: f32, cx: &mut Context<Self>) {
-        self.timeline_resize = Some((y, self.timeline_height));
+        let displayed_height = f32::from(self.pane_scroll.bounds().size.height);
+        let height = if displayed_height > 0.0 {
+            displayed_height
+        } else {
+            self.timeline_height
+        };
+        self.timeline_resize = Some((y, height));
         cx.notify();
     }
 
@@ -2447,17 +2990,15 @@ impl VideoEditorWindow {
     }
 
     pub fn remove_music_group(&mut self, group: SharedString, cx: &mut Context<Self>) {
-        self.selected_clip = None;
-        let ids: Vec<SharedString> = self
-            .state
-            .music_tracks
-            .iter()
-            .filter(|track| model::group_key(track) == group.as_ref())
-            .map(|track| SharedString::from(track.id.clone()))
-            .collect();
-        for id in ids {
-            self.remove_music_track(id, cx);
+        if self.path.is_none() {
+            return;
         }
+        self.selected_clip = None;
+        self.commit(cx, move |state| {
+            state
+                .music_tracks
+                .retain(|track| model::group_key(track) != group.as_ref());
+        });
     }
 
     pub fn step_selected_segment_speed(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -2541,6 +3082,14 @@ impl VideoEditorWindow {
     }
 
     pub fn rename_project(&mut self, value: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Cannot rename recording",
+                "Wait for the video export to finish before renaming the recording.",
+            );
+            return;
+        }
         let Some(old_path) = self.path.clone() else {
             return;
         };
@@ -2572,6 +3121,11 @@ impl VideoEditorWindow {
         crate::thumbnails::rekey(&old_path, &new_path);
         let history_update = crate::history_store::update_item_path(&old_path, &new_path);
         self.path = Some(new_path);
+        if let Some(session) = &mut self.music_session {
+            if let Some(path) = self.path.as_deref() {
+                session.update_project(path);
+            }
+        }
         self.rename_error = None;
         self.persist(cx);
         self.load_preview(cx);
@@ -2609,12 +3163,39 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    #[cfg(all(feature = "parity", windows))]
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
+    pub(crate) fn parity_export_field_bounds(
+        &self,
+        index: usize,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.export_scroll
+            .bounds_for_item(index)
+            .map(|bounds| bounds + self.export_scroll.offset())
+    }
+
+    #[cfg(all(feature = "parity", any(windows, target_os = "macos")))]
     pub(crate) fn begin_export_for_parity(&mut self, cx: &mut Context<Self>) {
         self.is_exporting = true;
         self.export_progress = 0.4;
         self.displayed_progress = 0.4;
         cx.notify();
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn export_to_path_for_parity(
+        &mut self,
+        output: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(project) = self.path.as_ref().map(PathBuf::from) else {
+            return false;
+        };
+        let mut state = self.state.clone();
+        state.export_settings.format = "mp4".into();
+        state.export_settings.resolution = "original".into();
+        state.export_settings.open_in_finder = false;
+        self.start_export_to_path(project, output, state, cx);
+        self.is_exporting
     }
 
     fn schedule_export_completion_clear(&mut self, cx: &mut Context<Self>) {
@@ -2683,12 +3264,36 @@ impl VideoEditorWindow {
         cx.notify();
     }
 
-    fn next_drawing_id(&mut self, prefix: &str) -> String {
-        self.drawing_id_seed += 1;
-        format!("{prefix}-{}", self.drawing_id_seed)
+    fn next_timeline_id(&mut self, prefix: &str) -> String {
+        loop {
+            self.timeline_id_seed = self.timeline_id_seed.wrapping_add(1);
+            let id = format!("{prefix}-{}", self.timeline_id_seed);
+            let in_use = self.state.segments.iter().any(|segment| segment.id == id)
+                || self
+                    .state
+                    .zoom_segments
+                    .iter()
+                    .any(|segment| segment.id == id)
+                || self
+                    .state
+                    .camera_segments
+                    .iter()
+                    .any(|segment| segment.id == id)
+                || self.state.music_tracks.iter().any(|track| track.id == id)
+                || self.state.drawing_segments.iter().any(|segment| {
+                    segment.id == id
+                        || segment
+                            .annotations
+                            .iter()
+                            .any(|annotation| annotation.id() == id)
+                });
+            if !in_use {
+                return id;
+            }
+        }
     }
 
-    fn preview_content_rect(&self) -> Option<drawing_overlay::Rect> {
+    pub(crate) fn preview_content_rect(&self) -> Option<drawing_overlay::Rect> {
         let composition = self.composition_size?;
         let bounds = (*self.preview_bounds.borrow())?;
         drawing_overlay::contain_rect(drawing_overlay::Rect::from_bounds(bounds), composition)
@@ -2718,7 +3323,7 @@ impl VideoEditorWindow {
             return;
         };
         let tools = self.drawing_tools.clone();
-        let id = self.next_drawing_id("annotation");
+        let id = self.next_timeline_id("annotation");
         if matches!(tools.active_tool.as_str(), "text" | "number") {
             let value = drawing_overlay::next_number_value(&self.state, &tools);
             let Some(annotation) = drawing_overlay::place(&tools, point, id, value) else {
@@ -2772,7 +3377,7 @@ impl VideoEditorWindow {
         };
         let total = self.total_duration();
         let position = self.playhead;
-        let segment_id = self.next_drawing_id("drawing");
+        let segment_id = self.next_timeline_id("drawing");
         let selected = self.selected_clip.as_ref().map(|id| id.to_string());
         let keeps_tool = matches!(annotation.kind(), "pen" | "highlight");
         let mut assigned = None;
@@ -2931,6 +3536,14 @@ impl VideoEditorWindow {
     }
 
     pub fn delete_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_exporting {
+            crate::windows::toast::Toast::show(
+                cx,
+                "Cannot delete recording",
+                "Wait for the video export to finish before deleting the recording.",
+            );
+            return;
+        }
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -3126,7 +3739,12 @@ impl VideoEditorWindow {
             cx.stop_propagation();
             return;
         }
-        if !self.focus_handle.is_focused(window) || self.editing_text(window, cx) {
+        let editor_focused = self.focus_handle.is_focused(window);
+        let button_focused = window
+            .context_stack()
+            .last()
+            .is_some_and(|context| context.contains("Button"));
+        if self.editing_text(window, cx) || (!editor_focused && !button_focused) {
             return;
         }
 
@@ -3134,6 +3752,9 @@ impl VideoEditorWindow {
         let primary = modifiers.control || modifiers.platform;
         let shortcuts = crate::state::state(cx).config.get().shortcuts;
         let key = event.keystroke.key.as_str();
+        if button_focused && !editor_focused && matches!(key, "space" | "enter") {
+            return;
+        }
 
         if primary {
             match key {
@@ -3220,6 +3841,13 @@ impl VideoEditorWindow {
         }
     }
 
+    fn available_music_tracks(&self) -> impl Iterator<Item = &model::MusicTrack> {
+        self.state.music_tracks.iter().filter(|track| {
+            track.source != crate::video::audio_tracks::SYSTEM_SOURCE
+                || self.has_system_audio != Some(false)
+        })
+    }
+
     fn tracks(&self, has_camera: bool) -> Vec<Track> {
         use timeline::tracks::{range_clips, source_icon, Clip, MusicLane};
 
@@ -3287,7 +3915,9 @@ impl VideoEditorWindow {
             );
         }
 
-        for group in model::music_groups(&self.state.music_tracks) {
+        for group in
+            model::music_groups(self.available_music_tracks().filter(|track| track.enabled))
+        {
             let Some(first) = group.first() else {
                 continue;
             };
@@ -3321,6 +3951,22 @@ impl VideoEditorWindow {
             );
         }
         tracks
+    }
+}
+
+impl Drop for VideoEditorWindow {
+    fn drop(&mut self) {
+        let saved = self.flush_pending_state();
+        self.source = None;
+        self.preview_image = None;
+        if let Some(session) = self.music_session.take() {
+            if saved {
+                let _ = session.close();
+            } else {
+                drop(session);
+            }
+        }
+        crate::system::memory::reclaim_idle_memory();
     }
 }
 
@@ -3422,9 +4068,11 @@ impl Render for VideoEditorWindow {
             stage_box = stage_box.max_w(px(width as f32)).max_h(px(height as f32));
         }
         let preview = div()
+            .id("video-editor-preview")
+            .debug_selector(|| "video-editor-preview".into())
             .relative()
             .flex_1()
-            .min_h_0()
+            .min_h(px(timeline::pane_height(timeline::MIN_PANE_TRACKS)))
             .flex()
             .items_center()
             .justify_center()
@@ -3455,9 +4103,10 @@ impl Render for VideoEditorWindow {
                     .unwrap_or(1.0),
                 pixels_per_second: self.pixels_per_second,
                 scrub_audio_enabled: self.state.ui.scrub_audio_enabled,
-                is_scrub_audio_available: has_project,
+                is_scrub_audio_available: self.has_system_audio.unwrap_or(has_project) || has_mic,
             },
             &theme,
+            window,
             cx,
         );
 
@@ -3493,7 +4142,8 @@ impl Render for VideoEditorWindow {
                     div()
                         .flex()
                         .flex_col()
-                        .flex_none()
+                        .min_h_0()
+                        .flex_shrink_1()
                         .border_t_1()
                         .border_color(theme.border)
                         .bg(theme.card)
@@ -3503,7 +4153,7 @@ impl Render for VideoEditorWindow {
                             window,
                             cx,
                         ))
-                        .child(controls)
+                        .child(div().flex_none().child(controls))
                         .child(timeline::ruler::render(
                             display_duration,
                             self.pixels_per_second,
@@ -3515,7 +4165,8 @@ impl Render for VideoEditorWindow {
                             div()
                                 .relative()
                                 .h(px(self.timeline_height))
-                                .flex_shrink_0()
+                                .min_h_0()
+                                .flex_shrink_1()
                                 .child(
                                     div()
                                         .id("video-timeline-tracks")
@@ -3537,6 +4188,18 @@ impl Render for VideoEditorWindow {
         use herogpui::gpui;
 
         let sidebar_open = self.state.ui.sidebar_open;
+        let active_tab = self.active_tab();
+        if sidebar_open
+            && active_tab == SidebarTab::Wallpaper
+            && self.desktop_wallpaper_preview.is_none()
+        {
+            self.load_desktop_wallpaper(false, cx);
+        }
+        if self.sidebar_scroll_tab != active_tab {
+            self.sidebar_scroll_tab = active_tab;
+            self.panel_scroll.set_offset(gpui::point(px(0.), px(0.)));
+            self.export_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        }
         let sidebar_width = self.sidebar_width;
         let panel_width = (sidebar_width - crate::ui::chrome::VIDEO_SIDEBAR_RESIZE).max(0.0);
         let mut sidebar_panel = div()
@@ -3550,7 +4213,7 @@ impl Render for VideoEditorWindow {
             .bg(theme.card);
         if sidebar_open || self.sidebar_closing {
             sidebar_panel = sidebar_panel.child(panels::render(
-                self.active_tab(),
+                active_tab,
                 self,
                 &self.state,
                 has_cursor_data,
@@ -3639,14 +4302,16 @@ impl Render for VideoEditorWindow {
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _event: &gpui::MouseDownEvent, window, cx| {
-                    window.focus(&this.focus_handle, cx);
-                }),
-            )
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
+                    if event.dragging() && this.is_dragging_clip() {
+                        let time = timeline::raw_time_at_position(
+                            event.position.x,
+                            &this.tracks_scroll,
+                            this.pixels_per_second,
+                        );
+                        this.update_timeline_drag(time, f32::from(event.position.x), cx);
+                    }
                     if this.sidebar_resize.is_some() {
                         this.update_sidebar_resize(f32::from(event.position.x), cx);
                     }
@@ -3666,6 +4331,9 @@ impl Render for VideoEditorWindow {
                 window,
                 cx,
             ));
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
@@ -3823,9 +4491,15 @@ fn adjust_preview_quality(
     index: usize,
     fast_frames: u16,
     elapsed: Duration,
+    decode_wait: Duration,
     budget: Duration,
 ) -> (usize, u16) {
-    if elapsed > budget && index > 0 {
+    let adjustable_elapsed = if decode_wait >= budget {
+        elapsed.saturating_sub(decode_wait)
+    } else {
+        elapsed
+    };
+    if adjustable_elapsed > budget && index > 0 {
         return (index - 1, 0);
     }
     if elapsed >= budget.mul_f32(0.65) {
@@ -3854,6 +4528,7 @@ fn playback_tick(frame_rate: f64) -> Duration {
 fn materialize_builtin_audio_tracks(
     state: &mut VideoEditorState,
     project: &std::path::Path,
+    include_embedded: bool,
 ) -> bool {
     let duration = state.source_duration.unwrap_or_else(|| {
         state
@@ -3867,7 +4542,7 @@ fn materialize_builtin_audio_tracks(
     }
     let sources = crate::video::audio_tracks::Sources::resolve(project);
     let mut built_in = Vec::new();
-    if sources.system.is_some() {
+    if sources.system.is_some() && (!sources.system_is_embedded || include_embedded) {
         let name = match sources.system_is_embedded {
             true => "Audio",
             false => "System Audio",
@@ -4006,6 +4681,34 @@ mod window_geometry_tests {
     }
 
     #[test]
+    fn embedded_audio_requires_metadata_and_a_sidecar_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let recording = directory.path().join("clip.mov");
+        std::fs::write(&recording, []).unwrap();
+        let empty = || VideoEditorState {
+            source_duration: Some(4.),
+            ..Default::default()
+        };
+        let mut state = empty();
+        assert!(!materialize_builtin_audio_tracks(
+            &mut state, &recording, false
+        ));
+        assert!(state.music_tracks.is_empty());
+
+        assert!(materialize_builtin_audio_tracks(
+            &mut state, &recording, true
+        ));
+        assert_eq!(state.music_tracks[0].name, "Audio");
+
+        std::fs::write(project::system_audio_path(&recording), []).unwrap();
+        let mut state = empty();
+        assert!(materialize_builtin_audio_tracks(
+            &mut state, &recording, false
+        ));
+        assert_eq!(state.music_tracks[0].name, "System Audio");
+    }
+
+    #[test]
     fn fits_the_editor_and_minimum_size_inside_a_small_work_area() {
         let work_area = bounds(0.0, 0.0, 1024.0, 728.0);
         let (editor, minimum) = video_editor_window_geometry(work_area, None);
@@ -4072,6 +4775,138 @@ mod keyboard_demo_tests {
                 .expect("load config"),
         );
         cx.update(|cx| crate::state::set_test_state(cx, config));
+    }
+
+    #[herogpui::test]
+    fn desktop_wallpaper_waits_for_the_open_wallpaper_panel(cx: &mut gpui::TestAppContext) {
+        use crate::system::capabilities::{is_supported, Feature};
+
+        if !is_supported(Feature::DesktopWallpaper) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.desktop_wallpaper_preview.is_none());
+                editor.activate_tab(SidebarTab::Wallpaper, cx);
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, cx| {
+                assert!(editor.desktop_wallpaper_preview.is_none());
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert!(editor.desktop_wallpaper_preview.is_some())
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn the_audio_panel_mutes_and_restores_every_clip_in_the_group(cx: &mut gpui::TestAppContext) {
+        use crate::video::audio_tracks::{stems, Sources, MIC_SOURCE, SYSTEM_SOURCE};
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Split audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let mut state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            music_tracks: vec![
+                model::MusicTrack {
+                    id: "first".into(),
+                    group_id: "split".into(),
+                    name: "Split track".into(),
+                    source: SYSTEM_SOURCE.into(),
+                    enabled: false,
+                    end_time: 2.0,
+                    ..Default::default()
+                },
+                model::MusicTrack {
+                    id: "second".into(),
+                    group_id: "split".into(),
+                    name: "Split track".into(),
+                    source: SYSTEM_SOURCE.into(),
+                    start_time: 2.0,
+                    end_time: 4.0,
+                    ..Default::default()
+                },
+                model::MusicTrack {
+                    id: "independent".into(),
+                    name: "Independent track".into(),
+                    source: MIC_SOURCE.into(),
+                    end_time: 1.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        state.ui.sidebar_open = true;
+        state.ui.sidebar_tab = SidebarTab::Audio.id().into();
+        model::save_state(&project, &state);
+        let (editor, cx) =
+            cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-clip-first").is_none());
+        cx.expect("timeline-clip-second");
+        let switch = cx.expect("music-enabled-split").center();
+
+        cx.simulate_click(switch, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let tracks = &editor.read(cx).state.music_tracks;
+            assert!(!tracks[0].enabled && !tracks[1].enabled);
+            assert!(tracks[2].enabled);
+        });
+        assert!(cx.debug_bounds("timeline-lane-split").is_none());
+        cx.expect("timeline-clip-independent");
+
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.undo(cx)));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-clip-first").is_none());
+        cx.expect("timeline-clip-second");
+
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.redo(cx)));
+        cx.settle();
+        assert!(cx.debug_bounds("timeline-lane-split").is_none());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, _| assert!(editor.flush_pending_state()));
+        });
+        let saved = model::load_state(&project);
+        assert!(!saved.music_tracks[0].enabled && !saved.music_tracks[1].enabled);
+        assert!(saved.music_tracks[2].enabled);
+        let sources = Sources {
+            system: Some(project.join("system.m4a")),
+            mic: Some(project.join("mic.m4a")),
+            ..Default::default()
+        };
+        let muted = stems(&sources, &saved, 4.0);
+        assert_eq!(muted.len(), 1);
+        assert_eq!(muted[0].id, "independent");
+
+        let switch = cx.expect("music-enabled-split").center();
+        cx.simulate_click(switch, gpui::Modifiers::none());
+        cx.settle();
+        cx.expect("timeline-clip-first");
+        cx.expect("timeline-clip-second");
+        cx.update(|_, cx| {
+            let state = &editor.read(cx).state;
+            assert!(state.music_tracks.iter().all(|track| track.enabled));
+            assert_eq!(stems(&sources, state, 4.0).len(), 3);
+        });
     }
 
     #[herogpui::test]
@@ -4448,6 +5283,708 @@ mod keyboard_demo_tests {
     }
 
     #[herogpui::test]
+    fn saved_camera_ranges_do_not_rewrite_the_project_on_open(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("CameraBeyondEnd.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let state = VideoEditorState {
+            source_duration: Some(4.0),
+            segments: vec![model::Segment::spanning(4.0)],
+            camera_segments: vec![
+                model::CameraSegment {
+                    id: "crossing".into(),
+                    start_time: 3.0,
+                    end_time: 6.0,
+                },
+                model::CameraSegment {
+                    id: "after".into(),
+                    start_time: 6.0,
+                    end_time: 7.0,
+                },
+            ],
+            music_tracks: vec![model::MusicTrack {
+                id: "long-music".into(),
+                start_time: 0.0,
+                end_time: 8.0,
+                ..model::MusicTrack::default()
+            }],
+            ..VideoEditorState::default()
+        };
+        model::save_state(&project, &state);
+        let path = crate::video::project::editor_state_path(&project);
+        let original = std::fs::read(&path).unwrap();
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.adopt_source_duration(4.0, cx);
+                let tracks = editor.tracks(true);
+                let camera = tracks
+                    .iter()
+                    .find(|track| track.kind == TrackKind::Camera)
+                    .unwrap();
+                assert_eq!(
+                    camera
+                        .clips
+                        .iter()
+                        .map(|clip| (clip.id.to_string(), clip.start, clip.duration))
+                        .collect::<Vec<_>>(),
+                    vec![("crossing".to_string(), 3.0, 1.0)]
+                );
+                assert_eq!(editor.total_duration(), 4.0);
+                assert_eq!(editor.display_duration(), 8.0);
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[herogpui::test]
+    fn changing_video_speed_retimes_overlay_tracks_and_undoes_together(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut first = model::Segment::spanning(4.0);
+                first.id = "first".into();
+                let mut second = model::Segment::spanning(8.0);
+                second.id = "second".into();
+                second.original_start = 4.0;
+                second.trim_min_start = 4.0;
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![first, second],
+                    zoom_segments: vec![model::ZoomSegment {
+                        id: "zoom".into(),
+                        start_time: 1.0,
+                        end_time: 3.0,
+                        ..model::ZoomSegment::default()
+                    }],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 3.0,
+                        end_time: 5.0,
+                    }],
+                    drawing_segments: vec![model::DrawingSegment {
+                        id: "drawing".into(),
+                        start_time: 4.5,
+                        end_time: 6.0,
+                        ..model::DrawingSegment::default()
+                    }],
+                    ..VideoEditorState::default()
+                };
+                let original = editor.state.clone();
+                editor.selected_clip = Some("first".into());
+                editor.set_selected_segment_speed(2.0, cx);
+                assert_eq!(editor.total_duration(), 6.0);
+                assert_eq!(
+                    (
+                        editor.state.zoom_segments[0].start_time,
+                        editor.state.zoom_segments[0].end_time
+                    ),
+                    (0.5, 1.5)
+                );
+                assert_eq!(
+                    (
+                        editor.state.camera_segments[0].start_time,
+                        editor.state.camera_segments[0].end_time
+                    ),
+                    (1.5, 3.0)
+                );
+                assert_eq!(
+                    (
+                        editor.state.drawing_segments[0].start_time,
+                        editor.state.drawing_segments[0].end_time
+                    ),
+                    (2.5, 4.0)
+                );
+                let edited = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, original);
+                editor.redo(cx);
+                assert_eq!(editor.state, edited);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn deleting_video_clips_bounds_overlays_and_undo_restores_them(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut first = model::Segment::spanning(4.0);
+                first.id = "first".into();
+                let mut second = model::Segment::spanning(8.0);
+                second.id = "second".into();
+                second.original_start = 4.0;
+                second.trim_min_start = 4.0;
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![first, second],
+                    zoom_segments: vec![model::ZoomSegment {
+                        id: "zoom".into(),
+                        start_time: 3.0,
+                        end_time: 6.0,
+                        ..Default::default()
+                    }],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 6.0,
+                        end_time: 7.0,
+                    }],
+                    drawing_segments: vec![model::DrawingSegment {
+                        id: "drawing".into(),
+                        start_time: 3.0,
+                        end_time: 7.0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.selected_clip = Some("second".into());
+                editor.delete_selected_segment(cx);
+                assert_eq!(editor.state.zoom_segments[0].end_time, 4.0);
+                assert!(editor.state.camera_segments.is_empty());
+                assert_eq!(editor.state.drawing_segments[0].end_time, 4.0);
+                let after = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, before);
+                editor.redo(cx);
+                assert_eq!(editor.state, after);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn trimming_video_back_and_forth_keeps_overlay_history(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut segment = model::Segment::spanning(8.0);
+                segment.id = "video".into();
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![segment],
+                    camera_segments: vec![model::CameraSegment {
+                        id: "camera".into(),
+                        start_time: 3.0,
+                        end_time: 7.0,
+                    }],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.begin_clip_drag(
+                    ClipDrag {
+                        id: "video".into(),
+                        kind: TrackKind::Video,
+                        mode: DragMode::ResizeEnd,
+                        grab_offset: 0.0,
+                    },
+                    cx,
+                );
+                editor.update_clip_drag(4.0, cx);
+                assert_eq!(editor.state.camera_segments[0].end_time, 4.0);
+                editor.update_clip_drag(6.0, cx);
+                assert_eq!(editor.state.camera_segments[0].end_time, 6.0);
+                editor.end_clip_drag(cx);
+                let after = editor.state.clone();
+                editor.undo(cx);
+                assert_eq!(editor.state, before);
+                editor.redo(cx);
+                assert_eq!(editor.state, after);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn repeated_start_trim_moves_follow_the_pointer_without_accumulating(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                let mut segment = model::Segment::spanning(8.0);
+                segment.id = "video".into();
+                editor.state = VideoEditorState {
+                    source_duration: Some(8.0),
+                    segments: vec![segment],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.begin_clip_drag(
+                    ClipDrag {
+                        id: "video".into(),
+                        kind: TrackKind::Video,
+                        mode: DragMode::ResizeStart,
+                        grab_offset: 0.25,
+                    },
+                    cx,
+                );
+                editor.update_clip_drag(1.25, cx);
+                assert_eq!(editor.state.segments[0].original_start, 1.0);
+                editor.update_clip_drag(2.25, cx);
+                assert_eq!(editor.state.segments[0].original_start, 2.0);
+                editor.update_clip_drag(0.25, cx);
+                assert_eq!(editor.state, before);
+                editor.end_clip_drag(cx);
+                assert!(editor.history.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn timeline_pointer_can_shorten_and_extend_video_in_one_drag(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            let mut segment = model::Segment::spanning(8.0);
+            segment.id = "video".into();
+            editor.state = VideoEditorState {
+                source_duration: Some(8.0),
+                segments: vec![segment],
+                ..Default::default()
+            };
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        cx.settle();
+        let handle = cx.expect("clip-handle-video-end");
+        let start = handle.center();
+        let shortened = gpui::point(start.x - px(160.0), start.y);
+        let extended = gpui::point(start.x - px(80.0), start.y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            shortened,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_end) - 4.0).abs() < 0.02
+        );
+        cx.simulate_mouse_move(
+            extended,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_end) - 6.0).abs() < 0.02
+        );
+        cx.simulate_mouse_up(extended, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let start = cx.expect("clip-handle-video-start").center();
+        let first = gpui::point(start.x + px(40.0), start.y);
+        let second = gpui::point(start.x + px(80.0), start.y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            first,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 1.0).abs()
+                < 0.02
+        );
+        cx.simulate_mouse_move(
+            second,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 2.0).abs()
+                < 0.02
+        );
+        cx.simulate_mouse_move(
+            start,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let restored = cx.update(|_, cx| editor.read(cx).state.segments[0].original_start);
+        assert!(restored.abs() < 0.02);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            first,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(first, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        assert!(
+            (cx.update(|_, cx| editor.read(cx).state.segments[0].original_start) - 1.0).abs()
+                < 0.02
+        );
+        let trimmed_start = cx.expect("clip-handle-video-start").center();
+        let restored_start = gpui::point(trimmed_start.x - px(40.0), trimmed_start.y);
+        cx.simulate_mouse_move(trimmed_start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(
+            trimmed_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            restored_start,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            restored_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        let restored = cx.update(|_, cx| editor.read(cx).state.segments[0].original_start);
+        assert!(
+            restored.abs() < 0.02,
+            "restored start: {restored}, handle: {trimmed_start:?}, pointer: {restored_start:?}"
+        );
+    }
+
+    #[herogpui::test]
+    fn zoom_and_camera_ranges_reject_overlapping_adds_and_drags(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.state = VideoEditorState {
+                    source_duration: Some(10.0),
+                    segments: vec![model::Segment::spanning(10.0)],
+                    zoom_segments: vec![
+                        model::ZoomSegment {
+                            id: "z1".into(),
+                            start_time: 1.0,
+                            end_time: 3.0,
+                            ..Default::default()
+                        },
+                        model::ZoomSegment {
+                            id: "z2".into(),
+                            start_time: 4.0,
+                            end_time: 6.0,
+                            ..Default::default()
+                        },
+                    ],
+                    camera_segments: vec![
+                        model::CameraSegment {
+                            id: "c1".into(),
+                            start_time: 1.0,
+                            end_time: 3.0,
+                        },
+                        model::CameraSegment {
+                            id: "c2".into(),
+                            start_time: 4.0,
+                            end_time: 6.0,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                let before = editor.state.clone();
+                editor.add_clip(TrackKind::Zoom, 2.0, 4.0, cx);
+                editor.add_clip(TrackKind::Camera, 2.0, 4.0, cx);
+                assert_eq!(editor.state, before);
+                for (kind, id) in [(TrackKind::Zoom, "z1"), (TrackKind::Camera, "c1")] {
+                    editor.begin_clip_drag(
+                        ClipDrag {
+                            kind,
+                            id: id.into(),
+                            mode: DragMode::Move,
+                            grab_offset: 0.0,
+                        },
+                        cx,
+                    );
+                    editor.update_clip_drag(3.0, cx);
+                    editor.end_clip_drag(cx);
+                    assert_eq!(editor.state, before);
+                    editor.begin_clip_drag(
+                        ClipDrag {
+                            kind,
+                            id: id.into(),
+                            mode: DragMode::ResizeEnd,
+                            grab_offset: 0.0,
+                        },
+                        cx,
+                    );
+                    editor.update_clip_drag(5.0, cx);
+                    editor.end_clip_drag(cx);
+                    assert_eq!(editor.state, before);
+                }
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn reopening_a_project_does_not_reuse_drawing_or_annotation_ids(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("ExistingDrawings.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let existing = Annotation::Rectangle {
+            id: "annotation-1".into(),
+            x: 1.0,
+            y: 1.0,
+            width: 10.0,
+            height: 10.0,
+            stroke: "#ff0000".into(),
+            stroke_width: 2.0,
+            fill: None,
+        };
+        model::save_state(
+            &project,
+            &VideoEditorState {
+                source_duration: Some(8.0),
+                segments: vec![model::Segment::spanning(8.0)],
+                drawing_segments: vec![model::DrawingSegment {
+                    id: "drawing-2".into(),
+                    start_time: 0.0,
+                    end_time: 4.0,
+                    canvas_width: 320.0,
+                    canvas_height: 180.0,
+                    annotations: vec![existing.clone()],
+                }],
+                ..Default::default()
+            },
+        );
+        let editor =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.composition_size = Some((320.0, 180.0));
+                let id = editor.next_timeline_id("annotation");
+                let mut new = existing.clone();
+                if let Annotation::Rectangle { id: new_id, .. } = &mut new {
+                    *new_id = id;
+                }
+                editor.add_drawing_annotation(new, cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+                assert_ne!(
+                    editor.state.drawing_segments[0].id,
+                    editor.state.drawing_segments[1].id
+                );
+                assert_ne!(
+                    editor.state.drawing_segments[0].annotations[0].id(),
+                    editor.state.drawing_segments[1].annotations[0].id()
+                );
+                editor.delete_selected_drawing(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 1);
+                assert_eq!(editor.state.drawing_segments[0].annotations, vec![existing]);
+                editor.undo(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        let reopened = model::load_state(&project);
+        assert_eq!(reopened.drawing_segments.len(), 2);
+        assert_ne!(
+            reopened.drawing_segments[0].id,
+            reopened.drawing_segments[1].id
+        );
+        assert_ne!(
+            reopened.drawing_segments[0].annotations[0].id(),
+            reopened.drawing_segments[1].annotations[0].id()
+        );
+    }
+
+    #[herogpui::test]
+    fn drawing_clips_at_the_same_time_have_independent_ids(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        editor
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(8.0);
+                editor.state.segments = vec![model::Segment::spanning(8.0)];
+                editor.add_clip(TrackKind::Drawing, 1.0, 3.0, cx);
+                editor.add_clip(TrackKind::Drawing, 1.0, 3.0, cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+                assert_ne!(
+                    editor.state.drawing_segments[0].id,
+                    editor.state.drawing_segments[1].id
+                );
+                let first = editor.state.drawing_segments[0].clone();
+                editor.delete_selected_drawing(cx);
+                assert_eq!(editor.state.drawing_segments, vec![first]);
+                editor.undo(cx);
+                assert_eq!(editor.state.drawing_segments.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn timeline_pointer_draws_moves_and_resizes_a_zoom_clip(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state = VideoEditorState {
+                source_duration: Some(10.0),
+                segments: vec![model::Segment::spanning(10.0)],
+                ..Default::default()
+            };
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        cx.settle();
+        let lane = cx.expect("timeline-lane-zoom");
+        let start = gpui::point(lane.left() + px(40.0), lane.center().y);
+        let end = gpui::point(lane.left() + px(120.0), lane.center().y);
+        cx.simulate_mouse_move(start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(end, Some(gpui::MouseButton::Left), gpui::Modifiers::none());
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        let id = cx.update(|_, cx| {
+            let ranges = &editor.read(cx).state.zoom_segments;
+            assert_eq!(ranges.len(), 1);
+            assert!((ranges[0].start_time - 1.0).abs() < 0.02);
+            assert!((ranges[0].end_time - 3.0).abs() < 0.02);
+            ranges[0].id.clone()
+        });
+        let body = cx.expect(&format!("timeline-clip-{id}")).center();
+        let moved = gpui::point(body.x + px(40.0), body.y);
+        cx.simulate_mouse_move(body, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(body, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            moved,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(moved, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let range = &editor.read(cx).state.zoom_segments[0];
+            assert!((range.start_time - 2.0).abs() < 0.02);
+            assert!((range.end_time - 4.0).abs() < 0.02);
+        });
+        let handle = cx.expect(&format!("clip-handle-{id}-end")).center();
+        let resized = gpui::point(handle.x + px(40.0), handle.y);
+        cx.simulate_mouse_move(handle, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(handle, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_move(
+            resized,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(resized, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.update(|_, cx| {
+            let range = &editor.read(cx).state.zoom_segments[0];
+            assert!((range.start_time - 2.0).abs() < 0.02);
+            assert!((range.end_time - 5.0).abs() < 0.02);
+        });
+        let overlapping_start = gpui::point(lane.left() + px(220.0), lane.center().y);
+        let overlapping_end = gpui::point(lane.left() + px(180.0), lane.center().y);
+        cx.simulate_mouse_move(overlapping_start, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(
+            overlapping_start,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            overlapping_end,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            overlapping_end,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.settle();
+        assert_eq!(
+            cx.update(|_, cx| editor.read(cx).state.zoom_segments.len()),
+            1
+        );
+    }
+
+    #[herogpui::test]
+    fn empty_and_short_timeline_lanes_fill_the_viewport(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| VideoEditorWindow::new_for_test(None, cx));
+        cx.settle();
+        for duration in [0.0, 2.0] {
+            cx.update(|_, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.state.source_duration = Some(duration);
+                    editor.state.segments = if duration > 0.0 {
+                        vec![model::Segment::spanning(duration)]
+                    } else {
+                        Vec::new()
+                    };
+                    cx.notify();
+                })
+            });
+            cx.settle();
+            let lane = cx.expect("timeline-lane-zoom");
+            let viewport = cx.expect("timeline-tracks-scroll");
+            assert!(
+                lane.size.width >= viewport.size.width - px(0.5),
+                "duration {duration}: lane {lane:?}, viewport {viewport:?}"
+            );
+            if duration == 0.0 {
+                assert!(cx.find("timeline-empty-zoom").is_none());
+            } else {
+                let hint = cx.expect("timeline-empty-zoom");
+                assert!(
+                    hint.size.width >= px(150.0),
+                    "duration {duration}: hint {hint:?}"
+                );
+            }
+        }
+    }
+
+    #[herogpui::test]
+    fn clicking_after_the_video_does_not_add_an_out_of_range_clip(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.source_duration = Some(2.0);
+            editor.state.segments = vec![model::Segment::spanning(2.0)];
+            editor.pixels_per_second = 40.0;
+            editor
+        });
+        let lane = cx.expect("timeline-lane-zoom");
+        cx.click_at(gpui::point(lane.left() + px(160.0), lane.center().y));
+        assert!(cx.update(|_, cx| editor.read(cx).state.zoom_segments.is_empty()));
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.state.source_duration = None;
+                editor.state.segments.clear();
+                cx.notify();
+            })
+        });
+        cx.settle();
+        cx.click_at(gpui::point(lane.left() + px(40.0), lane.center().y));
+        assert!(cx.update(|_, cx| editor.read(cx).state.zoom_segments.is_empty()));
+    }
+
+    #[herogpui::test]
     fn new_project_persists_materialized_builtin_audio_with_default_timeline(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -4480,7 +6017,223 @@ mod keyboard_demo_tests {
         assert_eq!(saved.music_tracks[0].source, "system");
     }
 
-    #[cfg(windows)]
+    #[herogpui::test]
+    fn removing_music_keeps_its_file_for_undo_and_redo(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let track = model::MusicTrack {
+            id: "music-sound".into(),
+            group_id: "music-sound".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.music_tracks = vec![track.clone()];
+                editor.remove_music_track(track.id.clone().into(), cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                assert_eq!(
+                    std::fs::read_dir(folder.parent().unwrap().join(".poratake-music-retention"))
+                        .unwrap()
+                        .count(),
+                    1
+                );
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![track.clone()]);
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.redo(cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![track]);
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn removing_a_split_music_group_is_one_undo_step(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let first = model::MusicTrack {
+            id: "first".into(),
+            group_id: "group".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let second = model::MusicTrack {
+            id: "second".into(),
+            ..first.clone()
+        };
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.music_tracks = vec![first.clone(), second.clone()];
+                editor.remove_music_group("group".into(), cx);
+                assert!(editor.state.music_tracks.is_empty());
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+                editor.undo(cx);
+                assert_eq!(editor.state.music_tracks, vec![first, second]);
+                assert_eq!(std::fs::read(&file).unwrap(), b"original audio");
+            })
+            .unwrap();
+    }
+
+    #[herogpui::test]
+    fn failed_state_save_does_not_mark_the_edit_as_saved(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir_all(project.join("state.json")).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.saved_at = "previous".into();
+                editor.toggle_sidebar(cx);
+            })
+            .unwrap();
+        cx.executor().advance_clock(SAVE_DEBOUNCE * 3);
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.state.saved_at, "previous");
+            })
+            .unwrap();
+        assert!(project.join("state.json").is_dir());
+    }
+
+    #[herogpui::test]
+    fn closing_before_the_debounce_saves_the_restored_music(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        let folder = project.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("sound.wav");
+        std::fs::write(&file, b"original audio").unwrap();
+        let track = model::MusicTrack {
+            id: "music-sound".into(),
+            group_id: "music-sound".into(),
+            file_name: "sound.wav".into(),
+            ..Default::default()
+        };
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, window, cx| {
+                editor.state.music_tracks = vec![track.clone()];
+                editor.remove_music_track(track.id.clone().into(), cx);
+                editor.undo(cx);
+                window.remove_window();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(model::load_state(&project).music_tracks, vec![track]);
+        assert_eq!(std::fs::read(file).unwrap(), b"original audio");
+    }
+
+    #[herogpui::test]
+    fn close_save_fails_without_discarding_the_edit_and_can_be_retried(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir_all(project.join("state.json")).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, window, cx| {
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), || {});
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        assert!(!visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.state.ui.sidebar_open);
+                assert_ne!(editor.save_generation, editor.saved_generation);
+            })
+            .unwrap();
+        std::fs::remove_dir(project.join("state.json")).unwrap();
+        assert!(visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert_eq!(editor.save_generation, editor.saved_generation);
+            })
+            .unwrap();
+        assert!(!model::load_state(&project).ui.sidebar_open);
+    }
+
+    #[herogpui::test]
+    fn file_dialog_blocks_close_without_reporting_a_save_failure(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let reported_failure = Arc::new(AtomicBool::new(false));
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        let failure = reported_failure.clone();
+        window
+            .update(cx, |editor, window, cx| {
+                VideoEditorWindow::guard_close(window, cx, cx.entity().downgrade(), move || {
+                    failure.store(true, Ordering::SeqCst);
+                });
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+                editor.is_file_dialog_open = true;
+            })
+            .unwrap();
+
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        assert!(!visual.simulate_close());
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.state.ui.sidebar_open);
+                assert_ne!(editor.save_generation, editor.saved_generation);
+                editor.is_file_dialog_open = false;
+            })
+            .unwrap();
+        assert!(!reported_failure.load(Ordering::SeqCst));
+        assert!(visual.simulate_close());
+        assert!(!reported_failure.load(Ordering::SeqCst));
+        assert!(!model::load_state(&project).ui.sidebar_open);
+    }
+
+    #[herogpui::test]
+    fn close_save_includes_a_gesture_that_has_not_ended(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.begin_gesture();
+                editor.commit(cx, |state| state.ui.sidebar_open = false);
+                assert_eq!(editor.save_generation, editor.saved_generation);
+                assert!(editor.flush_pending_state());
+            })
+            .unwrap();
+        assert!(!model::load_state(&project).ui.sidebar_open);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
     fn loaded_invalid_leading_timeline_segment_updates_preview_and_export(
         cx: &mut gpui::TestAppContext,
@@ -4514,7 +6267,7 @@ mod keyboard_demo_tests {
                 .write_frame([24, 24, 220, 255].repeat(320 * 180))
                 .unwrap();
         }
-        encoder.finish().unwrap();
+        encoder.finish_cancellable(&|| false).unwrap();
 
         let saved_state = VideoEditorState {
             source_duration: Some(2.0),
@@ -4644,6 +6397,7 @@ mod keyboard_demo_tests {
                     &project,
                     &editor.state,
                     editor.preview_audio.cache(),
+                    true,
                 );
                 let built = crate::video::preview_audio::build_stems(inputs);
                 editor.preview_audio.install(built, &editor.state, 0.0);
@@ -4658,6 +6412,120 @@ mod keyboard_demo_tests {
             .update(cx, |editor, _, _| {
                 assert_eq!(editor.state.segments[0].original_end, 3.0);
                 assert!(!editor.preview_audio.needs_rebuild(&editor.state));
+            })
+            .unwrap();
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[herogpui::test]
+    fn readding_music_with_the_same_name_refreshes_preview_audio(cx: &mut gpui::TestAppContext) {
+        use crate::video::{audio, music, preview_audio, transcription};
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let first_folder = directory.path().join("first");
+        let second_folder = directory.path().join("second");
+        std::fs::create_dir(&first_folder).unwrap();
+        std::fs::create_dir(&second_folder).unwrap();
+        let first_path = first_folder.join("sound.wav");
+        let second_path = second_folder.join("sound.wav");
+        std::fs::write(
+            &first_path,
+            transcription::wav_bytes(&vec![5000; 4800], 48000),
+        )
+        .unwrap();
+        std::fs::write(
+            &second_path,
+            transcription::wav_bytes(&vec![-15000; 4800], 48000),
+        )
+        .unwrap();
+        let first = music::add(&project, &first_path, 0.0).unwrap();
+        let window =
+            cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project.clone()), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                editor.state.source_duration = Some(0.1);
+                editor.state.segments = vec![model::Segment::spanning(0.1)];
+                editor.state.music_tracks = vec![first.clone()];
+                let mut built = preview_audio::build_stems(preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                    true,
+                ));
+                let original = built.stems[0].samples.iter().nth(1000).unwrap();
+                built.stems.clear();
+                editor.preview_audio.install(built, &editor.state, 0.0);
+                editor.remove_music_track(first.id.clone().into(), cx);
+                let replacement = music::add(&project, &second_path, 0.0).unwrap();
+                assert_ne!(replacement.file_name, first.file_name);
+                assert!(project.join("music").join(&first.file_name).is_file());
+                editor.accept_music_track(&project, replacement.clone(), cx);
+                assert!(editor.preview_audio.needs_rebuild(&editor.state));
+                let refreshed = preview_audio::build_stems(preview_audio::RebuildInputs::capture(
+                    &project,
+                    &editor.state,
+                    editor.preview_audio.cache(),
+                    true,
+                ));
+                let decoded =
+                    audio::decode(&project.join("music").join(&replacement.file_name)).unwrap();
+                let expected = audio::place(&decoded, &audio::Placement::of(&replacement));
+                assert_ne!(original, expected[1000]);
+                assert!(refreshed.stems[0].samples.iter().eq(expected));
+            })
+            .unwrap();
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
+    #[herogpui::test]
+    fn imported_music_with_colliding_names_remains_independent(cx: &mut gpui::TestAppContext) {
+        use crate::video::{music, transcription};
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let project = directory.path().join("Audio.poratake");
+        std::fs::create_dir(&project).unwrap();
+        let first_path = directory.path().join("mix-1.wav");
+        let second_path = directory.path().join("mix 1.wav");
+        let third_path = directory.path().join("mix_1.wav");
+        let wav = transcription::wav_bytes(&vec![5000; 4800], 48000);
+        std::fs::write(&first_path, &wav).unwrap();
+        std::fs::write(&second_path, &wav).unwrap();
+        std::fs::write(&third_path, &wav).unwrap();
+        let first = music::add(&project, &first_path, 0.0).unwrap();
+        let second = music::add(&project, &second_path, 0.0).unwrap();
+        let third = music::add(&project, &third_path, 0.0).unwrap();
+        let window = cx.add_window(|_, cx| VideoEditorWindow::new_for_test(Some(project), cx));
+        window
+            .update(cx, |editor, _, cx| {
+                let project = editor.path.clone().unwrap();
+                editor.accept_music_track(&project, first, cx);
+                editor.accept_music_track(&project, second, cx);
+                editor.accept_music_track(&project, third, cx);
+                let first = editor.state.music_tracks[0].clone();
+                let second = editor.state.music_tracks[1].clone();
+                let third = editor.state.music_tracks[2].clone();
+                assert_ne!(first.id, second.id);
+                assert_ne!(first.id, third.id);
+                assert_ne!(second.id, third.id);
+                assert_ne!(model::group_key(&first), model::group_key(&second));
+                editor.set_music_volume(first.id.clone().into(), 0.25, cx);
+                assert_eq!(editor.state.music_tracks[0].volume, 0.25);
+                assert_ne!(editor.state.music_tracks[1].volume, 0.25);
+                model::save_state(&project, &editor.state);
+                let restored = model::load_state(&project);
+                assert_eq!(restored.music_tracks, editor.state.music_tracks);
+                editor.remove_music_track(first.id.into(), cx);
+                assert_eq!(editor.state.music_tracks.len(), 2);
+                assert_eq!(editor.state.music_tracks[0].id, second.id);
+                assert_eq!(editor.state.music_tracks[1].id, third.id);
+                assert!(project.join("music").join(second.file_name).is_file());
+                assert!(project.join("music").join(third.file_name).is_file());
             })
             .unwrap();
     }
@@ -4686,6 +6554,150 @@ mod keyboard_demo_tests {
                 assert!(editor.is_playing);
             })
             .unwrap();
+    }
+
+    #[herogpui::test]
+    fn editor_shortcuts_work_when_a_button_is_focused(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let editor = VideoEditorWindow::new_for_test(None, cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.settle();
+        let mut reached_button = false;
+        for _ in 0..40 {
+            cx.press("tab");
+            reached_button = cx.update(|window, _| {
+                window
+                    .context_stack()
+                    .last()
+                    .is_some_and(|context| context.contains("Button"))
+            });
+            if reached_button {
+                break;
+            }
+        }
+        assert!(reached_button);
+        cx.press("c");
+        assert!(cx.update(|_, cx| editor.read(cx).is_cut_tool_active));
+        cx.press("c");
+        assert!(!cx.update(|_, cx| editor.read(cx).is_cut_tool_active));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn tab_reveals_wallpaper_padding_below_the_aspect_ratio_grid(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.wallpaper.enabled = true;
+            editor.state.wallpaper.padding = 12.;
+            editor.open_tab_for_test(SidebarTab::Wallpaper, cx);
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.simulate_resize(size(px(950.), px(520.)));
+        cx.settle();
+        let scroll = cx.update(|_, cx| editor.read(cx).panel_scroll.clone());
+        let padding_bounds = || scroll.bounds_for_item(5).unwrap() + scroll.offset();
+        assert!(padding_bounds().bottom() > scroll.bounds().bottom());
+        let ratio = cx.expect("aspect-label-3:2").center();
+        cx.simulate_mouse_move(ratio, None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(ratio, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.simulate_mouse_up(ratio, gpui::MouseButton::Left, gpui::Modifiers::none());
+        cx.settle();
+        cx.press("tab");
+        assert!(
+            padding_bounds().bottom() <= scroll.bounds().bottom(),
+            "Tab left Padding clipped: {:?}, viewport {:?}",
+            padding_bounds(),
+            scroll.bounds()
+        );
+        cx.press("right");
+        assert!(cx.update(|_, cx| editor.read(cx).state.wallpaper.padding) > 12.);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn switching_video_settings_tabs_starts_the_new_panel_at_the_top(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.wallpaper.enabled = true;
+            editor.state.music_tracks = (0..12)
+                .map(|index| model::MusicTrack {
+                    id: format!("track-{index}"),
+                    name: format!("Track {}", index + 1),
+                    ..Default::default()
+                })
+                .collect();
+            editor.open_tab_for_test(SidebarTab::Wallpaper, cx);
+            editor
+        });
+        cx.simulate_resize(size(px(950.), px(520.)));
+        cx.settle();
+        let scroll = cx.update(|_, cx| editor.read(cx).panel_scroll.clone());
+        let scroll_down = |cx: &mut gpui::VisualTestContext, scroll: &ScrollHandle, amount: f32| {
+            cx.simulate_event(gpui::ScrollEvent {
+                position: scroll.bounds().center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-amount))),
+                touch_phase: gpui::TouchPhase::Moved,
+                ..Default::default()
+            });
+            cx.settle();
+        };
+        scroll_down(cx, &scroll, 200.);
+        assert!(scroll.offset().y < px(0.), "Wallpaper should be scrolled");
+
+        let switch_to = |cx: &mut gpui::VisualTestContext, tab| {
+            cx.update(|_, cx| editor.update(cx, |editor, cx| editor.activate_tab(tab, cx)));
+            cx.settle();
+        };
+        switch_to(cx, SidebarTab::Audio);
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "Audio must overflow the viewport"
+        );
+        assert_eq!(
+            scroll.offset().y,
+            px(0.),
+            "Audio inherited the previous tab's position"
+        );
+
+        scroll_down(cx, &scroll, 120.);
+        let audio_offset = scroll.offset().y;
+        assert!(audio_offset < px(0.));
+        switch_to(cx, SidebarTab::Audio);
+        assert_eq!(
+            scroll.offset().y,
+            audio_offset,
+            "Re-selecting Audio should preserve its position"
+        );
+
+        switch_to(cx, SidebarTab::Export);
+        let export_scroll = cx.update(|_, cx| editor.read(cx).export_scroll.clone());
+        scroll_down(cx, &export_scroll, 120.);
+        assert!(
+            export_scroll.offset().y < px(0.),
+            "Export should be scrolled"
+        );
+        switch_to(cx, SidebarTab::Audio);
+        assert_eq!(scroll.offset().y, px(0.));
+        switch_to(cx, SidebarTab::Export);
+        assert!(export_scroll.max_offset().y > px(0.));
+        assert_eq!(export_scroll.offset().y, px(0.));
     }
 
     #[herogpui::test]
@@ -4923,6 +6935,44 @@ mod keyboard_demo_tests {
     }
 
     #[herogpui::test]
+    fn a_tall_saved_timeline_fits_a_short_window_without_hiding_the_preview(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        test_state(cx, dir.path());
+        let saved = timeline::pane_height(timeline::MAX_PANE_TRACKS);
+        let mut handle = None;
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.timeline_height = saved;
+            editor.state.ui.timeline_height = Some(f64::from(saved));
+            handle = Some(window.window_handle());
+            editor
+        });
+        let handle = handle.unwrap();
+        let compact = size(px(640.), px(440.));
+        cx.simulate_window_resize(handle, compact);
+        cx.refresh().unwrap();
+
+        let preview = cx.debug_bounds("video-editor-preview").unwrap();
+        let tracks = cx.update(|_, cx| editor.read(cx).pane_scroll.bounds());
+        assert!(
+            preview.size.height >= px(timeline::pane_height(timeline::MIN_PANE_TRACKS)),
+            "{preview:?}"
+        );
+        assert!(tracks.size.height < px(saved), "{tracks:?}");
+        assert!(tracks.bottom() <= compact.height, "{tracks:?}");
+
+        cx.simulate_window_resize(handle, size(px(1280.), px(800.)));
+        cx.refresh().unwrap();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.pane_scroll.bounds().size.height, px(saved));
+            assert_eq!(editor.state.ui.timeline_height, Some(f64::from(saved)));
+        });
+    }
+
+    #[herogpui::test]
     fn export_video_button_fits_the_small_work_area_window(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         test_state(cx, dir.path());
@@ -4957,25 +7007,46 @@ mod keyboard_demo_tests {
         assert!(button.bottom() <= viewport.height);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg_attr(target_os = "macos", ignore = "requires development FFmpeg")]
     #[herogpui::test]
     fn drawing_tool_ui_edit_survives_reopen_and_matches_export(cx: &mut gpui::TestAppContext) {
         use herogpui::test::TestWindowExt;
 
+        let narrow = std::env::var_os("PORATAKE_TEST_NARROW_VIDEO").is_some();
         let dir = tempfile::tempdir().unwrap();
         test_state(cx, dir.path());
         let notifications = crate::system::notification::capture_for_test();
         let project = dir.path().join("Drawing workflow.poratake");
         std::fs::create_dir(&project).unwrap();
         let recording = project::recording_video_path(&project);
-        std::fs::write(
-            &recording,
-            include_bytes!("../../ui/parity/fixtures/capture.mov"),
-        )
-        .unwrap();
-        let source_info = crate::video::decoder::VideoDecoder::open(&recording)
-            .expect("open recording fixture")
-            .info();
+        let external_recording = std::env::var_os("PORATAKE_TEST_RECORDING").map(PathBuf::from);
+        let recording_bytes = external_recording
+            .as_ref()
+            .map(|path| std::fs::read(path).expect("read test recording"))
+            .unwrap_or_else(|| include_bytes!("../../ui/parity/fixtures/capture.mov").to_vec());
+        std::fs::write(&recording, recording_bytes).unwrap();
+        if let Some(system_audio) = external_recording
+            .as_ref()
+            .map(|path| crate::video::project::system_audio_path(path))
+            .filter(|path| path.is_file())
+        {
+            std::fs::copy(
+                system_audio,
+                crate::video::project::system_audio_path(&project),
+            )
+            .expect("copy test system audio");
+        }
+        let source =
+            crate::video::decoder::VideoDecoder::open(&recording).expect("open recording fixture");
+        let source_info = source.info();
+        let first_frame = source.frame_at(0.0).expect("decode recording fixture");
+        assert!(first_frame
+            .bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[..3].iter().any(|channel| *channel > 32)));
         let mut initial_state = model::VideoEditorState {
             source_duration: Some(source_info.duration),
             segments: vec![model::Segment::spanning(source_info.duration)],
@@ -4993,8 +7064,17 @@ mod keyboard_demo_tests {
             window.focus(&editor.focus_handle, cx);
             editor
         });
+        if narrow {
+            cx.simulate_resize(size(px(720.0), px(520.0)));
+        }
         cx.run_until_parked();
         cx.settle();
+        if narrow {
+            assert_eq!(
+                cx.update(|window, _| window.viewport_size()),
+                size(px(720.0), px(520.0))
+            );
+        }
         let original_preview = cx.update(|_, app| {
             editor.update(app, |editor, _| {
                 editor
@@ -5005,6 +7085,11 @@ mod keyboard_demo_tests {
                     .to_vec()
             })
         });
+        assert!(original_preview
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[..3].iter().any(|channel| *channel > 32)));
 
         let drawing_shortcut = cx.update(|_, app| {
             crate::state::state(app)
@@ -5165,8 +7250,17 @@ mod keyboard_demo_tests {
             window.focus(&editor.focus_handle, cx);
             editor
         });
+        if narrow {
+            cx.simulate_resize(size(px(720.0), px(520.0)));
+        }
         cx.run_until_parked();
         cx.settle();
+        if narrow {
+            assert_eq!(
+                cx.update(|window, _| window.viewport_size()),
+                size(px(720.0), px(520.0))
+            );
+        }
         let reopened_preview = cx.update(|_, app| {
             reopened.update(app, |editor, _| {
                 assert_eq!(editor.state, saved_state);
@@ -5296,9 +7390,89 @@ mod keyboard_demo_tests {
             edited_mean_error + 8.0 < original_mean_error,
             "decoded export changed pixels do not favor the edited preview: edited MAE={edited_mean_error:.2}, original MAE={original_mean_error:.2}"
         );
+
+        let later_time = (source_info.duration * 7.0).floor() / 10.0;
+        reopened.update(&mut cx.cx, |editor, cx| editor.set_playhead(later_time, cx));
+        cx.run_until_parked();
+        cx.settle();
+        let later_preview = cx.update(|_, app| {
+            reopened.update(app, |editor, _| {
+                editor
+                    .preview_image()
+                    .expect("later editor preview")
+                    .as_bytes(0)
+                    .expect("later preview pixels")
+                    .to_vec()
+            })
+        });
+        let later_source = source.frame_at(later_time).expect("later recording frame");
+        let source_changed = first_frame
+            .bgra
+            .iter()
+            .zip(later_source.bgra.iter())
+            .filter(|(first, later)| first.abs_diff(**later) > 32)
+            .count()
+            > 20;
+        if source_changed {
+            assert!(
+                reopened_preview
+                    .iter()
+                    .zip(&later_preview)
+                    .any(|(first, later)| first.abs_diff(*later) > 16),
+                "the preview did not update when the recorded content changed"
+            );
+        }
+        let later_frame = exported.frame_at(later_time).expect("later exported frame");
+        assert_eq!(later_frame.bgra.len(), later_preview.len());
+        let later_error = later_frame
+            .bgra
+            .iter()
+            .zip(&later_preview)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum::<u64>() as f64
+            / later_preview.len() as f64;
+        assert!(
+            later_error < 8.0,
+            "later preview/export mean error at {later_time}s: {later_error}"
+        );
+        if let Some(directory) = std::env::var_os("PORATAKE_TEST_VIDEO_EVIDENCE") {
+            let directory = PathBuf::from(directory);
+            assert!(narrow && directory.is_absolute() && directory.is_dir());
+            let save_frame = |name: &str, pixels: &[u8]| {
+                let mut rgba = pixels.to_vec();
+                for pixel in rgba.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                image::RgbaImage::from_raw(frame.width, frame.height, rgba)
+                    .unwrap()
+                    .save(directory.join(name))
+                    .unwrap();
+            };
+            save_frame("narrow-video-preview.png", &reopened_preview);
+            save_frame("narrow-video-export-frame.png", &frame.bgra);
+            save_frame("narrow-video-later-preview.png", &later_preview);
+            save_frame("narrow-video-later-export-frame.png", &later_frame.bgra);
+            std::fs::copy(&output, directory.join("narrow-video-export.mp4")).unwrap();
+            let metrics = serde_json::json!({
+                "viewport": [720, 520],
+                "frameSize": [frame.width, frame.height],
+                "firstMeanError": mean_error,
+                "firstAnnotationRegionMeanError": roi_mean_error,
+                "changedPixels": changed_preview_pixels,
+                "editedChangedPixelMeanError": edited_mean_error,
+                "originalChangedPixelMeanError": original_mean_error,
+                "laterTime": later_time,
+                "laterMeanError": later_error,
+            });
+            std::fs::write(
+                directory.join("narrow-video-export-metrics.json"),
+                serde_json::to_vec_pretty(&metrics).unwrap(),
+            )
+            .unwrap();
+        }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[herogpui::test]
     fn cancelled_export_finishes_before_a_retry_can_start(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -5485,6 +7659,55 @@ mod keyboard_demo_tests {
     }
 
     #[herogpui::test]
+    fn space_starts_playback_from_the_hovered_frame(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let (editor, cx) = cx.add_window_view(|window, cx| {
+            let mut editor = VideoEditorWindow::new_for_test(None, cx);
+            editor.state.source_duration = Some(4.);
+            editor.state.segments = vec![model::Segment::spanning(4.)];
+            editor.pixels_per_second = 80.;
+            editor.playhead = 0.5;
+            window.focus(&editor.focus_handle, cx);
+            editor
+        });
+        cx.settle();
+        let lane = cx.expect("timeline-lane-zoom");
+        let pointer = gpui::point(lane.left() + px(160.), lane.center().y);
+        cx.simulate_mouse_move(pointer, None, gpui::Modifiers::none());
+        cx.settle();
+        let hovered = cx.update(|_, cx| editor.read(cx).preview_playhead.unwrap());
+        assert_eq!(hovered, 2.);
+
+        cx.press("space");
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert_eq!(editor.playhead, hovered);
+            assert!(editor.preview_playhead.is_none());
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.playhead > hovered);
+            assert!(editor.preview_playhead.is_none());
+        });
+
+        cx.press("space");
+        cx.update(|_, cx| editor.update(cx, |editor, cx| editor.preview_seek(Some(4.), cx)));
+        cx.press("space");
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert_eq!(editor.playhead, 0.);
+            assert!(editor.preview_playhead.is_none());
+        });
+    }
+
+    #[herogpui::test]
     fn typing_in_a_text_field_does_not_fire_editor_shortcuts(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().expect("temp dir");
         let config = Arc::new(
@@ -5509,6 +7732,13 @@ mod keyboard_demo_tests {
 
         cx.simulate_keystrokes(window.into(), "space");
         assert!(!window.update(cx, |editor, _, _| editor.is_playing).unwrap());
+        cx.simulate_keystrokes(window.into(), "c ctrl-s cmd-s");
+        window
+            .update(cx, |editor, _, _| {
+                assert!(!editor.is_cut_tool_active);
+                assert_ne!(editor.active_tab(), SidebarTab::Export);
+            })
+            .unwrap();
     }
 
     #[herogpui::test]
@@ -5598,6 +7828,264 @@ mod keyboard_demo_tests {
         assert_eq!(playback_tick(f64::NAN), playback_tick(60.0));
     }
 
+    #[cfg(target_os = "macos")]
+    fn editor_with_preview_source(
+        cx: &mut gpui::TestAppContext,
+        directory: &std::path::Path,
+    ) -> gpui::Entity<VideoEditorWindow> {
+        test_state(cx, directory);
+        let project = directory.join("Preview.poratake");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project::recording_video_path(&project),
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(2.);
+                editor.state.segments = vec![model::Segment::spanning(2.)];
+                editor.state.wallpaper.enabled = false;
+                let source = preview::Source::open(&project, editor.state.clone()).unwrap();
+                editor.source = Some(Arc::new(parking_lot::Mutex::new(source)));
+                editor
+            })
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn an_in_flight_preview_frame_is_discarded_after_a_seek(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let editor = editor_with_preview_source(cx, directory.path());
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.request_frame(cx);
+                editor.set_playhead(1., cx);
+            });
+        });
+        while cx.update(|cx| editor.read(cx).queued_frame.is_some()) {
+            assert!(cx.executor().tick());
+        }
+        assert!(
+            cx.update(|cx| editor.read(cx).preview_image().is_none()),
+            "the old frame was published ahead of the requested seek"
+        );
+        cx.run_until_parked();
+        let after_seek = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.begin_scrub();
+                editor.set_playhead(0.5, cx);
+                editor.set_playhead(0.75, cx);
+            });
+        });
+        while cx.update(|cx| editor.read(cx).queued_frame.is_some()) {
+            assert!(cx.executor().tick());
+        }
+        let while_scrubbing = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        assert!(!Arc::ptr_eq(&after_seek, &while_scrubbing));
+        cx.run_until_parked();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_first_preview_after_a_committed_edit_uses_the_applied_state() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        let editor = editor_with_preview_source(&mut cx, directory.path());
+        cx.update(|cx| editor.update(cx, |editor, cx| editor.request_frame(cx)));
+        while !scheduler.tick_background_only() {
+            assert!(scheduler.tick());
+        }
+        while scheduler.tick_background_only() {}
+
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.update_wallpaper(cx, |wallpaper| {
+                    wallpaper.enabled = true;
+                    wallpaper.aspect_ratio = Some(serde_json::json!({ "width": 1, "height": 1 }));
+                });
+            });
+        });
+        while cx.update(|cx| editor.read(cx).preview_image().is_none()) {
+            assert!(scheduler.tick());
+        }
+        let size = cx.update(|cx| editor.read(cx).preview_image().unwrap().size(0));
+        assert_eq!(
+            size.width, size.height,
+            "first preview must reflect the square wallpaper"
+        );
+        cx.run_until_parked();
+        scheduler.drain_tasks();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hidden_playback_advances_without_replacing_the_preview() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let clock = scheduler.clock();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        test_state(&mut cx, directory.path());
+        let recording = directory.path().join("Preview.mov");
+        std::fs::write(
+            &recording,
+            include_bytes!("../../ui/parity/fixtures/capture.mov"),
+        )
+        .unwrap();
+        let window = cx.update(|cx| {
+            VideoEditorWindow::open(cx, Some(recording.to_string_lossy().into_owned()));
+            registry::handle(RegistryKind::VideoEditor, cx).unwrap()
+        });
+        let editor = window
+            .downcast::<VideoEditorWindow>()
+            .unwrap()
+            .update(&mut cx, |_, _, cx| cx.entity())
+            .unwrap();
+        cx.run_until_parked();
+        let initial_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        let initial_playhead = cx.update(|cx| editor.read(cx).playhead);
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.toggle_playback(cx);
+                editor.request_frame(cx);
+            });
+        });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        cx.run_until_parked();
+
+        clock.advance(Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert!(editor.is_playing);
+            assert_eq!(editor.playhead, initial_playhead);
+            assert!(!editor.compose_in_flight);
+            assert!(Arc::ptr_eq(
+                &editor.preview_image().unwrap(),
+                &initial_image
+            ));
+        });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        let revealed_image = cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert!((editor.playhead - initial_playhead - 0.5).abs() < 1e-9);
+            editor.preview_image().unwrap()
+        });
+        assert!(!Arc::ptr_eq(&revealed_image, &initial_image));
+
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Hidden);
+        clock.advance(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert!(!editor.is_playing);
+            assert_eq!(editor.playhead, editor.total_duration());
+            assert!(Arc::ptr_eq(
+                &editor.preview_image().unwrap(),
+                &revealed_image
+            ));
+        });
+        cx.simulate_window_visibility_change(window, gpui::WindowVisibility::Visible);
+        cx.run_until_parked();
+        let final_image = cx.update(|cx| editor.read(cx).preview_image().unwrap());
+        assert!(!Arc::ptr_eq(&final_image, &revealed_image));
+        scheduler.drain_tasks();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[herogpui::test]
+    fn covered_playback_replans_after_a_seek_or_duration_edit(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        test_state(cx, directory.path());
+        let editor = cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(10.);
+                editor.state.segments = vec![model::Segment::spanning(10.)];
+                editor.set_preview_window_hidden(true, cx);
+                editor.toggle_playback(cx);
+                editor
+            })
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            editor.update(cx, |editor, cx| {
+                editor.toggle_playback(cx);
+                assert_eq!(editor.playhead, 1.);
+                editor.toggle_playback(cx);
+                editor.set_playhead(4., cx);
+                editor.commit(cx, |state| state.segments[0].original_end = 5.);
+            });
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let editor = editor.read(cx);
+            assert_eq!(editor.playhead, 5.);
+            assert!(!editor.is_playing);
+        });
+    }
+
+    #[test]
+    fn a_late_playback_tick_recovers_at_the_next_source_frame_boundary() {
+        let dispatcher = gpui::TestDispatcher::new(0);
+        let scheduler = dispatcher.scheduler().clone();
+        let clock = scheduler.clock();
+        let mut cx = gpui::TestAppContext::build(dispatcher, None);
+        let directory = tempfile::tempdir().unwrap();
+        test_state(&mut cx, directory.path());
+        let editor = cx.update(|cx| {
+            cx.new(|cx| {
+                let mut editor = VideoEditorWindow::new_for_test(None, cx);
+                editor.state.source_duration = Some(4.);
+                editor.state.segments = vec![model::Segment::spanning(4.)];
+                editor.source_frame_rate = 30.;
+                editor.is_playing = true;
+                editor.drive_playback(cx);
+                editor
+            })
+        });
+        cx.run_until_parked();
+
+        let period = playback_tick(30.);
+        let late_by = Duration::from_millis(9);
+        let assert_playhead = |cx: &mut gpui::TestAppContext, expected: Duration| {
+            cx.update(|cx| {
+                let actual = editor.read(cx).playhead;
+                assert!(
+                    (actual - expected.as_secs_f64()).abs() < 1e-9,
+                    "playhead was {actual}, expected {expected:?}"
+                );
+            });
+        };
+        clock.advance(period + late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period + late_by);
+
+        clock.advance(period - late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 2);
+
+        clock.advance(period * 3 + late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 5 + late_by);
+        clock.advance(period - late_by);
+        cx.run_until_parked();
+        assert_playhead(&mut cx, period * 6);
+        scheduler.drain_tasks();
+    }
+
     #[test]
     fn frame_stepping_is_a_fixed_thirty_per_second() {
         assert_eq!(FRAME_STEP, 1.0 / 30.0);
@@ -5619,7 +8107,13 @@ mod keyboard_demo_tests {
     fn active_preview_quality_tracks_the_frame_budget() {
         let budget = active_preview_budget(60.0);
         assert_eq!(
-            adjust_preview_quality(3, 0, budget + Duration::from_millis(1), budget),
+            adjust_preview_quality(
+                3,
+                0,
+                budget + Duration::from_millis(1),
+                Duration::ZERO,
+                budget
+            ),
             (2, 0)
         );
         assert_eq!(
@@ -5627,17 +8121,49 @@ mod keyboard_demo_tests {
                 2,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
                 Duration::from_millis(1),
+                Duration::ZERO,
                 budget
             ),
             (3, 0)
         );
         assert_eq!(
-            adjust_preview_quality(0, 0, budget + Duration::from_millis(1), budget),
+            adjust_preview_quality(
+                0,
+                0,
+                budget + Duration::from_millis(1),
+                Duration::ZERO,
+                budget
+            ),
             (0, 0)
         );
         assert!(
             active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(1.0 / 60.0))
                 <= Duration::from_nanos(1)
+        );
+    }
+
+    #[test]
+    fn a_slow_decode_does_not_lower_quality_when_composition_fits() {
+        let budget = active_preview_budget(60.0);
+        let decode = Duration::from_millis(1500);
+        let render = Duration::from_millis(4);
+        assert_eq!(
+            adjust_preview_quality(
+                3,
+                PREVIEW_QUALITY_RAISE_FRAMES - 1,
+                decode + render,
+                decode,
+                budget
+            ),
+            (3, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(3, 0, decode + budget + render, decode, budget),
+            (2, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(3, 0, budget + render, render, budget),
+            (2, 0)
         );
     }
 

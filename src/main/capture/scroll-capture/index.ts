@@ -29,6 +29,7 @@ import {
   showScrollCaptureOverlay,
   updateScrollCaptureState,
   hideScrollCaptureOverlay,
+  getScrollCaptureExclusionWindowIds,
 } from './scroll-capture-window';
 import type {
   ScrollCaptureAction,
@@ -37,7 +38,7 @@ import type {
 import type { AreaSelection } from '@/types/area';
 import type { AutoScrollSpeed } from '@/types/settings';
 import { isFeatureSupported } from '@/main/system/capabilities';
-import { isWindows } from '@/main/utils/platform';
+import { isMac, isWindows } from '@/main/utils/platform';
 import { showNotification } from '@/main/utils/notification';
 
 let activeCapture: Promise<void> | null = null;
@@ -287,6 +288,20 @@ async function runScrollCapture(): Promise<void> {
       try {
         if (action === 'toggle-auto-scroll') {
           if (finishInFlight || resolved) return;
+          if (!autoScrolling && isMac) {
+            const excludedWindowIds = getScrollCaptureExclusionWindowIds();
+            if (!excludedWindowIds) {
+              showNotification(
+                'Scroll Capture Stopped',
+                'Capture controls could not be excluded. You can retry or save the captured portion.'
+              );
+              return;
+            }
+            await daemon.call('scroll-capture', 'startAutoScroll', {
+              excludedWindowIds,
+            });
+            return;
+          }
           await daemon.call(
             'scroll-capture',
             autoScrolling ? 'stopAutoScroll' : 'startAutoScroll'
@@ -363,11 +378,15 @@ async function runScrollCapture(): Promise<void> {
             break;
           case 'capture-error':
             message =
-              'A frame could not be captured. You can save the captured portion.';
+              (data as { frameCount?: unknown } | null)?.frameCount === 0
+                ? 'The first frame could not be captured. Try auto-scroll again.'
+                : 'A frame could not be captured. You can save the captured portion.';
             break;
           case 'input-error':
             message =
-              'Scrolling could not be continued. You can save the captured portion.';
+              (data as { frameCount?: unknown } | null)?.frameCount === 0
+                ? 'Auto Scroll could not send input.'
+                : 'Scrolling could not be continued. You can save the captured portion.';
             break;
         }
         if (message) showNotification('Scroll Capture Stopped', message);

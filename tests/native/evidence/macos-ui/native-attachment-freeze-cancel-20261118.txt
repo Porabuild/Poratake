@@ -1,0 +1,20 @@
+2026-11-18 macOS attachment cancellation with Freeze Screen enabled
+
+Apple Silicon development binary, built-in 1728×1117-point Retina display.
+Screen Recording authorization was verified by the existing screen-only daemon
+before freeze. The bridge forwarded only the two freeze-screen requests. It
+checked on-screen window metadata before delivering the replies to GPUI.
+
+Light
+attachment cancel: AppKit Escape restored the editor and preserved the composition
+attachment cancel: pending freeze release settled
+Authorized Screen Recording, generated 1728x1117-point backdrop, frozen window 5839 created and released before the daemon quit
+
+Dark
+attachment cancel: AppKit Escape restored the editor and preserved the composition
+attachment cancel: pending freeze release settled
+Authorized Screen Recording, generated 1728x1117-point backdrop, frozen window 5846 created and released before the daemon quit
+
+The source PNG remained on disk. The event was sent directly to the temporary
+selector's AppKit view. No desktop key events were posted. Temporary processes
+closed and the existing editor remained open.

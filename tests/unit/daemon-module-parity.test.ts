@@ -188,6 +188,9 @@ describe('native daemon contract', () => {
       windows: ['scroll-capture:frame-captured', 'scroll-capture:scroll-ended'],
       linux: ['scroll-capture:frame-captured', 'scroll-capture:scroll-ended'],
     });
+    expect(value.modules['recording-overlay'].events).toEqual({
+      macos: ['recording-overlay:target-closed'],
+    });
     expect(value.geometry.timerControl).toEqual({
       width: 140,
       height: 52,

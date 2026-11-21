@@ -25,6 +25,8 @@ export function renderText({
   offsetX,
   offsetY,
   isSelected,
+  decorationOnly = false,
+  hitOnly = false,
   onMouseDown,
   onDoubleClick,
   editingTextId,
@@ -67,7 +69,7 @@ export function renderText({
       style={{
         cursor: 'move',
         userSelect: 'none',
-        pointerEvents: 'auto',
+        pointerEvents: hitOnly ? 'painted' : 'auto',
       }}
       transform={`rotate(${rotation}, ${centerX}, ${centerY})`}
       onMouseDown={e => onMouseDown?.(e, ann.id)}
@@ -86,7 +88,7 @@ export function renderText({
           strokeWidth={borderWidth}
         />
       )}
-      {hasBackground && (
+      {!decorationOnly && hasBackground && (
         <rect
           x={textX - bgPadding.x}
           y={textY - bgPadding.y}
@@ -97,17 +99,19 @@ export function renderText({
           fill={ann.backgroundColor}
         />
       )}
-      <text
-        x={textX}
-        y={textY}
-        fill={ann.fill}
-        fontSize={ann.fontSize}
-        fontFamily={fontFamily}
-        fontWeight={TEXT_FONT_WEIGHT}
-        dominantBaseline="text-before-edge"
-      >
-        {ann.text}
-      </text>
+      {!decorationOnly && (
+        <text
+          x={textX}
+          y={textY}
+          fill={ann.fill}
+          fontSize={ann.fontSize}
+          fontFamily={fontFamily}
+          fontWeight={TEXT_FONT_WEIGHT}
+          dominantBaseline="text-before-edge"
+        >
+          {ann.text}
+        </text>
+      )}
     </g>
   );
 }

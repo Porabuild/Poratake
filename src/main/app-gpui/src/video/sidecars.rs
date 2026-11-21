@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::video::project;
+use crate::windows::video_editor::model::VideoEditorState;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Size {
@@ -302,6 +303,17 @@ pub fn is_camera_visible_at(
         .any(|segment| timeline_time >= segment.start_time && timeline_time < segment.end_time)
 }
 
+pub(crate) fn editor_camera_visible_at(
+    state: &VideoEditorState,
+    timeline_time: f64,
+    first_frame_duration: f64,
+) -> bool {
+    let camera_time = timeline_time - first_frame_duration;
+    camera_time >= 0.0
+        && state.camera_style.visible
+        && is_camera_visible_at(Some(&state.camera_segments), camera_time)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +372,24 @@ mod tests {
     fn no_camera_segments_means_always_visible() {
         assert!(is_camera_visible_at(None, 5.0));
         assert!(!is_camera_visible_at(Some(&[]), 5.0));
+    }
+
+    #[test]
+    fn editor_camera_visibility_offsets_the_segment_by_the_intro() {
+        let mut state = VideoEditorState {
+            camera_segments: vec![crate::windows::video_editor::model::CameraSegment {
+                id: "camera".into(),
+                start_time: 0.25,
+                end_time: 0.5,
+            }],
+            ..Default::default()
+        };
+        state.camera_style.visible = true;
+        assert!(!editor_camera_visible_at(&state, 0.25, 0.125));
+        assert!(editor_camera_visible_at(&state, 0.375, 0.125));
+        assert!(!editor_camera_visible_at(&state, 0.625, 0.125));
+        state.camera_style.visible = false;
+        assert!(!editor_camera_visible_at(&state, 0.375, 0.125));
     }
 
     #[test]

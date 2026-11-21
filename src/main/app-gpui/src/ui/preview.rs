@@ -8,6 +8,29 @@ use crate::theme::vars::ThemeVars;
 use crate::ui::icon::{icon_element, Icon};
 use crate::ui::{chrome, tooltip::NativeTooltipPresenter};
 
+#[cfg(target_os = "macos")]
+pub trait PreviewFocusRevealHost: Sized + 'static {
+    fn keyboard_reveal_target(
+        &self,
+        window: &Window,
+        button: gpui::Bounds<gpui::Pixels>,
+    ) -> Option<(gpui::ScrollHandle, gpui::Bounds<gpui::Pixels>)>;
+}
+
+#[cfg(target_os = "macos")]
+pub fn focus_reveal<T: PreviewFocusRevealHost>(
+    id: impl Into<gpui::ElementId>,
+    owner: gpui::WeakEntity<T>,
+    button: AnyElement,
+) -> AnyElement {
+    PreviewFocusReveal {
+        id: id.into(),
+        owner,
+        button,
+    }
+    .into_any_element()
+}
+
 pub const FINISHED_BADGE: f32 = 40.0;
 pub const FINISHED_CHECK: f32 = 20.0;
 pub const FINISHED_CHECK_STROKE: f32 = 3.0;
@@ -26,6 +49,9 @@ pub fn finished_badge(progress: f32, theme: &ThemeVars) -> AnyElement {
     div()
         .absolute()
         .inset_0()
+        .when(chrome::is_macos(), |el| {
+            el.rounded(px(chrome::PREVIEW_RADIUS - 1.0))
+        })
         .flex()
         .items_center()
         .justify_center()
@@ -196,5 +222,89 @@ fn chip(
             presenter.wrap(id, tooltip, tip, trigger.child(button))
         }
         None => button.into_any_element(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(gpui::IntoElement)]
+struct PreviewFocusReveal<T: PreviewFocusRevealHost> {
+    id: gpui::ElementId,
+    owner: gpui::WeakEntity<T>,
+    button: AnyElement,
+}
+
+#[cfg(target_os = "macos")]
+impl<T: PreviewFocusRevealHost> RenderOnce for PreviewFocusReveal<T> {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state((self.id, "preview-focus-reveal"), cx, |_, cx| {
+                cx.focus_handle()
+            })
+            .read(cx)
+            .clone();
+        let scope = focus.clone();
+        div()
+            .flex()
+            .track_focus(&focus)
+            .on_children_prepainted(move |bounds, window, cx| {
+                if !scope.contains_focused(window, cx) {
+                    return;
+                }
+                let Some(button) = bounds.first() else {
+                    return;
+                };
+                let Some((scroll, target_bounds)) = self
+                    .owner
+                    .upgrade()
+                    .and_then(|owner| owner.read(cx).keyboard_reveal_target(window, *button))
+                else {
+                    return;
+                };
+                let viewport = scroll.bounds();
+                if viewport.size.width <= px(0.) || viewport.size.height <= px(0.) {
+                    return;
+                }
+                let reveal_delta = |start: gpui::Pixels,
+                                    end: gpui::Pixels,
+                                    visible_start: gpui::Pixels,
+                                    visible_end: gpui::Pixels| {
+                    let end = end.min(start + visible_end - visible_start);
+                    if start < visible_start {
+                        visible_start - start
+                    } else if end > visible_end {
+                        visible_end - end
+                    } else {
+                        px(0.)
+                    }
+                };
+                let current = scroll.offset();
+                let max = scroll.max_offset();
+                let x = reveal_delta(
+                    target_bounds.left(),
+                    target_bounds.right(),
+                    viewport.left(),
+                    viewport.right(),
+                );
+                let y = reveal_delta(
+                    target_bounds.top(),
+                    target_bounds.bottom(),
+                    viewport.top(),
+                    viewport.bottom(),
+                );
+                let target = gpui::point(
+                    (current.x + x).max(-max.x).min(px(0.)),
+                    (current.y + y).max(-max.y).min(px(0.)),
+                );
+                if target != current {
+                    let scope = scope.clone();
+                    window.defer(cx, move |window, cx| {
+                        if scope.contains_focused(window, cx) {
+                            scroll.set_offset(target);
+                            window.refresh();
+                        }
+                    });
+                }
+            })
+            .child(self.button)
     }
 }

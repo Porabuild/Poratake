@@ -16,6 +16,8 @@ export interface AnnotationRenderProps {
   offsetY: number;
   isSelected: boolean;
   isPreview: boolean;
+  decorationOnly?: boolean;
+  hitOnly?: boolean;
   onMouseDown?: (e: React.MouseEvent, id: string) => void;
   onDoubleClick?: (e: React.MouseEvent, id: string) => void;
 }

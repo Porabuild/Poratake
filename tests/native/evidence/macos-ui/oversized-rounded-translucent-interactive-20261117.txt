@@ -1,0 +1,56 @@
+macOS GPUI oversized rounded screenshot preview, 2026-11-17, source f3f1b17e
+
+An isolated Metal fixture generated textured 17,024x128 and 128x17,024 images
+with opaque or varying-alpha pixels. It used an unframed 50%-alpha solid-color
+wallpaper, padding 20, rounded corners 24, no inset and no shadow. It asserted
+that the exported PNG retained alpha 128 at the outer corner and compared the
+visible preview with a reopened full PNG before and after panning to a seam.
+
+A 48-run matrix covered both app appearances, simulated 100%, 125% and 200%
+scales, 25% and 50% zoom, and no annotation or a blackout, blur or pixelation
+across the tile seam. All 384 orientation/alpha/pan comparisons had no pixels
+more than two channel levels apart; the maximum difference was two. Controls
+confirmed that the enabled corner and redaction effects changed exported pixels.
+
+A separate 24-run matrix used a solid or 50%-alpha wallpaper in both
+appearances, at the same three simulated scales and two zooms. For each of 96
+orientation/alpha cases, the fixture sent a GPUI mouse-down and mouse-move to
+draw a rectangle, checked that the in-progress draft changed visible pixels,
+then sent mouse-up and checked that exactly one rectangle was committed. It
+compared the committed preview against the reopened PNG before and after
+panning. All 192 visible-region comparisons had no pixels more than two levels
+apart; the maximum difference was two. An undo control confirmed that the
+rectangle changed the PNG. The fixture does not compare the in-progress draft
+against a saved image, because the draft is not committed yet.
+
+The generated 125% translucent-wallpaper drag is retained as:
+  oversized-rounded-interactive-before-20261117.png
+  oversized-rounded-interactive-draft-20261117.png
+
+Across the 96 fixture gestures, the measured mouse-move, fixture settle and
+screenshot-capture sequence ranged from 76.08 to 88.89 ms, median 77.795 ms,
+with two fixture processes running. This measurement includes test settling and
+offscreen screenshot capture; it is not a physical input latency or frame-time
+benchmark. Peak memory, sustained drawing performance and large two-dimensional
+images remain unmeasured.
+
+cargo build --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --features parity
+PORATAKE_PARITY_OUTPUT=/tmp/poratake-rounded-interactive-check PORATAKE_PARITY_LARGE_FRAMED_ONLY=1 PORATAKE_PARITY_SCALE=1 PORATAKE_PARITY_LARGE_DPI=1.25 PORATAKE_PARITY_LARGE_ZOOM=0.5 PORATAKE_PARITY_LARGE_FRAME=none PORATAKE_PARITY_LARGE_SHADOW=0 PORATAKE_PARITY_LARGE_INSET=0 PORATAKE_PARITY_LARGE_CORNERS=24 PORATAKE_PARITY_LARGE_BACKGROUND_COLOR='#20306080' PORATAKE_PARITY_LARGE_ANNOTATION=interactive PORATAKE_PARITY_THEME=dark src/main/target/debug/poratake-gpui --parity
+
+The translucent matrix varied annotation among none, blackout, blur and
+pixelate; DPI among 1, 1.25 and 2; zoom among 0.25 and 0.5; and theme between
+dark and light. The drag matrix used annotation interactive with the default
+solid wallpaper or #20306080 and the same DPI, zoom and theme values. The
+retained images were generated with PORATAKE_PARITY_LARGE_SAVE_IMAGES=1.
+
+cargo test --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui editor::
+350 passed, 4 ignored.
+
+cargo clippy --offline --locked --manifest-path src/main/Cargo.toml -p poratake-gpui --all-targets --features parity -- -D warnings -A clippy::chunks_exact_to_as_chunks
+Passed with the existing unrelated editor/window.rs lint suppressed.
+
+These checks cover visible regions, not the entire oversized image at once.
+They do not verify an image-based or multi-stop wallpaper, the native Save
+dialog, physical input or displays, live screen capture, recordings, attachments,
+arbitrary zoom or other platforms. No privacy setting was changed and no
+capture permission was requested.

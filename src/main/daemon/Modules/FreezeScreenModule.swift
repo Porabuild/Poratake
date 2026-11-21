@@ -46,18 +46,25 @@ class FreezeScreenModule: Module {
         }
     }
     
+    static func prewarmDisplay(hasAccess: () -> Bool = CGPreflightScreenCaptureAccess, capture: () -> Bool) -> Bool {
+        guard hasAccess() else { return false }
+        return capture()
+    }
+
     private func handlePrewarm(requestId: String) {
         let frame = NSScreen.screens.first?.frame ?? .zero
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            if !frame.isEmpty {
-                _ = CGWindowListCreateImage(
+            guard let self = self else { return }
+            let warmed = Self.prewarmDisplay {
+                guard !frame.isEmpty else { return false }
+                return CGWindowListCreateImage(
                     frame,
                     .optionOnScreenOnly,
                     kCGNullWindowID,
                     [.bestResolution]
-                )
+                ) != nil
             }
-            self?.respond(id: requestId, result: ["prewarmed": true])
+            self.respond(id: requestId, result: ["prewarmed": warmed])
         }
     }
     
@@ -195,9 +202,18 @@ class FreezeScreenModule: Module {
     
     private func removeOverlays() {
         for window in overlayWindows {
+            window.alphaValue = 0
+        }
+        if !overlayWindows.isEmpty { CATransaction.flush() }
+        for window in overlayWindows {
             window.orderOut(nil)
         }
         overlayWindows.removeAll()
         FrozenFrameStore.clear()
     }
+
+    #if RECORDING_OUTLINE_TEST
+    func testInstallOverlay(_ window: NSWindow) { overlayWindows = [window] }
+    func testRemoveOverlays() { removeOverlays() }
+    #endif
 }

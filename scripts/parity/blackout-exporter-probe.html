@@ -1,0 +1,352 @@
+<!doctype html>
+<meta charset="utf-8" />
+<pre id="result">pending</pre>
+<script type="module">
+  import { exportAnnotationToSvg } from '/src/renderer/components/editor/annotations/export-annotation.ts';
+  import { blackoutRegion } from '/src/renderer/utils/redact.ts';
+  import RedactOverlay from '/src/renderer/components/editor/redact/redact-overlay.tsx';
+  import SvgAnnotationsOverlay from '/src/renderer/components/editor/svg-annotations-overlay.tsx';
+  import { createElement, Fragment } from 'react';
+  import { flushSync } from 'react-dom';
+  import { createRoot } from 'react-dom/client';
+
+  const results = [];
+  for (const scale of [1, 1.25, 2]) {
+    for (const offset of [0, 0.25, 0.5]) {
+      const shape = {
+        id: 'shape',
+        type: 'rectangle',
+        x: 30 + offset,
+        y: 20 + offset,
+        width: 24,
+        height: 24,
+        fill: '#ff00ff',
+        stroke: '#ff00ff',
+        strokeWidth: 1,
+      };
+      const blackout = {
+        id: 'blackout',
+        type: 'redact',
+        x: 32 + offset,
+        y: 22 + offset,
+        width: 20,
+        height: 20,
+        style: 'blackout',
+        intensity: 2,
+      };
+      const width = Math.round(100 * scale);
+      const height = Math.round(80 * scale);
+      const x = blackout.x * scale;
+      const y = blackout.y * scale;
+      for (const [order, annotations] of [
+        ['shape-blackout', [shape, blackout]],
+        ['blackout-shape', [blackout, shape]],
+      ]) {
+        const layers = annotations
+          .map(annotation =>
+            exportAnnotationToSvg(annotation, {
+              offsetX: 0,
+              offsetY: 0,
+              scale,
+            })
+          )
+          .join('');
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${layers}</svg>`;
+        const url = URL.createObjectURL(
+          new Blob([svg], { type: 'image/svg+xml' })
+        );
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+          image.src = url;
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        context.fillStyle = 'rgb(64, 128, 192)';
+        context.fillRect(0, 0, width, height);
+        blackoutRegion(
+          context,
+          x,
+          y,
+          blackout.width * scale,
+          blackout.height * scale
+        );
+        context.drawImage(image, 0, 0);
+        URL.revokeObjectURL(url);
+        const pixels = context.getImageData(
+          Math.floor(x),
+          Math.floor(y),
+          4,
+          4
+        ).data;
+        const rgba = Array.from({ length: 4 }, (_, row) =>
+          Array.from({ length: 4 }, (_, column) =>
+            Array.from(
+              pixels.slice((row * 4 + column) * 4, (row * 4 + column + 1) * 4)
+            )
+          )
+        );
+        results.push({ scale, offset, order, x, y, rgba });
+      }
+    }
+  }
+  const annotation = {
+    id: 'standalone',
+    type: 'redact',
+    x: 8.5,
+    y: 3.25,
+    width: 12.3,
+    height: 12.4,
+    style: 'blackout',
+    intensity: 5,
+  };
+  async function renderBoundary(redaction, points) {
+    const markup = exportAnnotationToSvg(redaction, {
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+    });
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24">${markup}</svg>`;
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 24;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, 32, 24);
+    blackoutRegion(
+      context,
+      redaction.x,
+      redaction.y,
+      redaction.width,
+      redaction.height
+    );
+    context.drawImage(image, 0, 0);
+    URL.revokeObjectURL(url);
+    return points.map(([x, y]) => ({
+      x,
+      y,
+      rgba: Array.from(context.getImageData(x, y, 1, 1).data),
+    }));
+  }
+  const standaloneBoundary = await renderBoundary(annotation, [
+    [8, 9],
+    [20, 9],
+    [21, 9],
+  ]);
+  const farBoundary = await renderBoundary(
+    { ...annotation, x: 8.8, y: 3.8, height: 12.3 },
+    [
+      [20, 9],
+      [21, 9],
+      [12, 16],
+      [22, 9],
+      [12, 17],
+    ]
+  );
+  const source = document.createElement('canvas');
+  source.width = 200;
+  source.height = 160;
+  const sourceContext = source.getContext('2d');
+  sourceContext.fillStyle = '#ffffff';
+  sourceContext.fillRect(0, 0, 200, 160);
+  const sourceImage = new Image();
+  await new Promise((resolve, reject) => {
+    sourceImage.onload = resolve;
+    sourceImage.onerror = reject;
+    sourceImage.src = source.toDataURL('image/png');
+  });
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const previewAnnotation = { ...annotation, x: 8.8, y: 3.8, height: 12.3 };
+  flushSync(() =>
+    root.render(
+      createElement(
+        Fragment,
+        null,
+        createElement(RedactOverlay, {
+          image: sourceImage,
+          imageWidth: 100,
+          imageHeight: 80,
+          canvasWidth: 100,
+          canvasHeight: 80,
+          offsetX: 0,
+          offsetY: 0,
+          annotations: [previewAnnotation],
+          currentAnnotation: null,
+        }),
+        createElement(SvgAnnotationsOverlay, {
+          annotations: [previewAnnotation],
+          currentAnnotation: null,
+          width: 100,
+          height: 80,
+          selectedAnnotationIds: [],
+          onSelect: () => {},
+          editingTextId: null,
+          activeTool: 'select',
+          showBlackoutFill: true,
+        })
+      )
+    )
+  );
+  const previewCanvas = container.querySelector('canvas');
+  const ratio = previewCanvas.width / 100;
+  const composed = document.createElement('canvas');
+  composed.width = previewCanvas.width;
+  composed.height = previewCanvas.height;
+  const composedContext = composed.getContext('2d');
+  composedContext.fillStyle = '#ffffff';
+  composedContext.fillRect(0, 0, composed.width, composed.height);
+  composedContext.drawImage(previewCanvas, 0, 0);
+  const previewBoundary = [
+    [Math.floor(21.05 * ratio), Math.floor(9 * ratio)],
+    [Math.floor(12 * ratio), Math.floor(16.05 * ratio)],
+    [Math.ceil(21.1 * ratio), Math.floor(9 * ratio)],
+    [Math.floor(12 * ratio), Math.ceil(16.1 * ratio)],
+  ].map(([x, y]) => ({
+    x,
+    y,
+    rgba: Array.from(composedContext.getImageData(x, y, 1, 1).data),
+  }));
+  const previewSvg = container.querySelector('svg').cloneNode(true);
+  previewSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  previewSvg
+    .querySelectorAll('rect[fill="transparent"]')
+    .forEach(node => node.remove());
+  const previewUrl = URL.createObjectURL(
+    new Blob([previewSvg.outerHTML], { type: 'image/svg+xml' })
+  );
+  const previewImage = new Image();
+  await new Promise((resolve, reject) => {
+    previewImage.onload = resolve;
+    previewImage.onerror = reject;
+    previewImage.src = previewUrl;
+  });
+  composedContext.drawImage(
+    previewImage,
+    0,
+    0,
+    composed.width,
+    composed.height
+  );
+  URL.revokeObjectURL(previewUrl);
+  const nativeExport = document.createElement('canvas');
+  nativeExport.width = 200;
+  nativeExport.height = 160;
+  const exportContext = nativeExport.getContext('2d');
+  exportContext.fillStyle = '#ffffff';
+  exportContext.fillRect(0, 0, 200, 160);
+  blackoutRegion(
+    exportContext,
+    previewAnnotation.x * 2,
+    previewAnnotation.y * 2,
+    previewAnnotation.width * 2,
+    previewAnnotation.height * 2
+  );
+  const exportMarkup = exportAnnotationToSvg(previewAnnotation, {
+    offsetX: 0,
+    offsetY: 0,
+    scale: 2,
+  });
+  const exportSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160">${exportMarkup}</svg>`;
+  const exportUrl = URL.createObjectURL(
+    new Blob([exportSvg], { type: 'image/svg+xml' })
+  );
+  const exportImage = new Image();
+  await new Promise((resolve, reject) => {
+    exportImage.onload = resolve;
+    exportImage.onerror = reject;
+    exportImage.src = exportUrl;
+  });
+  exportContext.drawImage(exportImage, 0, 0);
+  URL.revokeObjectURL(exportUrl);
+  const nativeRegion = exportContext.getImageData(17, 7, 26, 26).data;
+  let nativeRegionNonBlack = 0;
+  for (let i = 0; i < nativeRegion.length; i += 4) {
+    if (
+      nativeRegion[i] ||
+      nativeRegion[i + 1] ||
+      nativeRegion[i + 2] ||
+      nativeRegion[i + 3] !== 255
+    ) {
+      nativeRegionNonBlack++;
+    }
+  }
+  const scaledExport = document.createElement('canvas');
+  scaledExport.width = composed.width;
+  scaledExport.height = composed.height;
+  const scaledContext = scaledExport.getContext('2d');
+  scaledContext.imageSmoothingEnabled = true;
+  scaledContext.imageSmoothingQuality = 'high';
+  scaledContext.drawImage(
+    nativeExport,
+    0,
+    0,
+    scaledExport.width,
+    scaledExport.height
+  );
+  const scaleComparison = [
+    [8, 9],
+    [21, 9],
+    [12, 3],
+    [12, 16],
+  ].map(([x, y]) => ({
+    x,
+    y,
+    preview: Array.from(composedContext.getImageData(x, y, 1, 1).data),
+    export: Array.from(scaledContext.getImageData(x, y, 1, 1).data),
+  }));
+  const previewPixels = composedContext.getImageData(
+    0,
+    0,
+    composed.width,
+    composed.height
+  ).data;
+  const exportPixels = scaledContext.getImageData(
+    0,
+    0,
+    scaledExport.width,
+    scaledExport.height
+  ).data;
+  let differentPixels = 0;
+  let maximumDifference = 0;
+  for (let i = 0; i < previewPixels.length; i += 4) {
+    const difference = Math.max(
+      ...Array.from({ length: 4 }, (_, channel) =>
+        Math.abs(previewPixels[i + channel] - exportPixels[i + channel])
+      )
+    );
+    if (difference > 2) differentPixels++;
+    maximumDifference = Math.max(maximumDifference, difference);
+  }
+  root.unmount();
+  container.remove();
+  document.querySelector('#result').textContent = JSON.stringify({
+    samples: results,
+    standaloneBoundary,
+    farBoundary,
+    previewPixelRatio: ratio,
+    previewBoundary,
+    scaleComparison,
+    scaleComparisonMetrics: {
+      differentPixels,
+      maximumDifference,
+      nativeRegionPixels: 676,
+      nativeRegionNonBlack,
+    },
+    scaleComparisonImages: {
+      preview: composed.toDataURL('image/png'),
+      export: scaledExport.toDataURL('image/png'),
+    },
+  });
+</script>

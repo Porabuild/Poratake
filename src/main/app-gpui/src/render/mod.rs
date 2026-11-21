@@ -10,5 +10,6 @@ pub mod color;
 pub mod color_detection;
 pub mod freehand;
 pub mod gradient;
+pub mod images;
 pub mod text;
 pub mod window_frame;

@@ -130,6 +130,10 @@ impl OnboardingWindow {
                     });
                     let focus = view.read(cx).focus_handle.clone();
                     window.focus(&focus, cx);
+                    crate::system::native::register_dock_window(
+                        window.window_handle().window_id(),
+                        cx,
+                    );
                     view
                 },
             )
@@ -145,6 +149,32 @@ impl OnboardingWindow {
 
     fn is_last_step(&self) -> bool {
         self.step + 1 >= steps().len()
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
+    pub(crate) fn parity_step_index(&self) -> usize {
+        self.step
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn parity_set_step(&mut self, step: usize, cx: &mut Context<Self>) {
+        self.step = step.min(steps().len() - 1);
+        cx.notify();
+    }
+
+    #[cfg(all(feature = "parity", target_os = "macos"))]
+    pub(crate) fn new_for_parity(
+        store: std::sync::Arc<ConfigStore>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            store,
+            step: 0,
+            recording_shortcut: None,
+            scroll: ScrollHandle::new(),
+            permission_polling: false,
+            focus_handle: cx.focus_handle(),
+        }
     }
 
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -658,6 +688,7 @@ fn permission_card(
                 .flex()
                 .flex_col()
                 .flex_1()
+                .min_w_0()
                 .child(
                     div()
                         .flex()

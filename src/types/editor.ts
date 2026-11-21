@@ -66,6 +66,13 @@ export const ASPECT_RATIO_OPTIONS = [
 
 export type AspectRatioOption = (typeof ASPECT_RATIO_OPTIONS)[number];
 
+export interface AnnotationExportGeometry {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 export interface GradientOption {
   id: string;
   colors: string[];
