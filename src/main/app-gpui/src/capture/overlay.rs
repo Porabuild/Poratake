@@ -930,7 +930,8 @@ fn overlay_options(
     };
     #[cfg(not(target_os = "macos"))]
     let window_bounds = display_bounds;
-    crate::windows::popup_window_options(
+    #[allow(unused_mut)]
+    let mut options = crate::windows::popup_window_options(
         window_bounds,
         crate::windows::PopupWindowConfig {
             focus,
@@ -938,7 +939,14 @@ fn overlay_options(
             display_id: Some(display_id),
             ..Default::default()
         },
-    )
+    );
+    #[cfg(target_os = "linux")]
+    if crate::system::linux_session::current()
+        == crate::system::linux_session::LinuxSession::Wayland
+    {
+        options.window_bounds = Some(gpui::WindowBounds::Maximized(window_bounds));
+    }
+    options
 }
 
 #[cfg(windows)]
@@ -1164,41 +1172,62 @@ fn open_overlay_window(
         }
     }
 
-    let opened = cx.open_window(
-        overlay_options(display_bounds, display_id, launch.focus),
-        |window, cx| {
-            prepare_overlay_window(window, display_bounds);
-            let scale = window.scale_factor();
-            let focus_handle = cx.focus_handle();
-            let view = cx.new(|_| {
-                let mut view = build(scale, focus_handle);
-                view.display_id = Some(u64::from(display_id) as u32);
-                view
-            });
-            view.update(cx, |overlay, cx| {
-                cx.observe_window_activation(window, |overlay, window, _| {
-                    let active = window.is_window_active();
-                    if !active {
-                        overlay.menu_activation_key = None;
-                        overlay.menu_return_focus = false;
-                    }
-                    #[cfg(all(windows, not(test)))]
-                    if active {
-                        prepare_overlay_window(window, overlay.display_bounds);
-                    }
-                })
-                .detach();
-                after_new(overlay, cx);
-            });
-            let shown = reveal_overlay_window(window, launch, active);
-            if launch.focus && shown {
-                window.activate_window();
-            }
-            let focus = view.read(cx).focus_handle.clone();
-            window.focus(&focus, cx);
+    let make_options = || overlay_options(display_bounds, display_id, launch.focus);
+    let build_overlay = |window: &mut Window, cx: &mut App| {
+        prepare_overlay_window(window, display_bounds);
+        let scale = window.scale_factor();
+        let focus_handle = cx.focus_handle();
+        let view = cx.new(|_| {
+            let mut view = build(scale, focus_handle);
+            view.display_id = Some(u64::from(display_id) as u32);
             view
+        });
+        view.update(cx, |overlay, cx| {
+            cx.observe_window_activation(window, |overlay, window, _| {
+                let active = window.is_window_active();
+                if !active {
+                    overlay.menu_activation_key = None;
+                    overlay.menu_return_focus = false;
+                }
+                #[cfg(all(windows, not(test)))]
+                if active {
+                    prepare_overlay_window(window, overlay.display_bounds);
+                }
+            })
+            .detach();
+            after_new(overlay, cx);
+        });
+        let shown = reveal_overlay_window(window, launch, active);
+        if launch.focus && shown {
+            window.activate_window();
+        }
+        let focus = view.read(cx).focus_handle.clone();
+        window.focus(&focus, cx);
+        view
+    };
+    #[cfg(target_os = "linux")]
+    let opened = crate::windows::open_wayland_layer_or_fallback(
+        cx,
+        gpui::layer_shell::LayerShellOptions {
+            namespace: "poratake-overlay".to_string(),
+            layer: gpui::layer_shell::Layer::Overlay,
+            anchor: gpui::layer_shell::Anchor::TOP
+                | gpui::layer_shell::Anchor::BOTTOM
+                | gpui::layer_shell::Anchor::LEFT
+                | gpui::layer_shell::Anchor::RIGHT,
+            exclusive_zone: Some(px(-1.0)),
+            keyboard_interactivity: if launch.focus {
+                gpui::layer_shell::KeyboardInteractivity::Exclusive
+            } else {
+                gpui::layer_shell::KeyboardInteractivity::OnDemand
+            },
+            ..Default::default()
         },
+        make_options,
+        build_overlay,
     );
+    #[cfg(not(target_os = "linux"))]
+    let opened = cx.open_window(make_options(), build_overlay);
     match opened {
         Ok(handle) => {
             #[cfg(all(target_os = "macos", not(test)))]

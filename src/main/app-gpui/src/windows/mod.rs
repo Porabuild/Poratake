@@ -98,6 +98,38 @@ pub fn popup_window_options(bounds: Bounds<Pixels>, config: PopupWindowConfig) -
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn open_wayland_layer_or_fallback<V: 'static + gpui::Render>(
+    cx: &mut gpui::App,
+    layer_options: gpui::layer_shell::LayerShellOptions,
+    fallback: impl Fn() -> WindowOptions,
+    build: impl FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V>,
+) -> anyhow::Result<gpui::WindowHandle<V>> {
+    if crate::system::linux_session::current()
+        != crate::system::linux_session::LinuxSession::Wayland
+    {
+        return cx.open_window(fallback(), build);
+    }
+    let mut build = Some(build);
+    let mut primary = fallback();
+    primary.kind = WindowKind::LayerShell(layer_options);
+    if let Some(bounds) = primary.window_bounds {
+        primary.window_bounds = Some(WindowBounds::Windowed(bounds.get_bounds()));
+    }
+    match cx.open_window(primary, |window, cx| {
+        (build.take().expect("window builder"))(window, cx)
+    }) {
+        Ok(handle) => Ok(handle),
+        Err(error) => {
+            if let Some(build) = build.take() {
+                cx.open_window(fallback(), build)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn remove_popup_frame(window: &gpui::Window) {
     use cocoa::appkit::NSWindowStyleMask;
