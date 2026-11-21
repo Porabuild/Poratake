@@ -20,6 +20,43 @@ pub enum InstanceCommand {
     Intent { id: String, extra: Option<String> },
 }
 
+pub fn decode_file_url(raw: &str) -> Option<String> {
+    let stripped = raw.strip_prefix("file://")?;
+    let path = stripped.strip_prefix("localhost").unwrap_or(stripped);
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                    out.push(value);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    let decoded = String::from_utf8(out).ok()?;
+    if cfg!(windows) {
+        let trimmed = decoded.strip_prefix('/').unwrap_or(&decoded);
+        if trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':' {
+            return Some(trimmed.replace('/', "\\"));
+        }
+    }
+    Some(decoded)
+}
+
+pub fn resolve_cli_path(arg: &str) -> Option<String> {
+    if arg.starts_with("--") {
+        return None;
+    }
+    let candidate = decode_file_url(arg).unwrap_or_else(|| arg.to_string());
+    Path::new(&candidate).exists().then_some(candidate)
+}
+
 impl InstanceCommand {
     pub fn from_args(args: &[String]) -> Self {
         let mut iter = args.iter().skip(1);
@@ -37,8 +74,8 @@ impl InstanceCommand {
         }
         let mut paths = Vec::new();
         for arg in std::iter::once(first).chain(iter) {
-            if !arg.starts_with("--") && Path::new(arg).exists() {
-                paths.push(arg.clone());
+            if let Some(path) = resolve_cli_path(arg) {
+                paths.push(path);
             }
         }
         if paths.is_empty() {
@@ -156,6 +193,11 @@ impl SingleInstanceGuard {
         let Ok(listener) = std::os::unix::net::UnixListener::bind(&socket_path) else {
             return (tx, rx);
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
+        }
         let _ = std::thread::Builder::new()
             .name("single-instance-ipc".into())
             .spawn(move || {
@@ -263,14 +305,28 @@ fn notify_running_in(dir: &Path, command: &InstanceCommand) -> bool {
 
 #[cfg(windows)]
 fn notify_running_in(dir: &Path, command: &InstanceCommand) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::System::Pipes::WaitNamedPipeW;
+
     let pipe = pipe_name_for(dir);
-    let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(pipe) else {
-        return false;
-    };
     let Ok(payload) = serde_json::to_vec(command) else {
         return false;
     };
-    file.write_all(&payload).is_ok()
+    let wide: Vec<u16> = OsStr::new(&pipe)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    for attempt in 0..3 {
+        match std::fs::OpenOptions::new().write(true).open(&pipe) {
+            Ok(mut file) => return file.write_all(&payload).is_ok(),
+            Err(error) if error.raw_os_error() == Some(231) && attempt < 2 => unsafe {
+                let _ = WaitNamedPipeW(windows::core::PCWSTR(wide.as_ptr()), 500);
+            },
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -345,6 +401,23 @@ mod tests {
                 id: "open-settings".into(),
                 extra: Some("cloud".into()),
             }
+        );
+    }
+
+    #[test]
+    fn decodes_file_urls_passed_through_cli_arguments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("my shot.png");
+        std::fs::write(&file, b"png").expect("write file");
+        let encoded = format!(
+            "file://{}",
+            file.to_string_lossy()
+                .replace('\\', "/")
+                .replace(' ', "%20")
+        );
+        assert_eq!(
+            InstanceCommand::from_args(&["poratake".into(), encoded]),
+            InstanceCommand::OpenPaths(vec![file.to_string_lossy().into_owned()])
         );
     }
 }

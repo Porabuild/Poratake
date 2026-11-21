@@ -77,20 +77,14 @@ pub fn set_open_at_login(enabled: bool) {
     }
 }
 
-/// Whether the Run entry for this app exists right now.
-///
-/// Read-only counterpart to [`set_open_at_login`], mirroring the Electron
-/// shell's `app.getLoginItemSettings`.
 #[cfg(windows)]
-pub fn is_open_at_login() -> bool {
+fn read_windows_run_value() -> Option<String> {
     use windows::core::w;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
     };
 
     let mut key = HKEY::default();
-    // SAFETY: `key` is initialised here and closed on every path below; the
-    // zero-sized query only asks whether the value exists.
     unsafe {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -101,23 +95,102 @@ pub fn is_open_at_login() -> bool {
         )
         .is_err()
         {
-            return false;
+            return None;
         }
 
         let mut size: u32 = 0;
-        // A `None` data buffer with a size slot is a pure existence probe:
-        // success means the value is there (reporting its size), FILE_NOT_FOUND
-        // means it is not.
-        let result = RegQueryValueExW(
+        let mut kind = REG_SZ;
+        let probe = RegQueryValueExW(
             key,
             w!("electron.app.Poratake"),
             None,
-            None,
+            Some(&mut kind),
             None,
             Some(&mut size),
         );
+        if probe.is_err() || kind != REG_SZ || size == 0 {
+            let _ = RegCloseKey(key);
+            return None;
+        }
+        let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
+        let read = RegQueryValueExW(
+            key,
+            w!("electron.app.Poratake"),
+            None,
+            Some(&mut kind),
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut size),
+        );
         let _ = RegCloseKey(key);
-        !result.is_err()
+        if read.is_err() {
+            return None;
+        }
+        let end = buffer
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(buffer.len());
+        Some(String::from_utf16_lossy(&buffer[..end]))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_run_value_matches(stored: &str, executable: &str) -> bool {
+    let expected = quote_path(executable);
+    stored.trim().eq_ignore_ascii_case(expected.trim())
+        || stored
+            .trim()
+            .trim_matches('"')
+            .eq_ignore_ascii_case(executable.trim())
+}
+
+/// Whether the Run entry for this app exists right now.
+///
+/// Read-only counterpart to [`set_open_at_login`], mirroring the Electron
+/// shell's `app.getLoginItemSettings`.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn is_open_at_login() -> bool {
+    read_windows_run_value().is_some()
+}
+
+pub fn reconcile_open_at_login(enabled: bool) {
+    #[cfg(windows)]
+    {
+        let current = read_windows_run_value();
+        if !enabled {
+            if current.is_some() {
+                set_open_at_login(false);
+            }
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let exe_str = exe.to_string_lossy();
+        let already_current = current
+            .as_deref()
+            .is_some_and(|stored| windows_run_value_matches(stored, &exe_str));
+        if !already_current {
+            set_open_at_login(true);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        remove_legacy_linux_autostart();
+        let already_matches = linux_autostart_matches_current();
+        if enabled {
+            if !already_matches {
+                set_open_at_login(true);
+            }
+        } else if is_open_at_login() {
+            set_open_at_login(false);
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        if is_open_at_login() != enabled {
+            set_open_at_login(enabled);
+        }
     }
 }
 
@@ -239,12 +312,49 @@ pub fn is_open_at_login() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_open_at_login(enabled: bool) {
-    let Some(path) = dirs::config_dir().map(|config| {
+fn linux_autostart_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|config| {
         config
             .join("autostart")
             .join("com.porabuild.poratake-gpui.desktop")
-    }) else {
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn remove_legacy_linux_autostart() {
+    let Some(autostart) = dirs::config_dir().map(|config| config.join("autostart")) else {
+        return;
+    };
+    for legacy in ["Poratake.desktop", "poratake.desktop"] {
+        let path = autostart.join(legacy);
+        if path.is_file() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_autostart_matches_current() -> bool {
+    let Some(path) = linux_autostart_path() else {
+        return false;
+    };
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let expected = format!(
+        "Exec={}",
+        quote_desktop_exec(executable.to_string_lossy().as_ref())
+    );
+    contents.lines().any(|line| line.trim() == expected)
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_open_at_login(enabled: bool) {
+    remove_legacy_linux_autostart();
+    let Some(path) = linux_autostart_path() else {
         return;
     };
     if !enabled {
@@ -271,12 +381,7 @@ pub fn set_open_at_login(enabled: bool) {
 
 #[cfg(target_os = "linux")]
 pub fn is_open_at_login() -> bool {
-    dirs::config_dir().is_some_and(|config| {
-        config
-            .join("autostart")
-            .join("com.porabuild.poratake-gpui.desktop")
-            .is_file()
-    })
+    linux_autostart_path().is_some_and(|path| path.is_file())
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
@@ -336,5 +441,21 @@ mod tests {
             quote_desktop_exec("/opt/Poratake App/poratake\"gpui"),
             "\"/opt/Poratake App/poratake\\\"gpui\""
         );
+    }
+
+    #[test]
+    fn windows_run_value_reconciliation_detects_electron_to_gpui_migration() {
+        assert!(windows_run_value_matches(
+            "\"C:\\Program Files\\Poratake\\poratake-gpui.exe\"",
+            "C:\\Program Files\\Poratake\\poratake-gpui.exe"
+        ));
+        assert!(windows_run_value_matches(
+            "c:\\poratake\\poratake-gpui.exe",
+            "C:\\Poratake\\poratake-gpui.exe"
+        ));
+        assert!(!windows_run_value_matches(
+            "\"C:\\Users\\user\\AppData\\Local\\Programs\\Poratake\\Poratake.exe\"",
+            "C:\\Users\\user\\AppData\\Local\\Programs\\Poratake\\poratake-gpui.exe"
+        ));
     }
 }
