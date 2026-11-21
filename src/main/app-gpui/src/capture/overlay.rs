@@ -2656,12 +2656,43 @@ impl Render for AreaOverlay {
         let window_hovered = self.pointer_inside;
         #[cfg(not(target_os = "macos"))]
         let window_hovered = window.is_window_hovered();
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
         let content = self.surface(window_hovered, window, cx);
         crate::ui::window_root::focus_root(content, window, cx)
+            .key_context("AreaOverlay")
+            .on_action(cx.listener(Self::on_cancel))
     }
 }
 
 impl AreaOverlay {
+    fn on_cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handed_off {
+            return;
+        }
+        if self.menu.is_open(cx) {
+            self.menu.close(window, cx);
+            self.focus_all_in_one_menu_trigger(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if self.picking_color {
+            self.stop_color_picker(cx);
+            return;
+        }
+        if self.intent == crate::capture::intent::CaptureIntent::Recording {
+            crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
+        }
+        if self.intent == crate::capture::intent::CaptureIntent::EditorAttach {
+            let coordinator = crate::state::coordinator(cx);
+            coordinator.update(cx, |coordinator, cx| {
+                coordinator.cancel_editor_attach(cx);
+            });
+        }
+        dismiss(window, cx);
+    }
+
     pub(crate) fn surface(
         &mut self,
         window_hovered: bool,
@@ -2681,32 +2712,7 @@ impl AreaOverlay {
             .id("area-overlay")
             .size_full()
             .key_context("AreaOverlay")
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &Cancel, window, cx| {
-                if this.handed_off {
-                    return;
-                }
-                if this.menu.is_open(cx) {
-                    this.menu.close(window, cx);
-                    this.focus_all_in_one_menu_trigger(window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if this.picking_color {
-                    this.stop_color_picker(cx);
-                    return;
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::Recording {
-                    crate::windows::recording_control::RecordingControl::cancel_pre_recording(cx);
-                }
-                if this.intent == crate::capture::intent::CaptureIntent::EditorAttach {
-                    let coordinator = crate::state::coordinator(cx);
-                    coordinator.update(cx, |coordinator, cx| {
-                        coordinator.cancel_editor_attach(cx);
-                    });
-                }
-                dismiss(window, cx);
-            }));
+            .track_focus(&self.focus_handle);
 
         if self.handed_off {
             let viewport = window.viewport_size();
