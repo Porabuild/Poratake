@@ -4041,15 +4041,37 @@ impl Render for VideoEditorWindow {
             stage_box = stage_box.max_w(px(width as f32)).max_h(px(height as f32));
         }
         let viewport_cell = self.preview_viewport_physical.clone();
-        let stage_box = stage_box.on_children_prepainted(move |bounds, window, _| {
-            if let Some(stage) = bounds.first() {
-                let scale = window.scale_factor().max(1.0);
-                let width = (f32::from(stage.size.width) * scale).round() as u32;
-                let height = (f32::from(stage.size.height) * scale).round() as u32;
-                if width > 0 && height > 0 {
-                    *viewport_cell.borrow_mut() = Some((width, height));
-                }
+        let viewport_owner = cx.entity().downgrade();
+        let stage_box = stage_box.on_children_prepainted(move |bounds, window, cx| {
+            let Some(stage) = bounds.first() else {
+                return;
+            };
+            let scale = window.scale_factor().max(1.0);
+            let width = (f32::from(stage.size.width) * scale).round() as u32;
+            let height = (f32::from(stage.size.height) * scale).round() as u32;
+            if width == 0 || height == 0 {
+                return;
             }
+            if viewport_cell
+                .borrow()
+                .is_some_and(|current| current == (width, height))
+            {
+                return;
+            }
+            *viewport_cell.borrow_mut() = Some((width, height));
+            let owner = viewport_owner.clone();
+            cx.defer(move |cx| {
+                let Some(owner) = owner.upgrade() else {
+                    return;
+                };
+                owner.update(cx, |editor, cx| {
+                    if editor.is_playing || editor.is_scrubbing || editor.gesture_snapshot.is_some()
+                    {
+                        return;
+                    }
+                    editor.request_frame(cx);
+                });
+            });
         });
         let preview = div()
             .id("video-editor-preview")

@@ -79,6 +79,7 @@ pub fn stream_capture_monitors(priority: Option<isize>) -> std::sync::mpsc::Rece
 
     run_isolated(CAPTURE_TIMEOUT, move || {
         let mut targets = monitors();
+        prune_capture_devices(&targets);
         if let Some(handle) = priority {
             targets.sort_by_key(|entry| entry.handle != handle);
         }
@@ -688,10 +689,18 @@ impl Drop for MtaApartment {
     }
 }
 
+struct CachedStaging {
+    width: u32,
+    height: u32,
+    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    texture: ID3D11Texture2D,
+}
+
 struct CaptureDevice {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     winrt: IDirect3DDevice,
+    staging: Option<CachedStaging>,
 }
 
 unsafe impl Send for CaptureDevice {}
@@ -713,7 +722,42 @@ impl CaptureDevice {
             device,
             context,
             winrt,
+            staging: None,
         })
+    }
+
+    fn staging_texture(
+        &mut self,
+        descriptor: &D3D11_TEXTURE2D_DESC,
+    ) -> Result<ID3D11Texture2D, String> {
+        if let Some(cached) = &self.staging
+            && cached.width == descriptor.Width
+            && cached.height == descriptor.Height
+            && cached.format == descriptor.Format
+        {
+            return Ok(cached.texture.clone());
+        }
+        let staging_descriptor = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+            ..*descriptor
+        };
+        let mut created = None;
+        unsafe {
+            self.device
+                .CreateTexture2D(&staging_descriptor, None, Some(&mut created))
+                .map_err(|error| format!("Failed to prepare the capture buffer: {error}"))?;
+        }
+        let texture = created.ok_or_else(|| "The capture buffer was not created".to_string())?;
+        self.staging = Some(CachedStaging {
+            width: descriptor.Width,
+            height: descriptor.Height,
+            format: descriptor.Format,
+            texture: texture.clone(),
+        });
+        Ok(texture)
     }
 }
 
@@ -743,16 +787,22 @@ fn evict_capture_device(monitor_handle: isize) {
     }
 }
 
+fn prune_capture_devices(targets: &[MonitorEntry]) {
+    if let Ok(mut devices) = capture_devices().lock() {
+        devices.retain(|handle, _| targets.iter().any(|entry| entry.handle == *handle));
+    }
+}
+
 fn capture_with_cached_device(
     monitor: &MonitorEntry,
-    capture: impl FnOnce(&CaptureDevice, &MonitorEntry) -> Result<DesktopFrame, String>,
+    capture: impl FnOnce(&mut CaptureDevice, &MonitorEntry) -> Result<DesktopFrame, String>,
 ) -> Result<DesktopFrame, String> {
     let device = cached_capture_device(monitor.handle)
         .ok_or_else(|| "Failed to create the capture device".to_string())?;
     let captured = device
         .lock()
         .map_err(|_| "The capture device is unavailable".to_string())
-        .and_then(|device| capture(&device, monitor));
+        .and_then(|mut device| capture(&mut device, monitor));
 
     if captured.is_err() {
         evict_capture_device(monitor.handle);
@@ -889,7 +939,10 @@ fn capture_interop() -> Result<IGraphicsCaptureItemInterop, String> {
         .map_err(|error| format!("Failed to open the capture factory: {error}"))
 }
 
-fn capture_monitor(device: &CaptureDevice, monitor: &MonitorEntry) -> Result<DesktopFrame, String> {
+fn capture_monitor(
+    device: &mut CaptureDevice,
+    monitor: &MonitorEntry,
+) -> Result<DesktopFrame, String> {
     let interop = capture_interop()?;
     let handle = HMONITOR(monitor.handle as *mut c_void);
     let item = unsafe { interop.CreateForMonitor(handle) }
@@ -923,7 +976,7 @@ where
 }
 
 fn capture_item(
-    device: &CaptureDevice,
+    device: &mut CaptureDevice,
     item: &GraphicsCaptureItem,
     bounds: RECT,
     white_scale: Option<f32>,
@@ -1004,7 +1057,7 @@ fn capture_item(
 }
 
 fn read_pixels(
-    device: &CaptureDevice,
+    device: &mut CaptureDevice,
     frame: &Direct3D11CaptureFrame,
     white_scale: Option<f32>,
     preserve_alpha: bool,
@@ -1021,21 +1074,7 @@ fn read_pixels(
     let mut descriptor = D3D11_TEXTURE2D_DESC::default();
     unsafe { source.GetDesc(&mut descriptor) };
 
-    let staging_descriptor = D3D11_TEXTURE2D_DESC {
-        Usage: D3D11_USAGE_STAGING,
-        BindFlags: 0,
-        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-        MiscFlags: 0,
-        ..descriptor
-    };
-    let mut staging = None;
-    unsafe {
-        device
-            .device
-            .CreateTexture2D(&staging_descriptor, None, Some(&mut staging))
-            .map_err(|error| format!("Failed to prepare the capture buffer: {error}"))?;
-    }
-    let staging = staging.ok_or_else(|| "The capture buffer was not created".to_string())?;
+    let staging = device.staging_texture(&descriptor)?;
 
     let source_resource: ID3D11Resource = source
         .cast()
@@ -1085,24 +1124,22 @@ fn convert_pixels(
     pixels
         .try_reserve_exact(stride * height)
         .map_err(|_| "Not enough memory to read the screen contents".to_string())?;
-    pixels.resize(stride * height, 0);
 
     let source = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, pitch * height) };
 
     let Some(white_scale) = white_scale else {
         for row in 0..height {
-            let source_row = &source[row * pitch..row * pitch + stride];
-            let target_row = &mut pixels[row * stride..(row + 1) * stride];
-            target_row.copy_from_slice(source_row);
-            if !preserve_alpha {
-                for pixel in target_row.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
-                    pixel[3] = u8::MAX;
-                }
+            pixels.extend_from_slice(&source[row * pitch..row * pitch + stride]);
+        }
+        if !preserve_alpha {
+            for pixel in pixels.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
+                pixel[3] = u8::MAX;
             }
         }
         return Ok(pixels);
     };
 
+    pixels.resize(stride * height, 0);
     let mapper = ToneMapper::new(white_scale);
     for row in 0..height {
         let source_row = &source[row * pitch..row * pitch + width * HDR_BYTES_PER_PIXEL];
@@ -2257,5 +2294,47 @@ mod tests {
         assert_eq!(active.join().expect("active capture caller"), Some(1));
         assert_eq!(next.join().expect("next capture caller"), Some(3));
         assert!(!queued_ran.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reuses_the_screen_readback_buffer_until_the_frame_shape_changes() {
+        ensure_multithreaded_apartment();
+        let mut device = CaptureDevice::create().expect("capture device");
+        let descriptor = D3D11_TEXTURE2D_DESC {
+            Width: 16,
+            Height: 8,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT,
+            BindFlags: 0,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let first = device.staging_texture(&descriptor).expect("staging buffer");
+        let reused = device.staging_texture(&descriptor).expect("reused buffer");
+        assert_eq!(first.as_raw(), reused.as_raw());
+
+        let resized_descriptor = D3D11_TEXTURE2D_DESC {
+            Width: 32,
+            ..descriptor
+        };
+        let resized = device
+            .staging_texture(&resized_descriptor)
+            .expect("resized buffer");
+        assert_ne!(resized.as_raw(), first.as_raw());
+
+        let reformatted_descriptor = D3D11_TEXTURE2D_DESC {
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT,
+            ..resized_descriptor
+        };
+        let reformatted = device
+            .staging_texture(&reformatted_descriptor)
+            .expect("reformatted buffer");
+        assert_ne!(reformatted.as_raw(), resized.as_raw());
     }
 }

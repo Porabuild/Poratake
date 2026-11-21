@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use md5::{Digest, Md5};
 
+#[cfg(windows)]
+use windows::Win32::Graphics::Imaging::IWICImagingFactory;
+
 use crate::config::store::config_dir;
 use crate::history_store::HistoryItemType;
 
@@ -272,38 +275,48 @@ fn scaled_thumbnail_size(width: u32, height: u32, max_dimension: u32) -> (u32, u
 }
 
 #[cfg(windows)]
+fn wic_factory() -> Option<IWICImagingFactory> {
+    use std::cell::RefCell;
+    use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+
+    thread_local! {
+        static FACTORY: RefCell<Option<IWICImagingFactory>> = const { RefCell::new(None) };
+    }
+
+    FACTORY.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(factory) = slot.as_ref() {
+            return Some(factory.clone());
+        }
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let factory: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+            *slot = Some(factory.clone());
+            Some(factory)
+        }
+    })
+}
+
+#[cfg(windows)]
 fn generate_native_thumbnail(original: &Path, _target: &Path) -> Option<Vec<u8>> {
     use windows::core::{Interface as _, HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{GENERIC_READ, S_FALSE, S_OK};
+    use windows::Win32::Foundation::GENERIC_READ;
     use windows::Win32::Graphics::Imaging::{
-        CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
-        IWICImagingFactory, WICBitmapInterpolationModeFant, WICDecodeMetadataCacheOnDemand,
+        GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, WICBitmapInterpolationModeFant,
+        WICDecodeMetadataCacheOnDemand,
     };
     use windows::Win32::System::Com::StructuredStorage::{
         CreateStreamOnHGlobal, GetHGlobalFromStream, PROPBAG2,
     };
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_MULTITHREADED,
-    };
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Variant::VARIANT;
 
-    struct ComGuard(bool);
-    impl Drop for ComGuard {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
+    let factory = wic_factory()?;
     unsafe {
-        let init = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let _com = ComGuard(init == S_OK || init == S_FALSE);
-
-        let factory: IWICImagingFactory =
-            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
         let wide_path = HSTRING::from(original.as_os_str());
         let decoder = factory
             .CreateDecoderFromFilename(

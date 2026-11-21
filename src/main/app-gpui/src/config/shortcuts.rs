@@ -45,7 +45,7 @@ pub struct ScreenshotConfig {
     pub auto_copy_to_clipboard: bool,
     #[serde(default = "default_true")]
     pub show_preview: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub hide_desktop_icons: bool,
     #[serde(default = "default_true")]
     pub freeze_screen: bool,
@@ -63,7 +63,7 @@ impl Default for ScreenshotConfig {
             capture_to_clipboard: false,
             auto_copy_to_clipboard: true,
             show_preview: true,
-            hide_desktop_icons: true,
+            hide_desktop_icons: false,
             freeze_screen: true,
             format: default_format(),
             multi_image_attach_edge: default_attach_edge(),

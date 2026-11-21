@@ -1,15 +1,11 @@
 use tiny_skia::Pixmap;
 
-fn pixels(pixmap: &Pixmap, red: usize, blue: usize) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(pixmap.data().len());
-    for pixel in pixmap.data().as_chunks::<4>().0 {
-        bytes.extend_from_slice(&[pixel[red], pixel[1], pixel[blue], 255]);
+pub fn rgba(pixmap: &Pixmap) -> Vec<u8> {
+    let mut bytes = pixmap.data().to_vec();
+    for pixel in bytes.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
     }
     bytes
-}
-
-pub fn rgba(pixmap: &Pixmap) -> Vec<u8> {
-    pixels(pixmap, 0, 2)
 }
 
 pub fn bgra(pixmap: &Pixmap) -> Vec<u8> {
@@ -21,16 +17,35 @@ pub fn bgra(pixmap: &Pixmap) -> Vec<u8> {
 pub fn bgra_into(pixmap: &Pixmap, out: &mut Vec<u8>) {
     let source = pixmap.data();
     out.resize(source.len(), 0);
-    for (target, pixel) in out
+    copy_rgba_to_opaque_bgra(source, out);
+}
+
+pub(crate) fn copy_bgra_to_rgba(source: &[u8], target: &mut [u8]) {
+    swap_red_and_blue(source, target, false);
+}
+
+pub(crate) fn copy_rgba_to_opaque_bgra(source: &[u8], target: &mut [u8]) {
+    swap_red_and_blue(source, target, true);
+}
+
+fn swap_red_and_blue(source: &[u8], target: &mut [u8], opaque: bool) {
+    let count = source.len().min(target.len()) / 4;
+    for (out, pixel) in target[..count * 4]
         .as_chunks_mut::<4>()
         .0
         .iter_mut()
-        .zip(source.as_chunks::<4>().0)
+        .zip(source[..count * 4].as_chunks::<4>().0)
     {
-        target[0] = pixel[2];
-        target[1] = pixel[1];
-        target[2] = pixel[0];
-        target[3] = 255;
+        let packed = u32::from_le_bytes(*pixel);
+        let swapped = (packed & 0xFF00_FF00)
+            | ((packed & 0x00FF_0000) >> 16)
+            | ((packed & 0x0000_00FF) << 16);
+        let packed = if opaque {
+            (swapped & 0x00FF_FFFF) | 0xFF00_0000
+        } else {
+            swapped
+        };
+        *out = packed.to_le_bytes();
     }
 }
 
@@ -46,6 +61,9 @@ mod tests {
             .copy_from_slice(&[64, 32, 16, 128, 1, 1, 1, 1, 0, 0, 0, 0]);
         assert_eq!(rgba(&pixmap), [64, 32, 16, 255, 1, 1, 1, 255, 0, 0, 0, 255]);
         assert_eq!(bgra(&pixmap), [16, 32, 64, 255, 1, 1, 1, 255, 0, 0, 0, 255]);
+        let mut round = [0u8; 12];
+        copy_bgra_to_rgba(&[16, 32, 64, 255, 1, 1, 1, 128, 0, 0, 0, 7], &mut round);
+        assert_eq!(round, [64, 32, 16, 255, 1, 1, 1, 128, 0, 0, 0, 7]);
         let mut reused = Vec::new();
         bgra_into(&pixmap, &mut reused);
         assert_eq!(reused, [16, 32, 64, 255, 1, 1, 1, 255, 0, 0, 0, 255]);

@@ -950,4 +950,57 @@ mod tests {
         engine.set_state(next);
         assert_eq!(engine.total_duration(), 2.0);
     }
+
+    #[test]
+    fn a_scaled_render_keeps_the_full_frame_layout() {
+        let mut state = state();
+        state.wallpaper.enabled = true;
+        state.wallpaper.padding = 100.0;
+        let mut engine = Engine::new(Config::new(400.0, 300.0, state));
+        let mut video = Pixmap::new(400, 300).unwrap();
+        let colors = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+        for (index, pixel) in video
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let x = index % 400;
+            let y = index / 400;
+            let quadrant = (x >= 200) as usize + (y >= 150) as usize * 2;
+            *pixel = colors[quadrant];
+        }
+        let frames = Frames {
+            video: Some(video.as_ref()),
+            camera: None,
+        };
+        let scaled = engine.render_frame_scaled(0.0, frames, 300, 250).unwrap();
+        assert_eq!((scaled.width(), scaled.height()), (300, 250));
+        let sample = |x: u32, y: u32| {
+            let offset = ((y * 300 + x) * 4) as usize;
+            let data = scaled.data();
+            [data[offset], data[offset + 1], data[offset + 2]]
+        };
+        for (x, y, expected) in [
+            (100, 87, colors[0]),
+            (200, 87, colors[1]),
+            (100, 162, colors[2]),
+            (200, 162, colors[3]),
+        ] {
+            let actual = sample(x, y);
+            assert!(
+                actual
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(a, b)| (*a as i32 - *b as i32).abs() < 60),
+                "scaled pixel at {x},{y} was {actual:?}, expected {expected:?}"
+            );
+        }
+    }
 }

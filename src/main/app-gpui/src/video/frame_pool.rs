@@ -39,14 +39,109 @@ impl FramePool {
         Err(vec![0u8; byte_len])
     }
 
-    pub fn recycle_arc(&self, buffer: Arc<Vec<u8>>) {
-        if let Ok(bytes) = Arc::try_unwrap(buffer) {
-            let _ = self.tx.try_send(bytes);
-        }
+    pub fn share(&self, bytes: Vec<u8>) -> FrameBytes {
+        FrameBytes::pooled(bytes, self.tx.clone())
     }
 
     pub fn clear(&self) {
         while self.rx.try_recv().is_ok() {}
+    }
+}
+
+struct StoredFrame {
+    bytes: Vec<u8>,
+    pool: Option<smol::channel::Sender<Vec<u8>>>,
+}
+
+impl Drop for StoredFrame {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        let bytes = std::mem::take(&mut self.bytes);
+        let _ = pool.try_send(bytes);
+    }
+}
+
+#[derive(Clone)]
+pub struct FrameBytes {
+    inner: Arc<StoredFrame>,
+}
+
+pub struct FrameWeak {
+    inner: std::sync::Weak<StoredFrame>,
+}
+
+impl FrameBytes {
+    pub fn pooled(bytes: Vec<u8>, pool: smol::channel::Sender<Vec<u8>>) -> Self {
+        Self {
+            inner: Arc::new(StoredFrame {
+                bytes,
+                pool: Some(pool),
+            }),
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.inner.bytes
+    }
+
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.inner.bytes.as_ptr()
+    }
+
+    pub fn downgrade(&self) -> FrameWeak {
+        FrameWeak {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
+    }
+}
+
+impl FrameWeak {
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    pub fn upgrade(&self) -> Option<FrameBytes> {
+        self.inner.upgrade().map(|inner| FrameBytes { inner })
+    }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.inner.ptr_eq(&other.inner)
+    }
+}
+
+impl From<Vec<u8>> for FrameBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: Arc::new(StoredFrame { bytes, pool: None }),
+        }
+    }
+}
+
+impl std::ops::Deref for FrameBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl std::fmt::Debug for FrameBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrameBytes")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl PartialEq for FrameBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
     }
 }
 
@@ -55,28 +150,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recycles_only_unshared_buffers_with_matching_size() {
-        let pool = FramePool::new(2);
-        let shared = Arc::new(vec![7u8; 64]);
-        let keep = shared.clone();
-        pool.recycle_arc(shared);
-        drop(keep);
-
-        let fresh = pool.take(64);
-        assert!(fresh.iter().all(|&byte| byte == 0));
-
-        let owned = Arc::new(vec![42u8; 64]);
-        let ptr = owned.as_ptr();
-        pool.recycle_arc(owned);
-        let reused = pool.take(64);
-        assert_eq!(reused.as_ptr(), ptr);
+    fn returns_shared_frame_storage_when_the_last_clone_drops() {
+        let pool = FramePool::new(1);
+        let mut original = pool.take(4);
+        original.copy_from_slice(&[9, 8, 7, 6]);
+        let address = original.as_ptr();
+        let frame = pool.share(original);
+        let held = frame.clone();
+        drop(frame);
+        let while_shared = pool.take(4);
+        assert_ne!(while_shared.as_ptr(), address);
+        drop(while_shared);
+        drop(held);
+        let reused = pool.take(4);
+        assert_eq!(reused.as_ptr(), address);
+        assert_eq!(reused.as_slice(), &[9, 8, 7, 6]);
     }
 
     #[test]
     fn clear_releases_pooled_buffers() {
         let pool = FramePool::new(2);
-        let owned = Arc::new(vec![9u8; 128]);
-        pool.recycle_arc(owned);
+        drop(pool.share(vec![9u8; 128]));
         pool.clear();
         let next = pool.take(128);
         assert!(next.iter().all(|&byte| byte == 0));

@@ -52,6 +52,8 @@ fn capture_gif_diagnostic(
         total_frames: 100,
         total_duration: 2.,
         source_duration: 2.,
+        video_frame: None,
+        camera_frame: None,
     };
     let composed = compose_pixmap(&mut session, first_frame_duration, time).unwrap();
     let composition = to_opaque_rgba_buffer(&composed);

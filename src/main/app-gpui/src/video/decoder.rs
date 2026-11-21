@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+#[cfg(test)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,12 +34,19 @@ impl VideoInfo {
     }
 }
 
+#[cfg(any(windows, test))]
+fn force_opaque_bgra(bytes: &mut [u8]) {
+    for pixel in bytes.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
+    }
+}
+
 /// A decoded frame in BGRA, the layout GPUI composites in.
 #[derive(Clone)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
-    pub bgra: Arc<Vec<u8>>,
+    pub bgra: crate::video::frame_pool::FrameBytes,
 }
 
 impl DecodedFrame {
@@ -60,17 +68,7 @@ impl DecodedFrame {
         if permute_bgra(&self.bgra, target, self.width.max(1), self.height.max(1)) {
             return Some(());
         }
-        for (out, pixel) in target
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(self.bgra.as_chunks::<4>().0)
-        {
-            out[0] = pixel[2];
-            out[1] = pixel[1];
-            out[2] = pixel[0];
-            out[3] = pixel[3];
-        }
+        crate::video::composition::opaque::copy_bgra_to_rgba(&self.bgra, target);
         Some(())
     }
 }
@@ -454,7 +452,7 @@ mod backend {
                     abandoned,
                 }) = command
                 else {
-                    cursor.clear(&pool);
+                    cursor.clear();
                     pool.clear();
                     continue;
                 };
@@ -571,29 +569,17 @@ mod backend {
                 .map(|frame| frame.frame.clone())
         }
 
-        fn replace_current(
-            &mut self,
-            frame: Option<TimedFrame>,
-            pool: &crate::video::frame_pool::FramePool,
-        ) {
-            if let Some(previous) = std::mem::replace(&mut self.current, frame) {
-                pool.recycle_arc(previous.frame.bgra);
-            }
+        fn replace_current(&mut self, frame: Option<TimedFrame>) {
+            self.current = frame;
         }
 
-        fn replace_next(
-            &mut self,
-            frame: Option<TimedFrame>,
-            pool: &crate::video::frame_pool::FramePool,
-        ) {
-            if let Some(previous) = std::mem::replace(&mut self.next, frame) {
-                pool.recycle_arc(previous.frame.bgra);
-            }
+        fn replace_next(&mut self, frame: Option<TimedFrame>) {
+            self.next = frame;
         }
 
-        fn clear(&mut self, pool: &crate::video::frame_pool::FramePool) {
-            self.replace_current(None, pool);
-            self.replace_next(None, pool);
+        fn clear(&mut self) {
+            self.replace_current(None);
+            self.replace_next(None);
         }
     }
 
@@ -625,7 +611,7 @@ mod backend {
         let position = (bounded_time(time, info) * UNITS_PER_SECOND).round() as i64;
         if cursor.needs_seek(position) {
             set_reader_position(reader, position)?;
-            cursor.clear(pool);
+            cursor.clear();
         }
 
         if cursor
@@ -634,7 +620,7 @@ mod backend {
             .is_some_and(|next| next.timestamp <= position.saturating_add(TIMESTAMP_TOLERANCE))
         {
             let next = cursor.next.take();
-            cursor.replace_current(next, pool);
+            cursor.replace_current(next);
         }
         if cursor
             .next
@@ -668,15 +654,15 @@ mod backend {
             if stream_flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
                 if let Some((timestamp, sample)) = candidate {
                     let frame = copy_sample(&sample, info, pool)?;
-                    cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
-                    cursor.replace_next(None, pool);
+                    cursor.replace_current(Some(TimedFrame { timestamp, frame }));
+                    cursor.replace_next(None);
                 } else if !retried_tail && cursor.frame().is_none() && info.duration > 0.0 {
                     retried_tail = true;
                     let tail = ((info.duration - 1.0 / info.frame_rate()).max(0.0)
                         * UNITS_PER_SECOND)
                         .round() as i64;
                     set_reader_position(reader, tail)?;
-                    cursor.clear(pool);
+                    cursor.clear();
                     continue;
                 }
                 return cursor.frame();
@@ -687,16 +673,16 @@ mod backend {
             if timestamp > position.saturating_add(TIMESTAMP_TOLERANCE) {
                 if let Some((timestamp, sample)) = candidate {
                     let frame = copy_sample(&sample, info, pool)?;
-                    cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
+                    cursor.replace_current(Some(TimedFrame { timestamp, frame }));
                 }
                 let frame = copy_sample(&sample, info, pool)?;
-                cursor.replace_next(Some(TimedFrame { timestamp, frame }), pool);
+                cursor.replace_next(Some(TimedFrame { timestamp, frame }));
                 return cursor.frame();
             }
             if timestamp >= position.saturating_sub(TIMESTAMP_TOLERANCE) {
                 let frame = copy_sample(&sample, info, pool)?;
-                cursor.replace_current(Some(TimedFrame { timestamp, frame }), pool);
-                cursor.replace_next(None, pool);
+                cursor.replace_current(Some(TimedFrame { timestamp, frame }));
+                cursor.replace_next(None);
                 return cursor.frame();
             }
             candidate = Some((timestamp, sample));
@@ -754,23 +740,37 @@ mod backend {
             return None;
         }
         let row_bytes = (info.width * 4) as usize;
-        let mut bgra = pool.take(row_bytes * info.height as usize);
-
-        for row in 0..info.height as usize {
-            let source = start.offset(pitch as isize * row as isize);
-            let target = &mut bgra[row * row_bytes..(row + 1) * row_bytes];
-            std::ptr::copy_nonoverlapping(source, target.as_mut_ptr(), row_bytes);
-        }
-        // RGB32 has no alpha channel; force it opaque.
-        for pixel in bgra.as_chunks_mut::<4>().0 {
-            pixel[3] = 255;
-        }
+        let height = info.height as usize;
+        let mut bgra = pool.take(row_bytes * height);
+        blit_bgra_rows(start, pitch, row_bytes, height, &mut bgra);
 
         Some(DecodedFrame {
             width: info.width,
             height: info.height,
-            bgra: bgra.into(),
+            bgra: pool.share(bgra),
         })
+    }
+
+    unsafe fn blit_bgra_rows(
+        start: *const u8,
+        pitch: i32,
+        row_bytes: usize,
+        height: usize,
+        target: &mut [u8],
+    ) {
+        let length = row_bytes * height;
+        if pitch == row_bytes as i32 {
+            std::ptr::copy_nonoverlapping(start, target.as_mut_ptr(), length);
+            super::force_opaque_bgra(&mut target[..length]);
+            return;
+        }
+        for row in 0..height {
+            let source = start.offset(pitch as isize * row as isize);
+            let offset = row * row_bytes;
+            let target = &mut target[offset..offset + row_bytes];
+            std::ptr::copy_nonoverlapping(source, target.as_mut_ptr(), row_bytes);
+            super::force_opaque_bgra(target);
+        }
     }
 
     #[cfg(test)]
@@ -786,6 +786,29 @@ mod backend {
                     bgra: vec![value; 4].into(),
                 },
             }
+        }
+
+        #[test]
+        fn bgra_rows_handle_packed_strided_and_bottom_up_pitches() {
+            let mut out = [0u8; 8];
+            unsafe {
+                blit_bgra_rows([1u8, 2, 3, 0, 4, 5, 6, 9].as_ptr(), 4, 4, 2, &mut out);
+            }
+            assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
+
+            let strided = [1u8, 2, 3, 0, 0, 0, 0, 0, 4, 5, 6, 9, 0, 0, 0, 0];
+            let mut out = [0u8; 8];
+            unsafe {
+                blit_bgra_rows(strided.as_ptr(), 8, 4, 2, &mut out);
+            }
+            assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
+
+            let bottom_up = [4u8, 5, 6, 9, 1, 2, 3, 0];
+            let mut out = [0u8; 8];
+            unsafe {
+                blit_bgra_rows(bottom_up.as_ptr().add(4), -4, 4, 2, &mut out);
+            }
+            assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
         }
 
         #[test]
@@ -850,9 +873,7 @@ mod backend {
 
     impl DecoderProcess {
         fn advance(&mut self, frame: TimedFrame) {
-            if let Some(previous) = self.current.replace(frame) {
-                self.pool.recycle_arc(previous.frame.bgra);
-            }
+            self.current = Some(frame);
         }
     }
 
@@ -1400,7 +1421,7 @@ mod backend {
                             frame: DecodedFrame {
                                 width: info.width,
                                 height: info.height,
-                                bgra: bytes.into(),
+                                bgra: reader_pool.share(bytes),
                             },
                         }))
                         .is_err()
@@ -1617,7 +1638,7 @@ esac
                 frame: DecodedFrame {
                     width: 1,
                     height: 1,
-                    bgra: vec![byte, 0, 0, 255].into(),
+                    bgra: pool.share(vec![byte, 0, 0, 255]),
                 },
             };
             decoder.advance(frame(0.0, 10));
@@ -1627,7 +1648,7 @@ esac
             assert_eq!(held.bgra[0], 10);
 
             let current = decoder.current.as_ref().unwrap();
-            let cached = Arc::downgrade(&current.frame.bgra);
+            let cached = current.frame.bgra.downgrade();
             let address = current.frame.bgra.as_ptr();
             decoder.advance(frame(2.0, 30));
             let bytes = pool.take(4);
@@ -2167,6 +2188,13 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_bgra_alpha_is_forced_opaque_without_touching_color() {
+        let mut bytes = [1u8, 2, 3, 0, 4, 5, 6, 9, 7];
+        force_opaque_bgra(&mut bytes);
+        assert_eq!(bytes, [1, 2, 3, 255, 4, 5, 6, 255, 7]);
+    }
 
     fn expect_frame(command: Command) -> FrameCommand {
         match command {

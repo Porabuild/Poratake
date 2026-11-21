@@ -1887,6 +1887,7 @@ impl AreaOverlay {
         launch: OverlayLaunch,
         cx: &mut App,
     ) -> Option<gpui::WindowHandle<AreaOverlay>> {
+        let prefetch_window_list = launch.focus;
         open_overlay_window(
             display_id,
             display_bounds,
@@ -1901,7 +1902,17 @@ impl AreaOverlay {
                 )
                 .with_all_in_one(choices)
             },
-            |this, cx| this.apply_all_in_one_target(cx),
+            move |this, cx| {
+                this.apply_all_in_one_target(cx);
+                if prefetch_window_list
+                    && !this.picking_windows
+                    && this.all_in_one.is_some_and(|choices| {
+                        choices.mode != crate::capture::all_in_one::Mode::Ocr
+                    })
+                {
+                    this.request_window_list(cx);
+                }
+            },
             true,
             "the all-in-one overlay",
             cx,
@@ -2020,34 +2031,35 @@ impl AreaOverlay {
             gpui::CursorStyle::Crosshair
         };
         self.hovered_window = None;
-        self.window_list_generation = self.window_list_generation.wrapping_add(1);
         self.picking_windows = choices.target == Target::Window;
-        if choices.target == Target::Window {
-            self.windows.clear();
-            let request_generation = self.window_list_generation;
-            let daemon = self.service.daemon.clone();
-            cx.spawn(async move |entity, cx| {
-                let windows = cx
-                    .background_executor()
-                    .spawn(async move { crate::capture::windows_list::list(&daemon) })
-                    .await;
-                let _ = entity.update(cx, |this, cx| {
-                    if !accepts_window_list(
-                        this.all_in_one,
-                        this.window_list_generation,
-                        request_generation,
-                    ) {
-                        return;
-                    }
-                    this.windows = windows;
-                    cx.notify();
-                });
-            })
-            .detach();
-        } else {
-            self.windows = Vec::new();
+        if self.picking_windows {
+            self.request_window_list(cx);
         }
         cx.notify();
+    }
+
+    fn request_window_list(&mut self, cx: &mut Context<Self>) {
+        self.window_list_generation = self.window_list_generation.wrapping_add(1);
+        let request_generation = self.window_list_generation;
+        let daemon = self.service.daemon.clone();
+        cx.spawn(async move |entity, cx| {
+            let windows = cx
+                .background_executor()
+                .spawn(async move { crate::capture::windows_list::list(&daemon) })
+                .await;
+            let _ = entity.update(cx, |this, cx| {
+                if !accepts_window_list(
+                    this.all_in_one,
+                    this.window_list_generation,
+                    request_generation,
+                ) {
+                    return;
+                }
+                this.windows = windows;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn start_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2556,10 +2568,7 @@ fn accepts_window_list(
     request_generation: u64,
 ) -> bool {
     current_generation == request_generation
-        && all_in_one.is_some_and(|choices| {
-            choices.mode != crate::capture::all_in_one::Mode::Ocr
-                && choices.target == crate::capture::all_in_one::Target::Window
-        })
+        && all_in_one.is_some_and(|choices| choices.mode != crate::capture::all_in_one::Mode::Ocr)
 }
 
 fn capture_intent(mode: crate::capture::all_in_one::Mode) -> crate::capture::intent::CaptureIntent {
@@ -4075,7 +4084,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_window_lists_are_rejected_after_leaving_window_mode() {
+    fn window_lists_follow_the_overlay_generation_and_skip_ocr() {
         use crate::capture::all_in_one::{Choices, Mode, Target};
 
         assert!(super::accepts_window_list(
@@ -4102,7 +4111,7 @@ mod tests {
             2,
             2,
         ));
-        assert!(!super::accepts_window_list(
+        assert!(super::accepts_window_list(
             Some(Choices {
                 mode: Mode::Record,
                 target: Target::Screen,
@@ -4110,6 +4119,62 @@ mod tests {
             2,
             2,
         ));
+    }
+
+    #[herogpui::test]
+    fn switching_to_the_window_target_reuses_a_prefetched_list(cx: &mut TestAppContext) {
+        use crate::capture::all_in_one::{Choices, Mode, Target};
+        use crate::capture::windows_list::{Rect, WindowListItem};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+        let service = cx.read(crate::state::state);
+        let bounds = gpui::Bounds {
+            origin: gpui::point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let (overlay, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            let mut overlay = super::AreaOverlay::with_focus(
+                bounds,
+                1.0,
+                service,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                focus,
+            )
+            .with_all_in_one(Choices {
+                mode: Mode::Screenshot,
+                target: Target::Area,
+            });
+            overlay.windows = vec![WindowListItem {
+                window_id: 7,
+                title: "Docs".into(),
+                owner_name: "Browser".into(),
+                owner_pid: 1,
+                bounds: Rect {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 300.0,
+                    height: 200.0,
+                },
+            }];
+            overlay
+        });
+        cx.refresh().expect("schedule a redraw");
+        cx.run_until_parked();
+        let generation = overlay.read_with(cx, |overlay, _| overlay.window_list_generation());
+        overlay.update(cx, |overlay, cx| {
+            overlay.set_all_in_one_target(Target::Window, cx);
+        });
+        overlay.read_with(cx, |overlay, _| {
+            assert!(overlay.is_picking_windows());
+            assert!(overlay.window_list_generation() > generation);
+            assert_eq!(overlay.windows.len(), 1);
+            assert_eq!(overlay.windows[0].window_id, 7);
+        });
     }
 
     #[herogpui::test]

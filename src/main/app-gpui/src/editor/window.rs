@@ -480,8 +480,8 @@ pub struct EditorWindow {
         Option<[u8; 3]>,
         Option<gpui::ImageId>,
     )>,
-    backdrop_generation: u64,
-    backdrop_task: Option<gpui::Task<()>>,
+    backdrop_in_flight: bool,
+    backdrop_pending: bool,
     inset_color: Option<String>,
     /// The stage's scroll position, which ctrl-drag pans.
     stage_scroll: gpui::ScrollHandle,
@@ -589,8 +589,8 @@ impl EditorWindow {
             image_tiles,
             retired_preview_edges: Vec::new(),
             backdrop_key: None,
-            backdrop_generation: 0,
-            backdrop_task: None,
+            backdrop_in_flight: false,
+            backdrop_pending: false,
             inset_color: None,
             stage_scroll: gpui::ScrollHandle::new(),
             pan_origin: None,
@@ -907,15 +907,9 @@ impl EditorWindow {
     fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
         if !wallpaper.is_active_with_layers(!self.layers.is_empty()) {
-            if self.backdrop.is_some()
-                || self.backdrop_key.is_some()
-                || self.backdrop_task.is_some()
-            {
-                self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-            }
+            self.backdrop_pending = self.backdrop_in_flight;
             self.retire_backdrop();
             self.backdrop_key = None;
-            self.backdrop_task = None;
             return;
         }
         // The frame surrounds the whole group, so the layout is computed from
@@ -993,6 +987,12 @@ impl EditorWindow {
             .then(|| self.image.as_ref().map(|image| image.id))
             .flatten(),
         );
+        if self.backdrop_in_flight {
+            if self.backdrop_key.as_ref() != Some(&key) {
+                self.backdrop_pending = true;
+            }
+            return;
+        }
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
         }
@@ -1011,8 +1011,6 @@ impl EditorWindow {
             self.retire_backdrop();
         }
         self.backdrop_key = Some(key);
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-        let generation = self.backdrop_generation;
         let frame_scale = self.native_scale;
         let layers = self.layers.clone();
         let inset_color = self.inset_color.clone();
@@ -1087,10 +1085,14 @@ impl EditorWindow {
             let backdrop_tiles = Vec::new();
             (rendered, inset_color, backdrop_tiles, rounded_matte)
         });
-        self.backdrop_task = Some(cx.spawn(async move |entity, cx| {
+        self.backdrop_in_flight = true;
+        cx.spawn(async move |entity, cx| {
             let (rendered, inset_color, backdrop_tiles, rounded_matte) = task.await;
             let _ = entity.update(cx, |editor, cx| {
-                if editor.backdrop_generation != generation {
+                editor.backdrop_in_flight = false;
+                if std::mem::take(&mut editor.backdrop_pending) {
+                    editor.backdrop_key = None;
+                    editor.refresh_backdrop(cx);
                     return;
                 }
                 let (backdrop, preview_edges, composite) = rendered
@@ -1103,10 +1105,10 @@ impl EditorWindow {
                 editor.backdrop_tiles = backdrop_tiles;
                 editor.preview_edges = preview_edges;
                 editor.inset_color = inset_color;
-                editor.backdrop_task = None;
                 cx.notify();
             });
-        }));
+        })
+        .detach();
     }
 
     fn sync_snapshot(&mut self, cx: &mut Context<Self>) {
@@ -4777,6 +4779,56 @@ mod tests {
             let editor = editor.read(cx);
             assert!(editor.backdrop_composite);
             assert_ne!(editor.backdrop.as_ref().unwrap().id, original);
+        });
+    }
+
+    #[herogpui::test]
+    fn a_backdrop_render_coalesces_changes_that_arrive_while_it_runs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([240, 80, 64, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 20.;
+                editor.refresh_backdrop(cx);
+                assert!(editor.backdrop_in_flight);
+                assert!(!editor.backdrop_pending);
+                editor.wallpaper.padding = 40.;
+                editor.refresh_backdrop(cx);
+                assert!(editor.backdrop_pending);
+            });
+        });
+        for _ in 0..8 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.settle();
+            if !cx.update(|_, cx| editor.read(cx).backdrop_in_flight) {
+                break;
+            }
+        }
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(!editor.backdrop_in_flight);
+            assert!(!editor.backdrop_pending);
+            let expected = (8.0 + 40.0 * editor.native_scale * 2.0).round() as u32;
+            let size = editor.backdrop.as_ref().unwrap().size(0);
+            assert_eq!(u32::from(size.width), expected);
+            assert_eq!(u32::from(size.height), expected);
         });
     }
 

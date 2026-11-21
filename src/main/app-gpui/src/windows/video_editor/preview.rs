@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use herogpui::gpui::BackgroundExecutor;
@@ -43,7 +43,7 @@ struct CameraWarmup {
 
 struct CachedFrame {
     time: f64,
-    decoded: Weak<Vec<u8>>,
+    decoded: crate::video::frame_pool::FrameWeak,
     pixmap: Arc<Pixmap>,
 }
 
@@ -373,7 +373,7 @@ fn cached_frame(
     }
 
     let frame = decoded?;
-    let decoded = Arc::downgrade(&frame.bgra);
+    let decoded = frame.bgra.downgrade();
     if let Some(cached) = cached.as_mut().filter(|cached| {
         cached.pixmap.width() == frame.width.max(1) && cached.pixmap.height() == frame.height.max(1)
     }) {
@@ -481,7 +481,7 @@ mod tests {
         let frame = DecodedFrame {
             width,
             height,
-            bgra: Arc::new(bgra),
+            bgra: bgra.into(),
         };
         assert_eq!(frame.to_pixmap().unwrap().data(), rgba);
     }
@@ -678,7 +678,7 @@ mod tests {
         let next = cached_frame(&mut cached, 0.01, || Some(decoded.clone())).unwrap();
         assert!(Arc::ptr_eq(&first, &next));
         assert_eq!(next.data(), &[30, 20, 10, 255]);
-        assert_eq!(Arc::strong_count(&decoded.bgra), 1);
+        assert_eq!(decoded.bgra.strong_count(), 1);
 
         let different = DecodedFrame {
             bgra: vec![40, 50, 60, 255].into(),

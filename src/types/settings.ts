@@ -448,7 +448,7 @@ export const DEFAULT_SETTINGS: SettingsConfig = {
     captureToClipboard: false,
     autoCopyToClipboard: true,
     showPreview: true,
-    hideDesktopIcons: true,
+    hideDesktopIcons: false,
     freezeScreen: true,
     format: 'png',
     multiImageAttachEdge: 'right',

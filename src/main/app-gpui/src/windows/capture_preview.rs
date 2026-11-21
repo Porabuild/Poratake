@@ -671,6 +671,10 @@ impl CapturePreviewWindow {
                             }
                             view.previews.push(preview);
                             configure_stack_window(window, cx, view.window_preview_count());
+                            #[cfg(windows)]
+                            if !view.revealed {
+                                schedule_preview_reveal(window, cx.entity());
+                            }
                             cx.notify();
                             view.revealed
                                 && view
@@ -763,7 +767,40 @@ impl CapturePreviewWindow {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn prewarm(cx: &mut App) {
+        if registry::handle(WindowKind::CapturePreview, cx).is_some() {
+            return;
+        }
+        Self::open_stack_window(cx, Vec::new());
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn prewarm(_cx: &mut App) {}
+
+    #[cfg(windows)]
+    pub(crate) fn discard_idle(cx: &mut App) {
+        let Some(handle) = registry::handle(WindowKind::CapturePreview, cx) else {
+            return;
+        };
+        let Some(handle) = handle.downcast::<CapturePreviewWindow>() else {
+            registry::forget(WindowKind::CapturePreview, cx);
+            return;
+        };
+        let idle = handle
+            .update(cx, |view, _, _| !view.revealed && view.previews.is_empty())
+            .unwrap_or(true);
+        if idle {
+            registry::forget(WindowKind::CapturePreview, cx);
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn discard_idle(_cx: &mut App) {}
+
     fn open_stack_window(cx: &mut App, previews: Vec<CapturePreview>) {
+        let announce = !previews.is_empty();
         let (bounds, display_id) = preview_stack_placement(cx, previews.len());
         let window_bounds = display_id
             .and_then(|id| cx.find_display(id))
@@ -890,12 +927,8 @@ impl CapturePreviewWindow {
                 ));
             });
             #[cfg(windows)]
-            if !cfg!(test) {
-                let reveal_handle = window.window_handle();
-                let reveal_view = view.clone();
-                window.on_next_frame(move |window, cx| {
-                    reveal_preview_when_ready(window, reveal_handle, reveal_view, false, cx);
-                });
+            if announce {
+                schedule_preview_reveal(window, view.clone());
             }
             view
         };
@@ -925,8 +958,10 @@ impl CapturePreviewWindow {
         if let Ok((handle, _)) = opened {
             let handle: AnyWindowHandle = handle.into();
             registry::remember(WindowKind::CapturePreview, handle, cx);
-            schedule_revealed_previews(handle, cx);
-        } else {
+            if announce {
+                schedule_revealed_previews(handle, cx);
+            }
+        } else if announce {
             crate::windows::toast::Toast::show(cx, "Preview unavailable", failure_body);
         }
     }
@@ -943,6 +978,17 @@ fn preview_viewport_ready(
     bounds: Bounds<gpui::Pixels>,
 ) -> bool {
     viewport == bounds.size
+}
+
+#[cfg(windows)]
+fn schedule_preview_reveal(window: &mut Window, view: Entity<CapturePreviewWindow>) {
+    if cfg!(test) {
+        return;
+    }
+    let handle = window.window_handle();
+    window.on_next_frame(move |window, cx| {
+        reveal_preview_when_ready(window, handle, view, false, cx);
+    });
 }
 
 #[cfg(windows)]
@@ -3702,6 +3748,56 @@ mod tests {
             .is_none());
         assert_eq!(cx.update(|cx| cx.windows().len()), 0);
         assert!(capture_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_prewarmed_preview_window_is_discarded_until_a_preview_arrives() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            Arc::new(gpui::NoopTextSystem),
+            Arc::new(()),
+            || Ok(None),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        cx.update(CapturePreviewWindow::prewarm);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+
+        let handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .expect("prewarmed window");
+        cx.update(|cx| {
+            handle
+                .downcast::<CapturePreviewWindow>()
+                .expect("preview window")
+                .update(cx, |view, _, _| view.revealed = true)
+                .unwrap();
+        });
+        cx.update(CapturePreviewWindow::discard_idle);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_some());
+
+        let handle = cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .unwrap();
+        cx.update(|cx| {
+            handle
+                .downcast::<CapturePreviewWindow>()
+                .unwrap()
+                .update(cx, |view, _, _| view.revealed = false)
+                .unwrap();
+        });
+        cx.update(CapturePreviewWindow::discard_idle);
+        assert!(cx
+            .update(|cx| registry::handle(WindowKind::CapturePreview, cx))
+            .is_none());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     }
 
     #[cfg(windows)]
