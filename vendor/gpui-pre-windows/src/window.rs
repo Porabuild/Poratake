@@ -830,40 +830,46 @@ impl PlatformWindow for WindowsWindow {
 
                     SetActiveWindow(hwnd).ok();
                     SetFocus(Some(hwnd)).ok();
+
+                    // Try SetForegroundWindow directly before synthesizing an Alt tap, so
+                    // hotkey-opened or already-foreground windows do not receive spurious
+                    // VK_MENU events that collide with subsequent Escape/key input.
+                    // crate `windows 0.56` reports true as Err.
+                    if GetForegroundWindow() != hwnd {
+                        let _ = SetForegroundWindow(hwnd).as_bool();
+                    }
+                    if GetForegroundWindow() != hwnd {
+                        // premium ragebait by windows, this is needed because the window
+                        // must have received an input event to be able to set itself to foreground
+                        // so let's just simulate user input as that seems to be the most reliable way
+                        // some more info: https://gist.github.com/Aetopia/1581b40f00cc0cadc93a0e8ccb65dc8c
+                        // bonus: this bug also doesn't manifest if you have vs attached to the process
+                        let inputs = [
+                            INPUT {
+                                r#type: INPUT_KEYBOARD,
+                                Anonymous: INPUT_0 {
+                                    ki: KEYBDINPUT {
+                                        wVk: VK_MENU,
+                                        dwFlags: KEYBD_EVENT_FLAGS(0),
+                                        ..Default::default()
+                                    },
+                                },
+                            },
+                            INPUT {
+                                r#type: INPUT_KEYBOARD,
+                                Anonymous: INPUT_0 {
+                                    ki: KEYBDINPUT {
+                                        wVk: VK_MENU,
+                                        dwFlags: KEYEVENTF_KEYUP,
+                                        ..Default::default()
+                                    },
+                                },
+                            },
+                        ];
+                        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+                        let _ = SetForegroundWindow(hwnd).as_bool();
+                    }
                 }
-
-                // premium ragebait by windows, this is needed because the window
-                // must have received an input event to be able to set itself to foreground
-                // so let's just simulate user input as that seems to be the most reliable way
-                // some more info: https://gist.github.com/Aetopia/1581b40f00cc0cadc93a0e8ccb65dc8c
-                // bonus: this bug also doesn't manifest if you have vs attached to the process
-                let inputs = [
-                    INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_MENU,
-                                dwFlags: KEYBD_EVENT_FLAGS(0),
-                                ..Default::default()
-                            },
-                        },
-                    },
-                    INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VK_MENU,
-                                dwFlags: KEYEVENTF_KEYUP,
-                                ..Default::default()
-                            },
-                        },
-                    },
-                ];
-                unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-
-                // todo(windows)
-                // crate `windows 0.56` reports true as Err
-                unsafe { SetForegroundWindow(hwnd).as_bool() };
             })
             .detach();
     }
