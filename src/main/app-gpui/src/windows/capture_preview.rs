@@ -3606,6 +3606,8 @@ mod tests {
             preview.kind = PreviewKind::Screenshot;
             preview.path = successful_capture.clone();
             preview.image = None;
+            preview.dismiss_animation = None;
+            preview.deleting = false;
         });
         visual.settle();
         let delete_point = gpui::point(px(100.), px(500.));
