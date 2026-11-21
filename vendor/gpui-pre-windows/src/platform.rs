@@ -1810,7 +1810,9 @@ fn handle_gpu_device_lost(
     std::thread::sleep(std::time::Duration::from_millis(350));
 
     *directx_devices = try_to_recover_from_device_lost(|| {
-        DirectXDevices::new().context("Failed to recreate new DirectX devices after device lost")
+        DirectXDevices::new()
+            .or_else(|_| DirectXDevices::new_warp())
+            .context("Failed to recreate new DirectX devices after device lost")
     })?;
     log::info!("DirectX devices successfully recreated.");
 

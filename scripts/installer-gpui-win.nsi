@@ -1,5 +1,6 @@
 Unicode True
 SetCompressor /SOLID lzma
+!include "LogicLib.nsh"
 
 !define PRODUCT_NAME "Poratake"
 !define PRODUCT_PUBLISHER "Porabuild"
@@ -31,12 +32,14 @@ Section "Install"
   nsExec::ExecToLog 'taskkill /F /IM Poratake.exe /T'
   Sleep 400
 
-  IfFileExists "$INSTDIR\Poratake.exe" 0 +6
+  ${If} ${FileExists} "$INSTDIR\Poratake.exe"
     Delete "$INSTDIR\Poratake.exe"
     Delete "$INSTDIR\*.dll"
     Delete "$INSTDIR\*.pak"
     RMDir /r "$INSTDIR\locales"
     RMDir /r "$INSTDIR\resources"
+    Delete "$SMPROGRAMS\Poratake.lnk"
+  ${EndIf}
 
   File /r "${STAGE_DIR}\*.*"
 
@@ -55,16 +58,18 @@ Section "Install"
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
 
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake"
-  StrCmp $0 "" +2 0
+  ${If} $0 != ""
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Poratake" '"$INSTDIR\poratake-gpui.exe"'
+  ${EndIf}
 
   WriteRegStr HKCU "Software\Classes\.poratake" "" "Poratake.Recording"
   WriteRegStr HKCU "Software\Classes\Poratake.Recording" "" "Poratake Recording"
   WriteRegStr HKCU "Software\Classes\Poratake.Recording\DefaultIcon" "" "$INSTDIR\poratake-gpui.exe,0"
   WriteRegStr HKCU "Software\Classes\Poratake.Recording\shell\open\command" "" '"$INSTDIR\poratake-gpui.exe" "%1"'
 
-  IfSilent 0 +2
+  ${If} ${Silent}
     Exec '"$INSTDIR\poratake-gpui.exe"'
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
