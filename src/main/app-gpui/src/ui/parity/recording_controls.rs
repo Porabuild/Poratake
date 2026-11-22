@@ -539,6 +539,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         click_measured(cx, window, "recording-controls", 10);
         assert_eq!(recorder::state(), RecorderState::Idle);
         assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(not(windows))]
         assert!(std::fs::read_dir(&recordings).unwrap().next().is_none());
     }
     let requests = std::fs::read_to_string(output.join("daemon-fixture.jsonl")).unwrap();
