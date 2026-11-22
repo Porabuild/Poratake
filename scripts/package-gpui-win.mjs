@@ -67,8 +67,9 @@ for (const required of [gpuiExe, daemonExe, ffmpegExe, whisperExe]) {
   }
 }
 
-const outDir =
-  process.argv[3] || path.join(ROOT_DIR, 'release', version, `win-${arch}`);
+const outDir = path.resolve(
+  process.argv[3] || path.join(ROOT_DIR, 'release', version, `win-${arch}`)
+);
 const stageDir = path.join(outDir, 'app');
 rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(path.join(stageDir, 'daemon'), { recursive: true });
