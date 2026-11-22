@@ -285,6 +285,9 @@ impl WindowsPlatform {
             .take()
             .context("CreateWindowExW did not run correctly")?;
         let handle = result?;
+        unsafe {
+            let _ = ShowWindow(handle, SW_HIDE);
+        }
 
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
