@@ -2777,6 +2777,8 @@ impl Render for EditorWindow {
         let window_scale = f64::from(window.scale_factor());
         if self.window_scale != window_scale {
             self.window_scale = window_scale;
+            self.retire_backdrop();
+            self.backdrop_key = None;
         }
         self.fit_to_window(window, cx);
         self.refresh_backdrop(cx);
