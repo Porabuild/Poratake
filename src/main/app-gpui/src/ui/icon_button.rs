@@ -173,6 +173,70 @@ mod tests {
         }
     }
 
+    struct CornerHeader;
+
+    impl Render for CornerHeader {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            crate::ui::window_root::focus_root(
+                div().flex().child(with_tooltip(
+                    "Corner tooltip that must stay inside viewport",
+                    compact("corner-button", "mouse-pointer-2", "Corner button"),
+                )),
+                window,
+                cx,
+            )
+        }
+    }
+
+    #[herogpui::test]
+    fn corner_tooltips_flip_and_clamp_inside_viewport(cx: &mut gpui::TestAppContext) {
+        let (_view, cx) = herogpui::test::open_window(cx, |_, _| CornerHeader);
+        cx.update(|_, cx| {
+            herogpui::theme::set_theme(
+                crate::theme::bridge::to_herogpui(&crate::theme::vars::ThemeVars::default(), true),
+                cx,
+            );
+        });
+        cx.simulate_mouse_move(point(px(14.0), px(14.0)), None, Modifiers::none());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(150));
+        cx.settle();
+        let (viewport, tips) = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let viewport = window.viewport_size();
+            let tips = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.bounds.size.width.0 / scale > 50.0)
+                .map(|quad| {
+                    (
+                        quad.bounds.origin.x.0 / scale,
+                        quad.bounds.origin.y.0 / scale,
+                        (quad.bounds.origin.x.0 + quad.bounds.size.width.0) / scale,
+                        (quad.bounds.origin.y.0 + quad.bounds.size.height.0) / scale,
+                    )
+                })
+                .collect::<Vec<_>>();
+            (viewport, tips)
+        });
+        assert!(!tips.is_empty(), "the corner tooltip must be visible");
+        for (left, top, right, bottom) in tips {
+            assert!(
+                left >= 0.0,
+                "tooltip left must stay inside viewport: {left}"
+            );
+            assert!(top >= 0.0, "tooltip top must stay inside viewport: {top}");
+            assert!(
+                right <= f32::from(viewport.width),
+                "tooltip right must stay inside viewport: {right}"
+            );
+            assert!(
+                bottom <= f32::from(viewport.height),
+                "tooltip bottom must stay inside viewport: {bottom}"
+            );
+        }
+    }
+
     #[test]
     fn hinted_appends_the_hint_only_when_present() {
         assert_eq!(hinted("Undo", "Ctrl+Z"), "Undo (Ctrl+Z)");

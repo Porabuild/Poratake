@@ -3,9 +3,9 @@ name: herogpui
 description: 'HeroGPUI — native Rust/GPUI port of HeroUI v3.2.7. Use when building GPUI UIs with HeroGPUI: ThemeProvider, ThemeBuilder::components, named recipes, Buttons, forms, overlays, or reading crate docs. Keywords: HeroGPUI, herogpui, GPUI, HeroUI, ThemeBuilder, recipe.'
 metadata:
   author: herogpui
-  source: https://github.com/Porabuild/HeroGPUI/blob/b7b28efc12839c5d805c5a628fdea98ae79ac9a2/skills/herogpui/SKILL.md
-  version: '0.15.2'
-  source_commit: b7b28efc12839c5d805c5a628fdea98ae79ac9a2
+  source: https://github.com/Porabuild/HeroGPUI/blob/5caacc31d1e222d3534bd24998690fddee3c6d47/skills/herogpui/SKILL.md
+  version: '0.15.3'
+  source_commit: 5caacc31d1e222d3534bd24998690fddee3c6d47
 ---
 
 # HeroGPUI Development Guide
@@ -18,13 +18,13 @@ This skill is for HeroGPUI only. Do not apply HeroUI v2 APIs, do not invent a CS
 
 ## Poratake's pinned references
 
-Use the exact published registry version in `src/main/Cargo.toml`: HeroGPUI 0.15.2 includes the consumer fixes from upstream pull request #44. The bundled references match that release; [upstream.json](upstream.json) records the tag, source revision and file checksums. Keep `gpui-pre` aligned with the release workspace.
+Use the exact published registry version in `src/main/Cargo.toml`: HeroGPUI 0.15.3 includes the compact slider hit-target/sizing fix (#46), in-window tooltip viewport clamping (#47), and the prior consumer fixes from #44. The bundled references match that release; [upstream.json](upstream.json) records the tag, source revision and file checksums. Keep `gpui-pre` aligned with the release workspace.
 
 - Start with [the local LLM component reference](references/llms.txt). Search for the relevant component or API instead of reading the whole reference.
 - When modifying HeroGPUI itself, use its [workflow](references/agents/workflow.md), [component implementation](references/agents/components.md), [parity audits](references/agents/parity.md), and [gallery verification](references/agents/gallery.md) guides. Their paths and commands refer to the HeroGPUI checkout; Poratake's own repository instructions govern work here.
 - Resolve implementation paths from the pinned dependency's `manifest_path` in `cargo metadata --locked --manifest-path src/main/Cargo.toml --format-version 1` when source inspection is needed.
 - Poratake patches the existing GPUI 0.3.11 Windows backend from `vendor/gpui-pre-windows` to clamp image sampling inside atlas tiles. Keep this source patch when updating dependency pins until its regression passes against an upstream replacement; the other GPUI crates remain registry dependencies.
-- All four HeroGPUI crates resolve to the published 0.15.2 registry release with locked checksums. Focus-ring gutters, Select/Slider accessibility actions and keyboard press ownership are provided upstream; do not restore the former vendored component patch.
+- All four HeroGPUI crates resolve to the published 0.15.3 registry release with locked checksums. Focus-ring gutters, Select/Slider accessibility actions and keyboard press ownership are provided upstream; do not restore the former vendored component patch.
 - Use `Select::fit_panel_width(true)` for intrinsic panel sizing. Compact owner windows use Poratake’s `Tooltip::presenter` integration so HeroGPUI owns the lifecycle. Windows uses a capture-excluded native surface. macOS preserves AppKit hover help and in-window keyboard tooltips; its native capture behavior still needs verification. The built-in separate-window presenter does not enforce capture exclusion.
 
 ## CRITICAL: Theme-first appearance
@@ -53,7 +53,7 @@ Do not invent Poratake-specific or app-specific field names in the library. App 
 ## Installation
 
 ```toml
-herogpui = "=0.15.2"
+herogpui = "=0.15.3"
 ```
 
 ```rust
@@ -192,6 +192,10 @@ These APIs are included in HeroGPUI 0.15.1. Existing 0.15.0 code remains compati
 ### APIs added in 0.15.2
 
 HeroGPUI 0.15.2 adds `Select::fit_panel_width` / `intrinsic_panel_width`, external tooltip presenters (`TooltipPresenter`, `TooltipPresentationRequest`, `TooltipPresenterMode`), and typed `TooltipStyle`, `PopoverStyle`, `TextAreaStyle`, and `TabsStyle` recipes. Read the bundled LLM reference for their contracts. These additions are included in the published 0.15.2 release.
+
+### Fixes in 0.15.3
+
+HeroGPUI 0.15.3 increases `SliderSize::Sm` to an 8px rail with a 14px knob centered inside an 18px interactive hit box (both horizontal and vertical) so clicks and drags on the overhanging handle register reliably, and keeps in-window `Tooltip` popups inside the window viewport with primary-axis flipping, 8px edge clamping, narrow-viewport wrapping, and popover/menu layering.
 
 ### Public types and methods
 
