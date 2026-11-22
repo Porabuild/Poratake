@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use std::io::Write as _;
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Command, Stdio};
 
 #[test]
@@ -12,24 +12,19 @@ fn headless_daemon_serves_the_shared_system_protocol() {
         .spawn()
         .expect("spawn Linux daemon");
     let mut stdin = child.stdin.take().expect("daemon stdin");
-    writeln!(
-        stdin,
-        r#"{{"id":"ping","module":"system","method":"ping"}}"#
-    )
-    .expect("write ping");
-    writeln!(
-        stdin,
-        r#"{{"id":"modules","module":"system","method":"list-modules"}}"#
-    )
-    .expect("write module request");
-    writeln!(
-        stdin,
-        r#"{{"id":"freeze","module":"freeze-screen","method":"freeze"}}"#
-    )
-    .expect("write freeze request");
-    writeln!(
-        stdin,
-        "{}",
+    let mut stdout = BufReader::new(child.stdout.take().expect("daemon stdout"));
+    let mut read_message = || {
+        let mut line = String::new();
+        let bytes = stdout.read_line(&mut line).expect("read daemon output");
+        assert!(bytes > 0, "daemon exited before responding");
+        serde_json::from_str::<serde_json::Value>(&line).expect("JSON response")
+    };
+
+    let mut messages = vec![read_message()];
+    let requests = [
+        r#"{"id":"ping","module":"system","method":"ping"}"#.to_string(),
+        r#"{"id":"modules","module":"system","method":"list-modules"}"#.to_string(),
+        r#"{"id":"freeze","module":"freeze-screen","method":"freeze"}"#.to_string(),
         serde_json::json!({
             "id": "timer",
             "module": "timer-control",
@@ -42,11 +37,7 @@ fn headless_daemon_serves_the_shared_system_protocol() {
                 "foregroundColor": "#ffffff"
             }
         })
-    )
-    .expect("write timer request");
-    writeln!(
-        stdin,
-        "{}",
+        .to_string(),
         serde_json::json!({
             "id": "print",
             "module": "print",
@@ -55,16 +46,8 @@ fn headless_daemon_serves_the_shared_system_protocol() {
                 "imageBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
             }
         })
-    )
-    .expect("write print request");
-    writeln!(
-        stdin,
-        r#"{{"id":"recorder-status","module":"screen-recorder","method":"status"}}"#
-    )
-    .expect("write recorder status request");
-    writeln!(
-        stdin,
-        "{}",
+        .to_string(),
+        r#"{"id":"recorder-status","module":"screen-recorder","method":"status"}"#.to_string(),
         serde_json::json!({
             "id": "recorder-start",
             "module": "screen-recorder",
@@ -74,11 +57,7 @@ fn headless_daemon_serves_the_shared_system_protocol() {
                 "outputPath": "/tmp/poratake-recorder-test/recording.mov"
             }
         })
-    )
-    .expect("write recorder start request");
-    writeln!(
-        stdin,
-        "{}",
+        .to_string(),
         serde_json::json!({
             "id": "recorder-window",
             "module": "screen-recorder",
@@ -89,22 +68,26 @@ fn headless_daemon_serves_the_shared_system_protocol() {
                 "outputPath": "/tmp/poratake-recorder-test/recording.mov"
             }
         })
-    )
-    .expect("write recorder window request");
+        .to_string(),
+    ];
+    for request in &requests {
+        writeln!(stdin, "{request}").expect("write request");
+    }
+    stdin.flush().expect("flush requests");
+    for _ in 0..requests.len() {
+        messages.push(read_message());
+    }
     writeln!(
         stdin,
         r#"{{"id":"quit","module":"system","method":"quit"}}"#
     )
     .expect("write quit");
+    stdin.flush().expect("flush quit");
+    messages.push(read_message());
     drop(stdin);
 
-    let output = child.wait_with_output().expect("wait for Linux daemon");
-    assert!(output.status.success(), "daemon failed: {output:?}");
-    let messages: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .expect("utf8 output")
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("JSON response"))
-        .collect();
+    let status = child.wait().expect("wait for Linux daemon");
+    assert!(status.success(), "daemon failed: {status:?}");
     let response = |id: &str| {
         messages
             .iter()
