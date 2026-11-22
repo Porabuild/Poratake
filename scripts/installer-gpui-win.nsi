@@ -23,7 +23,7 @@ UninstallIcon "${ICON_PATH}"
 Page directory
 Page instfiles
 
-UninstPage confirm
+UninstPage uninstConfirm
 UninstPage instfiles
 
 Section "Install"
