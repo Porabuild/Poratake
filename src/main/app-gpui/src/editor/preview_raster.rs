@@ -777,6 +777,19 @@ pub fn end_frame(window: &mut gpui::Window) {
     }
 }
 
+pub fn clear(window: &mut gpui::Window) {
+    let evicted: Vec<Arc<RenderImage>> = CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .drain()
+            .map(|(_, entry)| entry.patch.image)
+            .collect()
+    });
+    for image in evicted {
+        let _ = window.drop_image(image);
+    }
+}
+
 pub fn image(
     keys: &FrameKeys,
     index: usize,

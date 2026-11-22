@@ -65,6 +65,20 @@ impl BackgroundPreviews {
     pub fn set_custom(&mut self, id: &str, image: Option<Arc<gpui::RenderImage>>) {
         self.customs.insert(id.to_string(), state_for(image));
     }
+
+    pub fn drain_images(&mut self) -> Vec<Arc<gpui::RenderImage>> {
+        let mut images = Vec::new();
+        self.desktop_source = None;
+        if let Some(PreviewState::Ready(image)) = self.desktop.take() {
+            images.push(image);
+        }
+        for (_, state) in self.customs.drain() {
+            if let PreviewState::Ready(image) = state {
+                images.push(image);
+            }
+        }
+        images
+    }
 }
 
 fn state_for(image: Option<Arc<gpui::RenderImage>>) -> PreviewState {
