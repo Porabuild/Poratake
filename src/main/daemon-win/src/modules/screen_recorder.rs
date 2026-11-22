@@ -220,4 +220,5 @@ fn finish_stop(request_id: &str, receiver: Receiver<Result<RecordingResult, Reco
             "Recorder worker stopped before finalizing the recording",
         ),
     }
+    crate::desktop_frame::reclaim_idle_memory();
 }

@@ -360,12 +360,27 @@ pub fn cover_size(width: f32, height: f32) -> (u32, u32) {
     (dimension(width), dimension(height))
 }
 
+static PIXMAP_CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
+static IMAGE_CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
+
+pub fn clear_caches() {
+    if let Ok(mut cache) = PIXMAP_CACHE.lock() {
+        cache.entries.clear();
+        cache.bytes = 0;
+    }
+    if let Ok(mut cache) = IMAGE_CACHE.lock() {
+        *cache = None;
+    }
+}
+
 pub fn pixmap(id: &str, width: u32, height: u32) -> Option<Arc<Pixmap>> {
-    static CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
     let (id, source) = entry(id)?;
     let width = width.clamp(1, MAX_DIMENSION);
     let height = height.clamp(1, MAX_DIMENSION);
-    CACHE.lock().ok()?.pixmap((id, width, height), source)
+    PIXMAP_CACHE
+        .lock()
+        .ok()?
+        .pixmap((id, width, height), source)
 }
 
 pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
@@ -377,10 +392,9 @@ pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
 }
 
 pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
-    static CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
     let (id, source) = entry(id)?;
     let height = dimension(size * TILE_SCALE);
-    let mut guard = CACHE.lock().ok()?;
+    let mut guard = IMAGE_CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if let Some(cached) = cache.get(&(id, height)) {
         return cached.clone();

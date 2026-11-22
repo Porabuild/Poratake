@@ -758,6 +758,10 @@ pub fn begin_frame(visible: &[ScreenshotPaint<'_>]) -> FrameKeys {
     FrameKeys { hashes, prefixes }
 }
 
+pub fn clear_cache() {
+    CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
 pub fn end_frame(window: &mut gpui::Window) {
     let frame = FRAME.with(|frame| frame.get());
     let evicted: Vec<Arc<RenderImage>> = CACHE.with(|cache| {

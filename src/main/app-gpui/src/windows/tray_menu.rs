@@ -62,6 +62,7 @@ pub(crate) struct MenuDisplay {
 #[derive(Default)]
 struct TrayMenuCache {
     handle: Option<WindowHandle<TrayMenuWindow>>,
+    visible: bool,
 }
 
 #[cfg(windows)]
@@ -191,9 +192,11 @@ impl TrayMenuWindow {
     }
 
     #[cfg(windows)]
-    fn finish_close(&mut self, window: &mut Window, _: &mut Context<Self>) {
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         hide_tray_menu_window(window);
         self.visibility = TrayMenuVisibility::Hidden;
+        tray_menu_cache(cx).visible = false;
+        cx.defer(crate::system::memory::schedule_idle_reclaim);
     }
 
     #[cfg(not(windows))]
@@ -218,7 +221,7 @@ impl TrayMenuWindow {
         cx.notify();
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, any(test, feature = "parity")))]
     pub fn prewarm(cx: &mut App) {
         if let Some(handle) = tray_menu_cache(cx).handle {
             if handle.update(cx, |_, _, _| ()).is_ok() {
@@ -226,7 +229,63 @@ impl TrayMenuWindow {
             }
         }
         let opened = Self::open(None, false, cx);
-        tray_menu_cache(cx).handle = opened;
+        let cache = tray_menu_cache(cx);
+        cache.handle = opened;
+        cache.visible = false;
+    }
+
+    pub(crate) fn is_visible(cx: &App) -> bool {
+        #[cfg(windows)]
+        {
+            cx.try_global::<TrayMenuCache>().is_some_and(|cache| {
+                cache.visible
+                    && cache
+                        .handle
+                        .is_some_and(|handle| cx.windows().contains(&handle.into()))
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            registry::is_open(RegistryKind::TrayMenu, cx)
+        }
+    }
+
+    pub(crate) fn cached_hidden_count(cx: &App) -> usize {
+        #[cfg(windows)]
+        {
+            usize::from(cx.try_global::<TrayMenuCache>().is_some_and(|cache| {
+                !cache.visible
+                    && cache
+                        .handle
+                        .is_some_and(|handle| cx.windows().contains(&handle.into()))
+            }))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cx;
+            0
+        }
+    }
+
+    pub(crate) fn evict_cached(cx: &mut App) {
+        #[cfg(windows)]
+        {
+            let Some(handle) = cx
+                .try_global::<TrayMenuCache>()
+                .filter(|cache| !cache.visible)
+                .and_then(|cache| cache.handle)
+            else {
+                return;
+            };
+            let cache = tray_menu_cache(cx);
+            cache.handle = None;
+            cache.visible = false;
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cx;
+        }
     }
 
     #[cfg(all(windows, feature = "parity"))]
@@ -243,7 +302,9 @@ impl TrayMenuWindow {
 
     #[cfg(all(windows, feature = "parity"))]
     pub(crate) fn remove_cached_for_parity(cx: &mut App) {
-        if let Some(handle) = tray_menu_cache(cx).handle.take() {
+        let cache = tray_menu_cache(cx);
+        cache.visible = false;
+        if let Some(handle) = cache.handle.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
     }
@@ -271,10 +332,14 @@ impl TrayMenuWindow {
                 if updated.is_ok() {
                     return;
                 }
-                tray_menu_cache(cx).handle = None;
+                let cache = tray_menu_cache(cx);
+                cache.handle = None;
+                cache.visible = false;
             }
             let opened = Self::open(tray_rect, true, cx);
-            tray_menu_cache(cx).handle = opened;
+            let cache = tray_menu_cache(cx);
+            cache.handle = opened;
+            cache.visible = opened.is_some();
         }
 
         #[cfg(all(target_os = "macos", not(test)))]
@@ -410,6 +475,7 @@ impl TrayMenuWindow {
         self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), max_height, cx));
         self.tray_rect = tray_rect;
         self.visibility = TrayMenuVisibility::Revealing;
+        tray_menu_cache(cx).visible = true;
         self.reveal_generation = self.reveal_generation.wrapping_add(1);
         let generation = self.reveal_generation;
         window.focus(&self.menu.read(cx).focus_handle(), cx);

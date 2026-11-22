@@ -1,5 +1,6 @@
 pub mod capture_preview;
 pub mod history;
+#[cfg(target_os = "macos")]
 pub mod keepalive;
 pub mod onboarding;
 pub mod pin;
