@@ -1389,7 +1389,10 @@ impl EditorWindow {
                 (rendered, matte)
             };
             #[cfg(not(target_os = "macos"))]
-            let rounded_matte = None;
+            let rounded_matte = {
+                let _ = rounded_preview;
+                None
+            };
             #[cfg(target_os = "macos")]
             let backdrop_tiles = rendered
                 .as_ref()
