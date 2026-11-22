@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod a11y_tests;
 pub mod capture_preview;
 pub mod history;
 pub mod keepalive;

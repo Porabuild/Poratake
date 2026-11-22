@@ -20,11 +20,104 @@ on:
 
 concurrency:
   group: checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  typecheck:
-    name: Typecheck
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      macos: ${{ steps.filter.outputs.macos }}
+      macos_swift: ${{ steps.filter.outputs.macos_swift }}
+      rust_shared: ${{ steps.filter.outputs.rust_shared }}
+      linux: ${{ steps.filter.outputs.linux }}
+      windows: ${{ steps.filter.outputs.windows }}
+      windows_e2e: ${{ steps.filter.outputs.windows_e2e }}
+
+    steps:
+      - name: Checkout PR merge commit
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: filter
+        shell: bash
+        run: |
+          set_all_true() {
+            {
+              echo "macos=true"
+              echo "macos_swift=true"
+              echo "rust_shared=true"
+              echo "linux=true"
+              echo "windows=true"
+              echo "windows_e2e=true"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            set_all_true
+            exit 0
+          fi
+
+          if ! git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+            set_all_true
+            exit 0
+          fi
+
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          echo "Changed files:"
+          echo "$changed"
+
+          has_match() {
+            printf '%s\n' "$changed" | grep -Eq "$1"
+          }
+
+          macos_swift=false
+          rust_shared=false
+          linux=false
+          windows=false
+          windows_e2e=false
+
+          if has_match '^(src/main/daemon/|tests/native/|scripts/build-daemon\.sh$|scripts/generate-daemon-contract\.mjs$|src/types/(daemon-contract|platform-capabilities)\.json$|\.github/workflows/checks\.yml$)'; then
+            macos_swift=true
+          fi
+
+          if has_match '^(src/main/(Cargo\.(toml|lock)|app-gpui/|daemon-common/)|vendor/|\.cargo/|rust-toolchain\.toml$|clippy\.toml$|deny\.toml$|src/types/(daemon-contract|platform-capabilities)\.json$|scripts/generate-daemon-contract\.mjs$|\.github/(workflows/checks\.yml|actions/rust-cache/))'; then
+            rust_shared=true
+          fi
+
+          macos=false
+          if [ "$macos_swift" = "true" ] || [ "$rust_shared" = "true" ]; then
+            macos=true
+          fi
+
+          if [ "$rust_shared" = "true" ] || has_match '^(src/main/daemon-linux/|\.github/actions/linux-capture-deps/)'; then
+            linux=true
+          fi
+
+          if [ "$rust_shared" = "true" ] || has_match '^(src/main/daemon-win/|scripts/check-daemon-win\.mjs$)'; then
+            windows=true
+          fi
+
+          if [ "$windows" = "true" ] || has_match '^scripts/parity/'; then
+            windows_e2e=true
+          fi
+
+          {
+            echo "macos=$macos"
+            echo "macos_swift=$macos_swift"
+            echo "rust_shared=$rust_shared"
+            echo "linux=$linux"
+            echo "windows=$windows"
+            echo "windows_e2e=$windows_e2e"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Targets: macos=$macos macos_swift=$macos_swift rust_shared=$rust_shared linux=$linux windows=$windows windows_e2e=$windows_e2e"
+
+  js-checks:
+    name: JS Checks
     runs-on: ubuntu-latest
 
     steps:
@@ -47,98 +140,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
         env:
-          # No packaging here, so skip the ~120MB Electron binary download.
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Typecheck
         run: bun run check:daemon-contract && bun run typecheck
 
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      - name: Cache Bun installs
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          # No packaging here, so skip the ~120MB Electron binary download.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-
       - name: Lint
         run: bun run lint
 
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      - name: Cache Bun installs
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          # No packaging here, so skip the ~120MB Electron binary download.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-
       - name: Format check
         run: bun run format:check
-
-  test:
-    name: Test
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      - name: Cache Bun installs
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          # No packaging here, so skip the ~120MB Electron binary download.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: React Compiler
         run: bun run test:react-compiler
@@ -146,20 +157,42 @@ jobs:
       - name: Tests
         run: bun run test:run
 
+  test:
+    name: macOS
+    needs: changes
+    if: ${{ needs.changes.outputs.macos == 'true' }}
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        if: ${{ needs.changes.outputs.macos_swift == 'true' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
       - name: Build macOS daemon
+        if: ${{ needs.changes.outputs.macos_swift == 'true' }}
         run: ./scripts/build-daemon.sh
 
-      - name: Test macOS window ID validation
-        run: |
-          find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
-            xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D WINDOW_ID_VALIDATION_TEST -suppress-warnings \
-              tests/native/window-id-validation.swift -o "$RUNNER_TEMP/window-id-validation-test"
-          "$RUNNER_TEMP/window-id-validation-test"
-
-      - name: Compile macOS scroll preview fixture
+      - name: Compile macOS Swift tests
+        if: ${{ needs.changes.outputs.macos_swift == 'true' }}
         timeout-minutes: 5
         run: |
-          swiftc -O -target "$(uname -m)-apple-macosx13.0" -D SCROLL_CAPTURE_TEST \
+          set -euo pipefail
+          arch="$(uname -m)"
+          pids=()
+
+          (
+            find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
+              xargs -0 swiftc -target "$arch-apple-macosx13.0" -D WINDOW_ID_VALIDATION_TEST -suppress-warnings \
+                tests/native/window-id-validation.swift -o "$RUNNER_TEMP/window-id-validation-test"
+          ) &
+          pids+=($!)
+
+          swiftc -O -target "$arch-apple-macosx13.0" -D SCROLL_CAPTURE_TEST \
             -framework ScreenCaptureKit -o "$RUNNER_TEMP/scroll-capture-preview-test" \
             src/main/daemon/Core/Protocol.swift \
             src/main/daemon/Core/ModuleProtocol.swift \
@@ -169,26 +202,30 @@ jobs:
             src/main/daemon/ScreenRecorder/Types/RecorderTypes.swift \
             src/main/daemon/UI/ProtectedTooltip.swift \
             src/main/daemon/Modules/ScrollCaptureModule.swift \
-            tests/native/scroll-capture-preview.swift
+            tests/native/scroll-capture-preview.swift &
+          pids+=($!)
 
-      - name: Run macOS scroll preview fixture
-        timeout-minutes: 5
-        run: |
-          "$RUNNER_TEMP/scroll-capture-preview-test"
+          (
+            find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
+              xargs -0 swiftc -target "$arch-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings \
+                tests/native/recording-timeline.swift -o "$RUNNER_TEMP/recording-timeline-test"
+          ) &
+          pids+=($!)
 
-      - name: Test macOS recording target closure
-        run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" \
+          for pid in "${pids[@]}"; do
+            wait "$pid"
+          done
+
+          pids=()
+
+          swiftc -target "$arch-apple-macosx13.0" \
             src/main/daemon/ScreenRecorder/Types/RecorderError.swift \
             src/main/daemon/ScreenRecorder/Recorders/ScreenCaptureFrame.swift \
             tests/native/recording-target-closed.swift \
-            -o "$RUNNER_TEMP/recording-target-closed-test"
-          "$RUNNER_TEMP/recording-target-closed-test"
+            -o "$RUNNER_TEMP/recording-target-closed-test" &
+          pids+=($!)
 
-      - name: Test macOS recording outline lifecycle
-        timeout-minutes: 5
-        run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_OUTLINE_TEST \
+          swiftc -target "$arch-apple-macosx13.0" -D RECORDING_OUTLINE_TEST \
             -framework ScreenCaptureKit -o "$RUNNER_TEMP/recording-outline-lifecycle-test" \
             src/main/daemon/Core/Protocol.swift \
             src/main/daemon/Core/ModuleProtocol.swift \
@@ -201,32 +238,50 @@ jobs:
             src/main/daemon/Modules/RecordingOverlayModule.swift \
             src/main/daemon/Modules/CameraPreviewModule.swift \
             src/main/daemon/Modules/FreezeScreenModule.swift \
-            tests/native/recording-outline-lifecycle.swift
-          "$RUNNER_TEMP/recording-outline-lifecycle-test"
+            tests/native/recording-outline-lifecycle.swift &
+          pids+=($!)
 
-      - name: Test macOS timer control lifecycle
-        timeout-minutes: 5
-        run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" -D TIMER_CONTROL_TEST \
+          swiftc -target "$arch-apple-macosx13.0" -D TIMER_CONTROL_TEST \
             src/main/daemon/UI/Theme.swift \
             src/main/daemon/UI/FloatingPanel.swift \
             src/main/daemon/UI/TimerButton.swift \
             src/main/daemon/Core/DisplayCoordinates.swift \
             src/main/daemon/Modules/TimerControlModule.swift \
             tests/native/timer-control-lifecycle.swift \
-            -o "$RUNNER_TEMP/timer-control-lifecycle-test"
+            -o "$RUNNER_TEMP/timer-control-lifecycle-test" &
+          pids+=($!)
+
+          swiftc -target "$arch-apple-macosx13.0" \
+            src/main/daemon/Core/ScreenshotCaptureGeometry.swift \
+            src/main/daemon/Core/FrozenFrameStore.swift \
+            tests/native/screenshot-capture-geometry.swift \
+            -o "$RUNNER_TEMP/screenshot-capture-geometry-test" &
+          pids+=($!)
+
+          swiftc -target "$arch-apple-macosx13.0" \
+            src/main/daemon/Core/DisplayCoordinates.swift \
+            tests/native/display-coordinates.swift \
+            -o "$RUNNER_TEMP/display-coordinates-test" &
+          pids+=($!)
+
+          for pid in "${pids[@]}"; do
+            wait "$pid"
+          done
+
+      - name: Run macOS Swift tests
+        if: ${{ needs.changes.outputs.macos_swift == 'true' }}
+        timeout-minutes: 5
+        run: |
+          "$RUNNER_TEMP/window-id-validation-test"
+          "$RUNNER_TEMP/scroll-capture-preview-test"
+          "$RUNNER_TEMP/recording-target-closed-test"
+          "$RUNNER_TEMP/recording-outline-lifecycle-test"
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --queued
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --late
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --accessibility
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --visible-accessibility
           "$RUNNER_TEMP/timer-control-lifecycle-test" 0 128 100 128 --restart-press
-
-      - name: Test macOS recording timeline
-        run: |
-          find src/main/daemon -name '*.swift' -type f ! -name main.swift -print0 |
-            xargs -0 swiftc -target "$(uname -m)-apple-macosx13.0" -D RECORDING_TIMELINE_TEST -suppress-warnings \
-              tests/native/recording-timeline.swift -o "$RUNNER_TEMP/recording-timeline-test"
           "$RUNNER_TEMP/recording-timeline-test"
           PORATAKE_TEST_MIC_STATIC_CLOCK="$RUNNER_TEMP/static-microphone.m4a" \
             "$RUNNER_TEMP/recording-timeline-test"
@@ -272,44 +327,35 @@ jobs:
             "$RUNNER_TEMP/recording-timeline-test"
           PORATAKE_TEST_SYSTEM_INITIAL_OVERLAP="$RUNNER_TEMP/system-audio-initial-overlap.m4a" \
             "$RUNNER_TEMP/recording-timeline-test"
-
-      - name: Test macOS screenshot capture geometry
-        run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" \
-            src/main/daemon/Core/ScreenshotCaptureGeometry.swift \
-            src/main/daemon/Core/FrozenFrameStore.swift \
-            tests/native/screenshot-capture-geometry.swift \
-            -o "$RUNNER_TEMP/screenshot-capture-geometry-test"
           "$RUNNER_TEMP/screenshot-capture-geometry-test"
-
-      - name: Test macOS display coordinate conversions
-        run: |
-          swiftc -target "$(uname -m)-apple-macosx13.0" \
-            src/main/daemon/Core/DisplayCoordinates.swift \
-            tests/native/display-coordinates.swift \
-            -o "$RUNNER_TEMP/display-coordinates-test"
           "$RUNNER_TEMP/display-coordinates-test"
 
-      - name: Install macOS x86_64 Rust target
-        run: rustup target add x86_64-apple-darwin
-
       - name: Install cargo-nextest
+        if: ${{ needs.changes.outputs.rust_shared == 'true' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
       - name: Cache Rust build
+        if: ${{ needs.changes.outputs.rust_shared == 'true' }}
         uses: ./.github/actions/rust-cache
         with:
           shared-key: macos-gpui-checks
 
       - name: Clippy GPUI shell
+        if: ${{ needs.changes.outputs.rust_shared == 'true' }}
         run: cargo clippy --no-deps --locked --manifest-path src/main/app-gpui/Cargo.toml --all-targets -- -D warnings
 
+      - name: Install macOS x86_64 Rust target
+        if: ${{ needs.changes.outputs.rust_shared == 'true' && github.event_name != 'pull_request' }}
+        run: rustup target add x86_64-apple-darwin
+
       - name: Check GPUI shell x86_64
+        if: ${{ needs.changes.outputs.rust_shared == 'true' && github.event_name != 'pull_request' }}
         run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml --target x86_64-apple-darwin
 
       - name: Install FFmpeg for GPUI tests
+        if: ${{ needs.changes.outputs.rust_shared == 'true' }}
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
@@ -320,10 +366,13 @@ jobs:
           echo "PORATAKE_FFMPEG_PATH=$(command -v ffmpeg)" >> "$GITHUB_ENV"
 
       - name: Test GPUI shell
+        if: ${{ needs.changes.outputs.rust_shared == 'true' }}
         run: cargo nextest run --locked --manifest-path src/main/app-gpui/Cargo.toml --no-fail-fast
 
   linux-gpui:
     name: Linux GPUI
+    needs: changes
+    if: ${{ needs.changes.outputs.linux == 'true' }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -351,21 +400,23 @@ jobs:
 
       - name: Test Linux X11 window capture
         run: |
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::failed_freeze_presentation_closes_created_windows -- --ignored --exact
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::window_source_tracks_moves_resizes_and_closure_at_a_fixed_frame_size -- --ignored --exact
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux recording_input::tests::records_global_raw_input_when_a_child_selects_xi2_events -- --ignored --exact
-          xvfb-run -a -s "-extension Composite" cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --bin poratake-daemon-linux capture::tests::x11_connection_keeps_working_when_composite_is_unavailable -- --ignored --exact
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 daemon_records_x11_window_frames_and_cursor_across_lifecycle -- --ignored --exact
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked -- --ignored --exact
-          xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored --skip daemon_records_x11_window_frames_and_cursor_across_lifecycle --skip daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked --skip blocked_encoder_proxy_reads_one_frame_then_stalls
+          nextest_args=(--locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --run-ignored only --test-threads=1)
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=poratake-daemon-linux) & test(=capture::tests::failed_freeze_presentation_closes_created_windows)'
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=poratake-daemon-linux) & test(=capture::tests::window_source_tracks_moves_resizes_and_closure_at_a_fixed_frame_size)'
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=poratake-daemon-linux) & test(=recording_input::tests::records_global_raw_input_when_a_child_selects_xi2_events)'
+          xvfb-run -a -s "-extension Composite" cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=poratake-daemon-linux) & test(=capture::tests::x11_connection_keeps_working_when_composite_is_unavailable)'
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=x11) & test(=daemon_records_x11_window_frames_and_cursor_across_lifecycle)'
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=x11) & test(=daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked)'
+          xvfb-run -a cargo nextest run "${nextest_args[@]}" -E 'package(poratake-daemon-linux) & binary(=x11) & not (test(=daemon_records_x11_window_frames_and_cursor_across_lifecycle) | test(=daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked) | test(=blocked_encoder_proxy_reads_one_frame_then_stalls))'
 
       - name: Test Linux X11 capture with scaled GTK
-        run: xvfb-run -a cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-linux --test x11 -- --ignored --skip daemon_records_x11_window_frames_and_cursor_across_lifecycle --skip daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked --skip blocked_encoder_proxy_reads_one_frame_then_stalls
+        run: xvfb-run -a cargo nextest run --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --run-ignored only --test-threads=1 -E 'package(poratake-daemon-linux) & binary(=x11) & not (test(=daemon_records_x11_window_frames_and_cursor_across_lifecycle) | test(=daemon_reports_stop_failed_when_encoder_pipe_write_is_blocked) | test(=blocked_encoder_proxy_reads_one_frame_then_stalls))'
         env:
           GDK_SCALE: 2
 
   linux-arm64:
     name: Linux arm64
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04-arm
 
     steps:
@@ -385,6 +436,7 @@ jobs:
 
   windows-arm64:
     name: Windows arm64
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-11-arm
 
     steps:
@@ -408,30 +460,13 @@ jobs:
 
   windows-native:
     name: Windows native
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' }}
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
-      - name: Cache Bun installs
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          # No packaging here, so skip the ~120MB Electron binary download.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
@@ -444,10 +479,19 @@ jobs:
       - name: Cache Rust build
         uses: ./.github/actions/rust-cache
         with:
-          shared-key: windows-x64-native
+          shared-key: windows-x64-gpui
 
-      - name: Format, Clippy, and test Windows native
-        run: bun run test:daemon-win
+      - name: Format check
+        run: cargo fmt --manifest-path src/main/Cargo.toml --all -- --check
+
+      - name: Clippy Windows workspace
+        run: cargo clippy --locked --manifest-path src/main/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: Check licenses and advisories
+        run: cargo deny --manifest-path src/main/Cargo.toml check
+
+      - name: Test Windows workspace
+        run: cargo nextest run --locked --manifest-path src/main/Cargo.toml --workspace --no-fail-fast
 
       - name: Test Windows clipboard image formats
         id: clipboard_formats
@@ -459,34 +503,26 @@ jobs:
           PORATAKE_ISOLATED_CLIPBOARD_TEST: '1'
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests::native_clipboard_round_trips_text_png_and_dib -- --ignored
 
-      - name: Tests
-        run: bun run test:run
-
   windows-desktop-e2e:
     name: Windows desktop E2E
+    needs: changes
+    if: ${{ needs.changes.outputs.windows_e2e == 'true' }}
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-
       - name: Cache Rust build
         uses: ./.github/actions/rust-cache
         with:
-          shared-key: windows-x64-e2e
+          shared-key: windows-x64-gpui
+          save-if: 'false'
 
       - name: Test native Windows scroll capture stitching
         env:
           PORATAKE_RUN_WINDOWS_SCROLL_CAPTURE_TEST: '1'
         run: pwsh -NoProfile -File scripts/parity/windows-scroll-capture-test.ps1
-
-      - name: Test GPUI accessibility actions
-        run: bun scripts/parity/gpui-accessibility-test.mjs
 
       - name: Inspect Windows audio output availability
         run: |
@@ -558,7 +594,7 @@ jobs:
       - name: Cache Rust build
         uses: ./.github/actions/rust-cache
         with:
-          shared-key: windows-x64-e2e
+          shared-key: windows-x64-gpui
           save-if: 'false'
 
       - name: Visual regressions

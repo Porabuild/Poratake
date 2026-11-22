@@ -6,9 +6,9 @@ inputs:
     description: Cache namespace for this job and target
     required: true
   save-if:
-    description: Whether to save updated caches at the end of the job
+    description: Whether to save updated caches at the end of the job (defaults to main branch pushes only)
     required: false
-    default: 'true'
+    default: ''
 
 runs:
   using: composite
@@ -23,5 +23,5 @@ runs:
         workspaces: src/main
         shared-key: ${{ inputs.shared-key }}-${{ hashFiles('vendor/**') }}
         cache-all-crates: true
-        save-if: ${{ inputs.save-if }}
+        save-if: ${{ inputs.save-if == 'true' || (inputs.save-if == '' && github.ref == 'refs/heads/main') }}
         cache-on-failure: true
