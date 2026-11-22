@@ -49,6 +49,7 @@ base64 = "0.23.1"
 rodio = "0.22"
 
 [target.'cfg(windows)'.dependencies]
+poratake-daemon = { path = "../daemon-win" }
 windows = { version = "0.61", features = [
   "Data_Xml_Dom",
   "Win32_Devices_Display",

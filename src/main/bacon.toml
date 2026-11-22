@@ -21,8 +21,13 @@ apply_gitignore = false
 watch = [
   "Cargo.lock",
   "Cargo.toml",
+  "win_resource.rs",
   "app-gpui/Cargo.toml",
+  "app-gpui/build.rs",
   "app-gpui/src",
+  "daemon-win/Cargo.toml",
+  "daemon-win/build.rs",
+  "daemon-win/src",
   "../../build",
   "../../public",
 ]

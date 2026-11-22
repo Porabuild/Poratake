@@ -37,12 +37,6 @@ const gpuiExe = path.join(
   'release',
   'poratake-gpui.exe'
 );
-const daemonExe = path.join(
-  targetDir,
-  targetTriple,
-  'release',
-  'poratake-daemon.exe'
-);
 const ffmpegExe = path.join(
   ROOT_DIR,
   'src',
@@ -60,7 +54,7 @@ const whisperExe = path.join(
   'whisper.exe'
 );
 
-for (const required of [gpuiExe, daemonExe, ffmpegExe, whisperExe]) {
+for (const required of [gpuiExe, ffmpegExe, whisperExe]) {
   if (!existsSync(required)) {
     process.stderr.write(`Missing Windows release binary: ${required}\n`);
     process.exit(1);
@@ -72,14 +66,12 @@ const outDir = path.resolve(
 );
 const stageDir = path.join(outDir, 'app');
 rmSync(stageDir, { recursive: true, force: true });
-mkdirSync(path.join(stageDir, 'daemon'), { recursive: true });
 mkdirSync(path.join(stageDir, 'binaries', 'ffmpeg'), { recursive: true });
 mkdirSync(path.join(stageDir, 'binaries', 'whisper'), { recursive: true });
 mkdirSync(path.join(stageDir, 'licenses'), { recursive: true });
 mkdirSync(path.join(stageDir, 'sounds'), { recursive: true });
 
 cpSync(gpuiExe, path.join(stageDir, 'poratake-gpui.exe'));
-cpSync(daemonExe, path.join(stageDir, 'daemon', 'poratake-daemon.exe'));
 cpSync(ffmpegExe, path.join(stageDir, 'binaries', 'ffmpeg', 'ffmpeg.exe'));
 cpSync(whisperExe, path.join(stageDir, 'binaries', 'whisper', 'whisper.exe'));
 cpSync(path.join(ROOT_DIR, 'public', 'sounds'), path.join(stageDir, 'sounds'), {

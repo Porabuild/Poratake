@@ -260,6 +260,11 @@ fn main() {
         ui::parity::daemon_fixture::run();
         return;
     }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some(daemon::DAEMON_SUBPROCESS_ARG) {
+        poratake_daemon::run();
+        return;
+    }
     #[cfg(feature = "parity")]
     if std::env::args().nth(1).as_deref() == Some("--parity") {
         ui::parity::capture_editor_interaction_states();
