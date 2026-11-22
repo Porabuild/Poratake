@@ -17,6 +17,10 @@ mod ui;
 mod update;
 mod util;
 mod video;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../win_resource.rs"]
+mod win_resource;
 mod windows;
 
 use gpui::{prelude::*, px, size, App, Bounds};
@@ -258,6 +262,11 @@ fn main() {
     #[cfg(feature = "parity")]
     if std::env::var_os(ui::parity::daemon_fixture::PROCESS_ENV).is_some() {
         ui::parity::daemon_fixture::run();
+        return;
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some(daemon::DAEMON_SUBPROCESS_ARG) {
+        poratake_daemon::run();
         return;
     }
     #[cfg(feature = "parity")]

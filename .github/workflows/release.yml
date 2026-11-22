@@ -284,7 +284,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: src/main/daemon/poratake-daemon.exe
-          key: ${{ runner.os }}-${{ matrix.arch }}-daemon-${{ hashFiles('scripts/build-daemon-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/src/**.rs', 'src/main/daemon-common/**', 'src/main/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-daemon-${{ hashFiles('scripts/build-daemon-win.ps1', 'src/main/win_resource.rs', 'build/icon.ico', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/build.rs', 'src/main/daemon-win/src/**.rs', 'src/main/daemon-common/**', 'src/main/Cargo.lock') }}
 
       - name: Build Windows GPUI binaries
         shell: bash

@@ -44,6 +44,8 @@ use serde_json::{json, Value};
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_RESTART_ATTEMPTS: u32 = 5;
 const RESTART_BACKOFF_BASE_MS: u64 = 1_000;
+#[cfg(any(windows, test))]
+pub(crate) const DAEMON_SUBPROCESS_ARG: &str = "--daemon";
 
 pub type EventHandler = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
@@ -99,6 +101,7 @@ struct DaemonInner {
     event_handlers: Mutex<HashMap<u64, EventHandler>>,
     next_event_handler: AtomicU64,
     binary_path: PathBuf,
+    args: Vec<String>,
 }
 
 pub struct EventSubscription {
@@ -190,12 +193,64 @@ fn wait_for_child_exit(pid: u32) -> std::io::Result<bool> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DaemonLaunch {
+    binary_path: PathBuf,
+    args: Vec<String>,
+}
+
+#[cfg(any(windows, test))]
+fn resolve_windows_daemon_launch(
+    env_override: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+    fallback: impl FnOnce() -> PathBuf,
+) -> DaemonLaunch {
+    if let Some(path) = env_override.filter(|path| path.exists()) {
+        return DaemonLaunch {
+            binary_path: path,
+            args: Vec::new(),
+        };
+    }
+    if let Some(exe) = current_exe {
+        return DaemonLaunch {
+            binary_path: exe,
+            args: vec![DAEMON_SUBPROCESS_ARG.to_string()],
+        };
+    }
+    DaemonLaunch {
+        binary_path: fallback(),
+        args: Vec::new(),
+    }
+}
+
+fn resolve_daemon_launch() -> DaemonLaunch {
+    #[cfg(all(windows, not(test)))]
+    {
+        resolve_windows_daemon_launch(
+            std::env::var_os("PORATAKE_DAEMON_PATH").map(PathBuf::from),
+            std::env::current_exe().ok(),
+            find_daemon_binary,
+        )
+    }
+    #[cfg(not(all(windows, not(test))))]
+    DaemonLaunch {
+        binary_path: find_daemon_binary(),
+        args: Vec::new(),
+    }
+}
+
 impl DaemonHandle {
     pub fn new() -> Self {
-        Self::with_binary(find_daemon_binary())
+        let launch = resolve_daemon_launch();
+        Self::with_launch(launch.binary_path, launch.args)
     }
 
+    #[cfg(test)]
     pub fn with_binary(binary_path: PathBuf) -> Self {
+        Self::with_launch(binary_path, Vec::new())
+    }
+
+    fn with_launch(binary_path: PathBuf, args: Vec<String>) -> Self {
         Self {
             inner: Arc::new(DaemonInner {
                 lifecycle: Mutex::new(()),
@@ -209,6 +264,7 @@ impl DaemonHandle {
                 event_handlers: Mutex::new(HashMap::new()),
                 next_event_handler: AtomicU64::new(1),
                 binary_path,
+                args,
             }),
         }
     }
@@ -268,6 +324,7 @@ impl DaemonHandle {
         }
 
         let mut command = crate::util::process::command(&self.inner.binary_path);
+        command.args(&self.inner.args);
         #[cfg(target_os = "linux")]
         {
             command
@@ -1875,5 +1932,59 @@ done
         let error = rx.recv().unwrap().unwrap_err();
         assert_eq!(error.code, "STITCH_RETRYABLE");
         assert_eq!(error.message, "could not start worker");
+    }
+
+    #[test]
+    fn windows_daemon_launch_self_spawns_with_daemon_flag_by_default() {
+        let exe = PathBuf::from(r"C:\Program Files\Poratake\poratake-gpui.exe");
+        let launch =
+            resolve_windows_daemon_launch(None, Some(exe.clone()), || PathBuf::from("fallback"));
+        assert_eq!(
+            launch,
+            DaemonLaunch {
+                binary_path: exe,
+                args: vec![DAEMON_SUBPROCESS_ARG.to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn windows_daemon_launch_respects_existing_env_override() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let override_path = temp.path().to_path_buf();
+        let launch = resolve_windows_daemon_launch(
+            Some(override_path.clone()),
+            Some(PathBuf::from(r"C:\Poratake\poratake-gpui.exe")),
+            || PathBuf::from("fallback"),
+        );
+        assert_eq!(
+            launch,
+            DaemonLaunch {
+                binary_path: override_path,
+                args: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn windows_daemon_launch_ignores_missing_env_override_and_falls_back_when_exe_unavailable() {
+        let missing = PathBuf::from("/nonexistent/poratake-daemon-override");
+        let exe = PathBuf::from(r"C:\Poratake\poratake-gpui.exe");
+        let self_launch =
+            resolve_windows_daemon_launch(Some(missing.clone()), Some(exe.clone()), || {
+                PathBuf::from("fallback")
+            });
+        assert_eq!(self_launch.binary_path, exe);
+        assert_eq!(self_launch.args, vec![DAEMON_SUBPROCESS_ARG.to_string()]);
+
+        let fallback_launch =
+            resolve_windows_daemon_launch(Some(missing), None, || PathBuf::from("fallback"));
+        assert_eq!(
+            fallback_launch,
+            DaemonLaunch {
+                binary_path: PathBuf::from("fallback"),
+                args: Vec::new(),
+            }
+        );
     }
 }

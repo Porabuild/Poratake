@@ -5559,6 +5559,7 @@ dependencies = [
  "objc2-user-notifications",
  "parking_lot",
  "png 0.18.1",
+ "poratake-daemon",
  "poratake-daemon-common",
  "raw-window-handle",
  "resvg 0.45.1",

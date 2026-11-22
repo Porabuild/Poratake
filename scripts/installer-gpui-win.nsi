@@ -34,6 +34,7 @@ Section "Install"
   nsExec::ExecToLog 'taskkill /F /IM Poratake.exe /T'
   Sleep 400
 
+  RMDir /r "$INSTDIR\daemon"
   File /r "${STAGE_DIR}\*.*"
 
   ${If} ${FileExists} "$INSTDIR\poratake-gpui.exe"
