@@ -103,7 +103,10 @@ fn prepaint_action(
     resize_attempts: u8,
     height: Pixels,
 ) -> PrepaintAction {
-    if !height_matches && resize_attempts < MAX_LAYOUT_RESIZE_ATTEMPTS {
+    if !height_matches
+        && (visibility != TrayMenuVisibility::Revealing
+            || resize_attempts < MAX_LAYOUT_RESIZE_ATTEMPTS)
+    {
         return PrepaintAction::Resize { height };
     }
     match visibility {
@@ -168,6 +171,8 @@ pub struct TrayMenuWindow {
     #[cfg(windows)]
     resize_attempts: u8,
     #[cfg(windows)]
+    pending_resize: Option<Pixels>,
+    #[cfg(windows)]
     entry_signature: (usize, usize),
     #[cfg(windows)]
     measured_height: Option<((usize, usize), Pixels)>,
@@ -218,6 +223,8 @@ impl TrayMenuWindow {
             #[cfg(windows)]
             resize_attempts: 0,
             #[cfg(windows)]
+            pending_resize: None,
+            #[cfg(windows)]
             entry_signature,
             #[cfg(windows)]
             measured_height: None,
@@ -244,6 +251,7 @@ impl TrayMenuWindow {
             self.reveal_generation = self.reveal_generation.wrapping_add(1);
             self.reveal_scheduled = false;
             self.resize_attempts = 0;
+            self.pending_resize = None;
         }
         self.finish_close(window, cx);
     }
@@ -490,6 +498,7 @@ impl TrayMenuWindow {
         self.reveal_generation = self.reveal_generation.wrapping_add(1);
         self.reveal_scheduled = false;
         self.resize_attempts = 0;
+        self.pending_resize = None;
         window.focus(&self.menu.read(cx).focus_handle(), cx);
         cx.notify();
         window.refresh();
@@ -661,21 +670,34 @@ fn handle_windows_prepaint(
     ) {
         PrepaintAction::None => {}
         PrepaintAction::Resize { height } => {
+            let should_schedule = view.update(cx, |this, _| {
+                let was_pending = this.pending_resize.is_some();
+                this.pending_resize = Some(height);
+                !was_pending
+            });
+            if !should_schedule {
+                return;
+            }
             let view = view.clone();
             window.on_next_frame(move |window, cx| {
                 view.update(cx, |this, cx| {
                     if this.reveal_generation != generation {
                         return;
                     }
-                    if height_matches_viewport(height, window) {
+                    let Some(target_height) = this.pending_resize.take() else {
+                        return;
+                    };
+                    if height_matches_viewport(target_height, window) {
                         if this.visibility == TrayMenuVisibility::Revealing {
                             window.refresh();
                         }
                         return;
                     }
-                    this.record_measured_height(height);
-                    this.resize_attempts = this.resize_attempts.saturating_add(1);
-                    let geometry = menu_geometry(this.tray_rect, f32::from(height), cx);
+                    this.record_measured_height(target_height);
+                    if this.visibility == TrayMenuVisibility::Revealing {
+                        this.resize_attempts = this.resize_attempts.saturating_add(1);
+                    }
+                    let geometry = menu_geometry(this.tray_rect, f32::from(target_height), cx);
                     let mut bounds = geometry.bounds;
                     if this.visibility == TrayMenuVisibility::Hidden {
                         bounds.origin = gpui::point(px(-32000.), px(-32000.));
@@ -698,6 +720,8 @@ fn handle_windows_prepaint(
         PrepaintAction::Reveal { height } => {
             view.update(cx, |this, _| {
                 this.record_measured_height(height);
+                this.resize_attempts = 0;
+                this.pending_resize = None;
                 this.reveal_scheduled = true;
             });
             TrayMenuWindow::schedule_reveal(view, window, generation);
@@ -993,6 +1017,16 @@ mod tests {
             PrepaintAction::Resize { height: measured }
         );
         assert_eq!(
+            prepaint_action(
+                TrayMenuVisibility::Hidden,
+                false,
+                false,
+                MAX_LAYOUT_RESIZE_ATTEMPTS,
+                measured,
+            ),
+            PrepaintAction::Resize { height: measured }
+        );
+        assert_eq!(
             prepaint_action(TrayMenuVisibility::Visible, true, true, 0, measured),
             PrepaintAction::None
         );
@@ -1197,7 +1231,6 @@ mod tests {
         cx.update(|cx| TrayMenuWindow::toggle(None, cx));
         window
             .update(cx, |_, window, cx| {
-                window.simulate_next_frame(cx);
                 window.refresh();
                 window.draw(cx).clear(cx);
             })
@@ -1206,7 +1239,9 @@ mod tests {
 
         assert!(handle
             .update(cx, |this, _, _| {
-                this.visibility == TrayMenuVisibility::Revealing && !this.reveal_scheduled
+                this.visibility == TrayMenuVisibility::Revealing
+                    && !this.reveal_scheduled
+                    && this.pending_resize.is_some()
             })
             .unwrap());
 
