@@ -97,6 +97,7 @@ Poratake is a rebranded fork of Capty (https://github.com/capty-app/capty) and i
 - When adding new native modules, add them to `src/main/daemon/Modules/` and register in `main.swift` (macOS), and to `src/main/daemon-win/src/modules/` and register in `main.rs` (Windows).
 - When adding assets to the project like images, icons, sounds, etc, make sure you also consider them for production build and packing and notarizing to work on packaged app too.
 - Don't patch symptoms! Fix the root cause of the issues.
+- Before adding an app-side workaround or wrapper for a bug or missing behavior in an upstream dependency we maintain (especially `HeroGPUI` or patched `gpui-pre` crates), inspect the upstream source first and evaluate whether the fix belongs upstream. If the root cause lives in upstream component or framework behavior (such as overlay/tooltip positioning, focus handling, accessibility, or component sizing), stop and ask the user whether to fix it upstream rather than working around it in Poratake.
 - Use early returns to reduce nesting
 - Important to avoid nested if-else statements
 - Prefer switch-case for multiple conditions
