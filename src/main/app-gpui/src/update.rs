@@ -374,7 +374,7 @@ pub fn start_download(cx: &mut gpui::App) {
         let result = cx
             .background_executor()
             .spawn(async move {
-                download(&artifact, &sha512, move |fraction| {
+                let on_progress = move |fraction: f32| {
                     let percent = (fraction * 100.0).round() as u32;
                     let prev = last_percent.swap(percent, std::sync::atomic::Ordering::Relaxed);
                     if let Ok(mut cell) = progress_cell.lock() {
@@ -387,7 +387,15 @@ pub fn start_download(cx: &mut gpui::App) {
                     if prev != percent {
                         let _ = progress_tx.try_send(());
                     }
-                })
+                };
+                #[cfg(target_os = "windows")]
+                if artifact.url.is_empty() {
+                    if let Some(outcome) = download_velopack(on_progress) {
+                        return outcome;
+                    }
+                    return Err("Velopack update session is no longer available".to_string());
+                }
+                download(&artifact, &sha512, on_progress)
             })
             .await;
         cx.update(|cx| {
@@ -461,6 +469,10 @@ pub fn check(current: &str) -> Status {
     let suffix = installer_suffix();
     if suffix.is_empty() || !install_directory_is_writable() {
         return Status::Unsupported;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(status) = check_velopack() {
+        return status;
     }
     let response = ureq::get(&latest_release_url())
         .header("User-Agent", "Poratake")
@@ -1288,6 +1300,9 @@ pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        if path == std::path::Path::new(VELOPACK_READY_SENTINEL) {
+            return apply_velopack_update();
+        }
         std::process::Command::new(path)
             .args(windows_installer_args())
             .spawn()
@@ -1299,6 +1314,92 @@ pub fn launch_installer(path: &std::path::Path) -> Result<(), String> {
         let _ = path;
         Err("automatic updates are not available on this platform".to_string())
     }
+}
+
+#[cfg(target_os = "windows")]
+const VELOPACK_READY_SENTINEL: &str = "__velopack_ready__";
+
+#[cfg(target_os = "windows")]
+static PENDING_VELOPACK: std::sync::OnceLock<Mutex<Option<velopack::UpdateInfo>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn pending_velopack() -> &'static Mutex<Option<velopack::UpdateInfo>> {
+    PENDING_VELOPACK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn velopack_manager() -> Option<velopack::UpdateManager> {
+    let repo_url = format!("https://github.com/{OWNER}/{REPOSITORY}");
+    let source = velopack::sources::GithubSource::new(&repo_url, None, false);
+    velopack::UpdateManager::new(source, None, None).ok()
+}
+
+#[cfg(target_os = "windows")]
+fn check_velopack() -> Option<Status> {
+    let manager = velopack_manager()?;
+    match manager.check_for_updates() {
+        Ok(velopack::UpdateCheck::NoUpdateAvailable | velopack::UpdateCheck::RemoteIsEmpty) => {
+            Some(Status::UpToDate)
+        }
+        Ok(velopack::UpdateCheck::UpdateAvailable(info)) => {
+            let release = &info.TargetFullRelease;
+            let notes =
+                (!release.NotesMarkdown.trim().is_empty()).then(|| release.NotesMarkdown.clone());
+            let status = Status::Available {
+                version: release.Version.clone(),
+                artifact: Artifact {
+                    name: release.FileName.clone(),
+                    url: String::new(),
+                    size: release.Size,
+                },
+                sha512: release.SHA256.clone(),
+                notes,
+            };
+            if let Ok(mut slot) = pending_velopack().lock() {
+                *slot = Some(*info);
+            }
+            Some(status)
+        }
+        Err(error) => Some(Status::Error {
+            message: error.to_string(),
+        }),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn download_velopack(
+    on_progress: impl Fn(f32) + Send + 'static,
+) -> Option<Result<std::path::PathBuf, String>> {
+    let info = pending_velopack().lock().ok()?.clone()?;
+    let manager = velopack_manager()?;
+    let (tx, rx) = std::sync::mpsc::channel::<i16>();
+    let progress_thread = std::thread::spawn(move || {
+        while let Ok(percent) = rx.recv() {
+            on_progress(f32::from(percent.clamp(0, 100)) / 100.0);
+        }
+    });
+    let outcome = manager.download_updates(&info, Some(tx));
+    let _ = progress_thread.join();
+    Some(
+        outcome
+            .map(|()| std::path::PathBuf::from(VELOPACK_READY_SENTINEL))
+            .map_err(|error| error.to_string()),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn apply_velopack_update() -> Result<(), String> {
+    let info = pending_velopack()
+        .lock()
+        .map_err(|_| "Velopack update state is unavailable".to_string())?
+        .clone()
+        .ok_or_else(|| "No downloaded Velopack update is ready".to_string())?;
+    let manager = velopack_manager()
+        .ok_or_else(|| "Velopack updater is not available for this installation".to_string())?;
+    manager
+        .wait_exit_then_apply_updates(&info.TargetFullRelease, false, true, &[] as &[&str])
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(any(target_os = "windows", test))]

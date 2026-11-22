@@ -214,6 +214,7 @@ The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) an
 | `tray-icon`                |    0.24.2 | MIT OR Apache-2.0         |
 | `ureq`                     |     3.4.0 | MIT OR Apache-2.0         |
 | `usvg`                     |    0.45.1 | Apache-2.0 OR MIT         |
+| `velopack`                 |   1.2.161 | MIT                       |
 | `windows`                  |    0.61.3 | MIT OR Apache-2.0         |
 | `xcb`                      |     1.7.1 | MIT                       |
 | `zed-scap`                 | 0.0.8-zed | MIT                       |

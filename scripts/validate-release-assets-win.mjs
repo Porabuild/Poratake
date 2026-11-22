@@ -84,4 +84,31 @@ if (Number(fileValues.get('size')) !== nsisStats.size) {
   fail('Update metadata file size does not match the release installer');
 }
 
+const archMatch = nsisName.match(/-win-(x64|arm64)\.exe$/);
+if (archMatch) {
+  const channel = `win-${archMatch[1]}`;
+  const stageDir = path.dirname(nsisPath);
+  const feedPath = path.join(stageDir, `releases.${channel}.json`);
+  const fullNupkgName = `Poratake-${version}-${channel}-full.nupkg`;
+  const fullNupkgPath = path.join(stageDir, fullNupkgName);
+  requireFile(feedPath);
+  const fullStats = requireFile(fullNupkgPath);
+  const feed = JSON.parse(readFileSync(feedPath, 'utf8'));
+  const assets = Array.isArray(feed.Assets) ? feed.Assets : [];
+  const fullEntry = assets.find(
+    entry =>
+      entry.FileName === fullNupkgName &&
+      entry.Version === version &&
+      entry.Type === 'Full'
+  );
+  if (!fullEntry) {
+    fail(
+      `Velopack feed ${path.basename(feedPath)} is missing full package ${fullNupkgName}`
+    );
+  }
+  if (Number(fullEntry.Size) !== fullStats.size) {
+    fail(`Velopack feed size mismatch for ${fullNupkgName}`);
+  }
+}
+
 console.log('Windows release assets validated successfully');
