@@ -41,6 +41,8 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -69,6 +71,8 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -97,6 +101,8 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -125,6 +131,8 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -282,21 +290,31 @@ jobs:
             -o "$RUNNER_TEMP/display-coordinates-test"
           "$RUNNER_TEMP/display-coordinates-test"
 
-      - name: Check GPUI shell
-        run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml
+      - name: Install macOS x86_64 Rust target
+        run: rustup target add x86_64-apple-darwin
 
-      - name: Install macOS Rust targets
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
-      - name: Check GPUI shell architectures
-        run: |
-          cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml --target aarch64-apple-darwin
-          cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml --target x86_64-apple-darwin
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: macos-gpui-checks
+          cache-on-failure: true
 
       - name: Clippy GPUI shell
         run: cargo clippy --no-deps --locked --manifest-path src/main/app-gpui/Cargo.toml --all-targets -- -D warnings
 
+      - name: Check GPUI shell x86_64
+        run: cargo check --locked --manifest-path src/main/app-gpui/Cargo.toml --target x86_64-apple-darwin
+
       - name: Install FFmpeg for GPUI tests
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
             brew install ffmpeg
@@ -304,7 +322,7 @@ jobs:
           echo "PORATAKE_FFMPEG_PATH=$(command -v ffmpeg)" >> "$GITHUB_ENV"
 
       - name: Test GPUI shell
-        run: cargo test --locked --manifest-path src/main/app-gpui/Cargo.toml
+        run: cargo nextest run --locked --manifest-path src/main/app-gpui/Cargo.toml --no-fail-fast
 
   linux-gpui:
     name: Linux GPUI
@@ -317,23 +335,23 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/linux-capture-deps
 
-      - name: Cache Rust target
-        uses: actions/cache@v5
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-gpui-rust-${{ hashFiles('src/main/Cargo.lock') }}
+          tool: cargo-nextest
 
-      - name: Check GPUI shell
-        run: cargo check --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: linux-x64-gpui
+          cache-on-failure: true
 
-      - name: Clippy Linux daemon
-        run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --all-targets -- -D warnings
-
-      - name: Clippy GPUI shell
-        run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-gpui --all-targets -- -D warnings
+      - name: Clippy GPUI shell and Linux daemon
+        run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --all-targets -- -D warnings
 
       - name: Test GPUI shell and Linux daemon
-        run: cargo test --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui
+        run: cargo nextest run --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --no-fail-fast
 
       - name: Test Linux X11 window capture
         run: |
@@ -361,14 +379,12 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/linux-capture-deps
 
-      - name: Cache Rust target
-        uses: actions/cache@v5
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-${{ runner.arch }}-gpui-rust-${{ hashFiles('src/main/Cargo.lock') }}
-
-      - name: Check GPUI and Linux daemon on arm64
-        run: cargo check --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui
+          workspaces: src/main
+          shared-key: linux-arm64-gpui
+          cache-on-failure: true
 
       - name: Clippy GPUI and Linux daemon on arm64
         run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --all-targets -- -D warnings
@@ -388,14 +404,12 @@ jobs:
           components: clippy
           targets: aarch64-pc-windows-msvc
 
-      - name: Cache Rust target
-        uses: actions/cache@v5
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-${{ runner.arch }}-gpui-rust-${{ hashFiles('src/main/Cargo.lock') }}
-
-      - name: Check GPUI and Windows daemon on arm64
-        run: cargo check --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon --package poratake-gpui --target aarch64-pc-windows-msvc
+          workspaces: src/main
+          shared-key: windows-arm64-gpui
+          cache-on-failure: true
 
       - name: Clippy GPUI and Windows daemon on arm64
         run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon --package poratake-gpui --target aarch64-pc-windows-msvc --all-targets -- -D warnings
@@ -418,18 +432,14 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
         env:
           # No packaging here, so skip the ~120MB Electron binary download.
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-
-      - name: Cache Rust target
-        uses: actions/cache@v5
-        with:
-          path: src/main/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('src/main/Cargo.lock') }}
 
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
@@ -439,8 +449,48 @@ jobs:
         with:
           tool: cargo-nextest,cargo-deny
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: windows-x64-native
+          cache-on-failure: true
+
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
+
+      - name: Test Windows clipboard image formats
+        id: clipboard_formats
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
+
+      - name: Test native Windows clipboard roundtrip
+        if: ${{ !cancelled() && steps.clipboard_formats.outcome == 'success' }}
+        env:
+          PORATAKE_ISOLATED_CLIPBOARD_TEST: '1'
+        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests::native_clipboard_round_trips_text_png_and_dib -- --ignored
+
+      - name: Tests
+        run: bun run test:run
+
+  windows-desktop-e2e:
+    name: Windows desktop E2E
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: windows-x64-e2e
+          cache-on-failure: true
 
       - name: Test native Windows scroll capture stitching
         env:
@@ -461,31 +511,11 @@ jobs:
       - name: Test native GPUI recording tooltips
         run: pwsh -NoProfile -File scripts/parity/windows-recording-tooltip-test.ps1
 
-      - name: Test Windows clipboard image formats
-        id: clipboard_formats
-        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
-
-      - name: Visual regressions
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions && !inputs.update_windows_visual_baselines }}
-        run: bun run test:visual
-
-      - name: Record visual baselines
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions && inputs.update_windows_visual_baselines }}
-        run: bun scripts/parity/visual.mjs --update-baselines
-
-      - name: Preserve updated visual baselines
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.update_windows_visual_baselines }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-visual-baselines
-          path: scripts/parity/baselines/win32/**
-          if-no-files-found: ignore
-
       - name: Preserve visual evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-visual-evidence
+          name: windows-desktop-evidence
           path: |
             ${{ runner.temp }}/poratake-visual-*/**/*.png
             ${{ runner.temp }}/poratake-visual-*/**/renderer.json
@@ -495,11 +525,89 @@ jobs:
             ${{ runner.temp }}/poratake-scroll-capture-*/**
           if-no-files-found: ignore
 
-      - name: Test native Windows clipboard roundtrip
-        if: ${{ !cancelled() && steps.clipboard_formats.outcome == 'success' }}
-        env:
-          PORATAKE_ISOLATED_CLIPBOARD_TEST: '1'
-        run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests::native_clipboard_round_trips_text_png_and_dib -- --ignored
+  windows-visual-regressions:
+    name: Windows visual (${{ matrix.shard }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: light-950
+            theme: light
+            width: '950'
+          - shard: dark-950
+            theme: dark
+            width: '950'
+          - shard: light-1280
+            theme: light
+            width: '1280'
+          - shard: dark-1280
+            theme: dark
+            width: '1280'
 
-      - name: Tests
-        run: bun run test:run
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: windows-x64-visual
+          save-if: ${{ matrix.shard == 'light-950' }}
+          cache-on-failure: true
+
+      - name: Visual regressions
+        if: ${{ !cancelled() && !inputs.update_windows_visual_baselines }}
+        run: bun scripts/parity/visual.mjs --theme=${{ matrix.theme }} --width=${{ matrix.width }}
+
+      - name: Record visual baselines
+        if: ${{ !cancelled() && inputs.update_windows_visual_baselines }}
+        run: bun scripts/parity/visual.mjs --update-baselines --theme=${{ matrix.theme }} --width=${{ matrix.width }}
+
+      - name: Preserve updated visual baselines
+        if: ${{ always() && inputs.update_windows_visual_baselines }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-baselines-${{ matrix.shard }}
+          path: scripts/parity/baselines/win32/${{ matrix.shard }}-*/**
+          if-no-files-found: ignore
+
+      - name: Preserve visual evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-evidence-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/poratake-visual-*/**/*.png
+            ${{ runner.temp }}/poratake-visual-*/**/renderer.json
+            ${{ runner.temp }}/poratake-visual-*/*.json
+            ${{ runner.temp }}/poratake-visual-*/*.log
+          if-no-files-found: ignore
+
+  windows-visual-baselines:
+    name: Merge Windows visual baselines
+    needs: windows-visual-regressions
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions && inputs.update_windows_visual_baselines }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download visual baseline shards
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/windows-visual-baselines
+          pattern: windows-visual-baselines-*
+          merge-multiple: true
+
+      - name: Upload merged visual baselines
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-baselines
+          path: ${{ runner.temp }}/windows-visual-baselines/**
+          if-no-files-found: ignore

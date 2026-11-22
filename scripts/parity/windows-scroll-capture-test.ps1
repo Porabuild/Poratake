@@ -407,7 +407,7 @@ $script:requestNumber = 0
 try {
     Push-Location (Join-Path $root 'src/main')
     try {
-        & cargo build --locked --manifest-path $manifest --package poratake-daemon --bin poratake-daemon
+        & cargo build --locked --manifest-path $manifest --workspace --bin poratake-daemon
         if ($LASTEXITCODE -ne 0) { throw "Windows daemon build failed with exit code $LASTEXITCODE." }
     } finally {
         Pop-Location

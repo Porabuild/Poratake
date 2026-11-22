@@ -84,8 +84,13 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-gpui-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gpui-bun-
 
       - name: Install macOS native build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           # Runner images preinstall aws/tap, which trips Homebrew's tap-trust
           # check and prints a notice on every invocation. We don't use it.
@@ -103,22 +108,29 @@ jobs:
       - name: Check daemon contract
         run: bun run check:daemon-contract
 
-      - name: Cache native binaries
+      - name: Cache FFmpeg and Whisper binaries
         if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
           path: |
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
-            src/main/daemon/poratake-daemon
-          key: macos-native-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh', 'scripts/build-daemon.sh', 'src/main/daemon/**/*.swift') }}
+          key: macos-ffmpeg-whisper-${{ hashFiles('scripts/build-ffmpeg.sh', 'scripts/build-whisper.sh') }}
 
-      - name: Cache Rust target
+      - name: Cache macOS daemon binary
         if: ${{ !inputs.skip_cache }}
         uses: actions/cache@v5
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-gpui-rust-${{ hashFiles('src/main/Cargo.lock') }}
+          path: src/main/daemon/poratake-daemon
+          key: macos-daemon-${{ hashFiles('scripts/build-daemon.sh', 'src/main/daemon/**/*.swift', 'src/main/daemon/Info.plist') }}
+
+      - name: Cache Rust build
+        if: ${{ !inputs.skip_cache }}
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/main
+          shared-key: macos-gpui-release
+          cache-on-failure: true
 
       - name: Setup macOS certificates
         env:
@@ -225,6 +237,8 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ matrix.arch }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -234,12 +248,13 @@ jobs:
       - name: Update package.json version
         run: node scripts/set-package-version.mjs "${{ needs.prepare.outputs.version }}"
 
-      - name: Cache Rust target
+      - name: Cache Rust build
         if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-rust-${{ hashFiles('src/main/Cargo.lock') }}
+          workspaces: src/main
+          shared-key: windows-${{ matrix.arch }}-gpui-release
+          cache-on-failure: true
 
       - name: Setup MSYS2
         id: msys2
@@ -256,16 +271,21 @@ jobs:
             "$env:ProgramFiles (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
 
-      - name: Cache native binaries
+      - name: Cache FFmpeg and Whisper binaries
         if: ${{ !inputs.skip_cache }}
-        id: native-cache
         uses: actions/cache@v5
         with:
           path: |
             src/main/binaries/ffmpeg
             src/main/binaries/whisper
-            src/main/daemon/poratake-daemon.exe
-          key: ${{ runner.os }}-${{ matrix.arch }}-native-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-whisper-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/Cargo.lock', 'src/main/daemon-win/src/**.rs') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-ffmpeg-whisper-${{ hashFiles('scripts/build-ffmpeg-win.sh', 'scripts/build-ffmpeg-win.ps1', 'scripts/build-whisper-win.ps1') }}
+
+      - name: Cache Windows daemon binary
+        if: ${{ !inputs.skip_cache }}
+        uses: actions/cache@v5
+        with:
+          path: src/main/daemon/poratake-daemon.exe
+          key: ${{ runner.os }}-${{ matrix.arch }}-daemon-${{ hashFiles('scripts/build-daemon-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/src/**.rs', 'src/main/daemon-common/**', 'src/main/Cargo.lock') }}
 
       - name: Build Windows GPUI binaries
         shell: bash
@@ -333,12 +353,13 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/linux-capture-deps
 
-      - name: Cache Rust target
+      - name: Cache Rust build
         if: ${{ !inputs.skip_cache }}
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2
         with:
-          path: src/main/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-gpui-release-${{ hashFiles('src/main/Cargo.lock') }}
+          workspaces: src/main
+          shared-key: linux-${{ matrix.arch }}-gpui-release
+          cache-on-failure: true
 
       - name: Build GPUI Linux package
         run: bun run build:gpui:linux

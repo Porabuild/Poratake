@@ -2278,7 +2278,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $profileRoot 'config.json'), '{"onboarding":{"completed":true},"recording":{"micEnabled":false,"camera":{"enabled":false}}}', [System.Text.UTF8Encoding]::new($false))
     Push-Location (Join-Path $root 'src/main')
     try {
-        & cargo build --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --package poratake-daemon --features poratake-gpui/parity
+        & cargo build --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui --bin poratake-daemon --features poratake-gpui/parity
         if ($LASTEXITCODE -ne 0) { throw "GPUI and daemon build failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
@@ -2677,9 +2677,9 @@ try {
     $markerBackdropWindow = [IntPtr]::Zero
     Push-Location (Join-Path $root 'src/main')
     try {
-        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
         if ($LASTEXITCODE -ne 0) { throw "Decoded tooltip video exclusion test failed with exit code $LASTEXITCODE" }
-        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::export::tests::native_recording_edit_exports_and_decodes -- --ignored --exact
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui video::export::tests::native_recording_edit_exports_and_decodes -- --ignored --exact
         if ($LASTEXITCODE -ne 0) { throw "Native recording edit/export regression failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
@@ -4084,10 +4084,10 @@ try {
         $env:PORATAKE_SYSTEM_AUDIO_PROOF = $systemAudioProofPath
         Push-Location (Join-Path $root 'src/main')
         try {
-            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-daemon --bin poratake-daemon modules::recording_audio::tests::writes_a_system_audio_m4a_fixture -- --ignored --exact
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-daemon modules::recording_audio::tests::writes_a_system_audio_m4a_fixture -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw "The native audio-only M4A fixture writer failed with exit code $LASTEXITCODE" }
             if (-not [System.IO.File]::Exists($systemAudioFixturePath) -or (Get-Item -LiteralPath $systemAudioFixturePath).Length -le 0) { throw 'The native audio-only M4A fixture was not created.' }
-            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::export::tests::system_audio_sidecar_tones_match_preview_and_export -- --ignored --exact
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui video::export::tests::system_audio_sidecar_tones_match_preview_and_export -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw "System-audio sidecar preview/export verification failed with exit code $LASTEXITCODE" }
         } finally {
             Pop-Location
@@ -4104,7 +4104,7 @@ try {
         $env:PORATAKE_REPLACEFILE_SACL_PROOF = $replaceFileSaclProofPath
         Push-Location (Join-Path $root 'src/main')
         try {
-            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui config::store::replacefile_sacl_probe_tests::replacefile_reports_audit_sacl_behavior_when_privilege_is_available -- --ignored --exact
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui config::store::replacefile_sacl_probe_tests::replacefile_reports_audit_sacl_behavior_when_privilege_is_available -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw "ReplaceFileW audit-SACL probe failed with exit code $LASTEXITCODE" }
         } finally {
             Pop-Location
@@ -4406,7 +4406,7 @@ try {
     $env:PORATAKE_NATIVE_TOOLTIP_VIDEO_PROOF = $videoExportProofPath
     Push-Location (Join-Path $root 'src/main')
     try {
-        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-gpui --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
+        & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui video::decoder::tests::recorded_tooltip_is_excluded_from_video_frames -- --ignored --exact
         if ($LASTEXITCODE -ne 0) { throw "The UI-exported tooltip video did not decode or preserve the expected pixels: exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
