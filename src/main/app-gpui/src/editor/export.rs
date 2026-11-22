@@ -289,6 +289,23 @@ fn blit_opaque_aligned(canvas: &mut Canvas, image: tiny_skia::PixmapRef<'_>, x: 
     }
 }
 
+fn paint_shadow_only(
+    canvas: &mut Canvas,
+    path: &tiny_skia::Path,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Option<Shadow>,
+) {
+    let Some(shadow) = shadow else {
+        return;
+    };
+    if paint_rounded_shadow(canvas, rect, radius, shadow, Color::TRANSPARENT).is_none() {
+        canvas.set_shadow(Some(shadow));
+        canvas.fill_path(path, Color::TRANSPARENT, FillRule::Winding);
+        canvas.set_shadow(None);
+    }
+}
+
 fn draw_unframed_image(
     canvas: &mut Canvas,
     image: tiny_skia::PixmapRef<'_>,
@@ -302,13 +319,7 @@ fn draw_unframed_image(
         return;
     };
     canvas.save();
-    if shadow.is_some_and(|shadow| {
-        paint_rounded_shadow(canvas, rect, radius, shadow, Color::WHITE).is_none()
-    }) {
-        canvas.set_shadow(shadow);
-        canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
-        canvas.set_shadow(None);
-    }
+    paint_shadow_only(canvas, &path, rect, radius, shadow);
     if radius > 0.0 {
         canvas.clip_path(&path, FillRule::Winding);
         canvas.draw_pixmap(image, x, y, width, height);
@@ -329,13 +340,14 @@ fn draw_unframed_image(
     canvas.restore();
 }
 
-fn draw_inset_layer(
+fn draw_inset_image(
     canvas: &mut Canvas,
     image: tiny_skia::PixmapRef<'_>,
     rect: (f32, f32, f32, f32),
     radius: f32,
     shadow: Option<Shadow>,
     inset: f32,
+    inset_color: Option<&str>,
 ) {
     if inset <= 0.0 {
         draw_unframed_image(canvas, image, rect, radius, shadow, false);
@@ -345,14 +357,30 @@ fn draw_inset_layer(
     let Some(path) = rounded_rect_path(x, y, width, height, radius) else {
         return;
     };
-    let fill = crate::render::color_detection::dominant_inset_color(
-        image,
-        crate::render::color_detection::ContentBounds::default(),
-    )
-    .map(|value| color::parse_or(&value, Color::WHITE))
-    .or_else(|| shadow.map(|_| Color::WHITE));
+    let content_width = (width - inset * 2.0).max(0.0);
+    let content_height = (height - inset * 2.0).max(0.0);
+    let fill = inset_color.map(|value| color::parse_or(value, Color::WHITE));
     canvas.save();
     if let Some(fill) = fill {
+        if radius > inset {
+            if let Some(mut framed) =
+                Canvas::new(width.ceil().max(1.0) as u32, height.ceil().max(1.0) as u32)
+            {
+                framed.fill_all(fill);
+                framed.draw_pixmap(image, inset, inset, content_width, content_height);
+                paint_shadow_only(canvas, &path, rect, radius, shadow);
+                canvas.clip_path(&path, FillRule::Winding);
+                canvas.draw_pixmap(
+                    framed.pixmap().as_ref(),
+                    x,
+                    y,
+                    framed.width() as f32,
+                    framed.height() as f32,
+                );
+                canvas.restore();
+                return;
+            }
+        }
         if shadow
             .is_none_or(|shadow| paint_rounded_shadow(canvas, rect, radius, shadow, fill).is_none())
         {
@@ -360,16 +388,39 @@ fn draw_inset_layer(
             canvas.fill_path(&path, fill, FillRule::Winding);
             canvas.set_shadow(None);
         }
+    } else {
+        paint_shadow_only(canvas, &path, rect, radius, shadow);
     }
     canvas.clip_path(&path, FillRule::Winding);
-    canvas.draw_pixmap(
-        image,
-        x + inset,
-        y + inset,
-        (width - inset * 2.0).max(0.0),
-        (height - inset * 2.0).max(0.0),
-    );
+    canvas.draw_pixmap(image, x + inset, y + inset, content_width, content_height);
     canvas.restore();
+}
+
+fn draw_inset_layer(
+    canvas: &mut Canvas,
+    image: tiny_skia::PixmapRef<'_>,
+    rect: (f32, f32, f32, f32),
+    radius: f32,
+    shadow: Option<Shadow>,
+    inset: f32,
+) {
+    let inset_color = (inset > 0.0)
+        .then(|| {
+            crate::render::color_detection::dominant_inset_color(
+                image,
+                crate::render::color_detection::ContentBounds::default(),
+            )
+        })
+        .flatten();
+    draw_inset_image(
+        canvas,
+        image,
+        rect,
+        radius,
+        shadow,
+        inset,
+        inset_color.as_deref(),
+    );
 }
 
 fn compose_layered_wallpaper(
@@ -699,62 +750,20 @@ fn compose_wallpaper(
         return canvas.into_pixmap();
     }
 
-    let (frame_x, frame_y) = match &inset_color {
-        Some(_) => (offset_x - inset, offset_y - inset),
-        None => (offset_x, offset_y),
-    };
-    let (frame_width, frame_height) = match &inset_color {
-        Some(_) => (
+    draw_inset_image(
+        &mut canvas,
+        image.as_ref(),
+        (
+            offset_x - inset,
+            offset_y - inset,
             image_width as f32 + inset * 2.0,
             image_height as f32 + inset * 2.0,
         ),
-        None => (image_width as f32, image_height as f32),
-    };
-
-    canvas.save();
-    canvas.set_shadow(image_shadow(wallpaper.shadow));
-    if let Some(path) = rounded_rect_path(frame_x, frame_y, frame_width, frame_height, radius) {
-        // A shadow needs an opaque shape behind the image; with an inset that
-        // shape is the band itself, and the image is clipped inside it.
-        let fill = match &inset_color {
-            Some(value) => Some(color::parse_or(
-                value,
-                Color::from_rgba8(255, 255, 255, 255),
-            )),
-            None if wallpaper.shadow > 0.0 => Some(Color::from_rgba8(255, 255, 255, 255)),
-            None => None,
-        };
-        if let Some(fill) = fill {
-            match image_shadow(wallpaper.shadow) {
-                Some(shadow) => {
-                    canvas.set_shadow(None);
-                    if paint_rounded_shadow(
-                        &mut canvas,
-                        (frame_x, frame_y, frame_width, frame_height),
-                        radius,
-                        shadow,
-                        fill,
-                    )
-                    .is_none()
-                    {
-                        canvas.set_shadow(Some(shadow));
-                        canvas.fill_path(&path, fill, FillRule::Winding);
-                    }
-                }
-                None => canvas.fill_path(&path, fill, FillRule::Winding),
-            }
-        }
-        canvas.set_shadow(None);
-        canvas.clip_path(&path, FillRule::Winding);
-    }
-    canvas.draw_pixmap(
-        image.as_ref(),
-        offset_x,
-        offset_y,
-        image_width as f32,
-        image_height as f32,
+        radius,
+        image_shadow(wallpaper.shadow),
+        inset,
+        inset_color.as_deref(),
     );
-    canvas.restore();
 
     canvas.into_pixmap()
 }
@@ -1176,7 +1185,7 @@ pub fn render_backdrop_with_pixmap(
                 ),
                 wallpaper.corners.max(0.0) as f32,
                 shadow,
-                Color::WHITE,
+                Color::TRANSPARENT,
             )?;
         }
     }
@@ -2616,7 +2625,101 @@ mod tests {
         };
         let shadowed = compose(Some(&transparent), 60, 60, &[], &settings, 1.0);
         assert_eq!(shadowed.dimensions(), (60, 60));
-        assert_eq!(shadowed.get_pixel(30, 30).0, [255, 255, 255, 255]);
+        let center = shadowed.get_pixel(30, 30).0;
+        assert_eq!(&center[..3], &[0, 0, 0]);
+        assert!(center[3] > 0);
+    }
+
+    #[test]
+    fn shadowed_rounded_corners_have_no_white_fringe_and_stay_smooth() {
+        let dark_image = image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            160,
+            120,
+            image::Rgba([24, 24, 30, 255]),
+        ));
+        let mut without_shadow = WallpaperSettings {
+            gradient: Some(crate::editor::wallpaper::GradientOption {
+                id: "black".into(),
+                colors: vec!["#000000".into()],
+                angle: 0.0,
+            }),
+            padding: 39.0,
+            corners: 49.0,
+            shadow: 0.0,
+            ..WallpaperSettings::default()
+        };
+        let mut with_shadow = without_shadow.clone();
+        with_shadow.shadow = 73.0;
+
+        let plain = compose(Some(&dark_image), 160, 120, &[], &without_shadow, 1.0);
+        let shadowed = compose(Some(&dark_image), 160, 120, &[], &with_shadow, 1.0);
+        assert_eq!(shadowed, plain);
+        for pixel in shadowed.pixels() {
+            assert!(
+                pixel.0[0] <= 24 && pixel.0[1] <= 24 && pixel.0[2] <= 30,
+                "unexpected bright artifact pixel: {:?}",
+                pixel.0
+            );
+        }
+
+        without_shadow.gradient = Some(crate::editor::wallpaper::GradientOption {
+            id: "mid".into(),
+            colors: vec!["#607080".into()],
+            angle: 0.0,
+        });
+        with_shadow.gradient = without_shadow.gradient.clone();
+        let shadowed_colored = compose(Some(&dark_image), 160, 120, &[], &with_shadow, 1.0);
+        for pixel in shadowed_colored.pixels() {
+            assert!(
+                pixel.0[0] <= 0x60 && pixel.0[1] <= 0x70 && pixel.0[2] <= 0x80,
+                "unexpected white fringe over colored wallpaper: {:?}",
+                pixel.0
+            );
+        }
+
+        with_shadow.gradient = None;
+        let shadowed_transparent = compose(Some(&dark_image), 160, 120, &[], &with_shadow, 1.0);
+        for pixel in shadowed_transparent.pixels() {
+            assert!(
+                pixel.0[0] <= 26 && pixel.0[1] <= 26 && pixel.0[2] <= 32,
+                "unexpected bright fringe over transparent backdrop: {:?}",
+                pixel.0
+            );
+        }
+        assert!(shadowed_transparent.get_pixel(39 + 80, 39 + 120 + 5).0[3] > 0);
+    }
+
+    #[test]
+    fn rounded_inset_corners_larger_than_inset_have_no_inset_fringe() {
+        let mut raw = RgbaImage::from_pixel(120, 120, image::Rgba([255, 255, 255, 255]));
+        for y in 0..50 {
+            for x in 0..50 {
+                raw.put_pixel(x, y, image::Rgba([20, 20, 24, 255]));
+            }
+        }
+        let base = image::DynamicImage::ImageRgba8(raw);
+        let settings = WallpaperSettings {
+            gradient: Some(crate::editor::wallpaper::GradientOption {
+                id: "black".into(),
+                colors: vec!["#000000".into()],
+                angle: 0.0,
+            }),
+            padding: 20.0,
+            inset: 6.0,
+            corners: 40.0,
+            shadow: 60.0,
+            ..WallpaperSettings::default()
+        };
+        let output = compose(Some(&base), 120, 120, &[], &settings, 1.0);
+        for y in 26..50 {
+            for x in 26..50 {
+                let pixel = output.get_pixel(x, y).0;
+                assert!(
+                    pixel[0] <= 20 && pixel[1] <= 20 && pixel[2] <= 24,
+                    "inset fringe at ({x},{y}): {pixel:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -285,6 +285,147 @@ export const renderWindowFrame = (
   ctx.restore();
 };
 
+const createOffscreenSurface = (
+  width: number,
+  height: number
+): {
+  surface: OffscreenCanvas | HTMLCanvasElement;
+  ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+} | null => {
+  const safeWidth = Math.max(1, Math.ceil(width));
+  const safeHeight = Math.max(1, Math.ceil(height));
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const surface = new OffscreenCanvas(safeWidth, safeHeight);
+    const offCtx = surface.getContext('2d');
+    if (offCtx) return { surface, ctx: offCtx };
+  }
+  if (typeof document === 'undefined') return null;
+  const surface = document.createElement('canvas');
+  surface.width = safeWidth;
+  surface.height = safeHeight;
+  const offCtx = surface.getContext('2d');
+  if (!offCtx) return null;
+  return { surface, ctx: offCtx };
+};
+
+const renderFramedImage = (
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  frameWidth: number,
+  frameHeight: number,
+  cornerRadius: number,
+  shadow: number,
+  inset: number,
+  insetColor: string | null,
+  balanceCrop: BalanceCrop
+) => {
+  const srcX = balanceCrop.left;
+  const srcY = balanceCrop.top;
+  const srcW = image.naturalWidth - balanceCrop.left - balanceCrop.right;
+  const srcH = image.naturalHeight - balanceCrop.top - balanceCrop.bottom;
+  if (frameWidth <= 0 || frameHeight <= 0 || srcW <= 0 || srcH <= 0) return;
+  const effectiveInset = inset > 0 && insetColor ? inset : 0;
+  const contentW = Math.max(0, frameWidth - effectiveInset * 2);
+  const contentH = Math.max(0, frameHeight - effectiveInset * 2);
+
+  if (
+    cornerRadius > 0 &&
+    (shadow > 0 || (effectiveInset > 0 && cornerRadius > effectiveInset))
+  ) {
+    const transform =
+      typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+    const scaleX = transform ? Math.hypot(transform.a, transform.b) || 1 : 1;
+    const scaleY = transform ? Math.hypot(transform.c, transform.d) || 1 : 1;
+    const offscreen = createOffscreenSurface(
+      frameWidth * scaleX,
+      frameHeight * scaleY
+    );
+    if (offscreen) {
+      const { surface, ctx: offCtx } = offscreen;
+      offCtx.imageSmoothingEnabled = true;
+      offCtx.imageSmoothingQuality = 'high';
+      offCtx.scale(surface.width / frameWidth, surface.height / frameHeight);
+
+      if (effectiveInset > 0 && insetColor) {
+        offCtx.fillStyle = insetColor;
+        offCtx.fillRect(0, 0, frameWidth, frameHeight);
+      }
+
+      offCtx.drawImage(
+        image,
+        srcX,
+        srcY,
+        srcW,
+        srcH,
+        effectiveInset,
+        effectiveInset,
+        contentW,
+        contentH
+      );
+
+      offCtx.globalCompositeOperation = 'destination-in';
+      offCtx.beginPath();
+      offCtx.roundRect(0, 0, frameWidth, frameHeight, cornerRadius);
+      offCtx.fillStyle = '#000';
+      offCtx.fill();
+
+      ctx.save();
+      applyImageShadow(ctx, shadow);
+      ctx.drawImage(surface, x, y, frameWidth, frameHeight);
+      ctx.restore();
+      return;
+    }
+  }
+
+  ctx.save();
+
+  if (effectiveInset > 0 && insetColor) {
+    applyImageShadow(ctx, shadow);
+
+    ctx.beginPath();
+    if (cornerRadius > 0) {
+      ctx.roundRect(x, y, frameWidth, frameHeight, cornerRadius);
+    } else {
+      ctx.rect(x, y, frameWidth, frameHeight);
+    }
+
+    ctx.fillStyle = insetColor;
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    ctx.clip();
+    ctx.drawImage(
+      image,
+      srcX,
+      srcY,
+      srcW,
+      srcH,
+      x + effectiveInset,
+      y + effectiveInset,
+      contentW,
+      contentH
+    );
+    ctx.restore();
+    return;
+  }
+
+  if (cornerRadius > 0) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, frameWidth, frameHeight, cornerRadius);
+    ctx.clip();
+  } else {
+    applyImageShadow(ctx, shadow);
+  }
+
+  ctx.drawImage(image, srcX, srcY, srcW, srcH, x, y, frameWidth, frameHeight);
+  ctx.restore();
+};
+
 export const renderImageToCanvas = (
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -296,42 +437,19 @@ export const renderImageToCanvas = (
   shadow: number,
   balanceCrop: BalanceCrop = { left: 0, top: 0, right: 0, bottom: 0 }
 ) => {
-  ctx.save();
-
-  applyImageShadow(ctx, shadow);
-
-  ctx.beginPath();
-  if (cornerRadius > 0) {
-    ctx.roundRect(x, y, croppedWidth, croppedHeight, cornerRadius);
-  } else {
-    ctx.rect(x, y, croppedWidth, croppedHeight);
-  }
-
-  if (shadow > 0) {
-    ctx.fillStyle = 'white';
-    ctx.fill();
-  }
-
-  ctx.clip();
-
-  const srcX = balanceCrop.left;
-  const srcY = balanceCrop.top;
-  const srcW = image.naturalWidth - balanceCrop.left - balanceCrop.right;
-  const srcH = image.naturalHeight - balanceCrop.top - balanceCrop.bottom;
-
-  ctx.drawImage(
+  renderFramedImage(
+    ctx,
     image,
-    srcX,
-    srcY,
-    srcW,
-    srcH,
     x,
     y,
     croppedWidth,
-    croppedHeight
+    croppedHeight,
+    cornerRadius,
+    shadow,
+    0,
+    null,
+    balanceCrop
   );
-
-  ctx.restore();
 };
 
 export const renderImageWithInset = (
@@ -347,49 +465,19 @@ export const renderImageWithInset = (
   insetColor: string,
   balanceCrop: BalanceCrop = { left: 0, top: 0, right: 0, bottom: 0 }
 ) => {
-  ctx.save();
-
-  applyImageShadow(ctx, shadow);
-
-  ctx.beginPath();
-  if (cornerRadius > 0) {
-    ctx.roundRect(x, y, frameWidth, frameHeight, cornerRadius);
-  } else {
-    ctx.rect(x, y, frameWidth, frameHeight);
-  }
-
-  ctx.fillStyle = insetColor;
-  ctx.fill();
-
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  ctx.clip();
-
-  const contentX = x + inset;
-  const contentY = y + inset;
-  const croppedWidth = frameWidth - inset * 2;
-  const croppedHeight = frameHeight - inset * 2;
-
-  const srcX = balanceCrop.left;
-  const srcY = balanceCrop.top;
-  const srcW = image.naturalWidth - balanceCrop.left - balanceCrop.right;
-  const srcH = image.naturalHeight - balanceCrop.top - balanceCrop.bottom;
-
-  ctx.drawImage(
+  renderFramedImage(
+    ctx,
     image,
-    srcX,
-    srcY,
-    srcW,
-    srcH,
-    contentX,
-    contentY,
-    croppedWidth,
-    croppedHeight
+    x,
+    y,
+    frameWidth,
+    frameHeight,
+    cornerRadius,
+    shadow,
+    inset,
+    insetColor,
+    balanceCrop
   );
-
-  ctx.restore();
 };
 
 export interface WallpaperCompositeSettings {

@@ -1518,4 +1518,37 @@ mod tests {
         assert_eq!(bounds.height(), 4.0);
         assert!(rounded_rect_path(0.0, 0.0, 0.0, 4.0, 2.0).is_none());
     }
+
+    #[test]
+    fn transparent_fill_rounded_shadow_casts_only_the_shadow() {
+        let shadow = crate::editor::export::image_shadow(75.0).unwrap();
+        for (width, height, radius) in [(160.0, 120.0, 49.0), (720.0, 120.0, 24.0)] {
+            let mut expected = Canvas::new(800, 240).unwrap();
+            let mut actual = Canvas::new(800, 240).unwrap();
+            let path = rounded_rect_path(40.0, 40.0, width, height, radius).unwrap();
+            expected.set_shadow(Some(shadow));
+            expected.fill_path(&path, Color::TRANSPARENT, FillRule::Winding);
+            paint_rounded_shadow(
+                &mut actual,
+                (40.0, 40.0, width, height),
+                radius,
+                shadow,
+                Color::TRANSPARENT,
+            )
+            .unwrap();
+            assert!(
+                expected
+                    .pixmap()
+                    .data()
+                    .iter()
+                    .zip(actual.pixmap().data())
+                    .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
+                "{width}x{height}, radius {radius}"
+            );
+            for pixel in actual.pixmap().data().as_chunks::<4>().0 {
+                assert_eq!(&pixel[..3], &[0, 0, 0]);
+            }
+            assert!(alpha_at(&actual, 40 + (width as u32) / 2, 40 + height as u32 + 5) > 0);
+        }
+    }
 }

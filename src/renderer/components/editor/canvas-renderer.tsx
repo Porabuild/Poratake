@@ -16,6 +16,8 @@ import {
   applyImageShadow,
   renderBackgroundImageToCanvas,
   renderGradientToCanvas,
+  renderImageToCanvas,
+  renderImageWithInset,
 } from '@/renderer/utils/wallpaper-render';
 import type { LayerRect } from '@/renderer/utils/layer-layout';
 import {
@@ -156,11 +158,9 @@ function drawLayer({
   balanceCrop,
   insetColor,
 }: DrawLayerArgs) {
-  ctx.save();
-
-  applyImageShadow(ctx, shadow);
-
   if (hasWindowFrame && frameTheme) {
+    ctx.save();
+    applyImageShadow(ctx, shadow);
     const framedStyle = frameStyle as FramedWindowStyle;
     const frameCornerRadius = getWindowFrameCornerRadius(framedStyle);
 
@@ -242,47 +242,34 @@ function drawLayer({
     return;
   }
 
-  ctx.beginPath();
-  if (cornerRadius > 0) {
-    ctx.roundRect(frameX, frameY, frameWidth, frameHeight, cornerRadius);
-  } else {
-    ctx.rect(frameX, frameY, frameWidth, frameHeight);
+  if (inset > 0 && insetColor) {
+    renderImageWithInset(
+      ctx,
+      image,
+      frameX,
+      frameY,
+      frameWidth,
+      frameHeight,
+      cornerRadius,
+      shadow,
+      inset,
+      insetColor,
+      balanceCrop
+    );
+    return;
   }
 
-  if (shadow > 0 || (inset > 0 && insetColor)) {
-    ctx.fillStyle = inset > 0 && insetColor ? insetColor : 'white';
-    ctx.fill();
-  }
-
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  ctx.clip();
-
-  const contentX = frameX + inset;
-  const contentY = frameY + inset;
-  const contentW = frameWidth - inset * 2;
-  const contentH = frameHeight - inset * 2;
-
-  const srcX = balanceCrop.left;
-  const srcY = balanceCrop.top;
-  const srcW = image.naturalWidth - balanceCrop.left - balanceCrop.right;
-  const srcH = image.naturalHeight - balanceCrop.top - balanceCrop.bottom;
-
-  ctx.drawImage(
+  renderImageToCanvas(
+    ctx,
     image,
-    srcX,
-    srcY,
-    srcW,
-    srcH,
-    contentX,
-    contentY,
-    contentW,
-    contentH
+    frameX + inset,
+    frameY + inset,
+    Math.max(0, frameWidth - inset * 2),
+    Math.max(0, frameHeight - inset * 2),
+    cornerRadius,
+    shadow,
+    balanceCrop
   );
-
-  ctx.restore();
 }
 
 const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(

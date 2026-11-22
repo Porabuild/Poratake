@@ -1144,7 +1144,7 @@ fn tile_shell(
             } else {
                 tooltip
             };
-            let button = Button::new(id)
+            let button = Button::new(id.clone())
                 .aria_label(SharedString::from(if selected {
                     format!("{label} (selected)")
                 } else {
@@ -1161,6 +1161,7 @@ fn tile_shell(
                 button.into_any_element()
             } else {
                 herogpui::components::Tooltip::new(SharedString::from(tooltip.to_string()))
+                    .id((id, "tooltip"))
                     .child(button)
                     .into_any_element()
             };
@@ -1174,6 +1175,7 @@ fn tile_shell(
         return tile.into_any_element();
     }
     herogpui::components::Tooltip::new(SharedString::from(tooltip.to_string()))
+        .id((id, "tooltip"))
         .child(tile)
         .into_any_element()
 }
