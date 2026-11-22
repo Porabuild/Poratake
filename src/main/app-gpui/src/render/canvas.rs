@@ -145,6 +145,13 @@ impl Canvas {
         self.state.transform
     }
 
+    pub fn is_identity_unclipped(&self) -> bool {
+        self.state.transform == Transform::identity()
+            && self.state.clip.is_none()
+            && self.state.alpha == 1.0
+            && self.state.shadow.is_none()
+    }
+
     pub fn pixel_grid_origin(&self) -> (f64, f64) {
         if let Some(origin) = self.pixel_grid_origin {
             return origin;

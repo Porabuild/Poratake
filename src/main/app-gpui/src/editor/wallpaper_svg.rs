@@ -286,8 +286,9 @@ pub const PRESETS: [(&str, &str, &str); 14] = [
 const VIEW_WIDTH: f32 = 800.0;
 const VIEW_HEIGHT: f32 = 600.0;
 const MAX_DIMENSION: u32 = 8192;
-const CACHE_LIMIT: usize = 48;
-const MAX_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const PIXMAP_CACHE_LIMIT: usize = 2;
+const IMAGE_CACHE_LIMIT: usize = 48;
+const MAX_PIXMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const TILE_SCALE: f32 = 2.0;
 
 type PixmapKey = (&'static str, u32, u32);
@@ -332,7 +333,7 @@ impl PixmapCache {
         }
         let bytes = pixmap.data().len();
         let remaining = self.max_bytes.saturating_sub(bytes);
-        while self.bytes > remaining || self.entries.len() >= CACHE_LIMIT {
+        while self.bytes > remaining || self.entries.len() >= PIXMAP_CACHE_LIMIT {
             let Some((_, stale)) = self.entries.pop_back() else {
                 break;
             };
@@ -351,6 +352,19 @@ impl PixmapCache {
         let pixmap = Arc::new(rasterize_preset(id, source, width, height)?);
         self.insert(key, pixmap.clone());
         Some(pixmap)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+}
+
+static PIXMAP_CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
+
+pub fn clear_pixmap_cache() {
+    if let Ok(mut cache) = PIXMAP_CACHE.lock() {
+        cache.clear();
     }
 }
 
@@ -382,14 +396,10 @@ pub fn cover_size(width: f32, height: f32) -> (u32, u32) {
     (dimension(width), dimension(height))
 }
 
-static PIXMAP_CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
 static IMAGE_CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
 
 pub fn clear_caches() {
-    if let Ok(mut cache) = PIXMAP_CACHE.lock() {
-        cache.entries.clear();
-        cache.bytes = 0;
-    }
+    clear_pixmap_cache();
     if let Ok(mut cache) = IMAGE_CACHE.lock() {
         *cache = None;
     }
@@ -430,7 +440,7 @@ pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
     if let Some(cached) = cache.get(&(id, height)) {
         return cached.clone();
     }
-    if cache.len() >= CACHE_LIMIT {
+    if cache.len() >= IMAGE_CACHE_LIMIT {
         cache.clear();
     }
     let width = dimension(height as f32 * VIEW_WIDTH / VIEW_HEIGHT);
@@ -438,6 +448,10 @@ pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
         .map(|source| crate::editor::export::render_image(&source));
     cache.insert((id, height), image.clone());
     image
+}
+
+pub fn preview_render_image(id: &str) -> Option<Arc<gpui::RenderImage>> {
+    render_image(id, VIEW_HEIGHT / TILE_SCALE)
 }
 
 fn rasterize_preset(id: &str, markup: &str, width: u32, height: u32) -> Option<Pixmap> {
@@ -598,6 +612,21 @@ mod tests {
 
         let rerendered = cache.pixmap(cold, FOREST_GLOW).unwrap();
         assert_eq!(rerendered.data(), earlier_pixels);
+    }
+
+    #[test]
+    fn sidebar_tile_images_stay_cached_across_all_presets() {
+        let first: Vec<_> = PRESETS
+            .iter()
+            .map(|(id, _, _)| render_image(id, 44.0).unwrap())
+            .collect();
+        let second: Vec<_> = PRESETS
+            .iter()
+            .map(|(id, _, _)| render_image(id, 44.0).unwrap())
+            .collect();
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert!(Arc::ptr_eq(a, b));
+        }
     }
 
     #[test]

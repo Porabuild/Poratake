@@ -2,6 +2,9 @@
 //! rasterizer in `crate::render`, the same one the video editor composites
 //! with, so a saved or copied image matches the editor preview.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
 use image::RgbaImage;
 use tiny_skia::{Color, FillRule, Pixmap};
 
@@ -790,11 +793,110 @@ fn image_shadow_at_scale(shadow: f64, scale: f64) -> Option<Shadow> {
     })
 }
 
-fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
-    paint_backdrop_excluding(canvas, wallpaper, width, height, None);
+const BACKDROP_CACHE_LIMIT: usize = 2;
+const BACKDROP_CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
+const LIVE_BACKGROUND_MAX_SIDE: u32 = 1024;
+
+#[derive(Clone, PartialEq, Eq)]
+struct PureBackgroundKey {
+    gradient: Option<(String, Vec<String>, u64)>,
+    background_image: Option<gradient::ImageSourceKey>,
+    blur_bits: u64,
+    noise_bits: u64,
+    width: u32,
+    height: u32,
 }
 
-fn paint_backdrop_excluding(
+struct PureBackgroundCache {
+    entries: VecDeque<(PureBackgroundKey, Arc<Pixmap>)>,
+    bytes: usize,
+}
+
+impl PureBackgroundCache {
+    const fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&mut self, key: &PureBackgroundKey) -> Option<Arc<Pixmap>> {
+        let index = self.entries.iter().position(|(cached, _)| cached == key)?;
+        let entry = self.entries.remove(index)?;
+        let pixmap = entry.1.clone();
+        self.entries.push_front(entry);
+        Some(pixmap)
+    }
+
+    fn insert(&mut self, key: PureBackgroundKey, pixmap: Arc<Pixmap>) {
+        self.entries.retain(|(cached, existing)| {
+            let keep = cached != &key
+                && cached.gradient == key.gradient
+                && cached.background_image == key.background_image
+                && cached.blur_bits == key.blur_bits
+                && cached.width == key.width
+                && cached.height == key.height;
+            if !keep {
+                self.bytes = self.bytes.saturating_sub(existing.data().len());
+            }
+            keep
+        });
+        let bytes = pixmap.data().len();
+        if bytes > BACKDROP_CACHE_MAX_BYTES {
+            return;
+        }
+        let remaining = BACKDROP_CACHE_MAX_BYTES.saturating_sub(bytes);
+        while self.bytes > remaining || self.entries.len() >= BACKDROP_CACHE_LIMIT {
+            let Some((_, stale)) = self.entries.pop_back() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(stale.data().len());
+        }
+        self.bytes += bytes;
+        self.entries.push_front((key, pixmap));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+}
+
+static PURE_BACKGROUND_CACHE: Mutex<PureBackgroundCache> = Mutex::new(PureBackgroundCache::new());
+
+pub fn clear_caches() {
+    if let Ok(mut cache) = PURE_BACKGROUND_CACHE.lock() {
+        cache.clear();
+    }
+    gradient::clear_image_cache();
+}
+
+fn pure_background_key(
+    wallpaper: &WallpaperSettings,
+    width: u32,
+    height: u32,
+    noise: f64,
+) -> PureBackgroundKey {
+    PureBackgroundKey {
+        gradient: wallpaper.gradient.as_ref().map(|gradient| {
+            (
+                gradient.id.clone(),
+                gradient.colors.clone(),
+                gradient.angle.to_bits(),
+            )
+        }),
+        background_image: wallpaper
+            .background_image
+            .as_deref()
+            .map(gradient::image_source_key),
+        blur_bits: wallpaper.background_blur.to_bits(),
+        noise_bits: noise.to_bits(),
+        width,
+        height,
+    }
+}
+
+fn paint_backdrop_uncached(
     canvas: &mut Canvas,
     wallpaper: &WallpaperSettings,
     width: f32,
@@ -839,10 +941,143 @@ fn paint_backdrop_excluding(
     } else {
         paint_background_source_excluding(canvas, wallpaper, width, height, excluded);
     }
+}
 
-    if wallpaper.has_background() {
+fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
+    paint_backdrop_excluding(canvas, wallpaper, width, height, None);
+}
+
+fn paint_backdrop_excluding(
+    canvas: &mut Canvas,
+    wallpaper: &WallpaperSettings,
+    width: f32,
+    height: f32,
+    excluded: Option<(u32, u32, u32, u32)>,
+) {
+    let cacheable = wallpaper.has_background()
+        && canvas.is_identity_unclipped()
+        && (width - canvas.width() as f32).abs() < f32::EPSILON
+        && (height - canvas.height() as f32).abs() < f32::EPSILON;
+    if !cacheable {
+        paint_backdrop_uncached(canvas, wallpaper, width, height, excluded);
+        if wallpaper.has_background() {
+            gradient::overlay_noise(canvas, width, height, wallpaper.noise, NOISE_SEED);
+        }
+        return;
+    }
+
+    let (pixel_width, pixel_height) = (canvas.width(), canvas.height());
+    let final_key = pure_background_key(wallpaper, pixel_width, pixel_height, wallpaper.noise);
+    if let Some(cached) = PURE_BACKGROUND_CACHE
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.get(&final_key))
+    {
+        canvas
+            .pixmap_mut()
+            .data_mut()
+            .copy_from_slice(cached.data());
+        return;
+    }
+
+    let has_hole = excluded.is_some() && wallpaper.background_blur <= 0.0;
+    if has_hole {
+        paint_backdrop_uncached(canvas, wallpaper, width, height, excluded);
+        if wallpaper.noise > 0.0 {
+            gradient::overlay_noise(canvas, width, height, wallpaper.noise, NOISE_SEED);
+        }
+        return;
+    }
+
+    let base_key = if wallpaper.noise > 0.0 {
+        Some(pure_background_key(
+            wallpaper,
+            pixel_width,
+            pixel_height,
+            0.0,
+        ))
+    } else {
+        None
+    };
+    let reused_base = base_key.as_ref().and_then(|key| {
+        PURE_BACKGROUND_CACHE
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(key))
+    });
+    if let Some(cached) = reused_base {
+        canvas
+            .pixmap_mut()
+            .data_mut()
+            .copy_from_slice(cached.data());
+    } else {
+        paint_backdrop_uncached(canvas, wallpaper, width, height, None);
+        if let Some(key) = base_key {
+            if let Ok(mut cache) = PURE_BACKGROUND_CACHE.lock() {
+                cache.insert(key, Arc::new(canvas.pixmap().clone()));
+            }
+        }
+    }
+
+    if wallpaper.noise > 0.0 {
         gradient::overlay_noise(canvas, width, height, wallpaper.noise, NOISE_SEED);
     }
+    if let Ok(mut cache) = PURE_BACKGROUND_CACHE.lock() {
+        cache.insert(final_key, Arc::new(canvas.pixmap().clone()));
+    }
+}
+
+fn downscale_preview(pixmap: &Pixmap) -> Option<Arc<gpui::RenderImage>> {
+    let max_side = pixmap.width().max(pixmap.height());
+    if max_side <= LIVE_BACKGROUND_MAX_SIDE {
+        return Some(render_image(pixmap));
+    }
+    let scale = LIVE_BACKGROUND_MAX_SIDE as f32 / max_side as f32;
+    let target_w = ((pixmap.width() as f32 * scale).round() as u32).max(1);
+    let target_h = ((pixmap.height() as f32 * scale).round() as u32).max(1);
+    let mut scaled = Pixmap::new(target_w, target_h)?;
+    scaled.draw_pixmap(
+        0,
+        0,
+        pixmap.as_ref(),
+        &tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bilinear,
+            ..Default::default()
+        },
+        tiny_skia::Transform::from_scale(
+            target_w as f32 / pixmap.width() as f32,
+            target_h as f32 / pixmap.height() as f32,
+        ),
+        None,
+    );
+    Some(render_image(&scaled))
+}
+
+fn live_background_from_cache(
+    wallpaper: &WallpaperSettings,
+    width: u32,
+    height: u32,
+) -> Option<Arc<gpui::RenderImage>> {
+    if !wallpaper.has_background() {
+        return None;
+    }
+    if wallpaper.background_blur <= 0.0 && wallpaper.noise <= 0.0 {
+        if let Some(source) = wallpaper.background_image.as_deref() {
+            let image = gradient::load_image_cached(source)?;
+            return downscale_preview(image.as_ref());
+        }
+        if let Some(preset) = wallpaper.gradient.as_ref() {
+            if crate::editor::wallpaper_svg::is_preset(&preset.id) || preset.colors.len() <= 2 {
+                return None;
+            }
+        }
+    }
+    let key = pure_background_key(wallpaper, width.max(1), height.max(1), wallpaper.noise);
+    let pixmap = PURE_BACKGROUND_CACHE
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.get(&key))?;
+    downscale_preview(pixmap.as_ref())
 }
 
 /// The grain is deterministic so the preview and the exported file agree.
@@ -1015,6 +1250,13 @@ fn composite_tiles(
     Some(tiles)
 }
 
+pub struct BackdropRender {
+    pub backdrop: Arc<gpui::RenderImage>,
+    pub preview_edges: Vec<PreviewEdgeImage>,
+    pub composite: bool,
+    pub live_background: Option<Arc<gpui::RenderImage>>,
+}
+
 pub fn backdrop_needs_primary_pixmap(
     wallpaper: &WallpaperSettings,
     layers: &[crate::editor::layers::ImageLayer],
@@ -1044,7 +1286,7 @@ pub fn render_backdrop(
     Vec<PreviewEdgeImage>,
     bool,
 )> {
-    render_backdrop_with_pixmap(
+    let rendered = render_backdrop_cached(
         wallpaper,
         width,
         height,
@@ -1054,13 +1296,20 @@ pub fn render_backdrop(
         layers,
         base,
         None,
+        None,
         frame_scale,
         stage_background,
-    )
+        false,
+    )?;
+    Some((
+        rendered.backdrop,
+        rendered.preview_edges,
+        rendered.composite,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn render_backdrop_with_pixmap(
+pub fn render_backdrop_cached(
     wallpaper: &WallpaperSettings,
     width: u32,
     height: u32,
@@ -1070,13 +1319,20 @@ pub fn render_backdrop_with_pixmap(
     layers: &[crate::editor::layers::ImageLayer],
     base: Option<&image::DynamicImage>,
     base_pixmap: Option<(&Pixmap, bool)>,
+    precomputed_balance: Option<Option<crate::render::color_detection::ContentBounds>>,
     frame_scale: f64,
     stage_background: [u8; 3],
-) -> Option<(
-    std::sync::Arc<gpui::RenderImage>,
-    Vec<PreviewEdgeImage>,
-    bool,
-)> {
+    include_live_background: bool,
+) -> Option<BackdropRender> {
+    let resolve_balance = |primary: &Pixmap| {
+        if !wallpaper.balance {
+            return None;
+        }
+        match precomputed_balance {
+            Some(bounds) => bounds,
+            None => balance_pixmap(primary.as_ref()),
+        }
+    };
     let owned_primary;
     if composites_primary_backdrop(wallpaper, layers) {
         let (primary_ref, primary_opaque) = match base_pixmap {
@@ -1086,11 +1342,8 @@ pub fn render_backdrop_with_pixmap(
                 (&owned_primary.0, owned_primary.1)
             }
         };
-        let cropped = wallpaper
-            .balance
-            .then(|| balance_pixmap(primary_ref.as_ref()))
-            .flatten()
-            .and_then(|bounds| balance_crop(primary_ref, bounds));
+        let cropped =
+            resolve_balance(primary_ref).and_then(|bounds| balance_crop(primary_ref, bounds));
         let primary = cropped.as_ref().unwrap_or(primary_ref);
         let composite = compose_wallpaper(
             primary,
@@ -1105,7 +1358,15 @@ pub fn render_backdrop_with_pixmap(
         } else {
             Vec::new()
         };
-        return Some((render_image(&composite), tiles, true));
+        let live_background = include_live_background
+            .then(|| live_background_from_cache(wallpaper, composite.width(), composite.height()))
+            .flatten();
+        return Some(BackdropRender {
+            backdrop: render_image(&composite),
+            preview_edges: tiles,
+            composite: true,
+            live_background,
+        });
     }
     if framed_composite_required(wallpaper, layers) {
         let primary_ref = match base_pixmap {
@@ -1115,10 +1376,7 @@ pub fn render_backdrop_with_pixmap(
                 &owned_primary.0
             }
         };
-        let balance = wallpaper
-            .balance
-            .then(|| balance_pixmap(primary_ref.as_ref()))
-            .flatten();
+        let balance = resolve_balance(primary_ref);
         let cropped = balance.and_then(|bounds| balance_crop(primary_ref, bounds));
         let primary = cropped.as_ref().unwrap_or(primary_ref);
         let offset = balance
@@ -1138,7 +1396,15 @@ pub fn render_backdrop_with_pixmap(
         } else {
             Vec::new()
         };
-        return Some((render_image(&composite), tiles, true));
+        let live_background = include_live_background
+            .then(|| live_background_from_cache(wallpaper, composite.width(), composite.height()))
+            .flatten();
+        return Some(BackdropRender {
+            backdrop: render_image(&composite),
+            preview_edges: tiles,
+            composite: true,
+            live_background,
+        });
     }
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
         let primary_ref = match base_pixmap {
@@ -1148,11 +1414,8 @@ pub fn render_backdrop_with_pixmap(
                 &owned_primary.0
             }
         };
-        let cropped = wallpaper
-            .balance
-            .then(|| balance_pixmap(primary_ref.as_ref()))
-            .flatten()
-            .and_then(|bounds| balance_crop(primary_ref, bounds));
+        let cropped =
+            resolve_balance(primary_ref).and_then(|bounds| balance_crop(primary_ref, bounds));
         let primary = cropped.as_ref().unwrap_or(primary_ref);
         let composite =
             compose_layered_wallpaper(primary, wallpaper, layers, &[], frame_scale, (0.0, 0.0))?;
@@ -1161,10 +1424,21 @@ pub fn render_backdrop_with_pixmap(
         } else {
             Vec::new()
         };
-        return Some((render_image(&composite), tiles, true));
+        let live_background = include_live_background
+            .then(|| live_background_from_cache(wallpaper, composite.width(), composite.height()))
+            .flatten();
+        return Some(BackdropRender {
+            backdrop: render_image(&composite),
+            preview_edges: tiles,
+            composite: true,
+            live_background,
+        });
     }
     let edge_preview = wallpaper.supports_edge_preview(!layers.is_empty());
     let mut canvas = wallpaper_backdrop(wallpaper, width, height, edge_preview, stage_background)?;
+    let live_background = include_live_background
+        .then(|| live_background_from_cache(wallpaper, canvas.width(), canvas.height()))
+        .flatten();
 
     if edge_preview && crate::render::window_frame::theme(&wallpaper.window_frame.style).is_none() {
         if let Some(shadow) = image_shadow(wallpaper.shadow) {
@@ -1335,15 +1609,16 @@ pub fn render_backdrop_with_pixmap(
             None,
         );
     }
-    Some((
-        render_image(canvas.pixmap()),
-        edge_tiles
+    Some(BackdropRender {
+        backdrop: render_image(canvas.pixmap()),
+        preview_edges: edge_tiles
             .into_iter()
             .flatten()
             .map(preview_edge_image)
             .collect(),
-        false,
-    ))
+        composite: false,
+        live_background,
+    })
 }
 
 fn wallpaper_backdrop(
@@ -1482,6 +1757,30 @@ pub fn redact_region(
 mod tests {
     use super::*;
     use crate::editor::wallpaper::preset;
+
+    #[test]
+    fn pure_background_cache_evicts_stale_sizes_on_resize() {
+        let mut cache = PureBackgroundCache::new();
+        let settings = WallpaperSettings {
+            gradient: preset("crimson-wave"),
+            ..Default::default()
+        };
+        for step in 0..30u32 {
+            let width = 64 + step * 2;
+            let height = 48 + step * 2;
+            let key = pure_background_key(&settings, width, height, 0.0);
+            let pixmap = Arc::new(Pixmap::new(width, height).unwrap());
+            cache.insert(key, pixmap);
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.bytes, (width * height * 4) as usize);
+        }
+        let noise_key = pure_background_key(&settings, 122, 106, 40.0);
+        cache.insert(noise_key, Arc::new(Pixmap::new(122, 106).unwrap()));
+        assert_eq!(cache.entries.len(), 2);
+        cache.clear();
+        assert_eq!(cache.entries.len(), 0);
+        assert_eq!(cache.bytes, 0);
+    }
 
     #[test]
     fn blurred_translucent_background_keeps_its_alpha() {
@@ -3734,7 +4033,7 @@ mod tests {
                 [24, 24, 27],
             )
             .unwrap();
-            let b = render_backdrop_with_pixmap(
+            let b = render_backdrop_cached(
                 &settings,
                 w,
                 h,
@@ -3744,14 +4043,16 @@ mod tests {
                 &[],
                 Some(&base),
                 Some((&primary, true)),
+                None,
                 1.0,
                 [24, 24, 27],
+                false,
             )
             .unwrap();
-            assert_eq!(a.0.as_bytes(0), b.0.as_bytes(0));
-            assert_eq!(a.2, b.2);
-            if b.2 {
-                let mut preview_rgba = b.0.as_bytes(0).unwrap().to_vec();
+            assert_eq!(a.0.as_bytes(0), b.backdrop.as_bytes(0));
+            assert_eq!(a.2, b.composite);
+            if b.composite {
+                let mut preview_rgba = b.backdrop.as_bytes(0).unwrap().to_vec();
                 for pixel in preview_rgba.as_chunks_mut::<4>().0 {
                     pixel.swap(0, 2);
                 }

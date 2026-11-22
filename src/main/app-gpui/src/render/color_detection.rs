@@ -77,7 +77,7 @@ fn colors_are_similar(a: [u8; 4], b: (u8, u8, u8)) -> bool {
         && (a[2] as i32 - b.2 as i32).abs() <= COLOR_SIMILARITY_THRESHOLD
 }
 
-fn to_hex(pixel: [u8; 4]) -> String {
+fn to_hex(pixel: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", pixel[0], pixel[1], pixel[2])
 }
 
@@ -88,7 +88,7 @@ fn tally(
     y: u32,
     width: u32,
     height: u32,
-    counts: &mut std::collections::HashMap<String, (u32, usize)>,
+    counts: &mut std::collections::HashMap<[u8; 3], (u32, usize)>,
 ) {
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
@@ -99,16 +99,19 @@ fn tally(
                 continue;
             }
             let index = counts.len();
-            counts.entry(to_hex(pixel)).or_insert((0, index)).0 += 1;
+            counts
+                .entry([pixel[0], pixel[1], pixel[2]])
+                .or_insert((0, index))
+                .0 += 1;
         }
     }
 }
 
-fn dominant(counts: std::collections::HashMap<String, (u32, usize)>) -> Option<String> {
+fn dominant(counts: std::collections::HashMap<[u8; 3], (u32, usize)>) -> Option<String> {
     counts
         .into_iter()
         .max_by_key(|(_, (count, index))| (*count, std::cmp::Reverse(*index)))
-        .map(|(color, _)| color)
+        .map(|(color, _)| to_hex(color))
 }
 
 /// `detectDominantEdgeColor` — the most common colour around the border.

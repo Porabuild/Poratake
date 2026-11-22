@@ -33,6 +33,22 @@ pub struct RedactPatch {
     pub height: f64,
 }
 
+#[derive(Clone, Default)]
+pub enum LiveBackground {
+    #[default]
+    None,
+    Solid(Hsla),
+    LinearGradient {
+        angle: f32,
+        from: Hsla,
+        to: Hsla,
+    },
+    Image {
+        image: std::sync::Arc<gpui::RenderImage>,
+        cover: bool,
+    },
+}
+
 pub struct CanvasSnapshot {
     pub image: Option<std::sync::Arc<gpui::RenderImage>>,
     pub image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
@@ -63,6 +79,8 @@ pub struct CanvasSnapshot {
     pub rounded_matte: Option<std::sync::Arc<gpui::RenderImage>>,
     pub backdrop_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     pub preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
+    pub live_background: LiveBackground,
+    pub inset_color: Option<String>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
     /// The text annotation being re-edited, hidden while its draft shows.
@@ -185,13 +203,17 @@ impl RenderOnce for EditorCanvas {
 
         let wallpaper = snap.wallpaper.clone();
         let frame_scale = snap.frame_scale;
+        let has_backdrop = snap.backdrop.is_some();
+        let framed_active = wallpaper.is_active_with_layers(!snap.layers.is_empty());
+        let live_fallback = framed_active && !has_backdrop;
         let has_preview_edges = !snap.preview_edges.is_empty();
         let layered_composite = snap.backdrop_composite;
         let rounded_composite = snap.rounded_matte.is_some();
         let composited_primary =
             crate::editor::export::composites_primary_backdrop(&wallpaper, &snap.layers);
-        let stage_annotations =
-            layered_composite || rounded_composite || (snap.image.is_some() && composited_primary);
+        let stage_annotations = layered_composite
+            || rounded_composite
+            || (has_backdrop && snap.image.is_some() && composited_primary);
         let overlay_above = has_preview_edges || stage_annotations;
         let window_frame =
             crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
@@ -212,20 +234,52 @@ impl RenderOnce for EditorCanvas {
             && snap.layers.is_empty()
             && wallpaper.corners <= 0.0
             && wallpaper.shadow <= 0.0;
-        let transparent_backdrop = wallpaper.is_active_with_layers(!snap.layers.is_empty())
-            && (snap.layers.is_empty() || overlay_above)
-            && (!wallpaper.balance
-                || balanced_unframed
-                || layered_composite
-                || (window_frame && has_preview_edges))
-            && (wallpaper.inset <= 0.0 || inset_unframed || layered_composite)
-            && (wallpaper.corners <= 0.0 || overlay_above)
-            && (window_frame || wallpaper.shadow <= 0.0 || overlay_above);
-        let frame_surface = if wallpaper.is_active_with_layers(!snap.layers.is_empty()) {
+        let transparent_backdrop = live_fallback
+            || (framed_active
+                && (snap.layers.is_empty() || overlay_above)
+                && (!wallpaper.balance
+                    || balanced_unframed
+                    || layered_composite
+                    || (window_frame && has_preview_edges))
+                && (wallpaper.inset <= 0.0 || inset_unframed || layered_composite)
+                && (wallpaper.corners <= 0.0 || overlay_above)
+                && (window_frame || wallpaper.shadow <= 0.0 || overlay_above));
+        let frame_surface = if framed_active {
             theme.surface
         } else {
             theme.background
         };
+        let live_image_corners = if live_fallback && snap.layers.is_empty() {
+            if window_frame {
+                let frame_inset = if !wallpaper.balance {
+                    wallpaper.inset.max(0.0) as f32
+                } else {
+                    0.0
+                };
+                let radius =
+                    (crate::render::window_frame::corner_radius(&wallpaper.window_frame.style)
+                        * frame_scale) as f32;
+                let bottom = px((radius - frame_inset).max(0.0) * snap.zoom);
+                gpui::Corners {
+                    top_left: Pixels::ZERO,
+                    top_right: Pixels::ZERO,
+                    bottom_right: bottom,
+                    bottom_left: bottom,
+                }
+            } else {
+                let inset = wallpaper.inset.max(0.0) as f32;
+                let radius = wallpaper.corners.max(0.0) as f32;
+                gpui::Corners::all(px((radius - inset).max(0.0) * snap.zoom))
+            }
+        } else {
+            gpui::Corners::default()
+        };
+        let live_crop = if live_fallback {
+            snap.balance_crop
+        } else {
+            None
+        };
+        let live_zoom = snap.zoom;
         let stage_bounds = Rc::new(RefCell::new(None));
         let mut frame = div()
             .relative()
@@ -235,10 +289,13 @@ impl RenderOnce for EditorCanvas {
                 !wallpaper.is_active(!snap.layers.is_empty()) && !layered_composite,
                 |el| el.shadow_md(),
             )
-            .when(wallpaper.corners > 0.0 && !overlay_above, |el| {
-                el.rounded(px(wallpaper.corners as f32 * snap.zoom))
-                    .overflow_hidden()
-            })
+            .when(
+                wallpaper.corners > 0.0 && !overlay_above && !live_fallback,
+                |el| {
+                    el.rounded(px(wallpaper.corners as f32 * snap.zoom))
+                        .overflow_hidden()
+                },
+            )
             .when(wallpaper.shadow > 0.0 && !transparent_backdrop, |el| {
                 el.shadow_2xl()
             })
@@ -270,10 +327,26 @@ impl RenderOnce for EditorCanvas {
                     canvas(
                         |_, _, _| (),
                         move |bounds, (), window, _| {
+                            let visible = if let Some((left, top, right, bottom)) = live_crop {
+                                gpui::Bounds {
+                                    origin: gpui::point(
+                                        bounds.origin.x + px(left * live_zoom),
+                                        bounds.origin.y + px(top * live_zoom),
+                                    ),
+                                    size: gpui::size(
+                                        (bounds.size.width - px((left + right) * live_zoom))
+                                            .max(Pixels::ZERO),
+                                        (bounds.size.height - px((top + bottom) * live_zoom))
+                                            .max(Pixels::ZERO),
+                                    ),
+                                }
+                            } else {
+                                bounds
+                            };
                             let _ = window.paint_image(
+                                visible,
                                 bounds,
-                                bounds,
-                                gpui::Corners::default(),
+                                live_image_corners,
                                 image,
                                 0,
                                 false,
@@ -468,6 +541,8 @@ impl RenderOnce for EditorCanvas {
                     .inset_0(),
                 );
             let rendered = self.snapshot.borrow().backdrop.clone();
+            let live_bg = self.snapshot.borrow().live_background.clone();
+            let inset_color_hex = self.snapshot.borrow().inset_color.clone();
             backdrop = match rendered {
                 Some(_) if layered_composite && has_preview_edges => backdrop,
                 #[cfg(target_os = "macos")]
@@ -495,7 +570,29 @@ impl RenderOnce for EditorCanvas {
                         .w(px(canvas_width as f32 * zoom))
                         .h(px(canvas_height as f32 * zoom)),
                 ),
-                None => backdrop.bg(theme.surface_secondary),
+                None => match live_bg {
+                    LiveBackground::Image { image, cover } => backdrop.child(
+                        img(image)
+                            .object_fit(if cover {
+                                gpui::ObjectFit::Cover
+                            } else {
+                                gpui::ObjectFit::Fill
+                            })
+                            .absolute()
+                            .inset_0()
+                            .w(px(canvas_width as f32 * zoom))
+                            .h(px(canvas_height as f32 * zoom)),
+                    ),
+                    LiveBackground::LinearGradient { angle, from, to } => {
+                        backdrop.bg(gpui::linear_gradient(
+                            angle,
+                            gpui::linear_color_stop(from, 0.0),
+                            gpui::linear_color_stop(to, 1.0),
+                        ))
+                    }
+                    LiveBackground::Solid(color) => backdrop.bg(color),
+                    LiveBackground::None => backdrop,
+                },
             };
             // A window frame's title bar sits between the padding and the
             // image, so the image starts below it.
@@ -510,22 +607,38 @@ impl RenderOnce for EditorCanvas {
             let crop = self.snapshot.borrow().balance_crop;
             let (crop_left, crop_top, crop_right, crop_bottom) =
                 crop.unwrap_or((0.0, 0.0, 0.0, 0.0));
-            backdrop = backdrop.child(
-                div()
-                    .absolute()
-                    .left(px(offset_x as f32 * zoom))
-                    .top(px((offset_y + title_bar) as f32 * zoom))
-                    .w(px((image_width as f32 - crop_left - crop_right) * zoom))
-                    .h(px((image_height as f32 - crop_top - crop_bottom) * zoom))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(-crop_left * zoom))
-                            .top(px(-crop_top * zoom))
-                            .child(frame),
-                    ),
-            );
+            let visible_width = (image_width as f32 - crop_left - crop_right).max(0.0);
+            let visible_height = (image_height as f32 - crop_top - crop_bottom).max(0.0);
+            let cropped_frame = div()
+                .absolute()
+                .left(px(-crop_left * zoom))
+                .top(px(-crop_top * zoom))
+                .child(frame);
+            if live_fallback && layers.is_empty() {
+                backdrop = backdrop.child(live_preview_card(
+                    &wallpaper,
+                    frame_scale,
+                    zoom,
+                    offset_x as f32,
+                    offset_y as f32,
+                    visible_width,
+                    visible_height,
+                    title_bar as f32,
+                    inset_color_hex.as_deref(),
+                    cropped_frame,
+                ));
+            } else {
+                backdrop = backdrop.child(
+                    div()
+                        .absolute()
+                        .left(px(offset_x as f32 * zoom))
+                        .top(px((offset_y + title_bar) as f32 * zoom))
+                        .w(px(visible_width * zoom))
+                        .h(px(visible_height * zoom))
+                        .overflow_hidden()
+                        .child(cropped_frame),
+                );
+            }
             if layered_composite {
                 #[cfg(target_os = "macos")]
                 if let Some(image) = self.snapshot.borrow().backdrop.as_ref() {
@@ -665,6 +778,185 @@ impl RenderOnce for EditorCanvas {
                     .child(stage_child),
             )
     }
+}
+
+fn live_box_shadow(shadow_value: f64, scale: f64, zoom: f32) -> Option<gpui::BoxShadow> {
+    let shadow = crate::editor::export::image_shadow(shadow_value)?;
+    let scale = scale as f32;
+    Some(gpui::BoxShadow {
+        color: gpui::hsla(0.0, 0.0, 0.0, shadow.color.alpha()),
+        offset: gpui::point(px(0.0), px(shadow.offset_y * scale * zoom)),
+        blur_radius: px((shadow.blur * 0.5) * scale * zoom),
+        spread_radius: px(0.0),
+        inset: false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn live_preview_card(
+    wallpaper: &crate::editor::wallpaper::WallpaperSettings,
+    frame_scale: f64,
+    zoom: f32,
+    offset_x: f32,
+    offset_y: f32,
+    visible_width: f32,
+    visible_height: f32,
+    title_bar: f32,
+    inset_color: Option<&str>,
+    cropped_frame: gpui::Div,
+) -> gpui::AnyElement {
+    if let Some(frame_theme) = crate::render::window_frame::theme(&wallpaper.window_frame.style) {
+        let frame_inset = if !wallpaper.balance {
+            wallpaper.inset.max(0.0) as f32
+        } else {
+            0.0
+        };
+        let radius = (crate::render::window_frame::corner_radius(&wallpaper.window_frame.style)
+            * frame_scale) as f32;
+        let card_width = visible_width + frame_inset * 2.0;
+        let card_height = visible_height + title_bar + frame_inset * 2.0;
+        let content_bg = if frame_inset > 0.0 {
+            inset_color
+                .map(Srgba::parse)
+                .unwrap_or_else(|| Srgba::parse(frame_theme.content))
+                .to_hsla()
+        } else {
+            Srgba::parse(frame_theme.content).to_hsla()
+        };
+        let mut bar = div()
+            .w_full()
+            .h(px(title_bar * zoom))
+            .bg(Srgba::parse(frame_theme.title_bar).to_hsla())
+            .border_b_1()
+            .border_color(Srgba::parse(frame_theme.title_bar_border).to_hsla())
+            .rounded_t(px(radius * zoom))
+            .flex()
+            .flex_row()
+            .items_center();
+        if crate::render::window_frame::is_windows_frame(&wallpaper.window_frame.style) {
+            let control = Srgba::parse(frame_theme.control).to_hsla();
+            let step = (46.0 * frame_scale as f32 * zoom).max(12.0);
+            let glyph = (9.0 * frame_scale as f32 * zoom).max(4.0);
+            bar = bar.justify_end().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h_full()
+                    .child(
+                        div()
+                            .w(px(step))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().w(px(glyph)).h(px(1.0)).bg(control)),
+                    )
+                    .child(
+                        div()
+                            .w(px(step))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(glyph))
+                                    .h(px(glyph))
+                                    .border_1()
+                                    .border_color(control),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(step))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().w(px(glyph)).h(px(1.0)).bg(control)),
+                    ),
+            );
+        } else {
+            let dot = (12.0 * frame_scale as f32 * zoom).max(3.0);
+            let gap = (8.0 * frame_scale as f32 * zoom).max(2.0);
+            let lead = (13.0 * frame_scale as f32 * zoom).max(3.0);
+            bar = bar.pl(px(lead)).gap(px(gap)).children(
+                ["#FF5F57", "#FFBD2E", "#28C840"].into_iter().map(|hex| {
+                    div()
+                        .w(px(dot))
+                        .h(px(dot))
+                        .rounded(px(dot * 0.5))
+                        .bg(Srgba::parse(hex).to_hsla())
+                }),
+            );
+        }
+        let inner_bottom = (radius - frame_inset).max(0.0);
+        let mut card = div()
+            .absolute()
+            .left(px((offset_x - frame_inset) * zoom))
+            .top(px((offset_y - frame_inset) * zoom))
+            .w(px(card_width * zoom))
+            .h(px(card_height * zoom))
+            .rounded(px(radius * zoom))
+            .bg(content_bg)
+            .border_1()
+            .border_color(Srgba::parse(frame_theme.frame_border).to_hsla());
+        if let Some(shadow) = live_box_shadow(wallpaper.shadow, frame_scale, zoom) {
+            card = card.shadow(vec![shadow]);
+        }
+        return card
+            .child(bar)
+            .child(
+                div()
+                    .absolute()
+                    .left(px(frame_inset * zoom))
+                    .top(px((title_bar + frame_inset) * zoom))
+                    .w(px(visible_width * zoom))
+                    .h(px(visible_height * zoom))
+                    .when(inner_bottom > 0.0, |el| {
+                        el.rounded_b(px(inner_bottom * zoom))
+                    })
+                    .overflow_hidden()
+                    .child(cropped_frame),
+            )
+            .into_any_element();
+    }
+
+    let inset = wallpaper.inset.max(0.0) as f32;
+    let radius = wallpaper.corners.max(0.0) as f32;
+    let inner_radius = (radius - inset).max(0.0);
+    let card_width = visible_width + inset * 2.0;
+    let card_height = visible_height + inset * 2.0;
+    let mut card = div()
+        .absolute()
+        .left(px((offset_x - inset) * zoom))
+        .top(px((offset_y - inset) * zoom))
+        .w(px(card_width * zoom))
+        .h(px(card_height * zoom))
+        .when(radius > 0.0, |el| el.rounded(px(radius * zoom)));
+    if inset > 0.0 {
+        let fill = inset_color
+            .map(Srgba::parse)
+            .unwrap_or_else(|| Srgba::from_hex("#ffffff"))
+            .to_hsla();
+        card = card.bg(fill);
+    }
+    if let Some(shadow) = live_box_shadow(wallpaper.shadow, 1.0, zoom) {
+        card = card.shadow(vec![shadow]);
+    }
+    card.child(
+        div()
+            .absolute()
+            .left(px(inset * zoom))
+            .top(px(inset * zoom))
+            .w(px(visible_width * zoom))
+            .h(px(visible_height * zoom))
+            .when(inner_radius > 0.0, |el| el.rounded(px(inner_radius * zoom)))
+            .overflow_hidden()
+            .child(cropped_frame),
+    )
+    .into_any_element()
 }
 
 fn paint_selection_handles(
