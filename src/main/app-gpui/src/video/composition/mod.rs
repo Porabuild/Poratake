@@ -378,7 +378,7 @@ impl Engine {
         canvas.save();
         if let (Some(shadow), Some(path)) = (layout.shadow, clip.as_ref()) {
             canvas.set_shadow(Some(shadow));
-            canvas.fill_path(path, Color::from_rgba8(0, 0, 0, 255), FillRule::Winding);
+            canvas.fill_path(path, Color::TRANSPARENT, FillRule::Winding);
             canvas.set_shadow(None);
         }
         if let Some(path) = clip.as_ref() {
