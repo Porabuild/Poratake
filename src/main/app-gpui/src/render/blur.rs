@@ -39,6 +39,42 @@ fn box_kernel(sigma: f32) -> BoxKernel {
     }
 }
 
+const PARALLEL_BLUR_MIN_PIXELS: usize = 65_536;
+
+fn worker_count(work_items: usize, min_items_per_worker: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    (work_items / min_items_per_worker.max(1)).clamp(1, available)
+}
+
+fn transpose_columns_to_rows_parallel(
+    columns: &[u8],
+    target: &mut [u8],
+    width: usize,
+    height: usize,
+    rows_per: usize,
+) {
+    let row_bytes = width * 4;
+    std::thread::scope(|scope| {
+        for (chunk_idx, dst_chunk) in target.chunks_mut(rows_per * row_bytes).enumerate() {
+            let y_start = chunk_idx * rows_per;
+            let chunk_rows = dst_chunk.len() / row_bytes;
+            scope.spawn(move || {
+                for dy in 0..chunk_rows {
+                    let y = y_start + dy;
+                    let dst_row = dy * row_bytes;
+                    for x in 0..width {
+                        let from = (x * height + y) * 4;
+                        let to = dst_row + x * 4;
+                        dst_chunk[to..to + 4].copy_from_slice(&columns[from..from + 4]);
+                    }
+                }
+            });
+        }
+    });
+}
+
 /// Blurs `pixmap` in place. The buffer is premultiplied BGRA, which box blur
 /// handles correctly because premultiplied channels are linear in coverage.
 pub fn blur(pixmap: &mut Pixmap, sigma: f32) {
@@ -53,10 +89,59 @@ pub fn blur(pixmap: &mut Pixmap, sigma: f32) {
 
     let mut data: Vec<u8> = pixmap.data().to_vec();
     let mut scratch = vec![0u8; data.len()];
+    let mut sums = vec![[0u32; 4]; width];
     let kernel = box_kernel(sigma);
+    if width * height >= PARALLEL_BLUR_MIN_PIXELS {
+        let h_workers = worker_count(height, 32);
+        let v_workers = worker_count(width, 32);
+        let row_bytes = width * 4;
+        let rows_per = height.div_ceil(h_workers);
+        let cols_per = width.div_ceil(v_workers);
+        let mut transposed = vec![0u8; data.len()];
+        for _ in 0..3 {
+            std::thread::scope(|scope| {
+                for (src_chunk, dst_chunk) in data
+                    .chunks(rows_per * row_bytes)
+                    .zip(scratch.chunks_mut(rows_per * row_bytes))
+                {
+                    let chunk_rows = src_chunk.len() / row_bytes;
+                    scope.spawn(move || {
+                        box_blur_horizontal(src_chunk, dst_chunk, width, chunk_rows, kernel);
+                    });
+                }
+            });
+            let scratch_ref = &scratch;
+            std::thread::scope(|scope| {
+                for (chunk_idx, dst_chunk) in
+                    transposed.chunks_mut(cols_per * height * 4).enumerate()
+                {
+                    let x_start = chunk_idx * cols_per;
+                    let chunk_cols = dst_chunk.len() / (height * 4);
+                    scope.spawn(move || {
+                        let mut col_in = vec![0u8; height * 4];
+                        let mut col_out = vec![0u8; height * 4];
+                        for dx in 0..chunk_cols {
+                            let x = x_start + dx;
+                            for y in 0..height {
+                                let from = (y * width + x) * 4;
+                                let to = y * 4;
+                                col_in[to..to + 4].copy_from_slice(&scratch_ref[from..from + 4]);
+                            }
+                            box_blur_horizontal(&col_in, &mut col_out, height, 1, kernel);
+                            let dst_off = dx * height * 4;
+                            dst_chunk[dst_off..dst_off + height * 4].copy_from_slice(&col_out);
+                        }
+                    });
+                }
+            });
+            transpose_columns_to_rows_parallel(&transposed, &mut data, width, height, rows_per);
+        }
+        pixmap.data_mut().copy_from_slice(&data);
+        return;
+    }
     for _ in 0..3 {
         box_blur_horizontal(&data, &mut scratch, width, height, kernel);
-        box_blur_vertical(&scratch, &mut data, width, height, kernel);
+        box_blur_vertical(&scratch, &mut data, width, height, kernel, &mut sums);
     }
     pixmap.data_mut().copy_from_slice(&data);
 }
@@ -67,16 +152,93 @@ pub fn blur_transparent(pixmap: &mut Pixmap, sigma: f32) {
     }
     let width = pixmap.width() as usize;
     let height = pixmap.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
     let kernel = box_kernel(sigma);
     let guard = box_radius(sigma) * 2;
-    let max_line = (width.max(height) + guard * 2) * 4;
-    let mut first = vec![0u8; max_line];
-    let mut second = vec![0u8; max_line];
-    let mut horizontal = vec![0u8; width * height * 4];
     let row_width = width + guard * 2;
     let row_bytes = width * 4;
+    let column_width = height + guard * 2;
+
+    if width * height >= PARALLEL_BLUR_MIN_PIXELS {
+        let mut horizontal = vec![0u8; width * height * 4];
+        let h_workers = worker_count(height, 32);
+        let rows_per = height.div_ceil(h_workers);
+        let src_data = pixmap.data();
+        std::thread::scope(|scope| {
+            for (src_chunk, dst_chunk) in src_data
+                .chunks(rows_per * row_bytes)
+                .zip(horizontal.chunks_mut(rows_per * row_bytes))
+            {
+                let chunk_rows = src_chunk.len() / row_bytes;
+                scope.spawn(move || {
+                    let mut first = vec![0u8; row_width * 4];
+                    let mut second = vec![0u8; row_width * 4];
+                    for y in 0..chunk_rows {
+                        first.fill(0);
+                        let offset = y * row_bytes;
+                        first[guard * 4..guard * 4 + row_bytes]
+                            .copy_from_slice(&src_chunk[offset..offset + row_bytes]);
+                        for _ in 0..3 {
+                            box_blur_horizontal(&first, &mut second, row_width, 1, kernel);
+                            std::mem::swap(&mut first, &mut second);
+                        }
+                        dst_chunk[offset..offset + row_bytes]
+                            .copy_from_slice(&first[guard * 4..guard * 4 + row_bytes]);
+                    }
+                });
+            }
+        });
+
+        let v_workers = worker_count(width, 32);
+        let cols_per = width.div_ceil(v_workers);
+        let mut blurred_cols = vec![0u8; width * height * 4];
+        let horizontal_ref = &horizontal;
+        std::thread::scope(|scope| {
+            for (chunk_idx, dst_chunk) in blurred_cols.chunks_mut(cols_per * height * 4).enumerate()
+            {
+                let x_start = chunk_idx * cols_per;
+                let chunk_cols = dst_chunk.len() / (height * 4);
+                scope.spawn(move || {
+                    let mut first = vec![0u8; column_width * 4];
+                    let mut second = vec![0u8; column_width * 4];
+                    for dx in 0..chunk_cols {
+                        let x = x_start + dx;
+                        first.fill(0);
+                        for y in 0..height {
+                            let from = (y * width + x) * 4;
+                            let to = (y + guard) * 4;
+                            first[to..to + 4].copy_from_slice(&horizontal_ref[from..from + 4]);
+                        }
+                        for _ in 0..3 {
+                            box_blur_horizontal(&first, &mut second, column_width, 1, kernel);
+                            std::mem::swap(&mut first, &mut second);
+                        }
+                        let dst_off = dx * height * 4;
+                        dst_chunk[dst_off..dst_off + height * 4]
+                            .copy_from_slice(&first[guard * 4..(guard + height) * 4]);
+                    }
+                });
+            }
+        });
+
+        transpose_columns_to_rows_parallel(
+            &blurred_cols,
+            pixmap.data_mut(),
+            width,
+            height,
+            rows_per,
+        );
+        return;
+    }
+
+    let padded_height = height + guard * 2;
+    let mut first = vec![0u8; row_width * 4];
+    let mut second = vec![0u8; row_width * 4];
+    let mut vertical_a = vec![0u8; padded_height * row_bytes];
     for y in 0..height {
-        first[..row_width * 4].fill(0);
+        first.fill(0);
         let offset = y * row_bytes;
         first[guard * 4..guard * 4 + row_bytes]
             .copy_from_slice(&pixmap.data()[offset..offset + row_bytes]);
@@ -84,27 +246,26 @@ pub fn blur_transparent(pixmap: &mut Pixmap, sigma: f32) {
             box_blur_horizontal(&first, &mut second, row_width, 1, kernel);
             std::mem::swap(&mut first, &mut second);
         }
-        horizontal[offset..offset + row_bytes]
+        let target = (y + guard) * row_bytes;
+        vertical_a[target..target + row_bytes]
             .copy_from_slice(&first[guard * 4..guard * 4 + row_bytes]);
     }
-    let column_width = height + guard * 2;
-    for x in 0..width {
-        first[..column_width * 4].fill(0);
-        for y in 0..height {
-            let from = (y * width + x) * 4;
-            let to = (y + guard) * 4;
-            first[to..to + 4].copy_from_slice(&horizontal[from..from + 4]);
-        }
-        for _ in 0..3 {
-            box_blur_horizontal(&first, &mut second, column_width, 1, kernel);
-            std::mem::swap(&mut first, &mut second);
-        }
-        for y in 0..height {
-            let from = (y + guard) * 4;
-            let to = (y * width + x) * 4;
-            pixmap.data_mut()[to..to + 4].copy_from_slice(&first[from..from + 4]);
-        }
+    let mut vertical_b = vec![0u8; padded_height * row_bytes];
+    let mut sums = vec![[0u32; 4]; width];
+    for _ in 0..3 {
+        box_blur_vertical(
+            &vertical_a,
+            &mut vertical_b,
+            width,
+            padded_height,
+            kernel,
+            &mut sums,
+        );
+        std::mem::swap(&mut vertical_a, &mut vertical_b);
     }
+    pixmap
+        .data_mut()
+        .copy_from_slice(&vertical_a[guard * row_bytes..(guard + height) * row_bytes]);
 }
 
 pub fn blur_alpha(pixmap: &mut Pixmap, sigma: f32) {
@@ -226,31 +387,44 @@ fn box_blur_vertical(
     width: usize,
     height: usize,
     kernel: BoxKernel,
+    sums: &mut [[u32; 4]],
 ) {
     let radius = kernel.radius;
     let source = source.as_chunks::<4>().0;
     let target = target.as_chunks_mut::<4>().0;
+    let top_row = &source[..width];
+    let bottom_row = &source[(height - 1) * width..height * width];
+    let bottom_repeat = radius.saturating_sub(height - 1) as u32;
     for x in 0..width {
-        let mut sums = [0u32; 4];
-        for y in 0..=radius.min(height - 1) {
+        for channel in 0..4 {
+            sums[x][channel] = u32::from(top_row[x][channel]) * radius as u32
+                + u32::from(bottom_row[x][channel]) * bottom_repeat;
+        }
+    }
+    for y in 0..=radius.min(height - 1) {
+        let row = &source[y * width..(y + 1) * width];
+        for x in 0..width {
             for channel in 0..4 {
-                sums[channel] += u32::from(source[y * width + x][channel]);
+                sums[x][channel] += u32::from(row[x][channel]);
             }
         }
-        for channel in 0..4 {
-            sums[channel] += u32::from(source[x][channel]) * radius as u32
-                + u32::from(source[(height - 1) * width + x][channel])
-                    * radius.saturating_sub(height - 1) as u32;
-        }
-        for y in 0..height {
-            let first = &source[y.saturating_sub(radius + 1) * width + x];
-            let last = &source[(y + radius + 1).min(height - 1) * width + x];
-            let leaving = &source[y.saturating_sub(radius) * width + x];
+    }
+    for y in 0..height {
+        let first_row = &source[y.saturating_sub(radius + 1) * width..][..width];
+        let last_row = &source[(y + radius + 1).min(height - 1) * width..][..width];
+        let leaving_row = &source[y.saturating_sub(radius) * width..][..width];
+        let out_row = &mut target[y * width..(y + 1) * width];
+        for x in 0..width {
             for channel in 0..4 {
-                target[y * width + x][channel] =
-                    filtered(sums[channel], first[channel], last[channel], kernel);
-                sums[channel] = sums[channel].saturating_sub(u32::from(leaving[channel]))
-                    + u32::from(last[channel]);
+                out_row[x][channel] = filtered(
+                    sums[x][channel],
+                    first_row[x][channel],
+                    last_row[x][channel],
+                    kernel,
+                );
+                sums[x][channel] = sums[x][channel]
+                    .saturating_sub(u32::from(leaving_row[x][channel]))
+                    + u32::from(last_row[x][channel]);
             }
         }
     }
@@ -302,7 +476,8 @@ mod tests {
             if width == 2 {
                 box_blur_horizontal(&source, &mut result, width, height, kernel);
             } else {
-                box_blur_vertical(&source, &mut result, width, height, kernel);
+                let mut sums = vec![[0u32; 4]; width];
+                box_blur_vertical(&source, &mut result, width, height, kernel, &mut sums);
             }
             assert_eq!(result, [102, 102, 102, 255, 153, 153, 153, 255]);
         }
@@ -445,5 +620,89 @@ mod tests {
         assert_eq!(box_radius(0.0), 0);
         assert!(box_radius(4.0) >= 3);
         assert_eq!(sigma_for_shadow_blur(10.0), 5.0);
+    }
+
+    #[test]
+    fn parallel_blur_and_transparent_blur_match_sequential_results() {
+        let (width, height) = (320u32, 256u32);
+        let sigma = 6.0;
+        let mut original = Pixmap::new(width, height).unwrap();
+        for (index, pixel) in original
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let alpha = (index.wrapping_mul(37).wrapping_add(19) % 256) as u8;
+            pixel.copy_from_slice(&[alpha / 2, alpha / 3, alpha / 4, alpha]);
+        }
+
+        let mut parallel_opaque = original.clone();
+        blur(&mut parallel_opaque, sigma);
+        let mut seq_data = original.data().to_vec();
+        let mut scratch = vec![0u8; seq_data.len()];
+        let kernel = box_kernel(sigma);
+        let mut sums = vec![[0u32; 4]; width as usize];
+        for _ in 0..3 {
+            box_blur_horizontal(
+                &seq_data,
+                &mut scratch,
+                width as usize,
+                height as usize,
+                kernel,
+            );
+            box_blur_vertical(
+                &scratch,
+                &mut seq_data,
+                width as usize,
+                height as usize,
+                kernel,
+                &mut sums,
+            );
+        }
+        assert_eq!(parallel_opaque.data(), &seq_data[..]);
+
+        let mut parallel_trans = original.clone();
+        blur_transparent(&mut parallel_trans, sigma);
+        let guard = box_radius(sigma) * 2;
+        let row_width = width as usize + guard * 2;
+        let row_bytes = width as usize * 4;
+        let column_width = height as usize + guard * 2;
+        let max_line = row_width.max(column_width) * 4;
+        let mut first = vec![0u8; max_line];
+        let mut second = vec![0u8; max_line];
+        let mut horizontal = vec![0u8; width as usize * height as usize * 4];
+        for y in 0..height as usize {
+            first[..row_width * 4].fill(0);
+            let offset = y * row_bytes;
+            first[guard * 4..guard * 4 + row_bytes]
+                .copy_from_slice(&original.data()[offset..offset + row_bytes]);
+            for _ in 0..3 {
+                box_blur_horizontal(&first, &mut second, row_width, 1, kernel);
+                std::mem::swap(&mut first, &mut second);
+            }
+            horizontal[offset..offset + row_bytes]
+                .copy_from_slice(&first[guard * 4..guard * 4 + row_bytes]);
+        }
+        let mut seq_trans = original.clone();
+        for x in 0..width as usize {
+            first[..column_width * 4].fill(0);
+            for y in 0..height as usize {
+                let from = (y * width as usize + x) * 4;
+                let to = (y + guard) * 4;
+                first[to..to + 4].copy_from_slice(&horizontal[from..from + 4]);
+            }
+            for _ in 0..3 {
+                box_blur_horizontal(&first, &mut second, column_width, 1, kernel);
+                std::mem::swap(&mut first, &mut second);
+            }
+            for y in 0..height as usize {
+                let from = (y + guard) * 4;
+                let to = (y * width as usize + x) * 4;
+                seq_trans.data_mut()[to..to + 4].copy_from_slice(&first[from..from + 4]);
+            }
+        }
+        assert_eq!(parallel_trans.data(), seq_trans.data());
     }
 }

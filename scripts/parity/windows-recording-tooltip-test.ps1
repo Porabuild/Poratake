@@ -4084,7 +4084,7 @@ try {
         $env:PORATAKE_SYSTEM_AUDIO_PROOF = $systemAudioProofPath
         Push-Location (Join-Path $root 'src/main')
         try {
-            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-daemon modules::recording_audio::tests::writes_a_system_audio_m4a_fixture -- --ignored --exact
+            & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --package poratake-daemon --lib modules::recording_audio::tests::writes_a_system_audio_m4a_fixture -- --ignored --exact
             if ($LASTEXITCODE -ne 0) { throw "The native audio-only M4A fixture writer failed with exit code $LASTEXITCODE" }
             if (-not [System.IO.File]::Exists($systemAudioFixturePath) -or (Get-Item -LiteralPath $systemAudioFixturePath).Length -le 0) { throw 'The native audio-only M4A fixture was not created.' }
             & cargo test --locked --manifest-path (Join-Path $root 'src/main/Cargo.toml') --workspace --bin poratake-gpui video::export::tests::system_audio_sidecar_tones_match_preview_and_export -- --ignored --exact

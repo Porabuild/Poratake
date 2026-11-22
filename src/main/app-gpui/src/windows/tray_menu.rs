@@ -21,12 +21,14 @@ use crate::ui::primitives::OVERLAY_EXIT_MS;
 use crate::windows::registry::{self, WindowKind as RegistryKind};
 
 const MENU_WIDTH: f32 = 304.0;
-const ITEM_HEIGHT: f32 = 28.0;
+const ITEM_HEIGHT: f32 = crate::theme::bridge::TRAY_MENU_ROW_HEIGHT;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 const MENU_PADDING: f32 = 8.0;
 const SCREEN_GAP: f32 = 8.0;
 #[cfg(windows)]
 const MENU_FADE_MS: u32 = 80;
+#[cfg(any(windows, test))]
+const MAX_LAYOUT_RESIZE_ATTEMPTS: u8 = 2;
 /// Clicking the tray icon while the menu is open first deactivates the window
 /// (closing it) and only then delivers the tray click; a toggle arriving this
 /// soon after such a close is the same physical click and must not reopen.
@@ -45,6 +47,7 @@ fn recently_closed_on_deactivation(cx: &App) -> bool {
 
 struct MenuGeometry {
     bounds: Bounds<Pixels>,
+    max_height: Pixels,
     display_id: Option<DisplayId>,
     #[cfg(windows)]
     scale_factor: Option<f32>,
@@ -62,6 +65,7 @@ pub(crate) struct MenuDisplay {
 #[derive(Default)]
 struct TrayMenuCache {
     handle: Option<WindowHandle<TrayMenuWindow>>,
+    visible: bool,
 }
 
 #[cfg(windows)]
@@ -81,6 +85,45 @@ enum TrayMenuVisibility {
     Revealing,
     Visible,
     Closing,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrepaintAction {
+    None,
+    Resize { height: Pixels },
+    RecordHeight { height: Pixels },
+    Reveal { height: Pixels },
+}
+
+#[cfg(any(windows, test))]
+fn prepaint_action(
+    visibility: TrayMenuVisibility,
+    height_matches: bool,
+    reveal_scheduled: bool,
+    resize_attempts: u8,
+    height: Pixels,
+) -> PrepaintAction {
+    if !height_matches
+        && (visibility != TrayMenuVisibility::Revealing
+            || resize_attempts < MAX_LAYOUT_RESIZE_ATTEMPTS)
+    {
+        return PrepaintAction::Resize { height };
+    }
+    match visibility {
+        TrayMenuVisibility::Hidden => PrepaintAction::RecordHeight { height },
+        TrayMenuVisibility::Revealing if !reveal_scheduled => PrepaintAction::Reveal { height },
+        _ => PrepaintAction::None,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn entry_signature(entries: &[MenuEntry]) -> (usize, usize) {
+    let separators = entries
+        .iter()
+        .filter(|entry| matches!(entry, MenuEntry::Separator))
+        .count();
+    (entries.len() - separators, separators)
 }
 
 #[cfg(any(windows, test))]
@@ -125,6 +168,16 @@ pub struct TrayMenuWindow {
     #[cfg(windows)]
     reveal_generation: u64,
     #[cfg(windows)]
+    reveal_scheduled: bool,
+    #[cfg(windows)]
+    resize_attempts: u8,
+    #[cfg(windows)]
+    pending_resize: Option<Pixels>,
+    #[cfg(windows)]
+    entry_signature: (usize, usize),
+    #[cfg(windows)]
+    measured_height: Option<((usize, usize), Pixels)>,
+    #[cfg(windows)]
     tray_rect: Option<TrayRect>,
     #[cfg(not(windows))]
     window_handle: AnyWindowHandle,
@@ -152,6 +205,7 @@ impl TrayMenuWindow {
         dismiss: DismissHandler,
         visible: bool,
         tray_rect: Option<TrayRect>,
+        #[cfg(windows)] entry_signature: (usize, usize),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -165,6 +219,16 @@ impl TrayMenuWindow {
             visibility: TrayMenuVisibility::new(visible),
             #[cfg(windows)]
             reveal_generation: u64::from(visible),
+            #[cfg(windows)]
+            reveal_scheduled: false,
+            #[cfg(windows)]
+            resize_attempts: 0,
+            #[cfg(windows)]
+            pending_resize: None,
+            #[cfg(windows)]
+            entry_signature,
+            #[cfg(windows)]
+            measured_height: None,
             #[cfg(windows)]
             tray_rect,
             #[cfg(not(windows))]
@@ -186,14 +250,19 @@ impl TrayMenuWindow {
         #[cfg(windows)]
         {
             self.reveal_generation = self.reveal_generation.wrapping_add(1);
+            self.reveal_scheduled = false;
+            self.resize_attempts = 0;
+            self.pending_resize = None;
         }
         self.finish_close(window, cx);
     }
 
     #[cfg(windows)]
-    fn finish_close(&mut self, window: &mut Window, _: &mut Context<Self>) {
+    fn finish_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         hide_tray_menu_window(window);
         self.visibility = TrayMenuVisibility::Hidden;
+        tray_menu_cache(cx).visible = false;
+        cx.defer(crate::system::memory::schedule_idle_reclaim);
     }
 
     #[cfg(not(windows))]
@@ -218,7 +287,7 @@ impl TrayMenuWindow {
         cx.notify();
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, any(test, feature = "parity")))]
     pub fn prewarm(cx: &mut App) {
         if let Some(handle) = tray_menu_cache(cx).handle {
             if handle.update(cx, |_, _, _| ()).is_ok() {
@@ -226,7 +295,63 @@ impl TrayMenuWindow {
             }
         }
         let opened = Self::open(None, false, cx);
-        tray_menu_cache(cx).handle = opened;
+        let cache = tray_menu_cache(cx);
+        cache.handle = opened;
+        cache.visible = false;
+    }
+
+    pub(crate) fn is_visible(cx: &App) -> bool {
+        #[cfg(windows)]
+        {
+            cx.try_global::<TrayMenuCache>().is_some_and(|cache| {
+                cache.visible
+                    && cache
+                        .handle
+                        .is_some_and(|handle| cx.windows().contains(&handle.into()))
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            registry::has_open(RegistryKind::TrayMenu, cx)
+        }
+    }
+
+    pub(crate) fn cached_hidden_count(cx: &App) -> usize {
+        #[cfg(windows)]
+        {
+            usize::from(cx.try_global::<TrayMenuCache>().is_some_and(|cache| {
+                !cache.visible
+                    && cache
+                        .handle
+                        .is_some_and(|handle| cx.windows().contains(&handle.into()))
+            }))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cx;
+            0
+        }
+    }
+
+    pub(crate) fn evict_cached(cx: &mut App) {
+        #[cfg(windows)]
+        {
+            let Some(handle) = cx
+                .try_global::<TrayMenuCache>()
+                .filter(|cache| !cache.visible)
+                .and_then(|cache| cache.handle)
+            else {
+                return;
+            };
+            let cache = tray_menu_cache(cx);
+            cache.handle = None;
+            cache.visible = false;
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cx;
+        }
     }
 
     #[cfg(all(windows, feature = "parity"))]
@@ -243,7 +368,9 @@ impl TrayMenuWindow {
 
     #[cfg(all(windows, feature = "parity"))]
     pub(crate) fn remove_cached_for_parity(cx: &mut App) {
-        if let Some(handle) = tray_menu_cache(cx).handle.take() {
+        let cache = tray_menu_cache(cx);
+        cache.visible = false;
+        if let Some(handle) = cache.handle.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
     }
@@ -271,10 +398,14 @@ impl TrayMenuWindow {
                 if updated.is_ok() {
                     return;
                 }
-                tray_menu_cache(cx).handle = None;
+                let cache = tray_menu_cache(cx);
+                cache.handle = None;
+                cache.visible = false;
             }
             let opened = Self::open(tray_rect, true, cx);
-            tray_menu_cache(cx).handle = opened;
+            let cache = tray_menu_cache(cx);
+            cache.handle = opened;
+            cache.visible = opened.is_some();
         }
 
         #[cfg(all(target_os = "macos", not(test)))]
@@ -297,8 +428,10 @@ impl TrayMenuWindow {
         let config = crate::state::state(cx).config.get();
         let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
+        #[cfg(windows)]
+        let signature = entry_signature(&entries);
         let geometry = menu_geometry(tray_rect, estimated_menu_height(&entries), cx);
-        let max_height = geometry.bounds.size.height;
+        let max_height = geometry.max_height;
         let window_bounds = geometry
             .display_id
             .and_then(|id| cx.find_display(id))
@@ -329,6 +462,9 @@ impl TrayMenuWindow {
             window.set_window_title("Poratake tray menu");
             super::remove_popup_frame(window);
             configure_tray_menu_window(window);
+            #[cfg(windows)]
+            stage_tray_window(window, initial_bounds, geometry.scale_factor, cx);
+            #[cfg(not(windows))]
             crate::system::window_surface::stage(window, initial_bounds, None, false);
             let owner: Rc<RefCell<Option<WeakEntity<TrayMenuWindow>>>> =
                 Rc::new(RefCell::new(None));
@@ -345,7 +481,18 @@ impl TrayMenuWindow {
             if visible {
                 window.focus(&menu.read(cx).focus_handle(), cx);
             }
-            let view = cx.new(|cx| Self::new(menu, dismiss, visible, tray_rect, window, cx));
+            let view = cx.new(|cx| {
+                Self::new(
+                    menu,
+                    dismiss,
+                    visible,
+                    tray_rect,
+                    #[cfg(windows)]
+                    signature,
+                    window,
+                    cx,
+                )
+            });
             *owner.borrow_mut() = Some(view.downgrade());
             #[cfg(target_os = "macos")]
             if visible {
@@ -353,8 +500,7 @@ impl TrayMenuWindow {
             }
             #[cfg(windows)]
             if visible {
-                let generation = view.read(cx).reveal_generation;
-                Self::schedule_reveal(view.clone(), window, generation);
+                window.refresh();
                 window.activate_window();
             }
             view
@@ -404,18 +550,37 @@ impl TrayMenuWindow {
         let config = crate::state::state(cx).config.get();
         let state = TrayMenuState::from_config(&config, &crate::update::current_status(cx));
         let entries = crate::system::tray::entries(&state, tray_rect);
-        let geometry = menu_geometry(tray_rect, estimated_menu_height(&entries), cx);
-        let max_height = geometry.bounds.size.height;
-        crate::system::window_surface::stage(window, geometry.bounds, geometry.scale_factor, false);
-        self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), max_height, cx));
+        let signature = entry_signature(&entries);
+        let initial_height = self
+            .cached_height(signature)
+            .unwrap_or_else(|| estimated_menu_height(&entries));
+        let geometry = menu_geometry(tray_rect, initial_height, cx);
+        stage_tray_window(window, geometry.bounds, geometry.scale_factor, cx);
+        self.menu = cx.new(|cx| build_menu(entries, self.dismiss.clone(), geometry.max_height, cx));
         self.tray_rect = tray_rect;
+        self.entry_signature = signature;
         self.visibility = TrayMenuVisibility::Revealing;
+        tray_menu_cache(cx).visible = true;
         self.reveal_generation = self.reveal_generation.wrapping_add(1);
-        let generation = self.reveal_generation;
+        self.reveal_scheduled = false;
+        self.resize_attempts = 0;
+        self.pending_resize = None;
         window.focus(&self.menu.read(cx).focus_handle(), cx);
         cx.notify();
-        Self::schedule_reveal(cx.entity(), window, generation);
+        window.refresh();
         window.activate_window();
+    }
+
+    #[cfg(windows)]
+    fn cached_height(&self, signature: (usize, usize)) -> Option<f32> {
+        self.measured_height
+            .filter(|(saved, _)| *saved == signature)
+            .map(|(_, height)| f32::from(height))
+    }
+
+    #[cfg(windows)]
+    fn record_measured_height(&mut self, height: Pixels) {
+        self.measured_height = Some((self.entry_signature, height));
     }
 
     #[cfg(windows)]
@@ -425,25 +590,19 @@ impl TrayMenuWindow {
                 return;
             }
             configure_tray_menu_window(window);
-            let reveal_view = view.clone();
+            crate::system::window_surface::reveal(window, true, MENU_FADE_MS);
+            window.activate_window();
+            let settle_view = view.clone();
             window.on_next_frame(move |window, cx| {
-                if !reveal_view.read(cx).is_current_reveal(generation) {
-                    return;
-                }
-                crate::system::window_surface::reveal(window, true, MENU_FADE_MS);
-                window.activate_window();
-                let settle_view = reveal_view.clone();
-                window.on_next_frame(move |window, cx| {
-                    let active = window.is_window_active();
-                    settle_view.update(cx, |this, cx| {
-                        if !this.is_current_reveal(generation) {
-                            return;
-                        }
-                        this.visibility = TrayMenuVisibility::Visible;
-                        if !active {
-                            this.begin_close(window, cx);
-                        }
-                    });
+                let active = window.is_window_active();
+                settle_view.update(cx, |this, cx| {
+                    if !this.is_current_reveal(generation) {
+                        return;
+                    }
+                    this.visibility = TrayMenuVisibility::Visible;
+                    if !active {
+                        this.begin_close(window, cx);
+                    }
                 });
             });
         });
@@ -479,7 +638,7 @@ impl Render for TrayMenuWindow {
         #[cfg(target_os = "macos")]
         let content = content.on_children_prepainted(|bounds, window, _| {
             let height = bounds[0].size.height;
-            if ((height - window.viewport_size().height) * window.scale_factor()).abs() < px(0.01) {
+            if height_matches_viewport(height, window) {
                 return;
             }
             window.on_next_frame(move |window, _| {
@@ -490,34 +649,8 @@ impl Render for TrayMenuWindow {
         let content = {
             let weak = cx.entity().downgrade();
             let generation = self.reveal_generation;
-            content.on_children_prepainted(move |bounds, window, _| {
-                let height = bounds[0].size.height;
-                if ((height - window.viewport_size().height) * window.scale_factor()).abs()
-                    < px(0.01)
-                {
-                    return;
-                }
-                let weak = weak.clone();
-                window.on_next_frame(move |window, cx| {
-                    weak.update(cx, |this, cx| {
-                        if this.reveal_generation != generation {
-                            return;
-                        }
-                        let geometry = menu_geometry(this.tray_rect, f32::from(height), cx);
-                        let mut bounds = geometry.bounds;
-                        if this.visibility == TrayMenuVisibility::Hidden {
-                            bounds.origin = gpui::point(px(-32000.), px(-32000.));
-                        }
-                        window.resize(bounds.size);
-                        crate::system::window_surface::apply_bounds(
-                            window,
-                            bounds,
-                            geometry.scale_factor,
-                        );
-                        configure_tray_menu_window(window);
-                    })
-                    .ok();
-                });
+            content.on_children_prepainted(move |bounds, window, cx| {
+                handle_windows_prepaint(&weak, generation, bounds[0].size.height, window, cx);
             })
         };
         let surface = crate::ui::window_root::focus_root(content, window, cx);
@@ -531,6 +664,133 @@ impl Render for TrayMenuWindow {
                 overlay_fade_out("tray-menu-exit", surface).into_any_element()
             }
             _ => surface.into_any_element(),
+        }
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn height_matches_viewport(height: Pixels, window: &Window) -> bool {
+    ((height - window.viewport_size().height) * window.scale_factor()).abs() < px(0.01)
+}
+
+#[cfg(windows)]
+fn stage_tray_window(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    scale: Option<f32>,
+    cx: &mut App,
+) {
+    crate::system::window_surface::stage(window, bounds, scale, false);
+    if crate::windows::window_hwnd(window).is_some() {
+        window.bounds_changed(cx);
+    }
+}
+
+#[cfg(windows)]
+fn apply_tray_bounds(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    scale: Option<f32>,
+    cx: &mut App,
+) {
+    if crate::windows::window_hwnd(window).is_some() {
+        crate::system::window_surface::apply_bounds(window, bounds, scale);
+        window.bounds_changed(cx);
+    } else {
+        window.resize(bounds.size);
+    }
+}
+
+#[cfg(windows)]
+fn handle_windows_prepaint(
+    weak: &WeakEntity<TrayMenuWindow>,
+    generation: u64,
+    height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(view) = weak.upgrade() else {
+        return;
+    };
+    let (visibility, current_generation, reveal_scheduled, resize_attempts, signature, recorded) = {
+        let this = view.read(cx);
+        (
+            this.visibility,
+            this.reveal_generation,
+            this.reveal_scheduled,
+            this.resize_attempts,
+            this.entry_signature,
+            this.measured_height,
+        )
+    };
+    if current_generation != generation {
+        return;
+    }
+    let height_matches = height_matches_viewport(height, window);
+    match prepaint_action(
+        visibility,
+        height_matches,
+        reveal_scheduled,
+        resize_attempts,
+        height,
+    ) {
+        PrepaintAction::None => {}
+        PrepaintAction::Resize { height } => {
+            let should_schedule = view.update(cx, |this, _| {
+                let was_pending = this.pending_resize.is_some();
+                this.pending_resize = Some(height);
+                !was_pending
+            });
+            if !should_schedule {
+                return;
+            }
+            let view = view.clone();
+            window.on_next_frame(move |window, cx| {
+                view.update(cx, |this, cx| {
+                    if this.reveal_generation != generation {
+                        return;
+                    }
+                    let Some(target_height) = this.pending_resize.take() else {
+                        return;
+                    };
+                    if height_matches_viewport(target_height, window) {
+                        if this.visibility == TrayMenuVisibility::Revealing {
+                            window.refresh();
+                        }
+                        return;
+                    }
+                    this.record_measured_height(target_height);
+                    if this.visibility == TrayMenuVisibility::Revealing {
+                        this.resize_attempts = this.resize_attempts.saturating_add(1);
+                    }
+                    let geometry = menu_geometry(this.tray_rect, f32::from(target_height), cx);
+                    let mut bounds = geometry.bounds;
+                    if this.visibility == TrayMenuVisibility::Hidden {
+                        bounds.origin = gpui::point(px(-32000.), px(-32000.));
+                    }
+                    apply_tray_bounds(window, bounds, geometry.scale_factor, cx);
+                    configure_tray_menu_window(window);
+                    window.refresh();
+                });
+            });
+        }
+        PrepaintAction::RecordHeight { height } => {
+            if recorded != Some((signature, height)) {
+                view.update(cx, |this, _| {
+                    if this.reveal_generation == generation {
+                        this.record_measured_height(height);
+                    }
+                });
+            }
+        }
+        PrepaintAction::Reveal { height } => {
+            view.update(cx, |this, _| {
+                this.record_measured_height(height);
+                this.resize_attempts = 0;
+                this.pending_resize = None;
+                this.reveal_scheduled = true;
+            });
+            TrayMenuWindow::schedule_reveal(view, window, generation);
         }
     }
 }
@@ -557,12 +817,13 @@ fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> Menu
         let window_size = size(px(MENU_WIDTH), px(height));
         return MenuGeometry {
             bounds: Bounds::centered(None, window_size, cx),
+            max_height: px(height.max(768.0)),
             display_id: None,
             #[cfg(windows)]
             scale_factor: None,
         };
     };
-    let max_content_height = f32::from(display.work_area.size.height) - SCREEN_GAP * 2.0;
+    let max_content_height = (f32::from(display.work_area.size.height) - SCREEN_GAP * 2.0).max(0.0);
     let content_height = height.min(max_content_height);
     let window_width = MENU_WIDTH;
     let window_height = content_height;
@@ -570,6 +831,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> Menu
     let Some(rect) = display.tray_rect else {
         return MenuGeometry {
             bounds: Bounds::centered(Some(display.id), window_size, cx),
+            max_height: px(max_content_height),
             display_id: Some(display.id),
             #[cfg(windows)]
             scale_factor: display.scale_factor,
@@ -580,6 +842,7 @@ fn menu_geometry(tray_rect: Option<TrayRect>, height: f32, cx: &mut App) -> Menu
             origin: tray_menu_origin(display.work_area, rect, window_size),
             size: window_size,
         },
+        max_height: px(max_content_height),
         display_id: Some(display.id),
         #[cfg(windows)]
         scale_factor: display.scale_factor,
@@ -782,7 +1045,57 @@ mod tests {
             MenuEntry::Separator,
             MenuEntry::Item(crate::ui::menu::MenuItem::new("Two")),
         ];
-        assert_eq!(estimated_menu_height(&entries), 73.0);
+        assert_eq!(estimated_menu_height(&entries), 65.0);
+        assert_eq!(entry_signature(&entries), (2, 1));
+    }
+
+    #[test]
+    fn prepaint_waits_for_measured_height_before_revealing() {
+        let measured = px(564.0);
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Revealing, false, false, 0, measured),
+            PrepaintAction::Resize { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Revealing, true, false, 1, measured),
+            PrepaintAction::Reveal { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Revealing, true, true, 1, measured),
+            PrepaintAction::None
+        );
+        assert_eq!(
+            prepaint_action(
+                TrayMenuVisibility::Revealing,
+                false,
+                false,
+                MAX_LAYOUT_RESIZE_ATTEMPTS,
+                measured,
+            ),
+            PrepaintAction::Reveal { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Hidden, true, false, 0, measured),
+            PrepaintAction::RecordHeight { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Hidden, false, false, 0, measured),
+            PrepaintAction::Resize { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(
+                TrayMenuVisibility::Hidden,
+                false,
+                false,
+                MAX_LAYOUT_RESIZE_ATTEMPTS,
+                measured,
+            ),
+            PrepaintAction::Resize { height: measured }
+        );
+        assert_eq!(
+            prepaint_action(TrayMenuVisibility::Visible, true, true, 0, measured),
+            PrepaintAction::None
+        );
     }
 
     #[test]
@@ -957,6 +1270,74 @@ mod tests {
                 .unwrap();
             cx.run_until_parked();
         }
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn windows_tray_menu_defers_reveal_until_height_matches(cx: &mut gpui::TestAppContext) {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            crate::config::store::ConfigStore::load_at(scratch.path().join("config.json")).unwrap(),
+        );
+        store.update(|config| config.appearance.mode = "dark".into());
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+
+        cx.update(TrayMenuWindow::prewarm);
+        let handle = cx
+            .update(|cx| tray_menu_cache(cx).handle)
+            .expect("the tray menu must be prewarmed");
+        let window: gpui::AnyWindowHandle = handle.into();
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(MENU_WIDTH), px(720.0)));
+                window.bounds_changed(cx);
+            })
+            .unwrap();
+
+        cx.update(|cx| TrayMenuWindow::toggle(None, cx));
+        window
+            .update(cx, |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        assert!(handle
+            .update(cx, |this, _, _| {
+                this.visibility == TrayMenuVisibility::Revealing
+                    && !this.reveal_scheduled
+                    && this.pending_resize.is_some()
+            })
+            .unwrap());
+
+        for _ in 0..4 {
+            window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.bounds_changed(cx);
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+        }
+
+        handle
+            .update(cx, |this, window, _| {
+                assert_eq!(this.visibility, TrayMenuVisibility::Visible);
+                assert!(this.reveal_scheduled);
+                let cached = this
+                    .cached_height(this.entry_signature)
+                    .expect("measured height must be cached");
+                assert!((cached - f32::from(window.viewport_size().height)).abs() < 0.01);
+            })
+            .unwrap();
+
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
     }
 
     #[test]

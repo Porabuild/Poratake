@@ -61,7 +61,7 @@ pub fn init(cx: &mut gpui::App, defer_daemon: bool) -> Arc<ConfigStore> {
 
     let service = CaptureService::new(DaemonHandle::new(), config.clone());
 
-    if crate::system::capabilities::has_native_daemon() {
+    if crate::system::capabilities::has_native_daemon() && !cfg!(windows) {
         if defer_daemon {
             let daemon = service.daemon.clone();
             cx.spawn(async move |cx| {

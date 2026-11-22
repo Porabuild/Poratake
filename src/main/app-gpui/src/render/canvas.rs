@@ -145,6 +145,13 @@ impl Canvas {
         self.state.transform
     }
 
+    pub fn is_identity_unclipped(&self) -> bool {
+        self.state.transform == Transform::identity()
+            && self.state.clip.is_none()
+            && self.state.alpha == 1.0
+            && self.state.shadow.is_none()
+    }
+
     pub fn pixel_grid_origin(&self) -> (f64, f64) {
         if let Some(origin) = self.pixel_grid_origin {
             return origin;
@@ -412,6 +419,19 @@ impl Canvas {
         height: f32,
         quality: FilterQuality,
     ) {
+        self.draw_pixmap_with_quality_excluding(source, x, y, width, height, quality, None);
+    }
+
+    pub fn draw_pixmap_with_quality_excluding(
+        &mut self,
+        source: PixmapRef<'_>,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        quality: FilterQuality,
+        excluded: Option<(u32, u32, u32, u32)>,
+    ) {
         if source.width() == 0 || source.height() == 0 || width <= 0.0 || height <= 0.0 {
             return;
         }
@@ -419,6 +439,19 @@ impl Canvas {
             width / source.width() as f32,
             height / source.height() as f32,
         );
+        if let Some(excluded) = excluded.filter(|_| {
+            self.state.shadow.is_none() && self.state.clip.is_none() && self.state.alpha > 0.0
+        }) {
+            if self.draw_pixmap_excluding_raw(
+                source,
+                placement,
+                self.state.alpha,
+                quality,
+                excluded,
+            ) {
+                return;
+            }
+        }
         self.draw_pixmap_transformed_with_quality(source, placement, quality);
     }
 
@@ -462,14 +495,121 @@ impl Canvas {
             blend_mode: BlendMode::SourceOver,
             quality,
         };
-        self.pixmap.draw_pixmap(
-            0,
-            0,
-            source,
-            &paint,
-            self.state.transform.pre_concat(placement),
-            self.state.clip.as_deref(),
-        );
+        let combined = self.state.transform.pre_concat(placement);
+        if self.state.clip.is_none() {
+            draw_pixmap_parallel(&mut self.pixmap, source, &paint, combined);
+            return;
+        }
+        self.pixmap
+            .draw_pixmap(0, 0, source, &paint, combined, self.state.clip.as_deref());
+    }
+
+    fn draw_pixmap_excluding_raw(
+        &mut self,
+        source: PixmapRef<'_>,
+        placement: Transform,
+        alpha: f32,
+        quality: FilterQuality,
+        excluded: (u32, u32, u32, u32),
+    ) -> bool {
+        let canvas_width = self.pixmap.width();
+        let canvas_height = self.pixmap.height();
+        let ex0 = excluded.0.min(canvas_width);
+        let ey0 = excluded.1.min(canvas_height);
+        let ex1 = excluded.0.saturating_add(excluded.2).min(canvas_width);
+        let ey1 = excluded.1.saturating_add(excluded.3).min(canvas_height);
+        if ex1 <= ex0 || ey1 <= ey0 {
+            return false;
+        }
+        let paint = PixmapPaint {
+            opacity: alpha,
+            blend_mode: BlendMode::SourceOver,
+            quality,
+        };
+        let combined = self.state.transform.pre_concat(placement);
+        let row_bytes = canvas_width as usize * 4;
+        let data = self.pixmap.data_mut();
+        let (top_data, rest) = data.split_at_mut(ey0 as usize * row_bytes);
+        let (mid_data, bottom_data) = rest.split_at_mut((ey1 - ey0) as usize * row_bytes);
+        let mid_height = ey1 - ey0;
+        let left_width = ex0;
+        let right_width = canvas_width - ex1;
+
+        let mut left_buf = if left_width > 0 && mid_height > 0 {
+            Pixmap::new(left_width, mid_height)
+        } else {
+            None
+        };
+        let mut right_buf = if right_width > 0 && mid_height > 0 {
+            Pixmap::new(right_width, mid_height)
+        } else {
+            None
+        };
+
+        std::thread::scope(|scope| {
+            if ey0 > 0 {
+                scope.spawn(|| {
+                    draw_band_parallel(top_data, canvas_width, ey0, 0, source, &paint, combined);
+                });
+            }
+            if canvas_height > ey1 {
+                let bottom_h = canvas_height - ey1;
+                scope.spawn(move || {
+                    draw_band_parallel(
+                        bottom_data,
+                        canvas_width,
+                        bottom_h,
+                        ey1,
+                        source,
+                        &paint,
+                        combined,
+                    );
+                });
+            }
+            if let Some(left) = left_buf.as_mut() {
+                scope.spawn(move || {
+                    draw_pixmap_parallel(
+                        left,
+                        source,
+                        &paint,
+                        combined.post_translate(0.0, -(ey0 as f32)),
+                    );
+                });
+            }
+            if let Some(right) = right_buf.as_mut() {
+                scope.spawn(move || {
+                    draw_pixmap_parallel(
+                        right,
+                        source,
+                        &paint,
+                        combined.post_translate(-(ex1 as f32), -(ey0 as f32)),
+                    );
+                });
+            }
+        });
+
+        if let Some(left) = left_buf {
+            let src = left.data();
+            let left_bytes = left_width as usize * 4;
+            for row in 0..mid_height as usize {
+                let dst_offset = row * row_bytes;
+                let src_offset = row * left_bytes;
+                mid_data[dst_offset..dst_offset + left_bytes]
+                    .copy_from_slice(&src[src_offset..src_offset + left_bytes]);
+            }
+        }
+        if let Some(right) = right_buf {
+            let src = right.data();
+            let right_bytes = right_width as usize * 4;
+            let x_bytes = ex1 as usize * 4;
+            for row in 0..mid_height as usize {
+                let dst_offset = row * row_bytes + x_bytes;
+                let src_offset = row * right_bytes;
+                mid_data[dst_offset..dst_offset + right_bytes]
+                    .copy_from_slice(&src[src_offset..src_offset + right_bytes]);
+            }
+        }
+        true
     }
 
     /// Draws `source` scaled into the given rect with an explicit blend mode,
@@ -647,6 +787,86 @@ impl Canvas {
             self.state.clip.as_deref(),
         );
     }
+}
+
+const PARALLEL_DRAW_MIN_PIXELS: usize = 262_144;
+
+pub(crate) fn strip_workers(width: u32, height: u32) -> usize {
+    let pixels = width as usize * height as usize;
+    if pixels < PARALLEL_DRAW_MIN_PIXELS || height < 64 {
+        return 1;
+    }
+    let available = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    (height as usize / 32).clamp(1, available)
+}
+
+fn draw_pixmap_parallel(
+    target: &mut Pixmap,
+    source: PixmapRef<'_>,
+    paint: &PixmapPaint,
+    transform: Transform,
+) {
+    let width = target.width();
+    let height = target.height();
+    draw_band_parallel(
+        target.data_mut(),
+        width,
+        height,
+        0,
+        source,
+        paint,
+        transform,
+    );
+}
+
+fn draw_band_parallel(
+    data: &mut [u8],
+    width: u32,
+    height: u32,
+    y_offset: u32,
+    source: PixmapRef<'_>,
+    paint: &PixmapPaint,
+    transform: Transform,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let workers = strip_workers(width, height);
+    if workers <= 1 {
+        if let Some(mut pixmap) = tiny_skia::PixmapMut::from_bytes(data, width, height) {
+            let band_transform = if y_offset == 0 {
+                transform
+            } else {
+                transform.post_translate(0.0, -(y_offset as f32))
+            };
+            pixmap.draw_pixmap(0, 0, source, paint, band_transform, None);
+        }
+        return;
+    }
+    let row_bytes = width as usize * 4;
+    let rows_per = (height as usize).div_ceil(workers);
+    std::thread::scope(|scope| {
+        for (index, chunk) in data.chunks_mut(rows_per * row_bytes).enumerate() {
+            let strip_y = y_offset + (index * rows_per) as u32;
+            let strip_height = (chunk.len() / row_bytes) as u32;
+            scope.spawn(move || {
+                if let Some(mut strip) =
+                    tiny_skia::PixmapMut::from_bytes(chunk, width, strip_height)
+                {
+                    strip.draw_pixmap(
+                        0,
+                        0,
+                        source,
+                        paint,
+                        transform.post_translate(0.0, -(strip_y as f32)),
+                        None,
+                    );
+                }
+            });
+        }
+    });
 }
 
 fn paint_for(shader: Shader<'_>, blend: BlendMode) -> Paint<'_> {
@@ -1304,5 +1524,38 @@ mod tests {
         assert_eq!(bounds.width(), 10.0);
         assert_eq!(bounds.height(), 4.0);
         assert!(rounded_rect_path(0.0, 0.0, 0.0, 4.0, 2.0).is_none());
+    }
+
+    #[test]
+    fn transparent_fill_rounded_shadow_casts_only_the_shadow() {
+        let shadow = crate::editor::export::image_shadow(75.0).unwrap();
+        for (width, height, radius) in [(160.0, 120.0, 49.0), (720.0, 120.0, 24.0)] {
+            let mut expected = Canvas::new(800, 240).unwrap();
+            let mut actual = Canvas::new(800, 240).unwrap();
+            let path = rounded_rect_path(40.0, 40.0, width, height, radius).unwrap();
+            expected.set_shadow(Some(shadow));
+            expected.fill_path(&path, Color::TRANSPARENT, FillRule::Winding);
+            paint_rounded_shadow(
+                &mut actual,
+                (40.0, 40.0, width, height),
+                radius,
+                shadow,
+                Color::TRANSPARENT,
+            )
+            .unwrap();
+            assert!(
+                expected
+                    .pixmap()
+                    .data()
+                    .iter()
+                    .zip(actual.pixmap().data())
+                    .all(|(expected, actual)| expected.abs_diff(*actual) <= 2),
+                "{width}x{height}, radius {radius}"
+            );
+            for pixel in actual.pixmap().data().as_chunks::<4>().0 {
+                assert_eq!(&pixel[..3], &[0, 0, 0]);
+            }
+            assert!(alpha_at(&actual, 40 + (width as u32) / 2, 40 + height as u32 + 5) > 0);
+        }
     }
 }

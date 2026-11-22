@@ -20,12 +20,17 @@ pub const PREVIEW_SCALE: f32 = 2.0;
 #[derive(Default)]
 pub struct BackgroundPreviews {
     desktop: Option<PreviewState>,
+    desktop_source: Option<String>,
     customs: std::collections::HashMap<String, PreviewState>,
 }
 
 impl BackgroundPreviews {
     pub fn desktop(&self) -> PreviewState {
         self.desktop.clone().unwrap_or_default()
+    }
+
+    pub fn desktop_source(&self) -> Option<&str> {
+        self.desktop_source.as_deref()
     }
 
     pub fn desktop_requested(&self) -> bool {
@@ -48,12 +53,31 @@ impl BackgroundPreviews {
         self.customs.insert(id.to_string(), PreviewState::Loading);
     }
 
-    pub fn set_desktop(&mut self, image: Option<Arc<gpui::RenderImage>>) {
+    pub fn set_desktop(&mut self, source: Option<String>, image: Option<Arc<gpui::RenderImage>>) {
+        self.desktop_source = source;
         self.desktop = Some(state_for(image));
+    }
+
+    pub fn set_desktop_source(&mut self, source: String) {
+        self.desktop_source = Some(source);
     }
 
     pub fn set_custom(&mut self, id: &str, image: Option<Arc<gpui::RenderImage>>) {
         self.customs.insert(id.to_string(), state_for(image));
+    }
+
+    pub fn drain_images(&mut self) -> Vec<Arc<gpui::RenderImage>> {
+        let mut images = Vec::new();
+        self.desktop_source = None;
+        if let Some(PreviewState::Ready(image)) = self.desktop.take() {
+            images.push(image);
+        }
+        for (_, state) in self.customs.drain() {
+            if let PreviewState::Ready(image) = state {
+                images.push(image);
+            }
+        }
+        images
     }
 }
 
@@ -91,11 +115,11 @@ pub fn from_response(
 }
 
 pub fn preview_image(source: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
-    let decoded = crate::render::gradient::load_image(source)?;
+    let decoded = crate::render::gradient::load_image_cached(source)?;
     let target = (size * PREVIEW_SCALE).ceil().max(1.0);
     let scale = (target / decoded.width().max(decoded.height()) as f32).min(1.0);
     if scale >= 1.0 {
-        return crate::windows::video_editor::preview::to_render_image(&decoded);
+        return crate::windows::video_editor::preview::to_render_image(decoded.as_ref());
     }
     let width = ((decoded.width() as f32 * scale).ceil() as u32).max(1);
     let height = ((decoded.height() as f32 * scale).ceil() as u32).max(1);
@@ -103,7 +127,7 @@ pub fn preview_image(source: &str, size: f32) -> Option<Arc<gpui::RenderImage>> 
     scaled.draw_pixmap(
         0,
         0,
-        decoded.as_ref(),
+        decoded.as_ref().as_ref(),
         &tiny_skia::PixmapPaint {
             quality: tiny_skia::FilterQuality::Bilinear,
             ..Default::default()

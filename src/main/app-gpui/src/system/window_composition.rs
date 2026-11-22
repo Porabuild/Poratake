@@ -379,31 +379,38 @@ fn outer_window_bounds(
 
 pub fn apply_window_bounds(window: HWND, bounds: Bounds<Pixels>, scale: f32) {
     use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
     };
 
-    let mut client_rect = RECT::default();
-    let mut window_rect = RECT::default();
-    let mut client_origin = POINT::default();
-    unsafe {
-        if GetClientRect(window, &mut client_rect).is_err()
-            || GetWindowRect(window, &mut window_rect).is_err()
-            || !ClientToScreen(window, &mut client_origin).as_bool()
-        {
-            return;
+    for _ in 0..2 {
+        let mut client_rect = RECT::default();
+        let mut window_rect = RECT::default();
+        let mut client_origin = POINT::default();
+        unsafe {
+            let dpi_before = GetDpiForWindow(window);
+            if GetClientRect(window, &mut client_rect).is_err()
+                || GetWindowRect(window, &mut window_rect).is_err()
+                || !ClientToScreen(window, &mut client_origin).as_bool()
+            {
+                return;
+            }
+            let (x, y, width, height) =
+                outer_window_bounds(bounds, scale, window_rect, client_origin, client_rect);
+            let _ = SetWindowPos(
+                window,
+                None,
+                x,
+                y,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+            if GetDpiForWindow(window) == dpi_before {
+                return;
+            }
         }
-        let (x, y, width, height) =
-            outer_window_bounds(bounds, scale, window_rect, client_origin, client_rect);
-        let _ = SetWindowPos(
-            window,
-            None,
-            x,
-            y,
-            width,
-            height,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        );
     }
 }
 
@@ -442,42 +449,43 @@ pub fn apply_window_origin(window: HWND, origin: Point<Pixels>, scale: f32) {
     }
 }
 
-pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: bool) {
+pub fn set_cloaked(window: HWND, cloaked: bool) -> bool {
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
-    apply_window_bounds(window, bounds, scale);
-    let cloaked = BOOL(1);
+    let value = BOOL::from(cloaked);
     unsafe {
-        let _ = DwmSetWindowAttribute(
+        DwmSetWindowAttribute(
             window,
             DWMWA_CLOAK,
-            &cloaked as *const _ as *const core::ffi::c_void,
-            std::mem::size_of_val(&cloaked) as u32,
-        );
-        if !activate {
+            &value as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&value) as u32,
+        )
+        .is_ok()
+    }
+}
+
+pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+
+    set_cloaked(window, true);
+    apply_window_bounds(window, bounds, scale);
+    if !activate {
+        unsafe {
             let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
         }
     }
 }
 
 pub fn reveal_window(window: HWND, activate: bool, duration_ms: u32) {
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
     use windows::Win32::UI::WindowsAndMessaging::{
         AnimateWindow, ShowWindow, AW_ACTIVATE, AW_BLEND, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
     };
 
-    let cloaked = BOOL(0);
     unsafe {
         if duration_ms > 0 {
             let _ = ShowWindow(window, SW_HIDE);
         }
-        let _ = DwmSetWindowAttribute(
-            window,
-            DWMWA_CLOAK,
-            &cloaked as *const _ as *const core::ffi::c_void,
-            std::mem::size_of_val(&cloaked) as u32,
-        );
+        set_cloaked(window, false);
         if duration_ms == 0 {
             let _ = ShowWindow(window, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
             return;

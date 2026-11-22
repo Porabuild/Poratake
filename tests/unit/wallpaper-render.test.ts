@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { renderWallpaperComposite } from '@/renderer/utils/wallpaper-render';
+import {
+  renderImageToCanvas,
+  renderImageWithInset,
+  renderWallpaperComposite,
+} from '@/renderer/utils/wallpaper-render';
 import { WINDOW_FRAME_TITLE_BAR_HEIGHT } from '@/renderer/utils/window-frame';
 
 interface CanvasStub {
@@ -11,6 +15,7 @@ interface CanvasStub {
 const createContextStub = () => ({
   save: vi.fn(),
   restore: vi.fn(),
+  scale: vi.fn(),
   beginPath: vi.fn(),
   closePath: vi.fn(),
   clip: vi.fn(),
@@ -25,6 +30,12 @@ const createContextStub = () => ({
   arc: vi.fn(),
   drawImage: vi.fn(),
   createLinearGradient: vi.fn(() => ({ addColorStop: vi.fn() })),
+  fillStyle: '' as string,
+  globalCompositeOperation: 'source-over' as string,
+  shadowColor: '' as string,
+  shadowBlur: 0,
+  shadowOffsetX: 0,
+  shadowOffsetY: 0,
 });
 
 let ctx: ReturnType<typeof createContextStub>;
@@ -166,5 +177,65 @@ describe('renderWallpaperComposite', () => {
     expect(result.width).toBe(767);
     expect(result.height).toBe(487);
     expect(ctx.roundRect).toHaveBeenCalledWith(63, 63, 641, 361, 15);
+  });
+
+  it('masks shadowed rounded images once offscreen without filling white', () => {
+    const offCtx = createContextStub();
+    const offCanvas: CanvasStub = {
+      width: 0,
+      height: 0,
+      getContext: () => offCtx as unknown as Record<string, unknown>,
+    };
+    vi.stubGlobal('OffscreenCanvas', undefined);
+    vi.stubGlobal('document', { createElement: () => offCanvas });
+
+    renderImageToCanvas(
+      ctx as unknown as CanvasRenderingContext2D,
+      createImageStub(200, 120),
+      40,
+      40,
+      200,
+      120,
+      49,
+      73
+    );
+
+    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(ctx.fillStyle).not.toBe('white');
+    expect(offCtx.globalCompositeOperation).toBe('destination-in');
+    expect(offCtx.roundRect).toHaveBeenCalledWith(0, 0, 200, 120, 49);
+    expect(offCtx.fill).toHaveBeenCalledTimes(1);
+    expect(ctx.shadowBlur).toBeGreaterThan(0);
+    expect(ctx.drawImage).toHaveBeenCalledWith(offCanvas, 40, 40, 200, 120);
+  });
+
+  it('masks rounded inset images once offscreen when corner radius exceeds inset', () => {
+    const offCtx = createContextStub();
+    const offCanvas: CanvasStub = {
+      width: 0,
+      height: 0,
+      getContext: () => offCtx as unknown as Record<string, unknown>,
+    };
+    vi.stubGlobal('OffscreenCanvas', undefined);
+    vi.stubGlobal('document', { createElement: () => offCanvas });
+
+    renderImageWithInset(
+      ctx as unknown as CanvasRenderingContext2D,
+      createImageStub(200, 120),
+      30,
+      30,
+      212,
+      132,
+      40,
+      50,
+      6,
+      '#ffffff'
+    );
+
+    expect(ctx.fill).not.toHaveBeenCalled();
+    expect(offCtx.fillRect).toHaveBeenCalledWith(0, 0, 212, 132);
+    expect(offCtx.globalCompositeOperation).toBe('destination-in');
+    expect(offCtx.roundRect).toHaveBeenCalledWith(0, 0, 212, 132, 40);
+    expect(ctx.drawImage).toHaveBeenCalledWith(offCanvas, 30, 30, 212, 132);
   });
 });

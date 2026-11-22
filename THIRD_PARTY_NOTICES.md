@@ -177,48 +177,49 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 
 The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) and `png` 0.18.1 (MIT OR Apache-2.0), both already bundled through `image`.
 
-| Crate                      |   Version | License                   |
-| -------------------------- | --------: | ------------------------- |
-| `anyhow`                   |   1.0.104 | MIT OR Apache-2.0         |
-| `base64`                   |    0.23.1 | MIT OR Apache-2.0         |
-| `chrono`                   |    0.4.45 | MIT OR Apache-2.0         |
-| `cocoa`                    |    0.26.0 | MIT OR Apache-2.0         |
-| `block2`                   |     0.6.2 | MIT                       |
-| `dbus`                     |    0.9.12 | Apache-2.0 OR MIT         |
-| `dirs`                     |     6.0.0 | MIT OR Apache-2.0         |
-| `fontdue`                  |     0.9.4 | MIT OR Apache-2.0 OR Zlib |
-| `glib`                     |    0.18.5 | MIT                       |
-| `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
-| `gpui-pre`                 |    0.3.11 | Apache-2.0                |
-| `herogpui`                 |    0.15.3 | Apache-2.0                |
-| `gtk`                      |    0.18.2 | MIT                       |
-| `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
-| `image`                    |   0.25.10 | MIT OR Apache-2.0         |
-| `libc`                     |   0.2.189 | MIT OR Apache-2.0         |
-| `lyon`                     |    1.0.19 | MIT OR Apache-2.0         |
-| `md-5`                     |    0.11.0 | MIT OR Apache-2.0         |
-| `objc`                     |     0.2.7 | MIT                       |
-| `objc2`                    |     0.6.4 | MIT                       |
-| `objc2-foundation`         |     0.3.2 | MIT                       |
-| `objc2-user-notifications` |     0.3.2 | Zlib OR Apache-2.0 OR MIT |
-| `parking_lot`              |    0.12.5 | MIT OR Apache-2.0         |
-| `raw-window-handle`        |     0.6.2 | MIT OR Apache-2.0 OR Zlib |
-| `resvg`                    |    0.45.1 | Apache-2.0 OR MIT         |
-| `rfd`                      |    0.15.4 | MIT                       |
-| `rodio`                    |    0.22.2 | MIT OR Apache-2.0         |
-| `rqrr`                     |    0.10.1 | MIT                       |
-| `sha2`                     |    0.11.0 | MIT OR Apache-2.0         |
-| `smallvec`                 |    1.15.2 | MIT OR Apache-2.0         |
-| `smol`                     |     2.0.2 | Apache-2.0 OR MIT         |
-| `tiny-skia`                |    0.11.4 | BSD-3-Clause              |
-| `tray-icon`                |    0.24.2 | MIT OR Apache-2.0         |
-| `ureq`                     |     3.4.0 | MIT OR Apache-2.0         |
-| `usvg`                     |    0.45.1 | Apache-2.0 OR MIT         |
-| `windows`                  |    0.61.3 | MIT OR Apache-2.0         |
-| `xcb`                      |     1.7.1 | MIT                       |
-| `zed-scap`                 | 0.0.8-zed | MIT                       |
-| `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
-| `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
+| Crate                      |         Version | License                   |
+| -------------------------- | --------------: | ------------------------- |
+| `anyhow`                   |         1.0.104 | MIT OR Apache-2.0         |
+| `base64`                   |          0.23.1 | MIT OR Apache-2.0         |
+| `chrono`                   |          0.4.45 | MIT OR Apache-2.0         |
+| `cocoa`                    |          0.26.0 | MIT OR Apache-2.0         |
+| `block2`                   |           0.6.2 | MIT                       |
+| `dbus`                     |          0.9.12 | Apache-2.0 OR MIT         |
+| `dirs`                     |           6.0.0 | MIT OR Apache-2.0         |
+| `fontdue`                  |           0.9.4 | MIT OR Apache-2.0 OR Zlib |
+| `glib`                     |          0.18.5 | MIT                       |
+| `global-hotkey`            |           0.8.0 | Apache-2.0 OR MIT         |
+| `gpui-pre`                 |          0.3.11 | Apache-2.0                |
+| `herogpui`                 |          0.15.3 | Apache-2.0                |
+| `gtk`                      |          0.18.2 | MIT                       |
+| `hmac`                     |          0.13.0 | MIT OR Apache-2.0         |
+| `image`                    |         0.25.10 | MIT OR Apache-2.0         |
+| `libc`                     |         0.2.189 | MIT OR Apache-2.0         |
+| `lyon`                     |          1.0.19 | MIT OR Apache-2.0         |
+| `md-5`                     |          0.11.0 | MIT OR Apache-2.0         |
+| `objc`                     |           0.2.7 | MIT                       |
+| `objc2`                    |           0.6.4 | MIT                       |
+| `objc2-foundation`         |           0.3.2 | MIT                       |
+| `objc2-user-notifications` |           0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `parking_lot`              |          0.12.5 | MIT OR Apache-2.0         |
+| `raw-window-handle`        |           0.6.2 | MIT OR Apache-2.0 OR Zlib |
+| `resvg`                    |          0.45.1 | Apache-2.0 OR MIT         |
+| `rfd`                      |          0.15.4 | MIT                       |
+| `rodio`                    |          0.22.2 | MIT OR Apache-2.0         |
+| `rqrr`                     |          0.10.1 | MIT                       |
+| `sha2`                     |          0.11.0 | MIT OR Apache-2.0         |
+| `smallvec`                 |          1.15.2 | MIT OR Apache-2.0         |
+| `smol`                     |           2.0.2 | Apache-2.0 OR MIT         |
+| `tiny-skia`                |          0.11.4 | BSD-3-Clause              |
+| `tray-icon`                |          0.24.2 | MIT OR Apache-2.0         |
+| `ureq`                     |           3.4.0 | MIT OR Apache-2.0         |
+| `usvg`                     |          0.45.1 | Apache-2.0 OR MIT         |
+| `velopack`                 | 1.3.39-g8d2844f | MIT                       |
+| `windows`                  |          0.61.3 | MIT OR Apache-2.0         |
+| `xcb`                      |           1.7.1 | MIT                       |
+| `zed-scap`                 |       0.0.8-zed | MIT                       |
+| `serde`                    |         1.0.229 | MIT OR Apache-2.0         |
+| `serde_json`               |         1.0.151 | MIT OR Apache-2.0         |
 
 [HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` use the published 0.15.3 crates.io release ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.3), revision `5caacc31d1e222d3534bd24998690fddee3c6d47`); their registry checksums are locked in `src/main/Cargo.lock`. This revision replaces Poratake's former component patches for focus-ring gutters, accessibility actions, and keyboard press ownership. Poratake no longer vendors or modifies the HeroGPUI crates. The separate GPUI 0.3.11 Windows backend patch remains necessary. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
@@ -292,7 +293,7 @@ SOFTWARE.
 
 The GPUI implementation is the Apache-2.0 `gpui-pre` 0.3.11 family, replacing `gpui` 0.2.2: `gpui-pre`, `gpui-pre-apple`, `gpui-pre-bench-metrics`, `gpui-pre-collections`, `gpui-pre-derive-refineable`, `gpui-pre-http-client`, `gpui-pre-ios`, `gpui-pre-linux`, `gpui-pre-macos`, `gpui-pre-macros`, `gpui-pre-platform`, `gpui-pre-refineable`, `gpui-pre-scheduler`, `gpui-pre-shared-string`, `gpui-pre-sum-tree`, `gpui-pre-util`, `gpui-pre-web`, `gpui-pre-wgpu`, `gpui-pre-windows`, `gpui-pre-ztracing`, and `gpui-pre-ztracing-macro`. Platform-specific crates are linked only for their respective targets. GPUI itself links ICU4X `icu_segmenter` and `icu_segmenter_data` 2.4.0 (Unicode-3.0). On macOS the GPUI crates also link `mach2` 0.6.0 (BSD-2-Clause OR MIT OR Apache-2.0) and `objc2-core-text`, `objc2-core-video`, `objc2-metal`, `objc2-quartz-core`, `objc2-security`, and `objc2-uniform-type-identifiers` 0.3.2 (Zlib OR Apache-2.0 OR MIT).
 
-The GPUI core is vendored as `vendor/gpui-pre` from the published `gpui-pre` 0.3.11 archive (SHA-256 `9303c771abf2acff2a96d706f69d9a82088c4770173a07cce88f0002431d887d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/window.rs` to preserve one-pixel image dimensions when cropping and skip empty images; on Apple platforms it retains fractional crop coordinates and the original atlas allocation in polychrome sprites. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre/LICENSE-APACHE`.
+The GPUI core is vendored as `vendor/gpui-pre` from the published `gpui-pre` 0.3.11 archive (SHA-256 `9303c771abf2acff2a96d706f69d9a82088c4770173a07cce88f0002431d887d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/window.rs` to preserve one-pixel image dimensions when cropping and skip empty images; on Apple platforms it retains fractional crop coordinates and the original atlas allocation in polychrome sprites. It also adds headless test-window accessibility hooks in `src/platform/test/window.rs` and `src/app/test_context.rs` so accessibility action tests run directly in the workspace test suite. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre/LICENSE-APACHE`.
 
 The Windows backend is vendored as `vendor/gpui-pre-windows` from the published `gpui-pre-windows` 0.3.11 archive (SHA-256 `5141a3db59bab761a16ab19529fe4117a86e91922e8fc00af6dfc4829cb1744d`, Zed revision `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038`). Poratake modifies `src/shaders.hlsl` to clamp image sampling to each atlas tile's texel centers (preventing neighboring images from bleeding into scaled captures) and interpolate translucent images in premultiplied-alpha space. It also modifies `src/clipboard.rs` to provide a Windows bitmap alongside PNG and correctly read bitmap headers with embedded color masks. In `src/events.rs`, mouse-leave handling updates GPUI's pointer position and dispatches mouse-exit input so hover handlers clear correctly across client and nonclient boundaries. The original copyright and Apache-2.0 license are retained in `vendor/gpui-pre-windows/LICENSE-APACHE`.
 

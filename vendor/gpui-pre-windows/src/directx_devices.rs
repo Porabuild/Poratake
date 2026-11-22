@@ -15,7 +15,7 @@ use windows::Win32::{
         },
         Dxgi::{
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
-            IDXGIAdapter1, IDXGIFactory6,
+            IDXGIAdapter1, IDXGIDevice3, IDXGIFactory6,
         },
     },
 };
@@ -91,6 +91,16 @@ impl DirectXDevices {
             device,
             device_context: context.context("Missing WARP device context")?,
         })
+    }
+
+    pub(crate) fn trim(&self) {
+        unsafe {
+            self.device_context.ClearState();
+            self.device_context.Flush();
+            if let Ok(dxgi_device) = self.device.cast::<IDXGIDevice3>() {
+                dxgi_device.Trim();
+            }
+        }
     }
 }
 

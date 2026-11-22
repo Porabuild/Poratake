@@ -23,6 +23,8 @@ pub mod startup;
 #[cfg(all(target_os = "macos", not(test)))]
 pub mod tooltip_macos;
 pub mod tray;
+#[cfg(windows)]
+pub mod velopack_hooks;
 pub mod window_composition;
 pub mod window_surface;
 pub mod window_visibility;

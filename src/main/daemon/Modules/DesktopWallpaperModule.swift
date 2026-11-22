@@ -122,8 +122,7 @@ class DesktopWallpaperModule: Module {
             return nil
         }
         
-        let bitmapRep = NSBitmapImageRep(cgImage: image)
-        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+        return encodeJPEG(image)
     }
     
     private func isVideoDynamicWallpaper(heicPath: String) -> Bool {
@@ -174,7 +173,18 @@ class DesktopWallpaperModule: Module {
             return nil
         }
         
-        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
-        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+        return encodeJPEG(cgImage)
+    }
+
+    private func encodeJPEG(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
     }
 }

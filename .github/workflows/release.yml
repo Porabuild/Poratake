@@ -259,13 +259,16 @@ jobs:
           msystem: ${{ matrix.msystem }}
           install: ${{ matrix.packages }}
 
-      - name: Ensure NSIS is installed
+      - name: Setup .NET for Velopack CLI
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Ensure Velopack CLI is installed
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
-            choco install nsis -y --no-progress
-            "$env:ProgramFiles (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
+          dotnet tool update -g vpk --version 1.2.161
+          Join-Path $env:USERPROFILE '.dotnet\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache FFmpeg and Whisper binaries
         if: ${{ !inputs.skip_cache }}
@@ -281,7 +284,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: src/main/daemon/poratake-daemon.exe
-          key: ${{ runner.os }}-${{ matrix.arch }}-daemon-${{ hashFiles('scripts/build-daemon-win.ps1', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/src/**.rs', 'src/main/daemon-common/**', 'src/main/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-daemon-${{ hashFiles('scripts/build-daemon-win.ps1', 'src/main/win_resource.rs', 'build/icon.ico', 'src/main/daemon-win/Cargo.toml', 'src/main/daemon-win/build.rs', 'src/main/daemon-win/src/**.rs', 'src/main/daemon-common/**', 'src/main/Cargo.lock') }}
 
       - name: Build Windows GPUI binaries
         shell: bash
@@ -292,10 +295,24 @@ jobs:
           bun run build-native-win
           cargo build --release --locked --manifest-path src/main/Cargo.toml --target ${{ matrix.triple }} --package poratake-daemon --package poratake-gpui
 
+      - name: Fetch previous Velopack package for delta updates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          PREV_DIR="${{ runner.temp }}/velopack-prev"
+          mkdir -p "$PREV_DIR"
+          gh release download --repo "${{ github.repository }}" \
+            --pattern "releases.win-${ARCH}.json" \
+            --pattern "Poratake-*-win-${ARCH}-full.nupkg" \
+            --dir "$PREV_DIR" || true
+
       - name: Stage Windows GPUI installer
         shell: bash
         env:
           PORATAKE_WIN_ARCH: ${{ matrix.arch }}
+          PORATAKE_VELOPACK_PREV_DIR: ${{ runner.temp }}/velopack-prev
         run: node scripts/package-gpui-win.mjs "${{ inputs.version }}" "release/${{ inputs.version }}/win-${{ matrix.arch }}"
 
       - name: Validate Windows release assets
@@ -304,9 +321,9 @@ jobs:
           VERSION="${{ inputs.version }}"
           ARCH="${{ matrix.arch }}"
           STAGE="release/$VERSION/win-$ARCH"
-          NSIS="$STAGE/Poratake-$VERSION-win-$ARCH.exe"
+          SETUP="$STAGE/Poratake-$VERSION-win-$ARCH.exe"
           METADATA="$STAGE/latest.yml"
-          node scripts/validate-release-assets-win.mjs "$VERSION" "$NSIS" "$METADATA"
+          node scripts/validate-release-assets-win.mjs "$VERSION" "$SETUP" "$METADATA"
 
       - name: Upload Windows release assets
         uses: actions/upload-artifact@v7
@@ -314,6 +331,8 @@ jobs:
           name: release-windows-${{ matrix.arch }}
           path: |
             release/${{ inputs.version }}/win-${{ matrix.arch }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}.exe
+            release/${{ inputs.version }}/win-${{ matrix.arch }}/Poratake-${{ inputs.version }}-win-${{ matrix.arch }}-*.nupkg
+            release/${{ inputs.version }}/win-${{ matrix.arch }}/releases.win-${{ matrix.arch }}.json
           if-no-files-found: error
           retention-days: 7
 
@@ -435,7 +454,7 @@ jobs:
           grep -q "Poratake-$VERSION-linux-arm64.tar.gz" "$ASSET_DIR/latest-linux.yml"
           grep -q "Poratake-$VERSION-universal-mac.zip" "$ASSET_DIR/latest-mac.yml"
           EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
-          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f\n' | sort)
+          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f ! -name "Poratake-$VERSION-win-*-delta.nupkg" -printf '%f\n' | sort)
           test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
 
       - name: Upload updater manifests
@@ -528,7 +547,7 @@ jobs:
         run: |
           ASSET_DIR="${{ runner.temp }}/release-assets"
           EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
-          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f\n' | sort)
+          ACTUAL_ASSETS=$(find "$ASSET_DIR" -maxdepth 1 -type f ! -name "Poratake-$VERSION-win-*-delta.nupkg" -printf '%f\n' | sort)
           test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
 
       - name: Push release commit and staging tag
@@ -570,7 +589,7 @@ jobs:
           TAG="v$VERSION"
           ASSET_DIR="${{ runner.temp }}/release-assets"
           EXPECTED_ASSETS=$(node scripts/published-release-assets.mjs expected "$VERSION")
-          ACTUAL_ASSETS=$(gh release view "$DRAFT_TAG" --json assets --jq '.assets[].name' | sort)
+          ACTUAL_ASSETS=$(gh release view "$DRAFT_TAG" --json assets --jq '.assets[].name' | grep -vE "^Poratake-$VERSION-win-(x64|arm64)-delta\.nupkg$" | sort)
           test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
           for ASSET_PATH in "$ASSET_DIR"/*; do
             ASSET_NAME=$(basename "$ASSET_PATH")
