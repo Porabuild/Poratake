@@ -1430,6 +1430,7 @@ impl VideoEditorWindow {
                             let _ = window.drop_image(image);
                         }
                         editor.source = None;
+                        editor.preview_audio = crate::video::preview_audio::PreviewAudio::new();
                     }
                     (saved, !saved)
                 })

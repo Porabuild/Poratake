@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
+use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice, IDXGIDevice3};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
     DeleteObject, GdiFlush, GetDC, HBITMAP, HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint,
@@ -39,6 +39,11 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoIncrementMTAUsage,
     CoInitializeEx, CoUninitialize,
 };
+use windows::Win32::System::Memory::{
+    GetProcessHeap, HEAP_FLAGS, HeapCompact, SETPROCESSWORKINGSETSIZEEX_FLAGS,
+    SetProcessWorkingSetSizeEx,
+};
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -48,6 +53,7 @@ use windows::core::{IInspectable, Interface, PCWSTR, factory};
 const FRAME_POOL_SIZE: i32 = 1;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+const IDLE_CAPTURE_RELEASE_DELAY: Duration = Duration::from_secs(5);
 const BYTES_PER_PIXEL: usize = 4;
 const HDR_BYTES_PER_PIXEL: usize = 8;
 const BMP_HEADER_SIZE: usize = 54;
@@ -70,6 +76,7 @@ pub struct FrozenComposition {
     mask: Option<DesktopFrame>,
 }
 
+#[cfg(test)]
 pub fn capture_monitors() -> Vec<DesktopFrame> {
     collect_frames(stream_capture_monitors(None), CAPTURE_TIMEOUT)
 }
@@ -115,6 +122,7 @@ pub fn stream_capture_monitors(priority: Option<isize>) -> std::sync::mpsc::Rece
     receiver
 }
 
+#[cfg(test)]
 fn collect_frames(
     receiver: std::sync::mpsc::Receiver<DesktopFrame>,
     timeout: Duration,
@@ -137,14 +145,29 @@ fn capture_one_monitor(monitor: &MonitorEntry) -> Option<DesktopFrame> {
     capture_with_cached_device(monitor, capture_monitor).ok()
 }
 
-/// Loads the graphics stack ahead of the first capture. The initial
-/// `D3D11CreateDevice` pulls in the driver DLLs and dominates a cold freeze;
-/// every later device creation reuses the already loaded modules.
+unsafe extern "C" {
+    fn _heapmin() -> core::ffi::c_int;
+}
+
+pub fn reclaim_idle_memory() {
+    unsafe {
+        if let Ok(heap) = GetProcessHeap() {
+            let _ = HeapCompact(heap, HEAP_FLAGS(0));
+        }
+        let _ = _heapmin();
+        let _ = SetProcessWorkingSetSizeEx(
+            GetCurrentProcess(),
+            usize::MAX,
+            usize::MAX,
+            SETPROCESSWORKINGSETSIZEEX_FLAGS(0),
+        );
+    }
+}
+
 pub fn prewarm_capture() {
     let _ = std::thread::Builder::new().spawn(|| {
         ensure_multithreaded_apartment();
         let _ = capture_interop();
-        let _ = capture_monitors();
     });
 }
 
@@ -215,6 +238,8 @@ pub fn clear_frozen() {
     if let Ok(mut frozen) = frozen_frames().lock() {
         *frozen = Arc::from([]);
     }
+    release_cached_staging_textures();
+    schedule_idle_cleanup();
 }
 
 pub fn frozen_composition(bounds: RECT) -> Result<Option<FrozenComposition>, String> {
@@ -759,11 +784,140 @@ impl CaptureDevice {
         });
         Ok(texture)
     }
+
+    fn trim(&mut self) {
+        self.staging = None;
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+            if let Ok(dxgi_device) = self.device.cast::<IDXGIDevice3>() {
+                dxgi_device.Trim();
+            }
+        }
+    }
 }
 
 fn capture_devices() -> &'static Mutex<HashMap<isize, Arc<Mutex<CaptureDevice>>>> {
     static DEVICES: OnceLock<Mutex<HashMap<isize, Arc<Mutex<CaptureDevice>>>>> = OnceLock::new();
     DEVICES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn release_cached_staging_textures() {
+    let devices: Vec<Arc<Mutex<CaptureDevice>>> = capture_devices()
+        .lock()
+        .map(|devices| devices.values().cloned().collect())
+        .unwrap_or_default();
+    for device in devices {
+        if let Ok(mut device) = device.try_lock() {
+            device.staging = None;
+        }
+    }
+}
+
+fn release_cached_capture_resources() {
+    let drained: Vec<Arc<Mutex<CaptureDevice>>> = capture_devices()
+        .lock()
+        .map(|mut devices| devices.drain().map(|(_, device)| device).collect())
+        .unwrap_or_default();
+    for device in drained {
+        if let Ok(mut device) = device.lock() {
+            device.trim();
+        }
+    }
+    reclaim_idle_memory();
+}
+
+struct IdleCleanup {
+    state: Mutex<IdleCleanupState>,
+    wake: Condvar,
+}
+
+struct IdleCleanupState {
+    deadline: Option<std::time::Instant>,
+    worker_running: bool,
+}
+
+fn idle_cleanup() -> &'static IdleCleanup {
+    static CLEANUP: OnceLock<IdleCleanup> = OnceLock::new();
+    CLEANUP.get_or_init(|| IdleCleanup {
+        state: Mutex::new(IdleCleanupState {
+            deadline: None,
+            worker_running: false,
+        }),
+        wake: Condvar::new(),
+    })
+}
+
+fn schedule_idle_cleanup() {
+    schedule_idle_cleanup_after(IDLE_CAPTURE_RELEASE_DELAY);
+}
+
+fn schedule_idle_cleanup_after(delay: Duration) {
+    let cleanup = idle_cleanup();
+    let mut state = cleanup
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state.deadline = Some(std::time::Instant::now() + delay);
+    cleanup.wake.notify_all();
+    if state.worker_running {
+        return;
+    }
+    state.worker_running = true;
+    drop(state);
+
+    let spawned = std::thread::Builder::new()
+        .name("capture-idle-reaper".into())
+        .spawn(move || run_idle_cleanup_worker(cleanup));
+    if spawned.is_err() {
+        let mut state = cleanup
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.worker_running = false;
+    }
+}
+
+fn run_idle_cleanup_worker(cleanup: &IdleCleanup) {
+    let mut state = cleanup
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    loop {
+        let Some(deadline) = state.deadline else {
+            state.worker_running = false;
+            return;
+        };
+        let now = std::time::Instant::now();
+        if now < deadline {
+            let remaining = deadline - now;
+            let (next_state, _) = cleanup
+                .wake
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            state = next_state;
+            continue;
+        }
+        state.deadline = None;
+        let has_frozen = frozen_frames()
+            .lock()
+            .map(|frames| !frames.is_empty())
+            .unwrap_or(false);
+        if has_frozen {
+            state.worker_running = false;
+            return;
+        }
+        drop(state);
+        release_cached_capture_resources();
+        state = cleanup
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.deadline.is_none() {
+            state.worker_running = false;
+            return;
+        }
+    }
 }
 
 fn cached_capture_device(monitor_handle: isize) -> Option<Arc<Mutex<CaptureDevice>>> {
@@ -807,6 +961,7 @@ fn capture_with_cached_device(
     if captured.is_err() {
         evict_capture_device(monitor.handle);
     }
+    schedule_idle_cleanup();
     captured
 }
 
@@ -1928,6 +2083,36 @@ mod tests {
         let pixels = convert_pixels(&mapped, 2, 1, None, false).expect("pixels");
 
         assert_eq!(pixels, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn reclaim_idle_memory_succeeds_after_large_buffer() {
+        let buffer = vec![1u8; 4 * 1024 * 1024];
+        std::hint::black_box(&buffer);
+        drop(buffer);
+        reclaim_idle_memory();
+    }
+
+    #[test]
+    fn idle_cleanup_runs_and_exits_worker_cleanly() {
+        schedule_idle_cleanup_after(Duration::from_millis(15));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let running = idle_cleanup()
+                .state
+                .lock()
+                .map(|state| state.worker_running)
+                .unwrap_or(false);
+            if !running {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle cleanup worker did not finish in time"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(capture_devices().lock().unwrap().is_empty());
     }
 
     #[test]

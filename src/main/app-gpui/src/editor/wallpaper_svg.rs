@@ -396,6 +396,15 @@ pub fn cover_size(width: f32, height: f32) -> (u32, u32) {
     (dimension(width), dimension(height))
 }
 
+static IMAGE_CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
+
+pub fn clear_caches() {
+    clear_pixmap_cache();
+    if let Ok(mut cache) = IMAGE_CACHE.lock() {
+        *cache = None;
+    }
+}
+
 pub fn pixmap(id: &str, width: u32, height: u32) -> Option<Arc<Pixmap>> {
     let (id, source) = entry(id)?;
     let width = width.clamp(1, MAX_DIMENSION);
@@ -424,10 +433,9 @@ pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
 }
 
 pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
-    static CACHE: Mutex<Option<ImageCache>> = Mutex::new(None);
     let (id, source) = entry(id)?;
     let height = dimension(size * TILE_SCALE);
-    let mut guard = CACHE.lock().ok()?;
+    let mut guard = IMAGE_CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if let Some(cached) = cache.get(&(id, height)) {
         return cached.clone();

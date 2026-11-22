@@ -109,6 +109,7 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) platform_window_handle: HWND,
     pub(crate) parent_hwnd: Option<HWND>,
+    pub(crate) vsync_wake: Arc<VsyncWake>,
 }
 
 impl WindowsWindowState {
@@ -300,6 +301,7 @@ impl WindowsWindowInner {
             platform_window_handle: context.platform_window_handle,
             system_settings: WindowsSystemSettings::new(),
             parent_hwnd: context.parent_hwnd,
+            vsync_wake: context.vsync_wake.clone(),
         }))
     }
 
@@ -437,6 +439,7 @@ struct WindowCreateContext {
     invalidate_devices: Arc<AtomicBool>,
     draw_coordinator: Rc<DrawCoordinator>,
     parent_hwnd: Option<HWND>,
+    vsync_wake: Arc<VsyncWake>,
 }
 
 impl WindowsWindow {
@@ -464,6 +467,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             draw_coordinator,
+            vsync_wake,
         } = creation_info;
         register_window_class(icon);
         let parent_hwnd = if params.kind == WindowKind::Dialog {
@@ -550,6 +554,7 @@ impl WindowsWindow {
             invalidate_devices,
             draw_coordinator,
             parent_hwnd,
+            vsync_wake,
         };
         let creation_result = unsafe {
             CreateWindowExW(
@@ -559,8 +564,8 @@ impl WindowsWindow {
                 dwstyle,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                128,
+                128,
                 parent_hwnd,
                 None,
                 Some(hinstance.into()),
@@ -587,6 +592,18 @@ impl WindowsWindow {
             }
             unsafe { SetWindowPlacement(hwnd, &placement)? };
         } else {
+            let rect = placement.rcNormalPosition;
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    rect.left,
+                    rect.top,
+                    (rect.right - rect.left).max(1),
+                    (rect.bottom - rect.top).max(1),
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW,
+                );
+            }
             this.state.initial_placement.set(Some(WindowOpenStatus {
                 placement,
                 state: WindowOpenState::Windowed,
@@ -628,8 +645,10 @@ impl Drop for WindowsWindow {
                 this.dialog_owner.when_idle().await;
                 let handle = this.hwnd;
                 unsafe {
-                    RevokeDragDrop(handle).log_err();
-                    DestroyWindow(handle).log_err();
+                    if IsWindow(Some(handle)).as_bool() {
+                        let _ = RevokeDragDrop(handle);
+                        DestroyWindow(handle).log_err();
+                    }
                 }
             })
             .detach();
@@ -1153,13 +1172,13 @@ impl accesskit::ActionHandler for A11yActionHandler {
 }
 
 #[implement(IDropTarget)]
-struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
+struct WindowsDragDropHandler(pub Weak<WindowsWindowInner>);
 
 impl WindowsDragDropHandler {
-    fn handle_drag_drop(&self, input: PlatformInput) {
-        if let Some(mut func) = self.0.state.callbacks.input.take() {
+    fn handle_drag_drop(window: &WindowsWindowInner, input: PlatformInput) {
+        if let Some(mut func) = window.state.callbacks.input.take() {
             func(input);
-            self.0.state.callbacks.input.set(Some(func));
+            window.state.callbacks.input.set(Some(func));
         }
     }
 }
@@ -1173,6 +1192,10 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        let Some(window) = self.0.upgrade() else {
+            unsafe { *pdweffect = DROPEFFECT_NONE };
+            return Ok(());
+        };
         unsafe {
             let idata_obj = pdataobj.ok()?;
             let config = FORMATETC {
@@ -1200,10 +1223,10 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 });
                 ReleaseStgMedium(&mut idata);
                 let mut cursor_position = cursor_position;
-                ScreenToClient(self.0.hwnd, &mut cursor_position)
+                ScreenToClient(window.hwnd, &mut cursor_position)
                     .ok()
                     .log_err();
-                let scale_factor = self.0.state.scale_factor.get();
+                let scale_factor = window.state.scale_factor.get();
                 let input = PlatformInput::FileDrop(FileDropEvent::Entered {
                     position: logical_point(
                         cursor_position.x as f32,
@@ -1212,13 +1235,13 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                     ),
                     paths: ExternalPaths(paths),
                 });
-                self.handle_drag_drop(input);
+                WindowsDragDropHandler::handle_drag_drop(&window, input);
             } else {
                 *pdweffect = DROPEFFECT_NONE;
             }
-            self.0
+            window
                 .drop_target_helper
-                .DragEnter(self.0.hwnd, idata_obj, &cursor_position, *pdweffect)
+                .DragEnter(window.hwnd, idata_obj, &cursor_position, *pdweffect)
                 .log_err();
         }
         Ok(())
@@ -1230,18 +1253,22 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        let Some(window) = self.0.upgrade() else {
+            unsafe { *pdweffect = DROPEFFECT_NONE };
+            return Ok(());
+        };
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
             *pdweffect = DROPEFFECT_COPY;
-            self.0
+            window
                 .drop_target_helper
                 .DragOver(&cursor_position, *pdweffect)
                 .log_err();
-            ScreenToClient(self.0.hwnd, &mut cursor_position)
+            ScreenToClient(window.hwnd, &mut cursor_position)
                 .ok()
                 .log_err();
         }
-        let scale_factor = self.0.state.scale_factor.get();
+        let scale_factor = window.state.scale_factor.get();
         let input = PlatformInput::FileDrop(FileDropEvent::Pending {
             position: logical_point(
                 cursor_position.x as f32,
@@ -1249,17 +1276,20 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 scale_factor,
             ),
         });
-        self.handle_drag_drop(input);
+        WindowsDragDropHandler::handle_drag_drop(&window, input);
 
         Ok(())
     }
 
     fn DragLeave(&self) -> windows::core::Result<()> {
+        let Some(window) = self.0.upgrade() else {
+            return Ok(());
+        };
         unsafe {
-            self.0.drop_target_helper.DragLeave().log_err();
+            window.drop_target_helper.DragLeave().log_err();
         }
         let input = PlatformInput::FileDrop(FileDropEvent::Exited);
-        self.handle_drag_drop(input);
+        WindowsDragDropHandler::handle_drag_drop(&window, input);
 
         Ok(())
     }
@@ -1271,19 +1301,23 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        let Some(window) = self.0.upgrade() else {
+            unsafe { *pdweffect = DROPEFFECT_NONE };
+            return Ok(());
+        };
         let idata_obj = pdataobj.ok()?;
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
             *pdweffect = DROPEFFECT_COPY;
-            self.0
+            window
                 .drop_target_helper
                 .Drop(idata_obj, &cursor_position, *pdweffect)
                 .log_err();
-            ScreenToClient(self.0.hwnd, &mut cursor_position)
+            ScreenToClient(window.hwnd, &mut cursor_position)
                 .ok()
                 .log_err();
         }
-        let scale_factor = self.0.state.scale_factor.get();
+        let scale_factor = window.state.scale_factor.get();
         let input = PlatformInput::FileDrop(FileDropEvent::Submit {
             position: logical_point(
                 cursor_position.x as f32,
@@ -1291,7 +1325,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 scale_factor,
             ),
         });
-        self.handle_drag_drop(input);
+        WindowsDragDropHandler::handle_drag_drop(&window, input);
 
         Ok(())
     }
@@ -1526,7 +1560,7 @@ fn get_module_handle() -> HMODULE {
 
 fn register_drag_drop(window: &Rc<WindowsWindowInner>) -> Result<()> {
     let window_handle = window.hwnd;
-    let handler = WindowsDragDropHandler(window.clone());
+    let handler = WindowsDragDropHandler(Rc::downgrade(window));
     // The lifetime of `IDropTarget` is handled by Windows, it won't release until
     // we call `RevokeDragDrop`.
     // So, it's safe to drop it here.

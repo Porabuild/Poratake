@@ -49,6 +49,7 @@ pub fn apply_system_mode(mode: ThemeMode, cx: &mut gpui::App) {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub fn window_theme_mode(appearance: gpui::WindowAppearance) -> ThemeMode {
     match appearance {
         gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => ThemeMode::Light,

@@ -143,14 +143,24 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+static SPRITE_CACHE: Mutex<Option<HashMap<String, Option<Arc<Pixmap>>>>> = Mutex::new(None);
+static DECODED_IMAGE_CACHE: Mutex<Option<(String, Arc<Pixmap>)>> = Mutex::new(None);
+
+pub fn clear_caches() {
+    if let Ok(mut cache) = SPRITE_CACHE.lock() {
+        *cache = None;
+    }
+    if let Ok(mut cache) = DECODED_IMAGE_CACHE.lock() {
+        *cache = None;
+    }
+}
+
 /// Rasterizes a cursor sprite at `size` pixels square, caching by type, colour
 /// pair and size the way the renderer caches its `Image` objects.
 pub fn sprite(cursor_type: &str, fill: &str, stroke: &str, size: u32) -> Option<Arc<Pixmap>> {
-    static CACHE: Mutex<Option<HashMap<String, Option<Arc<Pixmap>>>>> = Mutex::new(None);
-
     let size = size.clamp(1, 1024);
     let key = format!("{cursor_type}:{fill}:{stroke}:{size}");
-    let mut guard = CACHE.lock().ok()?;
+    let mut guard = SPRITE_CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(HashMap::new);
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
@@ -161,8 +171,7 @@ pub fn sprite(cursor_type: &str, fill: &str, stroke: &str, size: u32) -> Option<
 }
 
 pub fn decoded_image(source: &str) -> Option<Arc<Pixmap>> {
-    static CACHE: Mutex<Option<(String, Arc<Pixmap>)>> = Mutex::new(None);
-    let mut guard = CACHE.lock().ok()?;
+    let mut guard = DECODED_IMAGE_CACHE.lock().ok()?;
     if let Some((_, image)) = guard
         .as_ref()
         .filter(|(cached_source, _)| cached_source == source)

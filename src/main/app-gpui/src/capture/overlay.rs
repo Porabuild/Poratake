@@ -99,6 +99,7 @@ pub(crate) fn set_pending_freeze(generation: u64, cx: &mut App) {
 pub(crate) fn finish_pending_freeze_release(generation: u64, released: bool, cx: &mut App) {
     if generation != 0 && released && session(cx).pending_freeze == Some(generation) {
         session(cx).pending_freeze = None;
+        crate::system::memory::schedule_idle_reclaim(cx);
     }
 }
 
@@ -133,6 +134,7 @@ pub(crate) fn retry_pending_freeze_release(generation: u64, cx: &mut App) {
 pub(crate) fn clear_pending_freeze(generation: u64, owner: u64, cx: &mut App) {
     if session(cx).revision == owner && session(cx).pending_freeze == Some(generation) {
         session(cx).pending_freeze = None;
+        crate::system::memory::schedule_idle_reclaim(cx);
     }
 }
 
@@ -504,6 +506,8 @@ fn take_all(cx: &mut App) -> (Vec<TrackedOverlay>, Option<u64>) {
 }
 
 fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
+    #[cfg(windows)]
+    let mut parked = false;
     for tracked in handles {
         #[cfg(windows)]
         if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
@@ -527,6 +531,7 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
                     handle,
                     display_id: tracked.display_id,
                 });
+                parked = true;
                 continue;
             }
         }
@@ -535,6 +540,53 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
             crate::system::window_visibility::hide(window);
             window.remove_window();
         });
+    }
+    #[cfg(windows)]
+    if parked {
+        crate::system::memory::schedule_idle_reclaim(cx);
+    }
+}
+
+pub(crate) fn has_active_or_pending(cx: &App) -> bool {
+    cx.try_global::<OverlaySession>()
+        .is_some_and(|session| !session.handles.is_empty() || session.pending_freeze.is_some())
+}
+
+pub(crate) fn pooled_count(cx: &App) -> usize {
+    #[cfg(windows)]
+    {
+        let windows = cx.windows();
+        cx.try_global::<OverlaySession>().map_or(0, |session| {
+            session
+                .pooled
+                .iter()
+                .filter(|entry| windows.contains(&entry.handle.into()))
+                .count()
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cx;
+        0
+    }
+}
+
+pub(crate) fn evict_pooled(cx: &mut App) {
+    #[cfg(windows)]
+    {
+        if cx.try_global::<OverlaySession>().is_none() {
+            return;
+        }
+        let pooled = std::mem::take(&mut cx.global_mut::<OverlaySession>().pooled);
+        for entry in pooled {
+            let _ = entry
+                .handle
+                .update(cx, |_, window, _| window.remove_window());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cx;
     }
 }
 
@@ -1309,7 +1361,7 @@ fn open_overlay_window(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub fn prewarm(cx: &mut App) {
     let service = crate::state::state(cx);
     for display in cx.displays() {

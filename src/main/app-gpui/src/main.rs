@@ -254,6 +254,7 @@ fn dispatch_instance_command(command: system::single_instance::InstanceCommand, 
 struct SingleInstanceState {
     _guard: system::single_instance::SingleInstanceGuard,
     _tx: smol::channel::Sender<system::single_instance::InstanceCommand>,
+    _window_closed: gpui::Subscription,
 }
 
 impl gpui::Global for SingleInstanceState {}
@@ -307,7 +308,11 @@ fn main() {
     // resolve to nothing and the migrated components lose their indicators.
     // The app's own images are decoded to `RenderImage` rather than loaded
     // through an asset source, so there is nothing to fall back to.
-    let app = application().with_assets(herogpui::HeroGpuiAssets);
+    let app = application()
+        .with_assets(herogpui::HeroGpuiAssets)
+        .with_quit_mode(gpui::QuitMode::Explicit);
+    #[cfg(windows)]
+    let app = app.with_windowing(gpui::WindowingRequest::Headless);
     app.on_open_urls(move |urls| {
         let paths: Vec<String> = urls
             .into_iter()
@@ -330,9 +335,13 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        let window_closed = cx.on_window_closed(|cx, _| {
+            system::memory::schedule_idle_reclaim(cx);
+        });
         cx.set_global(SingleInstanceState {
             _guard: single_instance,
             _tx: instance_tx,
+            _window_closed: window_closed,
         });
         cx.spawn(async move |cx| {
             while let Ok(command) = instance_rx.recv().await {
@@ -372,7 +381,7 @@ fn main() {
         capture::overlay::init_bindings(cx);
         // `capture/index.ts` prewarms the freeze pipeline at startup so the
         // first capture does not pay for initialising it.
-        if !defer_daemon {
+        if !defer_daemon && !cfg!(windows) {
             capture::prewarm_freeze_screen(cx);
         }
         // `applyLoginItemSetting()` in the Electron shell reconciles the Run
@@ -428,13 +437,8 @@ fn main() {
             }
         }
 
+        #[cfg(target_os = "macos")]
         windows::keepalive::KeepAlive::open(cx);
-        #[cfg(windows)]
-        if !settings.general.hide_menu_bar_icon {
-            windows::tray_menu::TrayMenuWindow::prewarm(cx);
-        }
-        #[cfg(windows)]
-        capture::overlay::prewarm(cx);
 
         if windows::onboarding::OnboardingWindow::should_show(&config) {
             windows::onboarding::OnboardingWindow::open(cx, config.clone());
@@ -541,6 +545,7 @@ fn main() {
             Some(path) => open_path(cx, path.to_owned(), true),
             None => {}
         }
+        system::memory::schedule_idle_reclaim(cx);
     });
 }
 
