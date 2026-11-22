@@ -433,6 +433,7 @@ pub struct EditorWindow {
     fit_for: Option<(gpui::Size<Pixels>, bool, (f32, f32))>,
     pub wallpaper: crate::editor::wallpaper::WallpaperSettings,
     native_scale: f64,
+    window_scale: f64,
     wallpaper_preset_id: String,
     background_editor: Option<BackgroundDraft>,
     background_editor_generation: u64,
@@ -479,6 +480,7 @@ pub struct EditorWindow {
         f64,
         Option<[u8; 3]>,
         Option<gpui::ImageId>,
+        f64,
     )>,
     backdrop_in_flight: bool,
     backdrop_pending: bool,
@@ -639,6 +641,7 @@ impl EditorWindow {
                 f64::from(height),
                 f64::from(window.scale_factor()),
             ),
+            window_scale: f64::from(window.scale_factor()),
             wallpaper_preset_id: String::new(),
             background_editor: None,
             background_editor_generation: 0,
@@ -986,6 +989,7 @@ impl EditorWindow {
                         .is_some()))
             .then(|| self.image.as_ref().map(|image| image.id))
             .flatten(),
+            self.window_scale,
         );
         if self.backdrop_in_flight {
             if self.backdrop_key.as_ref() != Some(&key) {
@@ -1007,6 +1011,7 @@ impl EditorWindow {
                 || previous.0.corners != key.0.corners
                 || previous.3 != key.3
                 || previous.6 != key.6
+                || previous.7 != key.7
         }) {
             self.retire_backdrop();
         }
@@ -2768,6 +2773,12 @@ impl Render for EditorWindow {
         if self.native_scale != native_scale {
             self.native_scale = native_scale;
             self.refresh_raster_patches();
+        }
+        let window_scale = f64::from(window.scale_factor());
+        if self.window_scale != window_scale {
+            self.window_scale = window_scale;
+            self.retire_backdrop();
+            self.backdrop_key = None;
         }
         self.fit_to_window(window, cx);
         self.refresh_backdrop(cx);

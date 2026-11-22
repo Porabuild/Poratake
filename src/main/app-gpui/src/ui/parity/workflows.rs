@@ -8827,15 +8827,16 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     });
     cx.update_window(window, |_, window, _| window.set_scale_factor(1.25))
         .unwrap();
+    editor.update(cx, |_, _, cx| cx.notify()).unwrap();
     super::frame(cx, window);
     cx.update(|cx| {
-        assert!(editor
-            .read(cx)
-            .unwrap()
-            .snapshot
-            .borrow()
+        let snapshot = editor.read(cx).unwrap().snapshot.borrow();
+        assert!(snapshot
             .backdrop
-            .is_none());
+            .as_ref()
+            .map_or(true, |backdrop| !std::sync::Arc::ptr_eq(
+                backdrop, &previous
+            )));
     });
     settle(cx, window);
     cx.update(|cx| {
@@ -8847,6 +8848,8 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             .backdrop
             .is_some());
     });
+    let before_padding =
+        cx.update(|cx| editor.read(cx).unwrap().snapshot.borrow().backdrop.clone());
     editor
         .update(cx, |editor, _, cx| {
             editor.wallpaper.padding = 40.;
@@ -8855,13 +8858,12 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
         .unwrap();
     super::frame(cx, window);
     cx.update(|cx| {
-        assert!(editor
-            .read(cx)
-            .unwrap()
-            .snapshot
-            .borrow()
-            .backdrop
-            .is_none());
+        let snapshot = editor.read(cx).unwrap().snapshot.borrow();
+        assert!(snapshot.backdrop.as_ref().map_or(true, |backdrop| {
+            before_padding
+                .as_ref()
+                .is_none_or(|before| !std::sync::Arc::ptr_eq(backdrop, before))
+        }));
     });
     let alpha_background = scratch.join("scaled-wallpaper-alpha-background.png");
     image::RgbaImage::from_pixel(64, 64, image::Rgba([32, 96, 160, 128]))

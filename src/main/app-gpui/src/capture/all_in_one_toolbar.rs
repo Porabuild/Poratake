@@ -227,12 +227,21 @@ fn target_menu(choices: Choices, menu: &MenuHandle, cx: &mut Context<AreaOverlay
                             px(chrome::OVERLAY_TARGET_CHEVRON),
                         )),
                 )
-                .on_press(move |_, window, cx| {
+                .on_press(move |event, window, cx| {
                     let focus = window.focused(cx);
                     if let Some(owner) = owner.upgrade() {
                         owner.update(cx, |this, _| this.set_all_in_one_menu_focus(focus));
                     }
-                    handle.toggle(target_menu_placement(), entries.clone(), window, cx);
+                    if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                        let handle = handle.clone();
+                        let entries = entries.clone();
+                        let placement = target_menu_placement();
+                        window.defer(cx, move |window, cx| {
+                            handle.toggle(placement, entries, window, cx);
+                        });
+                    } else {
+                        handle.toggle(target_menu_placement(), entries.clone(), window, cx);
+                    }
                     cx.stop_propagation();
                 }),
         )

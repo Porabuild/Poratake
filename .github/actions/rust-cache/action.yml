@@ -1,0 +1,27 @@
+name: Rust cache with vendored crates
+description: Normalize vendor/ mtimes and cache Cargo dependencies including vendored crates.
+
+inputs:
+  shared-key:
+    description: Cache namespace for this job and target
+    required: true
+  save-if:
+    description: Whether to save updated caches at the end of the job
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Normalize vendor timestamps
+      shell: bash
+      run: find vendor -type f -exec touch -t 202001010000 {} +
+
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/main
+        shared-key: ${{ inputs.shared-key }}-${{ hashFiles('vendor/**') }}
+        cache-all-crates: true
+        save-if: ${{ inputs.save-if }}
+        cache-on-failure: true

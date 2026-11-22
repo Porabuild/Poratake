@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,
-  mkdtempSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -53,23 +53,27 @@ if (!components || !theme || !core) {
 }
 
 const tempRoot = realpathSync(tmpdir());
-const tempDir = realpathSync(
-  mkdtempSync(path.join(tempRoot, 'poratake-a11y-'))
-);
+const tempDir = path.join(tempRoot, 'poratake-a11y-probe');
 const gpuiDir = path.join(tempDir, 'gpui-pre');
 const tomlPath = value =>
   JSON.stringify(path.resolve(value).replaceAll('\\', '/'));
 if (
   path.dirname(tempDir) !== tempRoot ||
-  !path.basename(tempDir).startsWith('poratake-a11y-')
+  path.basename(tempDir) !== 'poratake-a11y-probe'
 ) {
   throw new Error(
     'refusing to remove an unexpected accessibility test directory'
   );
 }
 
+rmSync(tempDir, { recursive: true, force: true });
+mkdirSync(tempDir, { recursive: true });
+
 try {
-  cpSync(path.dirname(gpui.manifest_path), gpuiDir, { recursive: true });
+  cpSync(path.dirname(gpui.manifest_path), gpuiDir, {
+    recursive: true,
+    preserveTimestamps: true,
+  });
   execFileSync(
     'git',
     ['apply', path.join(root, 'scripts/parity/gpui-accessibility-test.patch')],

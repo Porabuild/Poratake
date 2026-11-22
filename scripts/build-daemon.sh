@@ -18,6 +18,11 @@ echo -e "${YELLOW}Building poratake-daemon...${NC}"
 
 bun "$PROJECT_ROOT/scripts/generate-daemon-contract.mjs" --check
 
+if [ -x "$OUTPUT_FILE" ] && [ -n "${CI:-}" ]; then
+    echo "poratake-daemon already built (CI), skipping."
+    exit 0
+fi
+
 SWIFT_FILES=$(find "$DAEMON_DIR" -name "*.swift" -type f)
 if [ -z "$SWIFT_FILES" ]; then
     echo -e "${RED}Error: No Swift files found in $DAEMON_DIR${NC}"
@@ -30,19 +35,23 @@ if [ -f "$PLIST_FILE" ]; then
     PLIST_ARGS="-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker $PLIST_FILE"
 fi
 
-echo "  Compiling for arm64..."
+echo "  Compiling for arm64 and x86_64..."
 swiftc -O -target arm64-apple-macosx13.0 \
     -suppress-warnings \
     $PLIST_ARGS \
     -o "$OUTPUT_FILE-arm64" \
-    $SWIFT_FILES
+    $SWIFT_FILES &
+PID_ARM64=$!
 
-echo "  Compiling for x86_64..."
 swiftc -O -target x86_64-apple-macosx13.0 \
     -suppress-warnings \
     $PLIST_ARGS \
     -o "$OUTPUT_FILE-x86_64" \
-    $SWIFT_FILES
+    $SWIFT_FILES &
+PID_X86_64=$!
+
+wait "$PID_ARM64"
+wait "$PID_X86_64"
 
 echo "  Creating universal binary..."
 lipo -create \

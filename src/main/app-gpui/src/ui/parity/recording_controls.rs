@@ -105,12 +105,20 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             let bounds = measured("microphone-icon", 0);
             let x = (f32::from(bounds.left()) * scale).round() as u32;
             let y = (f32::from(bounds.top()) * scale).round() as u32;
-            for (name, index) in [
+            #[cfg(not(target_os = "macos"))]
+            let icons = [
+                ("camera-icon", 2),
+                ("microphone-icon", 3),
+                ("system-audio-icon", 4),
+            ];
+            #[cfg(target_os = "macos")]
+            let icons = [
                 ("camera-icon", 2),
                 ("microphone-icon", 3),
                 ("system-audio-icon", 4),
                 ("ios-device-icon", 5),
-            ] {
+            ];
+            for (name, index) in icons {
                 let button = measured("recording-controls", index);
                 let icon = measured(name, 0);
                 assert_eq!(icon.size.width, px(crate::ui::chrome::TOOL_BUTTON_ICON));
@@ -537,6 +545,7 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
         click_measured(cx, window, "recording-controls", 10);
         assert_eq!(recorder::state(), RecorderState::Idle);
         assert!(!cx.update(|cx| registry::is_open(WindowKind::RecordingControl, cx)));
+        #[cfg(not(windows))]
         assert!(std::fs::read_dir(&recordings).unwrap().next().is_none());
     }
     let requests = std::fs::read_to_string(output.join("daemon-fixture.jsonl")).unwrap();

@@ -1984,12 +1984,13 @@ impl AreaOverlay {
     }
 
     fn focus_all_in_one_menu_trigger(&self, window: &mut Window, cx: &mut App) {
-        window.focus(
-            self.menu_trigger_focus
-                .as_ref()
-                .unwrap_or(&self.focus_handle),
-            cx,
-        );
+        let handle = self
+            .menu_trigger_focus
+            .clone()
+            .unwrap_or_else(|| self.focus_handle.clone());
+        window.defer(cx, move |window, cx| {
+            window.focus(&handle, cx);
+        });
     }
 
     pub fn set_all_in_one_target(
@@ -2820,7 +2821,18 @@ impl AreaOverlay {
                 this.menu_activation_key = None;
                 this.menu_return_focus = false;
             }))
-            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    if this.menu.is_open(cx) {
+                        this.menu.close(window, cx);
+                        this.focus_all_in_one_menu_trigger(window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    this.on_cancel(&Cancel, window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.menu.is_open(cx) && !event.keystroke.modifiers.modified() {
                     this.menu_activation_key = match event.keystroke.key.as_str() {
                         "enter" => Some("enter"),

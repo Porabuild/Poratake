@@ -5,11 +5,42 @@ import os from 'node:os';
 import { PROFILE_TIMEOUT_MINUTES, runVisualProfile } from './visual-runner.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
-const update = process.argv.includes('--update-baselines');
-const unknown = process.argv
-  .slice(2)
-  .filter(arg => arg !== '--update-baselines');
+const ALL_THEMES = ['light', 'dark'];
+const ALL_WIDTHS = [950, 1280];
+const ALL_SCALES = [1, 1.25, 1.5, 2];
+
+function parseFilter(args, prefix, allowed, parse = value => value) {
+  const values = [];
+  for (const arg of args) {
+    if (!arg.startsWith(prefix)) continue;
+    for (const part of arg.slice(prefix.length).split(',')) {
+      if (!part) continue;
+      const parsed = parse(part);
+      if (!allowed.includes(parsed)) {
+        throw new Error(`Invalid value for ${prefix}: ${part}`);
+      }
+      if (!values.includes(parsed)) values.push(parsed);
+    }
+  }
+  return values.length ? values : allowed;
+}
+
+const rawArgs = process.argv.slice(2);
+const update = rawArgs.includes('--update-baselines');
+const unknown = rawArgs.filter(
+  arg =>
+    arg !== '--update-baselines' &&
+    !arg.startsWith('--theme=') &&
+    !arg.startsWith('--width=') &&
+    !arg.startsWith('--scale=')
+);
 if (unknown.length) throw new Error(`Unknown arguments: ${unknown.join(' ')}`);
+
+const themes = parseFilter(rawArgs, '--theme=', ALL_THEMES);
+const widths = parseFilter(rawArgs, '--width=', ALL_WIDTHS, Number);
+const scales = parseFilter(rawArgs, '--scale=', ALL_SCALES, Number);
+const totalProfiles = themes.length * widths.length * scales.length;
+
 const build = spawnSync(
   'cargo',
   [
@@ -17,10 +48,11 @@ const build = spawnSync(
     '--locked',
     '--manifest-path',
     'src/main/Cargo.toml',
-    '-p',
+    '--workspace',
+    '--bin',
     'poratake-gpui',
     '--features',
-    'parity',
+    'poratake-gpui/parity',
     '--message-format=json-render-diagnostics',
   ],
   { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
@@ -46,9 +78,9 @@ console.log(`Visual evidence: ${output}`);
 let failures = 0;
 let timedOutProfile = false;
 let profilesRun = 0;
-profileMatrix: for (const theme of ['light', 'dark']) {
-  for (const width of [950, 1280]) {
-    for (const scale of [1, 1.25, 1.5, 2]) {
+profileMatrix: for (const theme of themes) {
+  for (const width of widths) {
+    for (const scale of scales) {
       const name = `${theme}-${width}-${scale}`;
       const destination = path.join(output, name);
       mkdirSync(destination);
@@ -90,7 +122,7 @@ profileMatrix: for (const theme of ['light', 'dark']) {
   }
 }
 const summary = timedOutProfile
-  ? `Stopped after a per-profile timeout. ${profilesRun}/16 visual cases ran; ${failures} failed.`
-  : `${16 - failures}/16 visual cases passed.`;
+  ? `Stopped after a per-profile timeout. ${profilesRun}/${totalProfiles} visual cases ran; ${failures} failed.`
+  : `${totalProfiles - failures}/${totalProfiles} visual cases passed.`;
 console.log(`${summary} Evidence: ${output}`);
 process.exit(failures ? 1 : 0);
