@@ -177,48 +177,49 @@ The Poratake GPUI shell and Rust daemon crates directly depend on the following 
 
 The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) and `png` 0.18.1 (MIT OR Apache-2.0), both already bundled through `image`.
 
-| Crate                      |   Version | License                   |
-| -------------------------- | --------: | ------------------------- |
-| `anyhow`                   |   1.0.104 | MIT OR Apache-2.0         |
-| `base64`                   |    0.23.1 | MIT OR Apache-2.0         |
-| `chrono`                   |    0.4.45 | MIT OR Apache-2.0         |
-| `cocoa`                    |    0.26.0 | MIT OR Apache-2.0         |
-| `block2`                   |     0.6.2 | MIT                       |
-| `dbus`                     |    0.9.12 | Apache-2.0 OR MIT         |
-| `dirs`                     |     6.0.0 | MIT OR Apache-2.0         |
-| `fontdue`                  |     0.9.4 | MIT OR Apache-2.0 OR Zlib |
-| `glib`                     |    0.18.5 | MIT                       |
-| `global-hotkey`            |     0.8.0 | Apache-2.0 OR MIT         |
-| `gpui-pre`                 |    0.3.11 | Apache-2.0                |
-| `herogpui`                 |    0.15.2 | Apache-2.0                |
-| `gtk`                      |    0.18.2 | MIT                       |
-| `hmac`                     |    0.13.0 | MIT OR Apache-2.0         |
-| `image`                    |   0.25.10 | MIT OR Apache-2.0         |
-| `libc`                     |   0.2.189 | MIT OR Apache-2.0         |
-| `lyon`                     |    1.0.19 | MIT OR Apache-2.0         |
-| `md-5`                     |    0.11.0 | MIT OR Apache-2.0         |
-| `objc`                     |     0.2.7 | MIT                       |
-| `objc2`                    |     0.6.4 | MIT                       |
-| `objc2-foundation`         |     0.3.2 | MIT                       |
-| `objc2-user-notifications` |     0.3.2 | Zlib OR Apache-2.0 OR MIT |
-| `parking_lot`              |    0.12.5 | MIT OR Apache-2.0         |
-| `raw-window-handle`        |     0.6.2 | MIT OR Apache-2.0 OR Zlib |
-| `resvg`                    |    0.45.1 | Apache-2.0 OR MIT         |
-| `rfd`                      |    0.15.4 | MIT                       |
-| `rodio`                    |    0.22.2 | MIT OR Apache-2.0         |
-| `rqrr`                     |    0.10.1 | MIT                       |
-| `sha2`                     |    0.11.0 | MIT OR Apache-2.0         |
-| `smallvec`                 |    1.15.2 | MIT OR Apache-2.0         |
-| `smol`                     |     2.0.2 | Apache-2.0 OR MIT         |
-| `tiny-skia`                |    0.11.4 | BSD-3-Clause              |
-| `tray-icon`                |    0.24.2 | MIT OR Apache-2.0         |
-| `ureq`                     |     3.4.0 | MIT OR Apache-2.0         |
-| `usvg`                     |    0.45.1 | Apache-2.0 OR MIT         |
-| `windows`                  |    0.61.3 | MIT OR Apache-2.0         |
-| `xcb`                      |     1.7.1 | MIT                       |
-| `zed-scap`                 | 0.0.8-zed | MIT                       |
-| `serde`                    |   1.0.229 | MIT OR Apache-2.0         |
-| `serde_json`               |   1.0.151 | MIT OR Apache-2.0         |
+| Crate                      |         Version | License                   |
+| -------------------------- | --------------: | ------------------------- |
+| `anyhow`                   |         1.0.104 | MIT OR Apache-2.0         |
+| `base64`                   |          0.23.1 | MIT OR Apache-2.0         |
+| `chrono`                   |          0.4.45 | MIT OR Apache-2.0         |
+| `cocoa`                    |          0.26.0 | MIT OR Apache-2.0         |
+| `block2`                   |           0.6.2 | MIT                       |
+| `dbus`                     |          0.9.12 | Apache-2.0 OR MIT         |
+| `dirs`                     |           6.0.0 | MIT OR Apache-2.0         |
+| `fontdue`                  |           0.9.4 | MIT OR Apache-2.0 OR Zlib |
+| `glib`                     |          0.18.5 | MIT                       |
+| `global-hotkey`            |           0.8.0 | Apache-2.0 OR MIT         |
+| `gpui-pre`                 |          0.3.11 | Apache-2.0                |
+| `herogpui`                 |          0.15.2 | Apache-2.0                |
+| `gtk`                      |          0.18.2 | MIT                       |
+| `hmac`                     |          0.13.0 | MIT OR Apache-2.0         |
+| `image`                    |         0.25.10 | MIT OR Apache-2.0         |
+| `libc`                     |         0.2.189 | MIT OR Apache-2.0         |
+| `lyon`                     |          1.0.19 | MIT OR Apache-2.0         |
+| `md-5`                     |          0.11.0 | MIT OR Apache-2.0         |
+| `objc`                     |           0.2.7 | MIT                       |
+| `objc2`                    |           0.6.4 | MIT                       |
+| `objc2-foundation`         |           0.3.2 | MIT                       |
+| `objc2-user-notifications` |           0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `parking_lot`              |          0.12.5 | MIT OR Apache-2.0         |
+| `raw-window-handle`        |           0.6.2 | MIT OR Apache-2.0 OR Zlib |
+| `resvg`                    |          0.45.1 | Apache-2.0 OR MIT         |
+| `rfd`                      |          0.15.4 | MIT                       |
+| `rodio`                    |          0.22.2 | MIT OR Apache-2.0         |
+| `rqrr`                     |          0.10.1 | MIT                       |
+| `sha2`                     |          0.11.0 | MIT OR Apache-2.0         |
+| `smallvec`                 |          1.15.2 | MIT OR Apache-2.0         |
+| `smol`                     |           2.0.2 | Apache-2.0 OR MIT         |
+| `tiny-skia`                |          0.11.4 | BSD-3-Clause              |
+| `tray-icon`                |          0.24.2 | MIT OR Apache-2.0         |
+| `ureq`                     |           3.4.0 | MIT OR Apache-2.0         |
+| `usvg`                     |          0.45.1 | Apache-2.0 OR MIT         |
+| `velopack`                 | 1.3.39-g8d2844f | MIT                       |
+| `windows`                  |          0.61.3 | MIT OR Apache-2.0         |
+| `xcb`                      |           1.7.1 | MIT                       |
+| `zed-scap`                 |       0.0.8-zed | MIT                       |
+| `serde`                    |         1.0.229 | MIT OR Apache-2.0         |
+| `serde_json`               |         1.0.151 | MIT OR Apache-2.0         |
 
 [HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` use the published 0.15.2 crates.io release ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.2), revision `b7b28efc12839c5d805c5a628fdea98ae79ac9a2`); their registry checksums are locked in `src/main/Cargo.lock`. This revision replaces Poratake's former component patches for focus-ring gutters, accessibility actions, and keyboard press ownership. Poratake no longer vendors or modifies the HeroGPUI crates. The separate GPUI 0.3.11 Windows backend patch remains necessary. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
