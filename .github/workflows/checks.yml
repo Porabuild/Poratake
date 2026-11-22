@@ -466,10 +466,12 @@ jobs:
         run: cargo test --locked --manifest-path src/main/Cargo.toml --package gpui-pre-windows --lib clipboard::tests
 
       - name: Visual regressions
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions }}
-        env:
-          PORATAKE_PARITY_UPDATE_BASELINES: ${{ inputs.update_windows_visual_baselines && '1' || '0' }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions && !inputs.update_windows_visual_baselines }}
         run: bun run test:visual
+
+      - name: Record visual baselines
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions && inputs.update_windows_visual_baselines }}
+        run: bun scripts/parity/visual.mjs --update-baselines
 
       - name: Preserve updated visual baselines
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.update_windows_visual_baselines }}
