@@ -139,6 +139,7 @@ if (vpkProbe.status !== 0) {
 }
 
 const vpkOutDir = path.join(outDir, 'velopack');
+rmSync(vpkOutDir, { recursive: true, force: true });
 mkdirSync(vpkOutDir, { recursive: true });
 const prevDir = process.env.PORATAKE_VELOPACK_PREV_DIR;
 if (prevDir && existsSync(prevDir)) {

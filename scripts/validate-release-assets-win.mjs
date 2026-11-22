@@ -29,13 +29,13 @@ function unquote(value) {
   return value.replace(/^(['"])(.*)\1$/, '$2');
 }
 
-function hashFile(filePath) {
+function hashFile(filePath, algorithm = 'sha512', encoding = 'base64') {
   return new Promise((resolve, reject) => {
-    const hash = createHash('sha512');
+    const hash = createHash(algorithm);
     const stream = createReadStream(filePath);
     stream.on('data', chunk => hash.update(chunk));
     stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('base64')));
+    stream.on('end', () => resolve(hash.digest(encoding)));
   });
 }
 
@@ -108,6 +108,28 @@ if (archMatch) {
   }
   if (Number(fullEntry.Size) !== fullStats.size) {
     fail(`Velopack feed size mismatch for ${fullNupkgName}`);
+  }
+  const fullSha256 = (
+    await hashFile(fullNupkgPath, 'sha256', 'hex')
+  ).toUpperCase();
+  if (fullEntry.SHA256 && fullEntry.SHA256.toUpperCase() !== fullSha256) {
+    fail(`Velopack feed SHA-256 mismatch for ${fullNupkgName}`);
+  }
+  const deltaEntry = assets.find(
+    entry => entry.Version === version && entry.Type === 'Delta'
+  );
+  if (deltaEntry) {
+    const deltaPath = path.join(stageDir, deltaEntry.FileName);
+    const deltaStats = requireFile(deltaPath);
+    if (Number(deltaEntry.Size) !== deltaStats.size) {
+      fail(`Velopack feed size mismatch for ${deltaEntry.FileName}`);
+    }
+    const deltaSha256 = (
+      await hashFile(deltaPath, 'sha256', 'hex')
+    ).toUpperCase();
+    if (deltaEntry.SHA256 && deltaEntry.SHA256.toUpperCase() !== deltaSha256) {
+      fail(`Velopack feed SHA-256 mismatch for ${deltaEntry.FileName}`);
+    }
   }
 }
 

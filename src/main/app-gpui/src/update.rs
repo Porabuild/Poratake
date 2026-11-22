@@ -1340,6 +1340,9 @@ fn check_velopack() -> Option<Status> {
     let manager = velopack_manager()?;
     match manager.check_for_updates() {
         Ok(velopack::UpdateCheck::NoUpdateAvailable | velopack::UpdateCheck::RemoteIsEmpty) => {
+            if let Ok(mut slot) = pending_velopack().lock() {
+                *slot = None;
+            }
             Some(Status::UpToDate)
         }
         Ok(velopack::UpdateCheck::UpdateAvailable(info)) => {

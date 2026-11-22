@@ -1,10 +1,18 @@
 use std::path::{Path, PathBuf};
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, PCWSTR, PWSTR};
+use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
     RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
     REG_SZ,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
 const AUMID: &str = "electron.app.Poratake";
@@ -131,6 +139,7 @@ fn cleanup_legacy_install(current_dir: &Path) {
         {
             continue;
         }
+        stop_processes_in_dir(&legacy_canon);
         let _ = std::fs::remove_dir_all(&legacy_dir);
     }
 
@@ -145,6 +154,60 @@ fn cleanup_legacy_install(current_dir: &Path) {
             .join("Programs")
             .join("Poratake");
         let _ = std::fs::remove_dir_all(legacy_start_folder);
+    }
+}
+
+fn stop_processes_in_dir(target_dir: &Path) {
+    let self_pid = std::process::id();
+    let raw_prefix = target_dir.to_string_lossy().to_ascii_lowercase();
+    let trimmed = raw_prefix.strip_prefix(r"\\?\").unwrap_or(&raw_prefix);
+    let target_prefix = if trimmed.ends_with('\\') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}\\")
+    };
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let pid = entry.th32ProcessID;
+                if pid != 0 && pid != self_pid {
+                    let access =
+                        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
+                    if let Ok(handle) = OpenProcess(access, false, pid) {
+                        let mut buf = vec![0u16; 1024];
+                        let mut len = buf.len() as u32;
+                        if QueryFullProcessImageNameW(
+                            handle,
+                            PROCESS_NAME_WIN32,
+                            PWSTR(buf.as_mut_ptr()),
+                            &mut len,
+                        )
+                        .is_ok()
+                        {
+                            let image =
+                                String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+                            let image = image.strip_prefix(r"\\?\").unwrap_or(&image);
+                            if image.starts_with(&target_prefix) {
+                                let _ = TerminateProcess(handle, 1);
+                                let _ = WaitForSingleObject(handle, 2_000);
+                            }
+                        }
+                        let _ = CloseHandle(handle);
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
     }
 }
 
