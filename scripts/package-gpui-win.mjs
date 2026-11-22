@@ -127,13 +127,13 @@ if (!existsSync(splashPath)) {
 cpSync(iconPath, path.join(stageDir, 'poratake.ico'));
 
 const vpkBin = process.env.VPK_PATH || 'vpk';
-const vpkProbe = spawnSync(vpkBin, ['--version'], {
+const vpkProbe = spawnSync(vpkBin, ['--help'], {
   stdio: 'ignore',
   shell: process.platform === 'win32',
 });
 if (vpkProbe.status !== 0) {
   process.stderr.write(
-    'Velopack CLI (vpk) is required to build the Windows GPUI installer\n'
+    `Velopack CLI (vpk) is required to build the Windows GPUI installer (status=${vpkProbe.status}, error=${vpkProbe.error?.message || 'none'})\n`
   );
   process.exit(1);
 }
