@@ -894,6 +894,34 @@ function Get-VideoEditorButtonReadiness([IntPtr]$editorHandle, [PoratakeTooltipP
     }
 }
 
+function Open-VideoEditorSidebarTab([IntPtr]$editorHandle, [PoratakeTooltipProbe+Rect]$editorBounds, $tab, [string]$expectedButtonName, [string]$proofPath, [int]$attempts = 3) {
+    $bounds = $tab.button.bounds
+    $x = [int][Math]::Round(($bounds.left + $bounds.right) / 2.0)
+    $y = [int][Math]::Round(($bounds.top + $bounds.bottom) / 2.0)
+    $lastFailure = $null
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        [void][PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)
+        Wait-Until { [PoratakeTooltipProbe]::GetForegroundWindow() -eq $editorHandle } 3000 'The video editor did not become the foreground input target for its sidebar tab.' | Out-Null
+        if (-not [PoratakeTooltipProbe]::SetCursorPos($x, $y)) { throw 'Could not move to the measured video editor sidebar tab.' }
+        $point = New-Object PoratakeTooltipProbe+Point
+        $point.X = $x
+        $point.Y = $y
+        $hit = [PoratakeTooltipProbe]::WindowFromPoint($point)
+        if ($hit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($hit, 2) -ne $editorHandle) { throw 'Native hit testing at the measured video editor sidebar tab did not reach the video editor.' }
+        [PoratakeTooltipProbe]::Click($x, $y)
+        try {
+            return Get-VideoEditorButtonReadiness $editorHandle $editorBounds $proofPath $expectedButtonName
+        } catch {
+            $lastFailure = $_.Exception.Message
+            if ($attempt -lt $attempts) {
+                $foreground = Get-WindowIdentity ([PoratakeTooltipProbe]::GetForegroundWindow())
+                Write-Host "The '$($tab.button.name)' sidebar tab did not open the '$expectedButtonName' panel; retrying ($attempt/$attempts): $lastFailure Foreground: '$($foreground.title)' [$($foreground.className)] pid=$($foreground.processId)."
+            }
+        }
+    }
+    throw "The '$($tab.button.name)' sidebar tab did not open the '$expectedButtonName' panel after $attempts clicks: $lastFailure"
+}
+
 function Set-EditorSaveDialogFileName([IntPtr]$dialog, [string]$fileName) {
     if (-not [PoratakeTooltipProbe]::IsWindowVisible($dialog)) { throw 'The owned Save Screenshot dialog closed before its file name was set.' }
     $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
@@ -4165,20 +4193,11 @@ try {
     $videoExportTabButton = Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $videoExportTabProof 'Export'
     $videoExportTabBounds = $videoExportTabButton.button.bounds
     if ($videoExportTabBounds.left -lt $videoMonitor.Work.Left -or $videoExportTabBounds.top -lt $videoMonitor.Work.Top -or $videoExportTabBounds.right -gt $videoMonitor.Work.Right -or $videoExportTabBounds.bottom -gt $videoMonitor.Work.Bottom) { throw 'The Export sidebar tab exceeds the monitor work area.' }
-    $videoExportTabX = [int][Math]::Round(($videoExportTabBounds.left + $videoExportTabBounds.right) / 2.0)
-    $videoExportTabY = [int][Math]::Round(($videoExportTabBounds.top + $videoExportTabBounds.bottom) / 2.0)
-    if (-not [PoratakeTooltipProbe]::SetCursorPos($videoExportTabX, $videoExportTabY)) { throw 'Could not move to the measured Export sidebar tab.' }
-    $videoExportTabPoint = New-Object PoratakeTooltipProbe+Point
-    $videoExportTabPoint.X = $videoExportTabX
-    $videoExportTabPoint.Y = $videoExportTabY
-    $videoExportTabHit = [PoratakeTooltipProbe]::WindowFromPoint($videoExportTabPoint)
-    if ($videoExportTabHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($videoExportTabHit, 2) -ne $videoEditorHandle) { throw 'Native hit testing at the measured Export tab did not reach the video editor.' }
-    [PoratakeTooltipProbe]::Click($videoExportTabX, $videoExportTabY)
+    $preTrimButtonProof = Join-Path $evidenceRoot 'video-export-before-trim-button.json'
+    [void](Open-VideoEditorSidebarTab $videoEditorHandle $videoEditorBounds $videoExportTabButton 'Export Video' $preTrimButtonProof)
     Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
     $videoEditorInitialExportCapture = Join-Path $captureRoot 'real-video-editor-export-tab-initial.png'
     Capture-TooltipArea 'real-video-editor-export-tab-initial' $videoEditorScreenBounds $videoEditorInitialExportCapture
-    $preTrimButtonProof = Join-Path $evidenceRoot 'video-export-before-trim-button.json'
-    [void](Get-VideoEditorButtonReadiness $videoEditorHandle $videoEditorBounds $preTrimButtonProof 'Export Video')
     $videoBeforeTrimCapture = Join-Path $captureRoot 'real-video-editor-before-trim.png'
     Set-VideoEditorNeutralPointer $videoEditorHandle $videoEditorClient $videoEditorClientOrigin
     Capture-TooltipArea 'real-video-editor-before-trim' $videoEditorScreenBounds $videoBeforeTrimCapture
