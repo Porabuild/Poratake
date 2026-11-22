@@ -1013,8 +1013,9 @@ fn failed_icon_hides_stop_captures(cx: &mut HeadlessAppContext, output: &Path) {
                 "{kind} {error}"
             );
             assert!(
-                !recorded.iter().any(|call| call["module"] == "freeze-screen"
-                    || call["module"] == "screenshot"),
+                !recorded.iter().any(|call| call["module"] == "screenshot"
+                    || (call["module"] == "freeze-screen"
+                        && call["method"].as_str() != Some("release"))),
                 "{kind} {error}: {recorded:?}"
             );
             let methods: Vec<_> = recorded

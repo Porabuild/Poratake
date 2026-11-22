@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      update_windows_visual_baselines:
+        description: Record the Windows visual baselines from this runner
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: checks-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
@@ -462,7 +467,17 @@ jobs:
 
       - name: Visual regressions
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_windows_visual_regressions }}
+        env:
+          PORATAKE_PARITY_UPDATE_BASELINES: ${{ inputs.update_windows_visual_baselines && '1' || '0' }}
         run: bun run test:visual
+
+      - name: Preserve updated visual baselines
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.update_windows_visual_baselines }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-visual-baselines
+          path: scripts/parity/baselines/win32/**
+          if-no-files-found: ignore
 
       - name: Preserve visual evidence
         if: always()
