@@ -36,6 +36,10 @@ describe('published release assets', () => {
     expect(windowsAssetNames(version)).toEqual([
       'Poratake-1.0.0-win-x64.exe',
       'Poratake-1.0.0-win-arm64.exe',
+      'Poratake-1.0.0-win-x64-full.nupkg',
+      'Poratake-1.0.0-win-arm64-full.nupkg',
+      'releases.win-x64.json',
+      'releases.win-arm64.json',
       'latest.yml',
     ]);
     expect(linuxAssetNames(version)).toEqual([

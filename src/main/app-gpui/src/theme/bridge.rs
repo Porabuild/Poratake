@@ -27,7 +27,7 @@ fn app_shadow(alpha: f32) -> gpui::BoxShadow {
 
 const SURFACE_SHADOW_ALPHA: f32 = 0.08;
 const OVERLAY_SHADOW_ALPHA: f32 = 0.2;
-const TRAY_MENU_ROW_HEIGHT: f32 = 24.0;
+pub(crate) const TRAY_MENU_ROW_HEIGHT: f32 = 24.0;
 const TRAY_MENU_ROW_PADDING_Y: f32 = 2.0;
 const TRAY_MENU_SEPARATOR_INSET: f32 = 15.0;
 const SELECT_TRIGGER_PADDING_Y: f32 = 8.0;
