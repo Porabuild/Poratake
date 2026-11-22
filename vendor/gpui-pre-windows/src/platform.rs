@@ -526,24 +526,14 @@ impl WindowsPlatform {
                     let Some(all_windows_strong) = all_windows.upgrade() else {
                         break;
                     };
-                    let has_visible_window = {
+                    let has_active_window = {
                         let guard = all_windows_strong.read();
-                        let mut any_visible = false;
-                        for hwnd in guard.iter() {
-                            let visible = unsafe {
-                                IsWindowVisible(hwnd.as_raw()).as_bool()
-                                    && !IsIconic(hwnd.as_raw()).as_bool()
-                            };
-                            if visible {
-                                any_visible = true;
-                            } else {
-                                hwnd.frame_signal.take();
-                            }
-                        }
-                        any_visible
+                        guard
+                            .iter()
+                            .any(|hwnd| !unsafe { IsIconic(hwnd.as_raw()).as_bool() })
                     };
                     drop(all_windows_strong);
-                    if !has_visible_window && !invalidate_devices.load(Ordering::Acquire) {
+                    if !has_active_window && !invalidate_devices.load(Ordering::Acquire) {
                         vsync_wake.wait(&stop);
                         continue;
                     }
@@ -571,14 +561,17 @@ impl WindowsPlatform {
                     };
                     for hwnd in all_windows.read().iter() {
                         unsafe {
-                            let visible = IsWindowVisible(hwnd.as_raw()).as_bool()
-                                && !IsIconic(hwnd.as_raw()).as_bool();
-                            if !visible {
+                            if IsIconic(hwnd.as_raw()).as_bool() {
                                 hwnd.frame_signal.take();
                                 continue;
                             }
                             if let Some(signal_at) = signal_at {
-                                hwnd.frame_signal.record(signal_at, signal_source);
+                                if IsWindowVisible(hwnd.as_raw()).as_bool() {
+                                    hwnd.frame_signal.record(signal_at, signal_source);
+                                } else {
+                                    // Hidden windows may not consume WM_PAINT until shown again.
+                                    hwnd.frame_signal.take();
+                                }
                             }
                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
                                 .ok()
