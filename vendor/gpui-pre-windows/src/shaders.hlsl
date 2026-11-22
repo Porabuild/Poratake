@@ -1258,9 +1258,30 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
     float2 atlas_size;
     t_sprite.GetDimensions(atlas_size.x, atlas_size.y);
-    float2 tile_min = (float2(sprite.tile.bounds.origin) + 0.5) / atlas_size;
-    float2 tile_max = (float2(sprite.tile.bounds.origin + sprite.tile.bounds.size) - 0.5) / atlas_size;
-    float4 sample = t_sprite.Sample(s_sprite, clamp(input.tile_position, tile_min, tile_max));
+    float2 tile_origin = float2(sprite.tile.bounds.origin);
+    float2 tile_size = float2(sprite.tile.bounds.size);
+    float2 tile_min = (tile_origin + 0.5) / atlas_size;
+    float2 tile_max = (tile_origin + tile_size - 0.5) / atlas_size;
+    float2 tile_position = clamp(input.tile_position, tile_min, tile_max);
+    float2 pixel_min = tile_origin;
+    float2 pixel_max = tile_origin + tile_size - 1.0;
+    float2 pixel = tile_position * atlas_size - 0.5;
+    float2 base = floor(pixel);
+    float2 weight = pixel - base;
+    int2 p00 = int2(clamp(base, pixel_min, pixel_max));
+    int2 p11 = int2(clamp(base + 1.0, pixel_min, pixel_max));
+    float4 a = t_sprite.Load(int3(p00.x, p00.y, 0));
+    float4 b = t_sprite.Load(int3(p11.x, p00.y, 0));
+    float4 c = t_sprite.Load(int3(p00.x, p11.y, 0));
+    float4 d = t_sprite.Load(int3(p11.x, p11.y, 0));
+    a.rgb *= a.a;
+    b.rgb *= b.a;
+    c.rgb *= c.a;
+    d.rgb *= d.a;
+    float4 sample = lerp(lerp(a, b, weight.x), lerp(c, d, weight.x), weight.y);
+    if (sample.a > 0.0) {
+        sample.rgb /= sample.a;
+    }
     float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;

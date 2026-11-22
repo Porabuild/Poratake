@@ -1215,8 +1215,7 @@ impl AlignedSampling {
             .collect::<Vec<_>>();
         let stride = source.width() as usize;
         let source_pixels = source.as_raw().as_chunks::<4>().0;
-        let premultiply =
-            cfg!(target_os = "macos") && source_pixels.iter().any(|pixel| pixel[3] < 255);
+        let premultiply = source_pixels.iter().any(|pixel| pixel[3] < 255);
         let output: &mut [u8] = out.as_mut();
         for (y, row) in output
             .as_chunks_mut::<4>()
