@@ -8827,6 +8827,7 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
     });
     cx.update_window(window, |_, window, _| window.set_scale_factor(1.25))
         .unwrap();
+    editor.update(cx, |_, _, cx| cx.notify()).unwrap();
     super::frame(cx, window);
     cx.update(|cx| {
         let snapshot = editor.read(cx).unwrap().snapshot.borrow();
