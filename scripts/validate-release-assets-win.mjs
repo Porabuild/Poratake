@@ -29,13 +29,13 @@ function unquote(value) {
   return value.replace(/^(['"])(.*)\1$/, '$2');
 }
 
-function hashFile(filePath) {
+function hashFile(filePath, algorithm = 'sha512', encoding = 'base64') {
   return new Promise((resolve, reject) => {
-    const hash = createHash('sha512');
+    const hash = createHash(algorithm);
     const stream = createReadStream(filePath);
     stream.on('data', chunk => hash.update(chunk));
     stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('base64')));
+    stream.on('end', () => resolve(hash.digest(encoding)));
   });
 }
 
@@ -82,6 +82,55 @@ if (fileValues.get('sha512') !== nsisHash) {
 }
 if (Number(fileValues.get('size')) !== nsisStats.size) {
   fail('Update metadata file size does not match the release installer');
+}
+
+const archMatch = nsisName.match(/-win-(x64|arm64)\.exe$/);
+if (archMatch) {
+  const channel = `win-${archMatch[1]}`;
+  const stageDir = path.dirname(nsisPath);
+  const feedPath = path.join(stageDir, `releases.${channel}.json`);
+  const fullNupkgName = `Poratake-${version}-${channel}-full.nupkg`;
+  const fullNupkgPath = path.join(stageDir, fullNupkgName);
+  requireFile(feedPath);
+  const fullStats = requireFile(fullNupkgPath);
+  const feed = JSON.parse(readFileSync(feedPath, 'utf8'));
+  const assets = Array.isArray(feed.Assets) ? feed.Assets : [];
+  const fullEntry = assets.find(
+    entry =>
+      entry.FileName === fullNupkgName &&
+      entry.Version === version &&
+      entry.Type === 'Full'
+  );
+  if (!fullEntry) {
+    fail(
+      `Velopack feed ${path.basename(feedPath)} is missing full package ${fullNupkgName}`
+    );
+  }
+  if (Number(fullEntry.Size) !== fullStats.size) {
+    fail(`Velopack feed size mismatch for ${fullNupkgName}`);
+  }
+  const fullSha256 = (
+    await hashFile(fullNupkgPath, 'sha256', 'hex')
+  ).toUpperCase();
+  if (fullEntry.SHA256 && fullEntry.SHA256.toUpperCase() !== fullSha256) {
+    fail(`Velopack feed SHA-256 mismatch for ${fullNupkgName}`);
+  }
+  const deltaEntry = assets.find(
+    entry => entry.Version === version && entry.Type === 'Delta'
+  );
+  if (deltaEntry) {
+    const deltaPath = path.join(stageDir, deltaEntry.FileName);
+    const deltaStats = requireFile(deltaPath);
+    if (Number(deltaEntry.Size) !== deltaStats.size) {
+      fail(`Velopack feed size mismatch for ${deltaEntry.FileName}`);
+    }
+    const deltaSha256 = (
+      await hashFile(deltaPath, 'sha256', 'hex')
+    ).toUpperCase();
+    if (deltaEntry.SHA256 && deltaEntry.SHA256.toUpperCase() !== deltaSha256) {
+      fail(`Velopack feed SHA-256 mismatch for ${deltaEntry.FileName}`);
+    }
+  }
 }
 
 console.log('Windows release assets validated successfully');
