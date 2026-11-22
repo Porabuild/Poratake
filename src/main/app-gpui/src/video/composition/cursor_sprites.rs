@@ -169,7 +169,7 @@ pub fn decoded_image(source: &str) -> Option<Arc<Pixmap>> {
     {
         return Some(Arc::clone(image));
     }
-    let image = Arc::new(crate::render::gradient::load_image(source)?);
+    let image = crate::render::gradient::load_image_cached(source)?;
     *guard = Some((source.to_string(), Arc::clone(&image)));
     Some(image)
 }

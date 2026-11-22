@@ -97,13 +97,17 @@ pub fn compose_with_layers(
         None => (width.max(1), height.max(1)),
     };
 
-    let Some(mut canvas) = base
-        .and_then(from_dynamic_image)
-        .map(Canvas::from_pixmap)
-        .or_else(|| Canvas::new(width, height))
-    else {
-        return RgbaImage::new(width, height);
+    let (mut annotated, mut annotated_opaque) = match base {
+        Some(image) => match gradient::premultiply_dynamic_image(image) {
+            Some((pixmap, opaque)) => (pixmap, opaque),
+            None => return RgbaImage::new(width, height),
+        },
+        None => match Pixmap::new(width, height) {
+            Some(pixmap) => (pixmap, false),
+            None => return RgbaImage::new(width, height),
+        },
     };
+    let mut canvas = Canvas::from_pixmap(annotated);
     let original_balance = wallpaper
         .balance
         .then(|| balance_pixmap(canvas.pixmap().as_ref()))
@@ -153,14 +157,18 @@ pub fn compose_with_layers(
     let composited_primary = base.is_some() && composites_primary_backdrop(wallpaper, layers);
     if !composited_primary {
         annotation_renderer::draw_all_screenshot(&mut canvas, annotations, frame_scale);
+        if !annotations.is_empty() {
+            annotated_opaque = false;
+        }
     }
-    let mut annotated = canvas.into_pixmap();
+    annotated = canvas.into_pixmap();
 
     // Attached images sit around the annotated capture, before the wallpaper
     // frames the whole group.
     if !layers.is_empty() {
         if let Some(combined) = compose_layers(&annotated, layers, wallpaper.spacing.max(0.0)) {
             annotated = combined;
+            annotated_opaque = false;
         }
     }
 
@@ -182,6 +190,7 @@ pub fn compose_with_layers(
     }
     let composed = compose_wallpaper(
         &annotated,
+        annotated_opaque,
         wallpaper,
         frame_scale,
         original_inset_color,
@@ -240,12 +249,12 @@ fn compose_layers(
         let Some(source) = layers
             .iter()
             .find(|layer| &layer.id == id)
-            .and_then(|layer| gradient::load_image(&layer.image_url))
+            .and_then(|layer| gradient::load_image_cached(&layer.image_url))
         else {
             continue;
         };
         canvas.draw_pixmap(
-            source.as_ref(),
+            source.as_ref().as_ref(),
             rect.x as f32,
             rect.y as f32,
             rect.width as f32,
@@ -256,12 +265,37 @@ fn compose_layers(
     Some(canvas.into_pixmap())
 }
 
+fn blit_opaque_aligned(canvas: &mut Canvas, image: tiny_skia::PixmapRef<'_>, x: u32, y: u32) {
+    let canvas_width = canvas.width() as usize;
+    let canvas_height = canvas.height() as usize;
+    let img_width = image.width() as usize;
+    let img_height = image.height() as usize;
+    let x = x as usize;
+    let y = y as usize;
+    if x >= canvas_width || y >= canvas_height {
+        return;
+    }
+    let copy_w = img_width.min(canvas_width - x);
+    let copy_h = img_height.min(canvas_height - y);
+    let row_bytes = copy_w * 4;
+    let src_stride = img_width * 4;
+    let dst_stride = canvas_width * 4;
+    let src = image.data();
+    let dst = canvas.pixmap_mut().data_mut();
+    for row in 0..copy_h {
+        let src_off = row * src_stride;
+        let dst_off = (y + row) * dst_stride + x * 4;
+        dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+    }
+}
+
 fn draw_unframed_image(
     canvas: &mut Canvas,
     image: tiny_skia::PixmapRef<'_>,
     rect: (f32, f32, f32, f32),
     radius: f32,
     shadow: Option<Shadow>,
+    is_opaque: bool,
 ) {
     let (x, y, width, height) = rect;
     let Some(path) = rounded_rect_path(x, y, width, height, radius) else {
@@ -275,8 +309,23 @@ fn draw_unframed_image(
         canvas.fill_path(&path, Color::WHITE, FillRule::Winding);
         canvas.set_shadow(None);
     }
-    canvas.clip_path(&path, FillRule::Winding);
-    canvas.draw_pixmap(image, x, y, width, height);
+    if radius > 0.0 {
+        canvas.clip_path(&path, FillRule::Winding);
+        canvas.draw_pixmap(image, x, y, width, height);
+    } else if is_opaque
+        && canvas.transform().is_identity()
+        && canvas.global_alpha() >= 1.0
+        && x >= 0.0
+        && y >= 0.0
+        && x.fract() == 0.0
+        && y.fract() == 0.0
+        && width == image.width() as f32
+        && height == image.height() as f32
+    {
+        blit_opaque_aligned(canvas, image, x as u32, y as u32);
+    } else {
+        canvas.draw_pixmap(image, x, y, width, height);
+    }
     canvas.restore();
 }
 
@@ -289,7 +338,7 @@ fn draw_inset_layer(
     inset: f32,
 ) {
     if inset <= 0.0 {
-        draw_unframed_image(canvas, image, rect, radius, shadow);
+        draw_unframed_image(canvas, image, rect, radius, shadow, false);
         return;
     }
     let (x, y, width, height) = rect;
@@ -370,13 +419,13 @@ fn compose_layered_wallpaper(
         let Some(source) = layers
             .iter()
             .find(|layer| layer.id == id)
-            .and_then(|layer| gradient::load_image(&layer.image_url))
+            .and_then(|layer| gradient::load_image_cached(&layer.image_url))
         else {
             continue;
         };
         draw_inset_layer(
             &mut canvas,
-            source.as_ref(),
+            source.as_ref().as_ref(),
             rect(layer_rect),
             radius,
             shadow,
@@ -463,19 +512,24 @@ fn compose_framed_layers(
         let Some(image) = layers
             .iter()
             .find(|layer| layer.id == id)
-            .and_then(|layer| gradient::load_image(&layer.image_url))
+            .and_then(|layer| gradient::load_image_cached(&layer.image_url))
         else {
             continue;
         };
         let inset_color = if inset > 0.0 {
             crate::render::color_detection::dominant_inset_color(
-                image.as_ref(),
+                image.as_ref().as_ref(),
                 crate::render::color_detection::ContentBounds::default(),
             )
         } else {
             None
         };
-        render_layer(&mut canvas, image.as_ref(), rect, inset_color.as_deref());
+        render_layer(
+            &mut canvas,
+            image.as_ref().as_ref(),
+            rect,
+            inset_color.as_deref(),
+        );
     }
     canvas.translate(
         (offset_x + layout.primary.x + inset) as f32 - crop_offset.0,
@@ -509,9 +563,30 @@ fn balance_crop(
     Some(cropped)
 }
 
+fn opaque_occluded_rect(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let margin = if radius > 0.0 { radius.ceil() } else { 0.0 };
+    let left = (x + margin).ceil().max(0.0) as u32;
+    let top = (y + margin).ceil().max(0.0) as u32;
+    let right = ((x + width - margin).floor().max(0.0) as u32).min(canvas_width);
+    let bottom = ((y + height - margin).floor().max(0.0) as u32).min(canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((left, top, right - left, bottom - top))
+}
+
 /// Draws the annotated image onto the wallpaper backdrop at export size.
 fn compose_wallpaper(
     image: &Pixmap,
+    image_opaque: bool,
     wallpaper: &WallpaperSettings,
     frame_scale: f64,
     original_inset_color: Option<Option<String>>,
@@ -534,12 +609,6 @@ fn compose_wallpaper(
     let Some(mut canvas) = Canvas::new(canvas_width, canvas_height) else {
         return image.clone();
     };
-    paint_backdrop(
-        &mut canvas,
-        wallpaper,
-        canvas_width as f32,
-        canvas_height as f32,
-    );
 
     let radius = wallpaper.corners.max(0.0) as f32;
     let (offset_x, offset_y) = (offset_x.round() as f32, offset_y.round() as f32);
@@ -558,8 +627,45 @@ fn compose_wallpaper(
         })
         .flatten();
 
+    let is_framed = crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some();
+    let occluded =
+        if image_opaque && !is_framed && wallpaper.background_blur <= 0.0 && wallpaper.noise <= 0.0
+        {
+            if inset_color.is_some() {
+                opaque_occluded_rect(
+                    offset_x - inset,
+                    offset_y - inset,
+                    image_width as f32 + inset * 2.0,
+                    image_height as f32 + inset * 2.0,
+                    radius,
+                    canvas_width,
+                    canvas_height,
+                )
+            } else {
+                opaque_occluded_rect(
+                    offset_x,
+                    offset_y,
+                    image_width as f32,
+                    image_height as f32,
+                    radius,
+                    canvas_width,
+                    canvas_height,
+                )
+            }
+        } else {
+            None
+        };
+
+    paint_backdrop_excluding(
+        &mut canvas,
+        wallpaper,
+        canvas_width as f32,
+        canvas_height as f32,
+        occluded,
+    );
+
     // A window frame replaces the plain rounded rect with its own chrome.
-    if crate::render::window_frame::theme(&wallpaper.window_frame.style).is_some() {
+    if is_framed {
         let frame_inset = if !has_layers && !wallpaper.balance {
             inset
         } else {
@@ -588,6 +694,7 @@ fn compose_wallpaper(
             (offset_x, offset_y, image_width as f32, image_height as f32),
             radius,
             image_shadow(wallpaper.shadow),
+            image_opaque,
         );
         return canvas.into_pixmap();
     }
@@ -675,6 +782,16 @@ fn image_shadow_at_scale(shadow: f64, scale: f64) -> Option<Shadow> {
 }
 
 fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32, height: f32) {
+    paint_backdrop_excluding(canvas, wallpaper, width, height, None);
+}
+
+fn paint_backdrop_excluding(
+    canvas: &mut Canvas,
+    wallpaper: &WallpaperSettings,
+    width: f32,
+    height: f32,
+    excluded: Option<(u32, u32, u32, u32)>,
+) {
     if wallpaper.has_background() && wallpaper.background_blur > 0.0 {
         let sigma = ((wallpaper.background_blur / 100.0) * 50.0) as f32;
         let expansion = sigma * 2.;
@@ -691,11 +808,12 @@ fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32
         if let Some(mut expanded) = expanded {
             let shift = padding as f32 - expansion;
             expanded.translate(shift, shift);
-            paint_background_source(
+            paint_background_source_excluding(
                 &mut expanded,
                 wallpaper,
                 width + expansion * 2.,
                 height + expansion * 2.,
+                None,
             );
             crate::render::blur::blur_transparent(expanded.pixmap_mut(), sigma);
             canvas.draw_pixmap(
@@ -706,11 +824,11 @@ fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32
                 expanded.height() as f32,
             );
         } else {
-            paint_background_source(canvas, wallpaper, width, height);
+            paint_background_source_excluding(canvas, wallpaper, width, height, None);
             crate::render::blur::blur(canvas.pixmap_mut(), sigma);
         }
     } else {
-        paint_background_source(canvas, wallpaper, width, height);
+        paint_background_source_excluding(canvas, wallpaper, width, height, excluded);
     }
 
     if wallpaper.has_background() {
@@ -721,15 +839,32 @@ fn paint_backdrop(canvas: &mut Canvas, wallpaper: &WallpaperSettings, width: f32
 /// The grain is deterministic so the preview and the exported file agree.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
+#[cfg(test)]
 fn paint_background_source(
     canvas: &mut Canvas,
     wallpaper: &WallpaperSettings,
     width: f32,
     height: f32,
 ) {
+    paint_background_source_excluding(canvas, wallpaper, width, height, None);
+}
+
+fn paint_background_source_excluding(
+    canvas: &mut Canvas,
+    wallpaper: &WallpaperSettings,
+    width: f32,
+    height: f32,
+    excluded: Option<(u32, u32, u32, u32)>,
+) {
     if let Some(source) = wallpaper.background_image.as_deref() {
-        if let Some(image) = gradient::load_image(source) {
-            gradient::fill_image_high_quality(canvas, image.as_ref(), width, height);
+        if let Some(image) = gradient::load_image_cached(source) {
+            gradient::fill_image_high_quality_excluding(
+                canvas,
+                image.as_ref().as_ref(),
+                width,
+                height,
+                excluded,
+            );
             return;
         }
     }
@@ -746,7 +881,7 @@ fn paint_background_source(
         angle: preset.angle,
     };
     if option.is_renderable() {
-        gradient::fill(canvas, &option, width, height);
+        gradient::fill_excluding(canvas, &option, width, height, excluded);
         return;
     }
     let single = preset
@@ -757,11 +892,54 @@ fn paint_background_source(
     canvas.fill_all(single);
 }
 
-fn render_image(pixmap: &Pixmap) -> std::sync::Arc<gpui::RenderImage> {
-    let mut buffer = to_rgba(pixmap);
-    for pixel in buffer.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
+fn unpremultiply_to_bgra(source: &[u8], target: &mut [u8]) {
+    for (pixel, output) in source
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(target.as_chunks_mut::<4>().0.iter_mut())
+    {
+        let alpha = pixel[3];
+        *output = if alpha == 255 {
+            [pixel[2], pixel[1], pixel[0], 255]
+        } else if alpha == 0 {
+            [0, 0, 0, 0]
+        } else {
+            let a = u32::from(alpha);
+            let half = a / 2;
+            [
+                ((u32::from(pixel[2]) * 255 + half) / a).min(255) as u8,
+                ((u32::from(pixel[1]) * 255 + half) / a).min(255) as u8,
+                ((u32::from(pixel[0]) * 255 + half) / a).min(255) as u8,
+                alpha,
+            ]
+        };
     }
+}
+
+fn to_bgra(source: &Pixmap) -> RgbaImage {
+    let width = source.width();
+    let height = source.height();
+    let mut target = RgbaImage::new(width, height);
+    let src = source.data();
+    let dst = target.as_mut();
+    let workers = crate::render::canvas::strip_workers(width, height);
+    if workers > 1 {
+        let row_bytes = width as usize * 4;
+        let chunk_bytes = (height as usize).div_ceil(workers) * row_bytes;
+        std::thread::scope(|scope| {
+            for (src_chunk, dst_chunk) in src.chunks(chunk_bytes).zip(dst.chunks_mut(chunk_bytes)) {
+                scope.spawn(move || unpremultiply_to_bgra(src_chunk, dst_chunk));
+            }
+        });
+        return target;
+    }
+    unpremultiply_to_bgra(src, dst);
+    target
+}
+
+pub(crate) fn render_image(pixmap: &Pixmap) -> std::sync::Arc<gpui::RenderImage> {
+    let buffer = to_bgra(pixmap);
     std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
         image::Frame::new(buffer)
     ]))
@@ -828,8 +1006,18 @@ fn composite_tiles(
     Some(tiles)
 }
 
+pub fn backdrop_needs_primary_pixmap(
+    wallpaper: &WallpaperSettings,
+    layers: &[crate::editor::layers::ImageLayer],
+) -> bool {
+    composites_primary_backdrop(wallpaper, layers)
+        || framed_composite_required(wallpaper, layers)
+        || (wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty())
+}
+
 /// Renders just the wallpaper backdrop at `width` x `height`, for the editor
 /// preview to show behind the image.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn render_backdrop(
     wallpaper: &WallpaperSettings,
@@ -847,16 +1035,62 @@ pub fn render_backdrop(
     Vec<PreviewEdgeImage>,
     bool,
 )> {
+    render_backdrop_with_pixmap(
+        wallpaper,
+        width,
+        height,
+        image_width,
+        image_height,
+        inset_color,
+        layers,
+        base,
+        None,
+        frame_scale,
+        stage_background,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_backdrop_with_pixmap(
+    wallpaper: &WallpaperSettings,
+    width: u32,
+    height: u32,
+    image_width: f64,
+    image_height: f64,
+    inset_color: Option<String>,
+    layers: &[crate::editor::layers::ImageLayer],
+    base: Option<&image::DynamicImage>,
+    base_pixmap: Option<(&Pixmap, bool)>,
+    frame_scale: f64,
+    stage_background: [u8; 3],
+) -> Option<(
+    std::sync::Arc<gpui::RenderImage>,
+    Vec<PreviewEdgeImage>,
+    bool,
+)> {
+    let owned_primary;
     if composites_primary_backdrop(wallpaper, layers) {
-        let primary = from_dynamic_image(base?)?;
+        let (primary_ref, primary_opaque) = match base_pixmap {
+            Some(cached) => cached,
+            None => {
+                owned_primary = gradient::premultiply_dynamic_image(base?)?;
+                (&owned_primary.0, owned_primary.1)
+            }
+        };
         let cropped = wallpaper
             .balance
-            .then(|| balance_pixmap(primary.as_ref()))
+            .then(|| balance_pixmap(primary_ref.as_ref()))
             .flatten()
-            .and_then(|bounds| balance_crop(&primary, bounds));
-        let primary = cropped.as_ref().unwrap_or(&primary);
-        let composite =
-            compose_wallpaper(primary, wallpaper, frame_scale, Some(inset_color), false);
+            .and_then(|bounds| balance_crop(primary_ref, bounds));
+        let primary = cropped.as_ref().unwrap_or(primary_ref);
+        let composite = compose_wallpaper(
+            primary,
+            primary_opaque,
+            wallpaper,
+            frame_scale,
+            Some(inset_color),
+            false,
+        );
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
             composite_tiles(&composite, stage_background, 8192)?
         } else {
@@ -865,13 +1099,19 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     if framed_composite_required(wallpaper, layers) {
-        let primary = from_dynamic_image(base?)?;
+        let primary_ref = match base_pixmap {
+            Some((pixmap, _)) => pixmap,
+            None => {
+                owned_primary = gradient::premultiply_dynamic_image(base?)?;
+                &owned_primary.0
+            }
+        };
         let balance = wallpaper
             .balance
-            .then(|| balance_pixmap(primary.as_ref()))
+            .then(|| balance_pixmap(primary_ref.as_ref()))
             .flatten();
-        let cropped = balance.and_then(|bounds| balance_crop(&primary, bounds));
-        let primary = cropped.as_ref().unwrap_or(&primary);
+        let cropped = balance.and_then(|bounds| balance_crop(primary_ref, bounds));
+        let primary = cropped.as_ref().unwrap_or(primary_ref);
         let offset = balance
             .map(|bounds| (bounds.left as f32, bounds.top as f32))
             .unwrap_or_default();
@@ -892,13 +1132,19 @@ pub fn render_backdrop(
         return Some((render_image(&composite), tiles, true));
     }
     if wallpaper.supports_edge_preview(!layers.is_empty()) && !layers.is_empty() {
-        let primary = from_dynamic_image(base?)?;
+        let primary_ref = match base_pixmap {
+            Some((pixmap, _)) => pixmap,
+            None => {
+                owned_primary = gradient::premultiply_dynamic_image(base?)?;
+                &owned_primary.0
+            }
+        };
         let cropped = wallpaper
             .balance
-            .then(|| balance_pixmap(primary.as_ref()))
+            .then(|| balance_pixmap(primary_ref.as_ref()))
             .flatten()
-            .and_then(|bounds| balance_crop(&primary, bounds));
-        let primary = cropped.as_ref().unwrap_or(&primary);
+            .and_then(|bounds| balance_crop(primary_ref, bounds));
+        let primary = cropped.as_ref().unwrap_or(primary_ref);
         let composite =
             compose_layered_wallpaper(primary, wallpaper, layers, &[], frame_scale, (0.0, 0.0))?;
         let tiles = if composite.width() > 16384 || composite.height() > 16384 {
@@ -955,12 +1201,12 @@ pub fn render_backdrop(
             let Some(source) = layers
                 .iter()
                 .find(|layer| &layer.id == id)
-                .and_then(|layer| gradient::load_image(&layer.image_url))
+                .and_then(|layer| gradient::load_image_cached(&layer.image_url))
             else {
                 continue;
             };
             canvas.draw_pixmap(
-                source.as_ref(),
+                source.as_ref().as_ref(),
                 (offset_x + rect.x) as f32,
                 (offset_y + rect.y) as f32,
                 rect.width as f32,
@@ -1137,32 +1383,29 @@ pub fn render_rounded_preview(
     wallpaper: &WallpaperSettings,
     frame_scale: f64,
 ) -> Option<std::sync::Arc<gpui::RenderImage>> {
-    let primary = from_dynamic_image(base)?;
-    let composed = compose_wallpaper(&primary, wallpaper, frame_scale, None, false);
+    let (primary, opaque) = gradient::premultiply_dynamic_image(base)?;
+    let composed = compose_wallpaper(&primary, opaque, wallpaper, frame_scale, None, false);
+    Some(render_image(&composed))
+}
+
+#[cfg(target_os = "macos")]
+pub fn render_rounded_preview_with_pixmap(
+    primary: &Pixmap,
+    opaque: bool,
+    wallpaper: &WallpaperSettings,
+    frame_scale: f64,
+) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    let composed = compose_wallpaper(primary, opaque, wallpaper, frame_scale, None, false);
     Some(render_image(&composed))
 }
 
 pub fn from_dynamic_image(source: &image::DynamicImage) -> Option<Pixmap> {
-    match source.as_rgba8() {
-        Some(rgba) => from_rgba(rgba),
-        None => from_rgba(&source.to_rgba8()),
-    }
+    gradient::premultiply_dynamic_image(source).map(|(pixmap, _)| pixmap)
 }
 
 /// Converts an `image` RGBA buffer into a premultiplied pixmap.
 pub fn from_rgba(source: &RgbaImage) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(source.width().max(1), source.height().max(1))?;
-    let target = pixmap.data_mut();
-    for (index, pixel) in source.pixels().enumerate() {
-        let [r, g, b, a] = pixel.0;
-        let alpha = a as u32;
-        let offset = index * 4;
-        target[offset] = (r as u32 * alpha / 255) as u8;
-        target[offset + 1] = (g as u32 * alpha / 255) as u8;
-        target[offset + 2] = (b as u32 * alpha / 255) as u8;
-        target[offset + 3] = a;
-    }
-    Some(pixmap)
+    gradient::premultiply_rgba(source).map(|(pixmap, _)| pixmap)
 }
 
 /// Converts a premultiplied pixmap back into straight-alpha RGBA.
@@ -3296,6 +3539,124 @@ mod tests {
                 .filter(|(actual, expected)| actual != expected)
                 .count();
             assert_eq!(changed, 0, "background {background}, inset {inset}, x {x}");
+        }
+    }
+
+    #[test]
+    fn occluded_backdrop_and_cached_pixmap_match_full_composition_exactly() {
+        use base64::Engine;
+
+        let base = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(240, 180, |x, y| {
+            image::Rgba([((x * 5) & 255) as u8, ((y * 7) & 255) as u8, 180, 255])
+        }));
+        let wall = RgbaImage::from_fn(320, 240, |x, y| {
+            image::Rgba([
+                ((x * 3) & 255) as u8,
+                ((y * 11) & 255) as u8,
+                ((x + y) & 255) as u8,
+                255,
+            ])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(wall)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let data_url = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+        );
+        let (primary, opaque) = gradient::premultiply_dynamic_image(&base).unwrap();
+        assert!(opaque);
+
+        for (corners, shadow, inset, use_svg) in [
+            (0.0, 0.0, 0.0, false),
+            (24.0, 0.0, 0.0, false),
+            (16.0, 50.0, 0.0, false),
+            (12.0, 30.0, 10.0, false),
+            (0.0, 0.0, 0.0, true),
+            (20.0, 40.0, 0.0, true),
+        ] {
+            let mut settings = WallpaperSettings {
+                padding: 40.0,
+                corners,
+                shadow,
+                inset,
+                ..WallpaperSettings::default()
+            };
+            if use_svg {
+                settings.set_gradient(preset("violet-dune"));
+            } else {
+                settings.set_background_image(Some(data_url.clone()));
+            }
+            let occluded = compose_wallpaper(&primary, true, &settings, 1.0, None, false);
+            let full = compose_wallpaper(&primary, false, &settings, 1.0, None, false);
+            let w = full.width() as usize;
+            for (idx, (a, b)) in occluded
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(full.data().as_chunks::<4>().0.iter())
+                .enumerate()
+            {
+                assert!(
+                    a.iter().zip(b.iter()).all(|(x, y)| x.abs_diff(*y) <= 1),
+                    "mismatch for corners={corners} shadow={shadow} inset={inset} svg={use_svg} at ({}, {}): occluded={a:?} vs full={b:?}",
+                    idx % w,
+                    idx / w
+                );
+            }
+
+            let exported = compose(Some(&base), 240, 180, &[], &settings, 1.0);
+            let inset_color = (inset > 0.0)
+                .then(|| {
+                    crate::render::color_detection::dominant_inset_color(
+                        primary.as_ref(),
+                        crate::render::color_detection::ContentBounds::default(),
+                    )
+                })
+                .flatten();
+            let ((w, h), _) = crate::editor::wallpaper::layout(&settings, 240.0, 180.0, 1.0, false);
+            let (w, h) = (w.round() as u32, h.round() as u32);
+            let a = render_backdrop(
+                &settings,
+                w,
+                h,
+                240.0,
+                180.0,
+                inset_color.clone(),
+                &[],
+                Some(&base),
+                1.0,
+                [24, 24, 27],
+            )
+            .unwrap();
+            let b = render_backdrop_with_pixmap(
+                &settings,
+                w,
+                h,
+                240.0,
+                180.0,
+                inset_color,
+                &[],
+                Some(&base),
+                Some((&primary, true)),
+                1.0,
+                [24, 24, 27],
+            )
+            .unwrap();
+            assert_eq!(a.0.as_bytes(0), b.0.as_bytes(0));
+            assert_eq!(a.2, b.2);
+            if b.2 {
+                let mut preview_rgba = b.0.as_bytes(0).unwrap().to_vec();
+                for pixel in preview_rgba.as_chunks_mut::<4>().0 {
+                    pixel.swap(0, 2);
+                }
+                assert!(
+                    preview_rgba == exported.as_raw().as_slice(),
+                    "preview/export mismatch for corners={corners} shadow={shadow} inset={inset} svg={use_svg}"
+                );
+            }
         }
     }
 
