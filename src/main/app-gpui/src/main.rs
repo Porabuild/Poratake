@@ -271,6 +271,8 @@ fn main() {
         ui::native_smoke::popup_frame_probe();
         return;
     }
+    #[cfg(windows)]
+    system::velopack_hooks::init();
     #[cfg(all(feature = "parity", target_os = "macos", not(test)))]
     if std::env::args().nth(1).as_deref() == Some("--native-ui-probe") {
         ui::native_smoke::native_ui_probe();

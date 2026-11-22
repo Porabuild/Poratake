@@ -34,7 +34,7 @@ fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fm
     crate::windows::toast::Toast::show(cx, "Screenshot Save Failed", message);
 }
 
-#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PersistedEditorState {
     #[serde(default)]
@@ -51,11 +51,44 @@ impl PersistedEditorState {
             .and_then(|state| serde_json::from_value(state).ok())
             .unwrap_or_default()
     }
+
+    fn to_json_value(&self) -> Option<serde_json::Value> {
+        let mut wallpaper = self.wallpaper.clone();
+        if let Some(source) = wallpaper.background_image.as_deref() {
+            if !source.starts_with("data:") {
+                if let Ok(bytes) = std::fs::read(source) {
+                    use base64::Engine;
+                    let mime = match std::path::Path::new(source)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("jpg" | "jpeg") => "image/jpeg",
+                        Some("webp") => "image/webp",
+                        Some("gif") => "image/gif",
+                        Some("svg") => "image/svg+xml",
+                        _ => "image/png",
+                    };
+                    wallpaper.background_image = Some(format!(
+                        "data:{mime};base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ));
+                }
+            }
+        }
+        serde_json::to_value(PersistedEditorState {
+            annotations: self.annotations.clone(),
+            wallpaper,
+            layers: self.layers.clone(),
+        })
+        .ok()
+    }
 }
 
 struct EditorStateWriter {
     revision: AtomicU64,
-    persisted: parking_lot::Mutex<Option<Arc<serde_json::Value>>>,
+    persisted: parking_lot::Mutex<Option<PersistedEditorState>>,
 }
 
 impl EditorStateWriter {
@@ -65,12 +98,15 @@ impl EditorStateWriter {
             .wrapping_add(1)
     }
 
-    fn write(&self, path: &Path, state: Arc<serde_json::Value>, revision: u64) -> bool {
+    fn write(&self, path: &Path, state: PersistedEditorState, revision: u64) -> bool {
         let mut persisted = self.persisted.lock();
         if self.revision.load(Ordering::Relaxed) != revision || persisted.as_ref() == Some(&state) {
             return true;
         }
-        if !crate::history_store::update_editor_state_by_path(path, (*state).clone()) {
+        let Some(value) = state.to_json_value() else {
+            return false;
+        };
+        if !crate::history_store::update_editor_state_by_path(path, value) {
             return false;
         }
         *persisted = Some(state);
@@ -382,6 +418,11 @@ fn resize_crop_rect(
 pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
     pub base_image: Option<Arc<image::DynamicImage>>,
+    base_pixmap: Option<(
+        std::sync::Weak<image::DynamicImage>,
+        Arc<tiny_skia::Pixmap>,
+        bool,
+    )>,
     pub is_copied: bool,
     copy_pending: bool,
     pin_pending: bool,
@@ -491,7 +532,7 @@ pub struct EditorWindow {
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
     editor_state_writer: Arc<EditorStateWriter>,
-    requested_editor_state: Option<Arc<serde_json::Value>>,
+    requested_editor_state: Option<PersistedEditorState>,
     editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
     save_dialog_open: bool,
@@ -561,7 +602,7 @@ impl EditorWindow {
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
-        let persisted_value = serde_json::to_value(&persisted).ok().map(Arc::new);
+        let persisted_snapshot = persisted.clone();
         let next_id = persisted
             .annotations
             .iter()
@@ -572,6 +613,7 @@ impl EditorWindow {
         let mut editor = Self {
             image,
             base_image,
+            base_pixmap: None,
             layers: persisted.layers,
             capture_mode: false,
             meta_held: false,
@@ -685,9 +727,9 @@ impl EditorWindow {
             next_id,
             editor_state_writer: Arc::new(EditorStateWriter {
                 revision: 0.into(),
-                persisted: parking_lot::Mutex::new(persisted_value.clone()),
+                persisted: parking_lot::Mutex::new(Some(persisted_snapshot.clone())),
             }),
-            requested_editor_state: persisted_value,
+            requested_editor_state: Some(persisted_snapshot),
             editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
             save_dialog_open: false,
@@ -759,6 +801,7 @@ impl EditorWindow {
             let _ = window.drop_image(patch.image);
         }
         self.base_image = None;
+        self.base_pixmap = None;
         self.pre_crop = None;
         let mut snapshot = self.snapshot.borrow_mut();
         snapshot.image = None;
@@ -1015,6 +1058,13 @@ impl EditorWindow {
         }) {
             self.retire_backdrop();
         }
+        let debounce = self.backdrop.is_some()
+            && self.backdrop_key.as_ref().is_some_and(|previous| {
+                previous.0.gradient == wallpaper.gradient
+                    && previous.0.background_image == wallpaper.background_image
+                    && (previous.0.background_blur != wallpaper.background_blur
+                        || previous.0.noise != wallpaper.noise)
+            });
         self.backdrop_key = Some(key);
         let frame_scale = self.native_scale;
         let layers = self.layers.clone();
@@ -1031,9 +1081,20 @@ impl EditorWindow {
             )
             .unwrap_or_default();
         let base_image = self.base_image.clone();
+        let cached_base_pixmap = base_image.as_ref().and_then(|base| {
+            let (weak, pixmap, opaque) = self.base_pixmap.as_ref()?;
+            weak.upgrade()
+                .filter(|cached| Arc::ptr_eq(cached, base))
+                .map(|_| (pixmap.clone(), *opaque))
+        });
+        let needs_primary_pixmap =
+            crate::editor::export::backdrop_needs_primary_pixmap(&wallpaper, &layers)
+                || rounded_preview;
         let background = cx.background_executor().clone();
         let task = cx.background_executor().spawn(async move {
-            background.timer(std::time::Duration::from_millis(16)).await;
+            if debounce {
+                background.timer(std::time::Duration::from_millis(16)).await;
+            }
             let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
                 use crate::render::color_detection;
                 base_image.as_ref().and_then(|base| match base.as_rgba8() {
@@ -1046,7 +1107,18 @@ impl EditorWindow {
             } else {
                 inset_color
             };
-            let rendered = crate::editor::export::render_backdrop(
+            let computed_base_pixmap = if cached_base_pixmap.is_none() && needs_primary_pixmap {
+                base_image
+                    .as_deref()
+                    .and_then(crate::render::gradient::premultiply_dynamic_image)
+                    .map(|(pixmap, opaque)| (Arc::new(pixmap), opaque))
+            } else {
+                None
+            };
+            let primary_pixmap = cached_base_pixmap
+                .as_ref()
+                .or(computed_base_pixmap.as_ref());
+            let rendered = crate::editor::export::render_backdrop_with_pixmap(
                 &wallpaper,
                 size.0,
                 size.1,
@@ -1055,6 +1127,7 @@ impl EditorWindow {
                 inset_color.clone(),
                 &layers,
                 base_image.as_deref(),
+                primary_pixmap.map(|(pixmap, opaque)| (pixmap.as_ref(), *opaque)),
                 frame_scale,
                 stage_background,
             );
@@ -1062,8 +1135,19 @@ impl EditorWindow {
             let (rendered, rounded_matte) = {
                 let mut rendered = rendered;
                 let matte = if rounded_preview {
-                    match (rendered.as_mut(), base_image.as_ref()) {
-                        (Some((backdrop, edges, false)), Some(base)) if !edges.is_empty() => {
+                    match (rendered.as_mut(), primary_pixmap, base_image.as_ref()) {
+                        (Some((backdrop, edges, false)), Some((primary, opaque)), _)
+                            if !edges.is_empty() =>
+                        {
+                            crate::editor::export::render_rounded_preview_with_pixmap(
+                                primary,
+                                *opaque,
+                                &wallpaper,
+                                frame_scale,
+                            )
+                            .map(|composed| std::mem::replace(backdrop, composed))
+                        }
+                        (Some((backdrop, edges, false)), None, Some(base)) if !edges.is_empty() => {
                             crate::editor::export::render_rounded_preview(
                                 base,
                                 &wallpaper,
@@ -1088,13 +1172,33 @@ impl EditorWindow {
                 .unwrap_or_default();
             #[cfg(not(target_os = "macos"))]
             let backdrop_tiles = Vec::new();
-            (rendered, inset_color, backdrop_tiles, rounded_matte)
+            let new_base_pixmap = computed_base_pixmap
+                .zip(base_image.as_ref().map(Arc::downgrade))
+                .map(|((pixmap, opaque), weak)| (weak, pixmap, opaque));
+            (
+                rendered,
+                inset_color,
+                backdrop_tiles,
+                rounded_matte,
+                new_base_pixmap,
+            )
         });
         self.backdrop_in_flight = true;
         cx.spawn(async move |entity, cx| {
-            let (rendered, inset_color, backdrop_tiles, rounded_matte) = task.await;
+            let (rendered, inset_color, backdrop_tiles, rounded_matte, new_base_pixmap) =
+                task.await;
             let _ = entity.update(cx, |editor, cx| {
                 editor.backdrop_in_flight = false;
+                if let Some(entry) = new_base_pixmap {
+                    if editor.base_image.as_ref().is_some_and(|current| {
+                        entry
+                            .0
+                            .upgrade()
+                            .is_some_and(|cached| Arc::ptr_eq(&cached, current))
+                    }) {
+                        editor.base_pixmap = Some(entry);
+                    }
+                }
                 if std::mem::take(&mut editor.backdrop_pending) {
                     editor.backdrop_key = None;
                     editor.refresh_backdrop(cx);
@@ -1155,18 +1259,27 @@ impl EditorWindow {
         self.persist_editor_state(cx);
     }
 
+    fn current_persisted_state(&self) -> PersistedEditorState {
+        PersistedEditorState {
+            annotations: self.history.current().to_vec(),
+            wallpaper: self.wallpaper.clone(),
+            layers: self.layers.clone(),
+        }
+    }
+
     fn persist_editor_state(&mut self, cx: &mut Context<Self>) {
         if self.file_path.is_empty() || self.draft.is_some() {
             return;
         }
-        let Some(state) = self.editor_state_value() else {
-            return;
-        };
-        if self.requested_editor_state.as_deref() == Some(&state) {
+        if self.requested_editor_state.as_ref().is_some_and(|prev| {
+            prev.wallpaper == self.wallpaper
+                && prev.layers == self.layers
+                && prev.annotations == self.history.current()
+        }) {
             return;
         }
 
-        let state = Arc::new(state);
+        let state = self.current_persisted_state();
         self.requested_editor_state = Some(state.clone());
         let writer = self.editor_state_writer.clone();
         let revision = writer.next_revision();
@@ -1185,50 +1298,15 @@ impl EditorWindow {
         }));
     }
 
-    fn editor_state_value(&self) -> Option<serde_json::Value> {
-        if self.file_path.is_empty() {
-            return None;
-        }
-        let mut wallpaper = self.wallpaper.clone();
-        if let Some(source) = wallpaper.background_image.as_deref() {
-            if !source.starts_with("data:") {
-                if let Ok(bytes) = std::fs::read(source) {
-                    use base64::Engine;
-                    let mime = match std::path::Path::new(source)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref()
-                    {
-                        Some("jpg" | "jpeg") => "image/jpeg",
-                        Some("webp") => "image/webp",
-                        Some("gif") => "image/gif",
-                        Some("svg") => "image/svg+xml",
-                        _ => "image/png",
-                    };
-                    wallpaper.background_image = Some(format!(
-                        "data:{mime};base64,{}",
-                        base64::engine::general_purpose::STANDARD.encode(bytes)
-                    ));
-                }
-            }
-        }
-        serde_json::to_value(PersistedEditorState {
-            annotations: self.history.current().to_vec(),
-            wallpaper,
-            layers: self.layers.clone(),
-        })
-        .ok()
-    }
-
     fn force_persist_editor_state(&mut self) {
         self.editor_state_write_task.take();
-        let Some(state) = self.editor_state_value() else {
+        if self.file_path.is_empty() {
             return;
-        };
+        }
+        let state = self.current_persisted_state();
         let revision = self.editor_state_writer.next_revision();
         self.editor_state_writer
-            .write(Path::new(&self.file_path), Arc::new(state), revision);
+            .write(Path::new(&self.file_path), state, revision);
     }
 
     #[cfg(all(feature = "parity", target_os = "macos"))]
@@ -2715,15 +2793,19 @@ impl EditorWindow {
             self.background_previews.request_desktop();
             let daemon = crate::state::state(cx).daemon;
             cx.spawn(async move |entity, cx| {
-                let image = cx
+                let (source, image) = cx
                     .background_executor()
                     .spawn(async move {
-                        let source = crate::editor::background::desktop_wallpaper(&daemon)?;
-                        crate::editor::background::preview_image(&source, size)
+                        let Some(source) = crate::editor::background::desktop_wallpaper(&daemon)
+                        else {
+                            return (None, None);
+                        };
+                        let image = crate::editor::background::preview_image(&source, size);
+                        (image.is_some().then_some(source), image)
                     })
                     .await;
                 let _ = entity.update(cx, |editor, cx| {
-                    editor.background_previews.set_desktop(image);
+                    editor.background_previews.set_desktop(source, image);
                     cx.notify();
                 });
             })
@@ -3458,27 +3540,37 @@ impl EditorWindow {
                 ) {
                     return;
                 }
-                let daemon = crate::state::state(cx).daemon;
-                let background = cx.background_executor().clone();
-                cx.spawn(async move |entity, cx| {
-                    let source = background
-                        .spawn(async move { crate::editor::background::desktop_wallpaper(&daemon) })
-                        .await;
-                    let _ = entity.update(cx, |editor, cx| match source {
-                        Some(source) => {
-                            editor.wallpaper.set_background_image(Some(source));
-                            editor.refresh_backdrop(cx);
-                            editor.sync_snapshot(cx);
-                            cx.notify();
-                        }
-                        None => crate::windows::toast::Toast::show(
-                            cx,
-                            "Wallpaper unavailable",
-                            "The desktop wallpaper could not be read.",
-                        ),
-                    });
-                })
-                .detach();
+                if let Some(source) = self.background_previews.desktop_source().map(str::to_owned) {
+                    self.wallpaper.set_background_image(Some(source));
+                } else {
+                    let daemon = crate::state::state(cx).daemon;
+                    let background = cx.background_executor().clone();
+                    cx.spawn(async move |entity, cx| {
+                        let source =
+                            background
+                                .spawn(async move {
+                                    crate::editor::background::desktop_wallpaper(&daemon)
+                                })
+                                .await;
+                        let _ = entity.update(cx, |editor, cx| match source {
+                            Some(source) => {
+                                editor
+                                    .background_previews
+                                    .set_desktop_source(source.clone());
+                                editor.wallpaper.set_background_image(Some(source));
+                                editor.refresh_backdrop(cx);
+                                editor.sync_snapshot(cx);
+                                cx.notify();
+                            }
+                            None => crate::windows::toast::Toast::show(
+                                cx,
+                                "Wallpaper unavailable",
+                                "The desktop wallpaper could not be read.",
+                            ),
+                        });
+                    })
+                    .detach();
+                }
             }
             EditorOption::WallpaperClear => {
                 self.wallpaper.set_background_image(None);
@@ -5641,6 +5733,58 @@ mod tests {
                 assert!(editor.history.undo());
                 assert_eq!(editor.history.current(), std::slice::from_ref(&original));
             });
+        });
+    }
+
+    #[herogpui::test]
+    fn desktop_wallpaper_selection_reuses_cached_source_without_daemon_roundtrip(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        if !crate::system::capabilities::is_supported(
+            crate::system::capabilities::Feature::DesktopWallpaper,
+        ) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(32, 24, image::Rgba([40, 80, 120, 255]))
+            .save(&source)
+            .unwrap();
+        let wallpaper_file = directory.path().join("desktop.png");
+        image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 60, 40, 255]))
+            .save(&wallpaper_file)
+            .unwrap();
+        let wallpaper_path = wallpaper_file.to_string_lossy().into_owned();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+                .background_previews
+                .set_desktop(Some(wallpaper_path.clone()), None);
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.apply_option(EditorOption::WallpaperUseDesktop, cx);
+                assert_eq!(
+                    editor.wallpaper.background_image.as_deref(),
+                    Some(wallpaper_path.as_str())
+                );
+                assert_eq!(editor.wallpaper.padding, 50.0);
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop.is_some());
+            assert!(editor.base_pixmap.is_some());
         });
     }
 

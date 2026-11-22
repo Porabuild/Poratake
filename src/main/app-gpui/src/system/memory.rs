@@ -53,6 +53,7 @@ pub fn reclaim_idle_memory() {
 
 pub fn clear_transient_caches() {
     crate::editor::wallpaper_svg::clear_caches();
+    crate::render::gradient::clear_image_cache();
     crate::video::composition::cursor_sprites::clear_caches();
     crate::editor::preview_raster::clear_cache();
 }
