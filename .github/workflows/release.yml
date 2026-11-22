@@ -126,11 +126,9 @@ jobs:
 
       - name: Cache Rust build
         if: ${{ !inputs.skip_cache }}
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: macos-gpui-release
-          cache-on-failure: true
 
       - name: Setup macOS certificates
         env:
@@ -250,11 +248,9 @@ jobs:
 
       - name: Cache Rust build
         if: ${{ !inputs.skip_cache }}
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: windows-${{ matrix.arch }}-gpui-release
-          cache-on-failure: true
 
       - name: Setup MSYS2
         id: msys2
@@ -355,11 +351,9 @@ jobs:
 
       - name: Cache Rust build
         if: ${{ !inputs.skip_cache }}
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: linux-${{ matrix.arch }}-gpui-release
-          cache-on-failure: true
 
       - name: Build GPUI Linux package
         run: bun run build:gpui:linux

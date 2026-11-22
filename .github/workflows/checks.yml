@@ -299,11 +299,9 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: macos-gpui-checks
-          cache-on-failure: true
 
       - name: Clippy GPUI shell
         run: cargo clippy --no-deps --locked --manifest-path src/main/app-gpui/Cargo.toml --all-targets -- -D warnings
@@ -341,11 +339,9 @@ jobs:
           tool: cargo-nextest
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: linux-x64-gpui
-          cache-on-failure: true
 
       - name: Clippy GPUI shell and Linux daemon
         run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --all-targets -- -D warnings
@@ -380,11 +376,9 @@ jobs:
         uses: ./.github/actions/linux-capture-deps
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: linux-arm64-gpui
-          cache-on-failure: true
 
       - name: Clippy GPUI and Linux daemon on arm64
         run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon-linux --package poratake-gpui --all-targets -- -D warnings
@@ -405,11 +399,9 @@ jobs:
           targets: aarch64-pc-windows-msvc
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: windows-arm64-gpui
-          cache-on-failure: true
 
       - name: Clippy GPUI and Windows daemon on arm64
         run: cargo clippy --locked --manifest-path src/main/Cargo.toml --package poratake-daemon-common --package poratake-daemon --package poratake-gpui --target aarch64-pc-windows-msvc --all-targets -- -D warnings
@@ -450,11 +442,9 @@ jobs:
           tool: cargo-nextest,cargo-deny
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: windows-x64-native
-          cache-on-failure: true
 
       - name: Format, Clippy, and test Windows native
         run: bun run test:daemon-win
@@ -486,11 +476,9 @@ jobs:
           bun-version: 1.4.0
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: windows-x64-e2e
-          cache-on-failure: true
 
       - name: Test native Windows scroll capture stitching
         env:
@@ -536,15 +524,27 @@ jobs:
           - shard: light-950
             theme: light
             width: '950'
+            scales: '1,1.25,1.5,2'
           - shard: dark-950
             theme: dark
             width: '950'
-          - shard: light-1280
+            scales: '1,1.25,1.5,2'
+          - shard: light-1280-1
             theme: light
             width: '1280'
-          - shard: dark-1280
+            scales: '1'
+          - shard: dark-1280-1
             theme: dark
             width: '1280'
+            scales: '1'
+          - shard: light-1280-hi
+            theme: light
+            width: '1280'
+            scales: '1.25,1.5,2'
+          - shard: dark-1280-hi
+            theme: dark
+            width: '1280'
+            scales: '1.25,1.5,2'
 
     steps:
       - name: Checkout repository
@@ -556,27 +556,39 @@ jobs:
           bun-version: 1.4.0
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
         with:
-          workspaces: src/main
           shared-key: windows-x64-e2e
-          save-if: false
-          cache-on-failure: true
+          save-if: 'false'
 
       - name: Visual regressions
         if: ${{ !cancelled() && !inputs.update_windows_visual_baselines }}
-        run: bun scripts/parity/visual.mjs --theme=${{ matrix.theme }} --width=${{ matrix.width }}
+        run: bun scripts/parity/visual.mjs --theme=${{ matrix.theme }} --width=${{ matrix.width }} --scale=${{ matrix.scales }}
 
       - name: Record visual baselines
         if: ${{ !cancelled() && inputs.update_windows_visual_baselines }}
-        run: bun scripts/parity/visual.mjs --update-baselines --theme=${{ matrix.theme }} --width=${{ matrix.width }}
+        run: bun scripts/parity/visual.mjs --update-baselines --theme=${{ matrix.theme }} --width=${{ matrix.width }} --scale=${{ matrix.scales }}
+
+      - name: Stage updated visual baselines
+        if: ${{ always() && inputs.update_windows_visual_baselines }}
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'shard-baselines'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          foreach ($s in '${{ matrix.scales }}'.Split(',')) {
+            $name = "${{ matrix.theme }}-${{ matrix.width }}-$s"
+            $src = Join-Path 'scripts/parity/baselines/win32' $name
+            if (Test-Path -LiteralPath $src) {
+              Copy-Item -Path $src -Destination (Join-Path $dest $name) -Recurse -Force
+            }
+          }
 
       - name: Preserve updated visual baselines
         if: ${{ always() && inputs.update_windows_visual_baselines }}
         uses: actions/upload-artifact@v7
         with:
           name: windows-visual-baselines-${{ matrix.shard }}
-          path: scripts/parity/baselines/win32/${{ matrix.shard }}-*/**
+          path: ${{ runner.temp }}/shard-baselines/**
           if-no-files-found: ignore
 
       - name: Preserve visual evidence
