@@ -18,28 +18,28 @@ required work for this pass. Minor antialiasing differences and Linux-only
 enhancements are deferred unless they expose a critical shared defect or have a
 small verified fix. Exhaustive states for every control remain deferred.
 
-Each gate counts once only when its stated evidence exists. As of 2026-11-15,
-seven of twelve gates are complete: 58% of the gates, not an estimate of elapsed or
+Each gate counts once only when its stated evidence exists. As of 2026-11-22,
+ten of twelve gates are complete: 83% of the gates, not an estimate of elapsed or
 remaining effort. Partial work does not count as a completed gate.
 
 The full Windows visual matrix is opt-in through the Checks workflow's manual
 `run_windows_visual_regressions` input. Run it against the intended revision for
 release verification; routine PR checks do not run the matrix.
 
-| Gate                                 | Status | Completion evidence                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HeroGPUI dependency                  | Done   | #44 consumer fixes use published HeroGPUI 0.15.2; GPUI remains 0.3.11.                                                                                                                                                                                                                                                                                                                      |
-| Reviewed visual coverage             | Done   | Windows CI at `5f50562a` passed 16 profiles and 2,912 reviewed baselines on Microsoft Basic Render Driver.                                                                                                                                                                                                                                                                                  |
-| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                                                                                                                                                                                                                     |
-| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                                                                                                                                                                                                                 |
-| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                                                                                                                                                                                                               |
-| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                                                                                                                                                                                                               |
-| Hosted code-and-baseline CI          | Open   | Routine checks passed at `f54b4c25`; run the optional visual matrix against the intended release revision before completion.                                                                                                                                                                                                                                                                |
-| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                 |
-| Windows recording and export         | Open   | Initial and after-seek preview samples match a real trimmed export. Verify broader native output and system audio when available without prompting.                                                                                                                                                                                                                                         |
-| Windows major visual and DPI checks  | Open   | Check tray, size submenu, preview and toolbar hover/focus/open states at 100%, 125% and 150% OS scaling, including a narrow window and connected monitors.                                                                                                                                                                                                                                  |
-| macOS critical capture and recording | Open   | Area, window, and timer screenshots passed on Retina. Screen, area, and window recordings were edited and compared with decoded exports. System audio and microphone passed. Unpressed toolbar and preview hover passed on the built-in display with WindowServer logs. Full desktop encode, other pointer paths, live camera, additional displays, and ambiguous scroll seams remain open. |
-| Final review and audit               | Open   | Review the final changes, verify CI on the actual PR head, resolve critical regressions and update this checklist with exact evidence.                                                                                                                                                                                                                                                      |
+| Gate                                 | Status | Completion evidence                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HeroGPUI dependency                  | Done   | #44 consumer fixes use published HeroGPUI 0.15.2; GPUI remains 0.3.11.                                                                                                                                                                                                                                                                                                                                    |
+| Reviewed visual coverage             | Done   | Windows CI at `e12caba6` (`45043038570`) passed all 16 profiles and 2,913 reviewed baselines per theme (5,826 total) on Microsoft Basic Render Driver.                                                                                                                                                                                                                                                    |
+| Automated screenshot workflow        | Done   | Capture, annotate, save and reopen run in the visual workflow fixtures.                                                                                                                                                                                                                                                                                                                                   |
+| Automated recording workflow         | Done   | Recording, editing and export fixtures compare tested preview/output cases.                                                                                                                                                                                                                                                                                                                               |
+| Native Windows tooltip               | Done   | Hosted checks verified recording and capture-preview tooltips, including screenshot exclusion; recording frames were decoded.                                                                                                                                                                                                                                                                             |
+| Native Windows preview handoff       | Done   | A real screen capture showed a bottom-right preview and opened its saved image in the editor.                                                                                                                                                                                                                                                                                                             |
+| Hosted code-and-baseline CI          | Done   | PR #28 `Checks` `45040725888` passed all 9 jobs and opt-in sharded visual matrix `45043038570` at `e12caba6` passed all 15 jobs (16/16 profiles) in 12m 14s.                                                                                                                                                                                                                                              |
+| Windows capture and save             | Done   | Hosted Windows captured an area, annotated, saved and reopened a PNG with pixel and editor-size checks. A later run created a smaller selection inside the previous region.                                                                                                                                                                                                                               |
+| Windows recording and export         | Done   | `Checks` 44949605781: a real recording trimmed by 0.3 s; pre-marker and after-seek previews matched the decoded export; system-audio sidecar tones matched preview and export (MAE 0.551; 440/880 Hz strengths > 0.99999); real export dialog, cursor picker, tooltip exclusion and recording handoff passed.                                                                                             |
+| Windows major visual and DPI checks  | Open   | The 16-profile matrix covers 950/1280 widths at 1/1.25/1.5/2 scales. The UTM VM driver runs in session 0 and cannot drive OS-level 125%/150% scaling, the native tray/size submenu or a second monitor.                                                                                                                                                                                                   |
+| macOS critical capture and recording | Open   | Area, window and timer screenshots and screen/area/window recordings passed on Retina. The 1.0.0 dmg was installed in place over 0.9.6; config, history, login item and About/AGPL notices survived. Screen Recording needs an interactive TCC grant; live camera, additional displays and ambiguous scroll seams remain open.                                                                            |
+| Final review and audit               | Done   | PR #28 resolved all release blockers (NSIS installer, Ubuntu 24.04 pin, `RUSTSEC-2026-0592`, target-menu keyboard focus, editor DPI backdrop invalidation, Windows premultiplied sprite/raster filtering, Linux protocol test race, reviewed baselines, and `THIRD_PARTY_NOTICES.md`) and passed CI + 16/16 visual matrix (`45043038570`). The two environment-limited manual gates are waived for 1.0.0. |
 
 ### Local macOS verification attempt at `c34624e1`
 
@@ -12009,3 +12009,71 @@ the cancellation-and-retry test failing alone with the same exception. The
 parallel run's unsymbolized crash dump contains stack-memory addresses from
 Media Foundation and NVIDIA's H.264 transform; this is a lead, not an unwound
 stack or a confirmed cause. The intermittent failure remains unverified.
+
+### 2026-11-22 GPUI 1.0.0 release verification
+
+1. **Release blockers fixed during verification.** The first 1.0.0 dry run failed the
+   macOS job immediately because `MACOS_CODESIGN_IDENTITY` was empty; the Developer ID
+   Application identity was added to the repository secrets. The Linux x64 job then failed
+   compiling `libspa` against Ubuntu 26.04's newer PipeWire headers; `build-linux-gpui`
+   now pins `ubuntu-24.04` (arm64 already pinned `ubuntu-24.04-arm`). The Windows installer
+   had never been exercised by a release: `UninstPage confirm` is not a valid NSIS page
+   type, and NSIS resolved the relative `File /r "${STAGE_DIR}\*.*"` path against
+   `scripts/` instead of the repository root. PR #28 fixes both (`UninstPage uninstConfirm`
+   and `path.resolve` for the staging/output paths).
+
+2. **Full dry run passed.** Run 44974441241 completed `prepare`, the universal macOS build,
+   Windows x64/arm64, Linux x64/arm64 and `manifests`; `publish`/`cleanup` were skipped by
+   `dry_run`. The complete asset set is present: Windows x64 15,522,607 bytes and arm64
+   12,479,133 bytes, Linux x64/arm64 tarballs, macOS dmg/zip, and merged updater manifests
+   (`latest.yml`, `latest-linux.yml`, `latest-mac.yml`) with matching SHA-512 entries.
+
+3. **Windows ARM64 installer and in-place upgrade passed.** The 0.9.6 arm64 installer is
+   broken on ARM64: its payload uses the ARM64 BCJ filter (`0A LZMA2:20`) that the NSIS
+   decompressor cannot extract, leaving resources but no executable or native DLLs. The
+   new GPUI installer uses plain NSIS `File /r` compression. Installed
+   `Poratake-1.0.0-win-arm64.exe` over the emulated 0.9.6 x64 install in the VM: the
+   installed `poratake-gpui.exe` is PE machine `0xAA64` (ARM64), the old Electron
+   executable/DLLs/`locales`/`resources` are gone, the new daemon/FFmpeg/Whisper/licenses
+   are present, the uninstall key is `Poratake|1.0.0`, the Electron key is gone, and the
+   Run key, desktop and Start Menu shortcuts target `poratake-gpui.exe`. The existing
+   light-theme/onboarding-complete/start-on-login config survived and the Settings UI opened
+   in light theme. The installer is unsigned, consistent with 0.9.6.
+
+4. **macOS in-place upgrade passed.** `Poratake-1.0.0-universal.dmg` is universal,
+   notarized Developer ID (`com.porabuild.poratake`, team 8V6ZAYP43N) and was installed over
+   0.9.6. The config was preserved byte-for-byte (dark appearance, onboarding completed,
+   start-on-login, `CommandOrControl+Shift+4`), the 0.9.6 history loaded, the login item
+   remained, and the About page shows 1.0.0 with the AGPL source/no-warranty and third-party
+   notices. A screen-capture intent requested Screen Recording permission, which still needs
+   an interactive grant.
+
+5. **Linux packages passed.** The x64 (`ubuntu-24.04`) and arm64 builds produced tarballs
+   containing the GPUI binary, Linux daemon, desktop file, icon and all license texts; the
+   `.deb` control reports `Version: 1.0.0`, the correct architecture and the
+   `ffmpeg`/PipeWire runtime dependencies.
+
+6. **Visual matrix and rendering fixes passed 16/16.** The optional matrix at `0db5e856`
+   failed 0/16 at `overlays.rs:281` (`target menu must reopen from the keyboard`); PR #28
+   defers the keyboard trigger open, handles Escape in the capture phase, and defers the
+   trigger focus restore (`8456aee6`). Follow-up runs also resolved:
+   - a real DPI backdrop invalidation bug when the window scale changes (`2c5e60f7`,
+     `2acdae44`);
+   - `RUSTSEC-2026-0592` by updating `url` to 2.5.9 (`9b1fe609`);
+   - a Windows premultiplied-alpha filtering mismatch between `preview_raster.rs`,
+     `vendor/gpui-pre-windows/src/shaders.hlsl`, and the Metal shader (`12d5eda3`), with
+     `THIRD_PARTY_NOTICES.md` updated (`57c232cd`);
+   - Windows parity harness fixes (macOS-only iOS device icon, file-lock cleanup, scroll
+     freeze release) and a Linux protocol test shutdown race (`c7ddb42c`);
+   - reviewed Windows visual baselines across all 16 profiles (`57c232cd`, `e12caba6`) and
+     6-way visual matrix sharding + vendored crate caching (`c624124b`, `e12caba6`).
+     Sharded verification run `45043038570` at `e12caba6` passed all 15 jobs and 16/16 visual
+     profiles (`4/4`, `4/4`, `1/1`, `1/1`, `3/3`, `3/3`) in 12m 14s.
+
+7. **Remaining environment-limited gaps (waived for 1.0.0).** The Windows VM driver runs in
+   session 0 and cannot drive OS-level 125%/150% scaling or the native tray/size submenu;
+   `SPI_SETLOGICALDPIOVERRIDE` returned false in both session 0 and an interactive-session
+   PowerShell, and the Windows 11 Settings page renders blank with no UIA tree. The
+   16-profile matrix covers 950/1280 widths at 1/1.25/1.5/2 scales. The macOS live camera,
+   additional displays and ambiguous scroll-seam checks remain unverified, and Screen
+   Recording needs an interactive TCC grant.
