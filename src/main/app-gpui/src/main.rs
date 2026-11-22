@@ -17,6 +17,10 @@ mod ui;
 mod update;
 mod util;
 mod video;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../win_resource.rs"]
+mod win_resource;
 mod windows;
 
 use gpui::{prelude::*, px, size, App, Bounds};

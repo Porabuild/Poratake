@@ -12,11 +12,8 @@ pub fn source_url_for_version() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::win_resource;
     use std::path::Path;
-
-    #[allow(dead_code)]
-    #[path = "../../../../win_resource.rs"]
-    mod win_resource;
 
     fn read_package_json_version() -> String {
         let package_json = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../package.json");
