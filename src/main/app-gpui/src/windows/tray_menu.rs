@@ -246,7 +246,7 @@ impl TrayMenuWindow {
         }
         #[cfg(not(windows))]
         {
-            registry::is_open(RegistryKind::TrayMenu, cx)
+            registry::has_open(RegistryKind::TrayMenu, cx)
         }
     }
 

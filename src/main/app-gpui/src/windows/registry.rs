@@ -81,6 +81,13 @@ pub fn forget(kind: WindowKind, cx: &mut App) {
     registry(cx).handles.remove(&kind);
 }
 
+#[cfg(not(windows))]
+pub fn has_open(kind: WindowKind, cx: &App) -> bool {
+    cx.try_global::<WindowRegistry>()
+        .and_then(|registry| registry.handles.get(&kind))
+        .is_some_and(|handle| cx.windows().contains(handle))
+}
+
 pub fn is_open(kind: WindowKind, cx: &mut App) -> bool {
     let Some(handle) = registry(cx).handles.get(&kind).copied() else {
         return false;
