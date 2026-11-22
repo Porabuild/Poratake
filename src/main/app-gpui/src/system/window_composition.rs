@@ -449,19 +449,25 @@ pub fn apply_window_origin(window: HWND, origin: Point<Pixels>, scale: f32) {
     }
 }
 
-pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: bool) {
+pub fn set_cloaked(window: HWND, cloaked: bool) -> bool {
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
-    let cloaked = BOOL(1);
+    let value = BOOL::from(cloaked);
     unsafe {
-        let _ = DwmSetWindowAttribute(
+        DwmSetWindowAttribute(
             window,
             DWMWA_CLOAK,
-            &cloaked as *const _ as *const core::ffi::c_void,
-            std::mem::size_of_val(&cloaked) as u32,
-        );
+            &value as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&value) as u32,
+        )
+        .is_ok()
     }
+}
+
+pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+
+    set_cloaked(window, true);
     apply_window_bounds(window, bounds, scale);
     if !activate {
         unsafe {
@@ -471,22 +477,15 @@ pub fn stage_window(window: HWND, bounds: Bounds<Pixels>, scale: f32, activate: 
 }
 
 pub fn reveal_window(window: HWND, activate: bool, duration_ms: u32) {
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
     use windows::Win32::UI::WindowsAndMessaging::{
         AnimateWindow, ShowWindow, AW_ACTIVATE, AW_BLEND, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE,
     };
 
-    let cloaked = BOOL(0);
     unsafe {
         if duration_ms > 0 {
             let _ = ShowWindow(window, SW_HIDE);
         }
-        let _ = DwmSetWindowAttribute(
-            window,
-            DWMWA_CLOAK,
-            &cloaked as *const _ as *const core::ffi::c_void,
-            std::mem::size_of_val(&cloaked) as u32,
-        );
+        set_cloaked(window, false);
         if duration_ms == 0 {
             let _ = ShowWindow(window, if activate { SW_SHOW } else { SW_SHOWNOACTIVATE });
             return;
