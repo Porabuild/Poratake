@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tiny_skia::Pixmap;
 
@@ -286,8 +286,9 @@ pub const PRESETS: [(&str, &str, &str); 14] = [
 const VIEW_WIDTH: f32 = 800.0;
 const VIEW_HEIGHT: f32 = 600.0;
 const MAX_DIMENSION: u32 = 8192;
-const CACHE_LIMIT: usize = 48;
-const MAX_PIXMAP_CACHE_BYTES: usize = 128 * 1024 * 1024;
+const PIXMAP_CACHE_LIMIT: usize = 2;
+const IMAGE_CACHE_LIMIT: usize = 48;
+const MAX_PIXMAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const TILE_SCALE: f32 = 2.0;
 
 type PixmapKey = (&'static str, u32, u32);
@@ -320,7 +321,7 @@ impl PixmapCache {
         let pixmap = Arc::new(rasterize(source, width, height)?);
         let bytes = pixmap.data().len();
         let remaining = self.max_bytes.saturating_sub(bytes);
-        while self.bytes > remaining || self.entries.len() >= CACHE_LIMIT {
+        while self.bytes > remaining || self.entries.len() >= PIXMAP_CACHE_LIMIT {
             let Some((_, stale)) = self.entries.pop_back() else {
                 break;
             };
@@ -329,6 +330,19 @@ impl PixmapCache {
         self.bytes += bytes;
         self.entries.push_front((key, pixmap.clone()));
         Some(pixmap)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+}
+
+static PIXMAP_CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
+
+pub fn clear_pixmap_cache() {
+    if let Ok(mut cache) = PIXMAP_CACHE.lock() {
+        cache.clear();
     }
 }
 
@@ -361,11 +375,13 @@ pub fn cover_size(width: f32, height: f32) -> (u32, u32) {
 }
 
 pub fn pixmap(id: &str, width: u32, height: u32) -> Option<Arc<Pixmap>> {
-    static CACHE: Mutex<PixmapCache> = Mutex::new(PixmapCache::new(MAX_PIXMAP_CACHE_BYTES));
     let (id, source) = entry(id)?;
     let width = width.clamp(1, MAX_DIMENSION);
     let height = height.clamp(1, MAX_DIMENSION);
-    CACHE.lock().ok()?.pixmap((id, width, height), source)
+    PIXMAP_CACHE
+        .lock()
+        .ok()?
+        .pixmap((id, width, height), source)
 }
 
 pub fn cover_pixmap(id: &str, width: f32, height: f32) -> Option<Arc<Pixmap>> {
@@ -385,7 +401,7 @@ pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
     if let Some(cached) = cache.get(&(id, height)) {
         return cached.clone();
     }
-    if cache.len() >= CACHE_LIMIT {
+    if cache.len() >= IMAGE_CACHE_LIMIT {
         cache.clear();
     }
     let width = dimension(height as f32 * VIEW_WIDTH / VIEW_HEIGHT);
@@ -402,8 +418,21 @@ pub fn render_image(id: &str, size: f32) -> Option<Arc<gpui::RenderImage>> {
     image
 }
 
-fn rasterize(markup: &str, width: u32, height: u32) -> Option<Pixmap> {
-    let tree = usvg::Tree::from_str(markup, &usvg::Options::default()).ok()?;
+pub fn preview_render_image(id: &str) -> Option<Arc<gpui::RenderImage>> {
+    render_image(id, VIEW_HEIGHT / TILE_SCALE)
+}
+
+fn parsed_preset_trees() -> &'static [Option<usvg::Tree>] {
+    static TREES: OnceLock<Vec<Option<usvg::Tree>>> = OnceLock::new();
+    TREES.get_or_init(|| {
+        PRESETS
+            .iter()
+            .map(|(_, _, markup)| usvg::Tree::from_str(markup, &usvg::Options::default()).ok())
+            .collect()
+    })
+}
+
+fn rasterize_tree(tree: &usvg::Tree, width: u32, height: u32) -> Option<Pixmap> {
     let source = tree.size();
     if source.width() <= 0.0 || source.height() <= 0.0 {
         return None;
@@ -413,8 +442,18 @@ fn rasterize(markup: &str, width: u32, height: u32) -> Option<Pixmap> {
         width as f32 / source.width(),
         height as f32 / source.height(),
     );
-    resvg::render(&tree, scale, &mut pixmap.as_mut());
+    resvg::render(tree, scale, &mut pixmap.as_mut());
     Some(pixmap)
+}
+
+fn rasterize(markup: &str, width: u32, height: u32) -> Option<Pixmap> {
+    if let Some(index) = PRESETS.iter().position(|(_, _, source)| *source == markup) {
+        if let Some(tree) = parsed_preset_trees().get(index).and_then(Option::as_ref) {
+            return rasterize_tree(tree, width, height);
+        }
+    }
+    let tree = usvg::Tree::from_str(markup, &usvg::Options::default()).ok()?;
+    rasterize_tree(&tree, width, height)
 }
 
 #[cfg(test)]
@@ -528,6 +567,21 @@ mod tests {
 
         let rerendered = cache.pixmap(cold, FOREST_GLOW).unwrap();
         assert_eq!(rerendered.data(), earlier_pixels);
+    }
+
+    #[test]
+    fn sidebar_tile_images_stay_cached_across_all_presets() {
+        let first: Vec<_> = PRESETS
+            .iter()
+            .map(|(id, _, _)| render_image(id, 44.0).unwrap())
+            .collect();
+        let second: Vec<_> = PRESETS
+            .iter()
+            .map(|(id, _, _)| render_image(id, 44.0).unwrap())
+            .collect();
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert!(Arc::ptr_eq(a, b));
+        }
     }
 
     #[test]

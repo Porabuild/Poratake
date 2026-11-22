@@ -2,6 +2,10 @@
 //! `renderer/utils/wallpaper-render.ts` — the wallpaper backgrounds behind a
 //! screenshot or a recording.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
 use tiny_skia::{
     FillRule, FilterQuality, GradientStop, LinearGradient, Pixmap, PixmapRef, Point, Rect,
     SpreadMode, Transform,
@@ -130,6 +134,15 @@ pub fn overlay_noise(canvas: &mut Canvas, width: f32, height: f32, noise: f64, s
     }
     let opacity = ((noise / 100.0) * 0.3).clamp(0.0, 1.0) as f32;
     let (columns, rows) = (width.ceil() as u32, height.ceil() as u32);
+    if canvas.is_identity_unclipped()
+        && columns == canvas.width()
+        && rows == canvas.height()
+        && (width - columns as f32).abs() < f32::EPSILON
+        && (height - rows as f32).abs() < f32::EPSILON
+    {
+        overlay_noise_in_place(canvas.pixmap_mut(), opacity, seed);
+        return;
+    }
     let Some(mut grain) = Pixmap::new(columns.max(1), rows.max(1)) else {
         return;
     };
@@ -160,6 +173,139 @@ pub fn overlay_noise(canvas: &mut Canvas, width: f32, height: f32, noise: f64, s
         tiny_skia::BlendMode::Overlay,
     );
     canvas.restore();
+}
+
+fn overlay_noise_in_place(pixmap: &mut Pixmap, opacity: f32, seed: u64) {
+    let mut state = seed | 1;
+    let inv_sa = 1.0 - opacity;
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let s = f32::from((state >> 24) as u8) * (1.0 / 255.0);
+        if pixel[3] == 255 {
+            let factor = opacity * (2.0 * s - 1.0);
+            for value in &mut pixel[..3] {
+                let c = *value;
+                let dc = f32::from(c) * (1.0 / 255.0);
+                let out = if u16::from(c) * 2 <= 255 {
+                    dc + factor * dc
+                } else {
+                    dc + factor * (1.0 - dc)
+                };
+                *value = (out * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+            }
+            continue;
+        }
+        let sc = s * opacity;
+        let da = f32::from(pixel[3]) * (1.0 / 255.0);
+        let inv_da = 1.0 - da;
+        let out_a = (opacity + da * inv_sa).clamp(0.0, 1.0);
+        let out_a_u8 = (out_a * 255.0 + 0.5).clamp(0.0, 255.0) as u8;
+        for value in &mut pixel[..3] {
+            let dc = f32::from(*value) * (1.0 / 255.0);
+            let blend = if 2.0 * dc <= da {
+                2.0 * sc * dc
+            } else {
+                opacity * da - 2.0 * (da - dc) * (opacity - sc)
+            };
+            let out = (blend + sc * inv_da + dc * inv_sa).clamp(0.0, out_a);
+            *value = ((out * 255.0 + 0.5).clamp(0.0, 255.0) as u8).min(out_a_u8);
+        }
+        pixel[3] = out_a_u8;
+    }
+}
+
+const IMAGE_CACHE_LIMIT: usize = 2;
+const IMAGE_CACHE_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum ImageSourceKey {
+    Data(String),
+    File {
+        path: String,
+        len: u64,
+        modified: Option<SystemTime>,
+    },
+    Missing(String),
+}
+
+struct DecodedImageCache {
+    entries: VecDeque<(ImageSourceKey, Arc<Pixmap>)>,
+    bytes: usize,
+}
+
+impl DecodedImageCache {
+    const fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&mut self, key: &ImageSourceKey) -> Option<Arc<Pixmap>> {
+        let index = self.entries.iter().position(|(cached, _)| cached == key)?;
+        let entry = self.entries.remove(index)?;
+        let pixmap = entry.1.clone();
+        self.entries.push_front(entry);
+        Some(pixmap)
+    }
+
+    fn insert(&mut self, key: ImageSourceKey, pixmap: Arc<Pixmap>) {
+        let bytes = pixmap.data().len();
+        let remaining = IMAGE_CACHE_MAX_BYTES.saturating_sub(bytes);
+        while self.bytes > remaining || self.entries.len() >= IMAGE_CACHE_LIMIT {
+            let Some((_, stale)) = self.entries.pop_back() else {
+                break;
+            };
+            self.bytes -= stale.data().len();
+        }
+        self.bytes += bytes;
+        self.entries.push_front((key, pixmap));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+}
+
+static DECODED_IMAGE_CACHE: Mutex<DecodedImageCache> = Mutex::new(DecodedImageCache::new());
+
+pub fn clear_image_cache() {
+    if let Ok(mut cache) = DECODED_IMAGE_CACHE.lock() {
+        cache.clear();
+    }
+}
+
+pub(crate) fn image_source_key(source: &str) -> ImageSourceKey {
+    if source.contains("base64,") {
+        return ImageSourceKey::Data(source.to_string());
+    }
+    match std::fs::metadata(source) {
+        Ok(metadata) => ImageSourceKey::File {
+            path: source.to_string(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        },
+        Err(_) => ImageSourceKey::Missing(source.to_string()),
+    }
+}
+
+pub fn load_image_cached(source: &str) -> Option<Arc<Pixmap>> {
+    let key = image_source_key(source);
+    if !matches!(key, ImageSourceKey::Missing(_)) {
+        if let Some(cached) = DECODED_IMAGE_CACHE.lock().ok()?.get(&key) {
+            return Some(cached);
+        }
+    }
+    let pixmap = Arc::new(load_image(source)?);
+    if !matches!(key, ImageSourceKey::Missing(_)) {
+        if let Ok(mut cache) = DECODED_IMAGE_CACHE.lock() {
+            cache.insert(key, pixmap.clone());
+        }
+    }
+    Some(pixmap)
 }
 
 /// Decodes a `data:` URL or a file path into a pixmap, which is how both the
@@ -259,5 +405,96 @@ mod tests {
             .0
             .iter()
             .all(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn in_place_noise_matches_tiny_skia_overlay() {
+        for noise in [15.0, 50.0, 100.0] {
+            let mut fast = Canvas::new(32, 16).expect("canvas");
+            let mut reference = Canvas::new(32, 16).expect("canvas");
+            for (index, (a, b)) in fast
+                .pixmap_mut()
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(
+                    reference
+                        .pixmap_mut()
+                        .data_mut()
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut(),
+                )
+                .enumerate()
+            {
+                let alpha = if index % 3 == 0 {
+                    255
+                } else {
+                    ((index * 37) % 256) as u8
+                };
+                let premul = |value: u8| ((u16::from(value) * u16::from(alpha)) / 255) as u8;
+                let pixel = [
+                    premul(((index * 19) % 256) as u8),
+                    premul(((index * 53) % 256) as u8),
+                    premul(((index * 97) % 256) as u8),
+                    alpha,
+                ];
+                *a = pixel;
+                *b = pixel;
+            }
+            overlay_noise(&mut fast, 32.0, 16.0, noise, 42);
+            let opacity = ((noise / 100.0) * 0.3).clamp(0.0, 1.0) as f32;
+            let mut grain = Pixmap::new(32, 16).expect("grain");
+            let mut state = 42u64 | 1;
+            for pixel in grain.data_mut().as_chunks_mut::<4>().0 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let value = (state >> 24) as u8;
+                *pixel = [value, value, value, 255];
+            }
+            reference.set_global_alpha(opacity);
+            reference.draw_pixmap_blended(
+                grain.as_ref(),
+                0.0,
+                0.0,
+                32.0,
+                16.0,
+                tiny_skia::BlendMode::Overlay,
+            );
+            for (index, (actual, expected)) in fast
+                .pixmap()
+                .data()
+                .iter()
+                .zip(reference.pixmap().data().iter())
+                .enumerate()
+            {
+                assert!(
+                    actual.abs_diff(*expected) <= 1,
+                    "noise={noise} byte={index}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn load_image_cached_reuses_unchanged_file_and_reloads_when_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bg.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([20, 40, 60, 255]))
+            .save(&path)
+            .unwrap();
+        let path_str = path.to_str().unwrap();
+        let first = load_image_cached(path_str).unwrap();
+        let second = load_image_cached(path_str).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        image::RgbaImage::from_pixel(6, 4, image::Rgba([200, 100, 50, 255]))
+            .save(&path)
+            .unwrap();
+        let updated = load_image_cached(path_str).unwrap();
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert_eq!((updated.width(), updated.height()), (6, 4));
     }
 }

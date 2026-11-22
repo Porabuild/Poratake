@@ -53,10 +53,11 @@ pub fn blur(pixmap: &mut Pixmap, sigma: f32) {
 
     let mut data: Vec<u8> = pixmap.data().to_vec();
     let mut scratch = vec![0u8; data.len()];
+    let mut sums = vec![[0u32; 4]; width];
     let kernel = box_kernel(sigma);
     for _ in 0..3 {
         box_blur_horizontal(&data, &mut scratch, width, height, kernel);
-        box_blur_vertical(&scratch, &mut data, width, height, kernel);
+        box_blur_vertical(&scratch, &mut data, width, height, kernel, &mut sums);
     }
     pixmap.data_mut().copy_from_slice(&data);
 }
@@ -67,16 +68,19 @@ pub fn blur_transparent(pixmap: &mut Pixmap, sigma: f32) {
     }
     let width = pixmap.width() as usize;
     let height = pixmap.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
     let kernel = box_kernel(sigma);
     let guard = box_radius(sigma) * 2;
-    let max_line = (width.max(height) + guard * 2) * 4;
-    let mut first = vec![0u8; max_line];
-    let mut second = vec![0u8; max_line];
-    let mut horizontal = vec![0u8; width * height * 4];
     let row_width = width + guard * 2;
     let row_bytes = width * 4;
+    let padded_height = height + guard * 2;
+    let mut first = vec![0u8; row_width * 4];
+    let mut second = vec![0u8; row_width * 4];
+    let mut vertical_a = vec![0u8; padded_height * row_bytes];
     for y in 0..height {
-        first[..row_width * 4].fill(0);
+        first.fill(0);
         let offset = y * row_bytes;
         first[guard * 4..guard * 4 + row_bytes]
             .copy_from_slice(&pixmap.data()[offset..offset + row_bytes]);
@@ -84,27 +88,26 @@ pub fn blur_transparent(pixmap: &mut Pixmap, sigma: f32) {
             box_blur_horizontal(&first, &mut second, row_width, 1, kernel);
             std::mem::swap(&mut first, &mut second);
         }
-        horizontal[offset..offset + row_bytes]
+        let target = (y + guard) * row_bytes;
+        vertical_a[target..target + row_bytes]
             .copy_from_slice(&first[guard * 4..guard * 4 + row_bytes]);
     }
-    let column_width = height + guard * 2;
-    for x in 0..width {
-        first[..column_width * 4].fill(0);
-        for y in 0..height {
-            let from = (y * width + x) * 4;
-            let to = (y + guard) * 4;
-            first[to..to + 4].copy_from_slice(&horizontal[from..from + 4]);
-        }
-        for _ in 0..3 {
-            box_blur_horizontal(&first, &mut second, column_width, 1, kernel);
-            std::mem::swap(&mut first, &mut second);
-        }
-        for y in 0..height {
-            let from = (y + guard) * 4;
-            let to = (y * width + x) * 4;
-            pixmap.data_mut()[to..to + 4].copy_from_slice(&first[from..from + 4]);
-        }
+    let mut vertical_b = vec![0u8; padded_height * row_bytes];
+    let mut sums = vec![[0u32; 4]; width];
+    for _ in 0..3 {
+        box_blur_vertical(
+            &vertical_a,
+            &mut vertical_b,
+            width,
+            padded_height,
+            kernel,
+            &mut sums,
+        );
+        std::mem::swap(&mut vertical_a, &mut vertical_b);
     }
+    pixmap
+        .data_mut()
+        .copy_from_slice(&vertical_a[guard * row_bytes..(guard + height) * row_bytes]);
 }
 
 pub fn blur_alpha(pixmap: &mut Pixmap, sigma: f32) {
@@ -226,31 +229,44 @@ fn box_blur_vertical(
     width: usize,
     height: usize,
     kernel: BoxKernel,
+    sums: &mut [[u32; 4]],
 ) {
     let radius = kernel.radius;
     let source = source.as_chunks::<4>().0;
     let target = target.as_chunks_mut::<4>().0;
+    let top_row = &source[..width];
+    let bottom_row = &source[(height - 1) * width..height * width];
+    let bottom_repeat = radius.saturating_sub(height - 1) as u32;
     for x in 0..width {
-        let mut sums = [0u32; 4];
-        for y in 0..=radius.min(height - 1) {
+        for channel in 0..4 {
+            sums[x][channel] = u32::from(top_row[x][channel]) * radius as u32
+                + u32::from(bottom_row[x][channel]) * bottom_repeat;
+        }
+    }
+    for y in 0..=radius.min(height - 1) {
+        let row = &source[y * width..(y + 1) * width];
+        for x in 0..width {
             for channel in 0..4 {
-                sums[channel] += u32::from(source[y * width + x][channel]);
+                sums[x][channel] += u32::from(row[x][channel]);
             }
         }
-        for channel in 0..4 {
-            sums[channel] += u32::from(source[x][channel]) * radius as u32
-                + u32::from(source[(height - 1) * width + x][channel])
-                    * radius.saturating_sub(height - 1) as u32;
-        }
-        for y in 0..height {
-            let first = &source[y.saturating_sub(radius + 1) * width + x];
-            let last = &source[(y + radius + 1).min(height - 1) * width + x];
-            let leaving = &source[y.saturating_sub(radius) * width + x];
+    }
+    for y in 0..height {
+        let first_row = &source[y.saturating_sub(radius + 1) * width..][..width];
+        let last_row = &source[(y + radius + 1).min(height - 1) * width..][..width];
+        let leaving_row = &source[y.saturating_sub(radius) * width..][..width];
+        let out_row = &mut target[y * width..(y + 1) * width];
+        for x in 0..width {
             for channel in 0..4 {
-                target[y * width + x][channel] =
-                    filtered(sums[channel], first[channel], last[channel], kernel);
-                sums[channel] = sums[channel].saturating_sub(u32::from(leaving[channel]))
-                    + u32::from(last[channel]);
+                out_row[x][channel] = filtered(
+                    sums[x][channel],
+                    first_row[x][channel],
+                    last_row[x][channel],
+                    kernel,
+                );
+                sums[x][channel] = sums[x][channel]
+                    .saturating_sub(u32::from(leaving_row[x][channel]))
+                    + u32::from(last_row[x][channel]);
             }
         }
     }
@@ -302,7 +318,8 @@ mod tests {
             if width == 2 {
                 box_blur_horizontal(&source, &mut result, width, height, kernel);
             } else {
-                box_blur_vertical(&source, &mut result, width, height, kernel);
+                let mut sums = vec![[0u32; 4]; width];
+                box_blur_vertical(&source, &mut result, width, height, kernel, &mut sums);
             }
             assert_eq!(result, [102, 102, 102, 255, 153, 153, 153, 255]);
         }

@@ -20,12 +20,17 @@ pub const PREVIEW_SCALE: f32 = 2.0;
 #[derive(Default)]
 pub struct BackgroundPreviews {
     desktop: Option<PreviewState>,
+    desktop_source: Option<String>,
     customs: std::collections::HashMap<String, PreviewState>,
 }
 
 impl BackgroundPreviews {
     pub fn desktop(&self) -> PreviewState {
         self.desktop.clone().unwrap_or_default()
+    }
+
+    pub fn desktop_source(&self) -> Option<&str> {
+        self.desktop_source.as_deref()
     }
 
     pub fn desktop_requested(&self) -> bool {
@@ -48,12 +53,27 @@ impl BackgroundPreviews {
         self.customs.insert(id.to_string(), PreviewState::Loading);
     }
 
-    pub fn set_desktop(&mut self, image: Option<Arc<gpui::RenderImage>>) {
+    pub fn set_desktop(&mut self, source: Option<String>, image: Option<Arc<gpui::RenderImage>>) {
+        self.desktop_source = source;
         self.desktop = Some(state_for(image));
     }
 
     pub fn set_custom(&mut self, id: &str, image: Option<Arc<gpui::RenderImage>>) {
         self.customs.insert(id.to_string(), state_for(image));
+    }
+
+    pub fn drain_images(&mut self) -> Vec<Arc<gpui::RenderImage>> {
+        let mut images = Vec::new();
+        self.desktop_source = None;
+        if let Some(PreviewState::Ready(image)) = self.desktop.take() {
+            images.push(image);
+        }
+        for (_, state) in self.customs.drain() {
+            if let PreviewState::Ready(image) = state {
+                images.push(image);
+            }
+        }
+        images
     }
 }
 

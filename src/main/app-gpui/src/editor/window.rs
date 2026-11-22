@@ -16,7 +16,7 @@ use herogpui::gpui;
 
 use crate::editor::actions;
 use crate::editor::annotations::{self, Annotation, AnnotationHistory, Point, ResizeHandle};
-use crate::editor::canvas::{CanvasSnapshot, EditorCanvas};
+use crate::editor::canvas::{CanvasSnapshot, EditorCanvas, LiveBackground};
 use crate::editor::options::{
     EditorAction, EditorHandlers, EditorOption, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
@@ -34,7 +34,7 @@ fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fm
     crate::windows::toast::Toast::show(cx, "Screenshot Save Failed", message);
 }
 
-#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PersistedEditorState {
     #[serde(default)]
@@ -51,6 +51,33 @@ impl PersistedEditorState {
             .and_then(|state| serde_json::from_value(state).ok())
             .unwrap_or_default()
     }
+}
+
+fn encode_editor_state_value(mut state: PersistedEditorState) -> Option<serde_json::Value> {
+    if let Some(source) = state.wallpaper.background_image.as_deref() {
+        if !source.starts_with("data:") {
+            if let Ok(bytes) = std::fs::read(source) {
+                use base64::Engine;
+                let mime = match std::path::Path::new(source)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("webp") => "image/webp",
+                    Some("gif") => "image/gif",
+                    Some("svg") => "image/svg+xml",
+                    _ => "image/png",
+                };
+                state.wallpaper.background_image = Some(format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ));
+            }
+        }
+    }
+    serde_json::to_value(state).ok()
 }
 
 struct EditorStateWriter {
@@ -379,9 +406,75 @@ fn resize_crop_rect(
     rect
 }
 
+type BackdropKey = (
+    crate::editor::wallpaper::WallpaperSettings,
+    u32,
+    u32,
+    Vec<crate::editor::layers::ImageLayer>,
+    f64,
+    Option<[u8; 3]>,
+    Option<gpui::ImageId>,
+    f64,
+);
+
+#[derive(Clone, PartialEq)]
+struct LiveBackgroundSource {
+    gradient: Option<crate::editor::wallpaper::GradientOption>,
+    background_image: Option<String>,
+    has_effects: bool,
+}
+
+impl LiveBackgroundSource {
+    fn from_wallpaper(wallpaper: &crate::editor::wallpaper::WallpaperSettings) -> Self {
+        Self {
+            gradient: wallpaper.gradient.clone(),
+            background_image: wallpaper.background_image.clone(),
+            has_effects: wallpaper.background_blur > 0.0 || wallpaper.noise > 0.0,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct LiveBackgroundKey {
+    source: LiveBackgroundSource,
+    blur_bits: u64,
+    noise_bits: u64,
+}
+
+impl LiveBackgroundKey {
+    fn from_wallpaper(wallpaper: &crate::editor::wallpaper::WallpaperSettings) -> Self {
+        Self {
+            source: LiveBackgroundSource::from_wallpaper(wallpaper),
+            blur_bits: wallpaper.background_blur.to_bits(),
+            noise_bits: wallpaper.noise.to_bits(),
+        }
+    }
+}
+
+fn backdrop_layout_changed(previous: &BackdropKey, next: &BackdropKey) -> bool {
+    previous.1 != next.1
+        || previous.2 != next.2
+        || previous.4 != next.4
+        || previous.5 != next.5
+        || previous.0.window_frame.style != next.0.window_frame.style
+        || previous.0.balance != next.0.balance
+        || previous.0.inset != next.0.inset
+        || previous.0.corners != next.0.corners
+        || previous.0.shadow != next.0.shadow
+        || previous.0.spacing != next.0.spacing
+        || previous.3 != next.3
+        || previous.6 != next.6
+        || previous.7 != next.7
+}
+
+fn backdrop_source_changed(previous: &BackdropKey, next: &BackdropKey) -> bool {
+    previous.0.gradient != next.0.gradient || previous.0.background_image != next.0.background_image
+}
+
 pub struct EditorWindow {
     pub image: Option<Arc<gpui::RenderImage>>,
     pub base_image: Option<Arc<image::DynamicImage>>,
+    base_pixmap: Option<(Option<gpui::ImageId>, Arc<tiny_skia::Pixmap>)>,
     pub is_copied: bool,
     copy_pending: bool,
     pin_pending: bool,
@@ -472,16 +565,9 @@ pub struct EditorWindow {
     preview_edges: Vec<crate::editor::export::PreviewEdgeImage>,
     image_tiles: Vec<crate::editor::export::PreviewEdgeImage>,
     retired_preview_edges: Vec<Arc<gpui::RenderImage>>,
-    backdrop_key: Option<(
-        crate::editor::wallpaper::WallpaperSettings,
-        u32,
-        u32,
-        Vec<crate::editor::layers::ImageLayer>,
-        f64,
-        Option<[u8; 3]>,
-        Option<gpui::ImageId>,
-        f64,
-    )>,
+    backdrop_key: Option<BackdropKey>,
+    rendered_backdrop_key: Option<BackdropKey>,
+    live_background_cache: Option<(LiveBackgroundKey, Arc<gpui::RenderImage>)>,
     backdrop_in_flight: bool,
     backdrop_pending: bool,
     inset_color: Option<String>,
@@ -491,7 +577,7 @@ pub struct EditorWindow {
     pan_origin: Option<(gpui::Point<Pixels>, gpui::Point<Pixels>)>,
     next_id: u32,
     editor_state_writer: Arc<EditorStateWriter>,
-    requested_editor_state: Option<Arc<serde_json::Value>>,
+    requested_editor_state: Option<PersistedEditorState>,
     editor_state_write_task: Option<gpui::Task<()>>,
     pub focus_handle: gpui::FocusHandle,
     save_dialog_open: bool,
@@ -561,6 +647,7 @@ impl EditorWindow {
         let prefs = crate::state::try_state(cx)
             .map(|service| service.config.get().editor)
             .unwrap_or_default();
+        let persisted_initial = persisted.clone();
         let persisted_value = serde_json::to_value(&persisted).ok().map(Arc::new);
         let next_id = persisted
             .annotations
@@ -572,6 +659,7 @@ impl EditorWindow {
         let mut editor = Self {
             image,
             base_image,
+            base_pixmap: None,
             layers: persisted.layers,
             capture_mode: false,
             meta_held: false,
@@ -591,6 +679,8 @@ impl EditorWindow {
             image_tiles,
             retired_preview_edges: Vec::new(),
             backdrop_key: None,
+            rendered_backdrop_key: None,
+            live_background_cache: None,
             backdrop_in_flight: false,
             backdrop_pending: false,
             inset_color: None,
@@ -674,6 +764,8 @@ impl EditorWindow {
                 rounded_matte: None,
                 backdrop_tiles: Vec::new(),
                 preview_edges: Vec::new(),
+                live_background: LiveBackground::None,
+                inset_color: None,
                 selected: Vec::new(),
                 editing_text: None,
                 marquee: None,
@@ -685,9 +777,9 @@ impl EditorWindow {
             next_id,
             editor_state_writer: Arc::new(EditorStateWriter {
                 revision: 0.into(),
-                persisted: parking_lot::Mutex::new(persisted_value.clone()),
+                persisted: parking_lot::Mutex::new(persisted_value),
             }),
-            requested_editor_state: persisted_value,
+            requested_editor_state: Some(persisted_initial),
             editor_state_write_task: None,
             focus_handle: cx.focus_handle(),
             save_dialog_open: false,
@@ -758,7 +850,30 @@ impl EditorWindow {
         for (_, patch) in self.redact_patches.drain() {
             let _ = window.drop_image(patch.image);
         }
+        if let Some((_, image)) = self.live_background_cache.take() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(zoom_backdrop) = self.zoom_backdrop.take() {
+            let _ = window.drop_image(zoom_backdrop.image());
+        }
+        for image in self.background_previews.drain_images() {
+            let _ = window.drop_image(image);
+        }
+        if let Some(preview) = self
+            .background_editor
+            .take()
+            .and_then(|draft| draft.preview)
+        {
+            let _ = window.drop_image(preview);
+        }
+        crate::editor::preview_raster::clear(window);
+        crate::editor::export::clear_caches();
+        crate::editor::wallpaper_svg::clear_pixmap_cache();
         self.base_image = None;
+        self.base_pixmap = None;
+        self.backdrop_key = None;
+        self.backdrop_pending = false;
+        self.rendered_backdrop_key = None;
         self.pre_crop = None;
         let mut snapshot = self.snapshot.borrow_mut();
         snapshot.image = None;
@@ -768,6 +883,8 @@ impl EditorWindow {
         snapshot.backdrop_tiles.clear();
         snapshot.image_tiles.clear();
         snapshot.redact_patches.clear();
+        snapshot.live_background = LiveBackground::None;
+        snapshot.inset_color = None;
     }
 
     /// Rasterizes the redacted pixels for every committed redaction once, so
@@ -811,7 +928,12 @@ impl EditorWindow {
                     live.insert(key, patch);
                 }
             }
-            self.redact_patches = live;
+            let previous = std::mem::replace(&mut self.redact_patches, live);
+            for (key, patch) in previous {
+                if !self.redact_patches.contains_key(&key) {
+                    self.retired_preview_edges.push(patch.image);
+                }
+            }
         }
     }
 
@@ -900,20 +1022,175 @@ impl EditorWindow {
             self.retired_preview_edges.push(matte);
         }
         self.backdrop_composite = false;
+        self.rendered_backdrop_key = None;
         self.retired_preview_edges
             .extend(self.backdrop_tiles.drain(..).map(|tile| tile.image));
         self.retire_preview_edges();
     }
 
-    /// Renders the wallpaper backdrop when the settings or the image size have
-    /// changed since the last one.
-    fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
+    fn retire_live_background(&mut self) {
+        if let Some((_, image)) = self.live_background_cache.take() {
+            self.retired_preview_edges.push(image);
+        }
+    }
+
+    fn replace_live_background(&mut self, key: LiveBackgroundKey, image: Arc<gpui::RenderImage>) {
+        if let Some((_, previous)) = self.live_background_cache.replace((key, image)) {
+            self.retired_preview_edges.push(previous);
+        }
+    }
+
+    fn ensure_base_pixmap(&mut self) -> Option<Arc<tiny_skia::Pixmap>> {
+        let image_id = self.image.as_ref().map(|image| image.id);
+        if let Some((cached_id, pixmap)) = &self.base_pixmap {
+            if *cached_id == image_id {
+                return Some(pixmap.clone());
+            }
+        }
+        let pixmap = self
+            .base_image
+            .as_deref()
+            .and_then(crate::editor::export::from_dynamic_image)
+            .map(Arc::new)?;
+        self.base_pixmap = Some((image_id, pixmap.clone()));
+        Some(pixmap)
+    }
+
+    fn ensure_inset_color(&mut self) {
+        if self.wallpaper.inset <= 0.0 || self.inset_color.is_some() {
+            return;
+        }
+        let balance_crop = self.balance_crop_bounds().unwrap_or_default();
+        self.inset_color = self
+            .base_image
+            .as_ref()
+            .and_then(|base| match base.as_rgba8() {
+                Some(rgba) => {
+                    crate::render::color_detection::dominant_inset_color_rgba(rgba, balance_crop)
+                }
+                None => {
+                    let pixmap = crate::editor::export::from_dynamic_image(base)?;
+                    crate::render::color_detection::dominant_inset_color(
+                        pixmap.as_ref(),
+                        balance_crop,
+                    )
+                }
+            });
+    }
+
+    fn balance_crop_bounds(&self) -> Option<crate::render::color_detection::ContentBounds> {
+        self.balance_crop.map(|(left, top, right, bottom)| {
+            crate::render::color_detection::ContentBounds {
+                left: left as u32,
+                top: top as u32,
+                right: right as u32,
+                bottom: bottom as u32,
+            }
+        })
+    }
+
+    fn find_background_preview(
+        &self,
+        source: Option<&str>,
+        cx: &App,
+    ) -> Option<Arc<gpui::RenderImage>> {
+        let source = source?;
+        let customs = crate::state::try_state(cx)
+            .map(|service| service.config.get().wallpaper.custom_backgrounds)
+            .unwrap_or_default();
+        for custom in &customs {
+            if let crate::config::schema::CustomBackgroundData::Image { data } = &custom.data {
+                if data.image_url == source {
+                    if let crate::editor::background::PreviewState::Ready(image) =
+                        self.background_previews.custom(&custom.id)
+                    {
+                        return Some(image);
+                    }
+                    return None;
+                }
+            }
+        }
+        if self.background_previews.desktop_source() == Some(source) {
+            if let crate::editor::background::PreviewState::Ready(image) =
+                self.background_previews.desktop()
+            {
+                return Some(image);
+            }
+        }
+        None
+    }
+
+    fn resolve_live_background(
+        &self,
+        wallpaper: &crate::editor::wallpaper::WallpaperSettings,
+        cx: &App,
+    ) -> LiveBackground {
+        if !wallpaper.has_background() {
+            return LiveBackground::None;
+        }
+        let source = LiveBackgroundSource::from_wallpaper(wallpaper);
+        if let Some((cached, image)) = &self.live_background_cache {
+            if cached.source == source {
+                let cover = wallpaper.background_image.is_some()
+                    || wallpaper
+                        .gradient
+                        .as_ref()
+                        .is_some_and(|g| crate::editor::wallpaper_svg::is_preset(&g.id));
+                return LiveBackground::Image {
+                    image: image.clone(),
+                    cover,
+                };
+            }
+        }
+        if let Some(background_image) = wallpaper.background_image.as_deref() {
+            if let Some(image) = self.find_background_preview(Some(background_image), cx) {
+                return LiveBackground::Image { image, cover: true };
+            }
+            return LiveBackground::Solid(
+                crate::theme::color::Srgba::from_hex("#18181b").to_hsla(),
+            );
+        }
+        let Some(preset) = wallpaper.gradient.as_ref() else {
+            return LiveBackground::None;
+        };
+        if crate::editor::wallpaper_svg::is_preset(&preset.id) {
+            if let Some(image) = crate::editor::wallpaper_svg::preview_render_image(&preset.id) {
+                return LiveBackground::Image { image, cover: true };
+            }
+        }
+        if preset.colors.len() >= 2 {
+            let from = crate::theme::color::Srgba::parse(
+                preset
+                    .colors
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("#000000"),
+            )
+            .to_hsla();
+            let to = crate::theme::color::Srgba::parse(
+                preset
+                    .colors
+                    .last()
+                    .map(String::as_str)
+                    .unwrap_or("#ffffff"),
+            )
+            .to_hsla();
+            return LiveBackground::LinearGradient {
+                angle: preset.angle as f32,
+                from,
+                to,
+            };
+        }
+        if let Some(single) = preset.colors.first() {
+            return LiveBackground::Solid(crate::theme::color::Srgba::parse(single).to_hsla());
+        }
+        LiveBackground::None
+    }
+
+    fn compute_backdrop_plan(&self, cx: &App) -> Option<(BackdropKey, f64, f64, [u8; 3], bool)> {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
         if !wallpaper.is_active_with_layers(!self.layers.is_empty()) {
-            self.backdrop_pending = self.backdrop_in_flight;
-            self.retire_backdrop();
-            self.backdrop_key = None;
-            return;
+            return None;
         }
         // The frame surrounds the whole group, so the layout is computed from
         // the attached layers' bounds rather than the capture alone.
@@ -991,7 +1268,59 @@ impl EditorWindow {
             .flatten(),
             self.window_scale,
         );
+        Some((
+            key,
+            image_width,
+            image_height,
+            stage_background,
+            rounded_preview,
+        ))
+    }
+
+    /// Renders the wallpaper backdrop when the settings or the image size have
+    /// changed since the last one.
+    fn refresh_backdrop(&mut self, cx: &mut Context<Self>) {
+        let Some((key, image_width, image_height, stage_background, rounded_preview)) =
+            self.compute_backdrop_plan(cx)
+        else {
+            self.backdrop_pending = self.backdrop_in_flight;
+            self.retire_backdrop();
+            self.retire_live_background();
+            self.backdrop_key = None;
+            return;
+        };
+        let wallpaper = key.0.clone();
+        let size = (key.1, key.2);
+        self.ensure_inset_color();
+        if !wallpaper.has_background() {
+            self.retire_live_background();
+        } else {
+            let source = LiveBackgroundSource::from_wallpaper(&wallpaper);
+            if self
+                .live_background_cache
+                .as_ref()
+                .is_some_and(|(cached, _)| cached.source != source)
+            {
+                self.retire_live_background();
+            }
+        }
+        let can_live_switch_source = !wallpaper.has_background()
+            || wallpaper.gradient.is_some()
+            || self
+                .find_background_preview(wallpaper.background_image.as_deref(), cx)
+                .is_some();
+        let should_retire = |previous: &BackdropKey| {
+            backdrop_layout_changed(previous, &key)
+                || (backdrop_source_changed(previous, &key) && can_live_switch_source)
+        };
         if self.backdrop_in_flight {
+            if self
+                .rendered_backdrop_key
+                .as_ref()
+                .is_some_and(should_retire)
+            {
+                self.retire_backdrop();
+            }
             if self.backdrop_key.as_ref() != Some(&key) {
                 self.backdrop_pending = true;
             }
@@ -1000,53 +1329,29 @@ impl EditorWindow {
         if self.backdrop_key.as_ref() == Some(&key) {
             return;
         }
-        if self.backdrop_key.as_ref().is_some_and(|previous| {
-            previous.1 != key.1
-                || previous.2 != key.2
-                || previous.4 != key.4
-                || previous.5 != key.5
-                || previous.0.window_frame.style != key.0.window_frame.style
-                || previous.0.balance != key.0.balance
-                || previous.0.inset != key.0.inset
-                || previous.0.corners != key.0.corners
-                || previous.3 != key.3
-                || previous.6 != key.6
-                || previous.7 != key.7
-        }) {
+        if self
+            .rendered_backdrop_key
+            .as_ref()
+            .or(self.backdrop_key.as_ref())
+            .is_some_and(should_retire)
+        {
             self.retire_backdrop();
         }
+        let task_key = key.clone();
         self.backdrop_key = Some(key);
         let frame_scale = self.native_scale;
         let layers = self.layers.clone();
         let inset_color = self.inset_color.clone();
-        let balance_crop = self
-            .balance_crop
-            .map(
-                |(left, top, right, bottom)| crate::render::color_detection::ContentBounds {
-                    left: left as u32,
-                    top: top as u32,
-                    right: right as u32,
-                    bottom: bottom as u32,
-                },
-            )
-            .unwrap_or_default();
+        let balance_bounds = self.balance_crop_bounds();
+        let base_pixmap = self.ensure_base_pixmap();
         let base_image = self.base_image.clone();
-        let background = cx.background_executor().clone();
+        let live_key = LiveBackgroundKey::from_wallpaper(&wallpaper);
+        let include_live_background = self
+            .live_background_cache
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != live_key);
         let task = cx.background_executor().spawn(async move {
-            background.timer(std::time::Duration::from_millis(16)).await;
-            let inset_color = if wallpaper.inset > 0.0 && inset_color.is_none() {
-                use crate::render::color_detection;
-                base_image.as_ref().and_then(|base| match base.as_rgba8() {
-                    Some(rgba) => color_detection::dominant_inset_color_rgba(rgba, balance_crop),
-                    None => {
-                        let pixmap = crate::editor::export::from_dynamic_image(base)?;
-                        color_detection::dominant_inset_color(pixmap.as_ref(), balance_crop)
-                    }
-                })
-            } else {
-                inset_color
-            };
-            let rendered = crate::editor::export::render_backdrop(
+            let rendered = crate::editor::export::render_backdrop_cached(
                 &wallpaper,
                 size.0,
                 size.1,
@@ -1055,21 +1360,26 @@ impl EditorWindow {
                 inset_color.clone(),
                 &layers,
                 base_image.as_deref(),
+                base_pixmap.as_deref(),
+                balance_bounds.map(Some),
                 frame_scale,
                 stage_background,
+                include_live_background,
             );
             #[cfg(target_os = "macos")]
             let (rendered, rounded_matte) = {
                 let mut rendered = rendered;
                 let matte = if rounded_preview {
                     match (rendered.as_mut(), base_image.as_ref()) {
-                        (Some((backdrop, edges, false)), Some(base)) if !edges.is_empty() => {
+                        (Some(result), Some(base))
+                            if !result.composite && !result.preview_edges.is_empty() =>
+                        {
                             crate::editor::export::render_rounded_preview(
                                 base,
                                 &wallpaper,
                                 frame_scale,
                             )
-                            .map(|composed| std::mem::replace(backdrop, composed))
+                            .map(|composed| std::mem::replace(&mut result.backdrop, composed))
                         }
                         _ => None,
                     }
@@ -1083,8 +1393,8 @@ impl EditorWindow {
             #[cfg(target_os = "macos")]
             let backdrop_tiles = rendered
                 .as_ref()
-                .filter(|(_, _, composite)| !composite)
-                .map(|(backdrop, _, _)| crate::editor::image_tiles::create(backdrop))
+                .filter(|result| !result.composite)
+                .map(|result| crate::editor::image_tiles::create(&result.backdrop))
                 .unwrap_or_default();
             #[cfg(not(target_os = "macos"))]
             let backdrop_tiles = Vec::new();
@@ -1095,22 +1405,57 @@ impl EditorWindow {
             let (rendered, inset_color, backdrop_tiles, rounded_matte) = task.await;
             let _ = entity.update(cx, |editor, cx| {
                 editor.backdrop_in_flight = false;
-                if std::mem::take(&mut editor.backdrop_pending) {
-                    editor.backdrop_key = None;
-                    editor.refresh_backdrop(cx);
+                if editor.base_image.is_none() && editor.image.is_none() {
+                    editor.backdrop_pending = false;
                     return;
                 }
-                let (backdrop, preview_edges, composite) = rendered
-                    .map(|(backdrop, edges, composite)| (Some(backdrop), edges, composite))
-                    .unwrap_or_default();
-                editor.retire_backdrop();
-                editor.backdrop = backdrop;
-                editor.backdrop_composite = composite;
-                editor.rounded_matte = rounded_matte;
-                editor.backdrop_tiles = backdrop_tiles;
-                editor.preview_edges = preview_edges;
-                editor.inset_color = inset_color;
-                cx.notify();
+                let pending = std::mem::take(&mut editor.backdrop_pending);
+                let current_key = editor.compute_backdrop_plan(cx).map(|(key, ..)| key);
+                let compatible = current_key.as_ref().is_some_and(|current| {
+                    !backdrop_layout_changed(&task_key, current)
+                        && !backdrop_source_changed(&task_key, current)
+                });
+                if compatible {
+                    let (backdrop, preview_edges, composite, live_bg) = rendered
+                        .map(|result| {
+                            (
+                                Some(result.backdrop),
+                                result.preview_edges,
+                                result.composite,
+                                result.live_background,
+                            )
+                        })
+                        .unwrap_or_default();
+                    editor.retire_backdrop();
+                    editor.backdrop = backdrop;
+                    editor.backdrop_composite = composite;
+                    editor.rounded_matte = rounded_matte;
+                    editor.backdrop_tiles = backdrop_tiles;
+                    editor.preview_edges = preview_edges;
+                    editor.rendered_backdrop_key = Some(task_key.clone());
+                    if let Some(live_bg) = live_bg {
+                        editor.replace_live_background(
+                            LiveBackgroundKey::from_wallpaper(&task_key.0),
+                            live_bg,
+                        );
+                    }
+                    editor.inset_color = inset_color;
+                    cx.notify();
+                } else if let Some(result) = rendered {
+                    if let Some(live_bg) = result.live_background {
+                        let live_key = LiveBackgroundKey::from_wallpaper(&task_key.0);
+                        if current_key.as_ref().is_some_and(|current| {
+                            LiveBackgroundSource::from_wallpaper(&current.0) == live_key.source
+                        }) {
+                            editor.replace_live_background(live_key, live_bg);
+                            cx.notify();
+                        }
+                    }
+                }
+                if pending || current_key.as_ref() != Some(&task_key) {
+                    editor.backdrop_key = None;
+                    editor.refresh_backdrop(cx);
+                }
             });
         })
         .detach();
@@ -1118,6 +1463,7 @@ impl EditorWindow {
 
     fn sync_snapshot(&mut self, cx: &mut Context<Self>) {
         let wallpaper = self.wallpaper.for_scale(self.native_scale);
+        let live_background = self.resolve_live_background(&wallpaper, cx);
         {
             let mut snap = self.snapshot.borrow_mut();
             snap.redact_patches = self.redact_patches_by_id();
@@ -1129,6 +1475,8 @@ impl EditorWindow {
             snap.rounded_matte = self.rounded_matte.clone();
             snap.backdrop_tiles = self.backdrop_tiles.clone();
             snap.preview_edges = self.preview_edges.clone();
+            snap.live_background = live_background;
+            snap.inset_color = self.inset_color.clone();
             snap.selected = self.selected_annotations.clone();
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
             snap.marquee = self.marquee.map(|(start, current)| {
@@ -1159,14 +1507,11 @@ impl EditorWindow {
         if self.file_path.is_empty() || self.draft.is_some() {
             return;
         }
-        let Some(state) = self.editor_state_value() else {
-            return;
-        };
-        if self.requested_editor_state.as_deref() == Some(&state) {
+        let state = self.persisted_editor_state();
+        if self.requested_editor_state.as_ref() == Some(&state) {
             return;
         }
 
-        let state = Arc::new(state);
         self.requested_editor_state = Some(state.clone());
         let writer = self.editor_state_writer.clone();
         let revision = writer.next_revision();
@@ -1177,7 +1522,12 @@ impl EditorWindow {
                 .await;
             let written = cx
                 .background_executor()
-                .spawn(async move { writer.write(&path, state, revision) })
+                .spawn(async move {
+                    let Some(value) = encode_editor_state_value(state) else {
+                        return true;
+                    };
+                    writer.write(&path, Arc::new(value), revision)
+                })
                 .await;
             if !written {
                 let _ = editor.update(cx, |editor, _| editor.requested_editor_state = None);
@@ -1185,45 +1535,20 @@ impl EditorWindow {
         }));
     }
 
-    fn editor_state_value(&self) -> Option<serde_json::Value> {
-        if self.file_path.is_empty() {
-            return None;
-        }
-        let mut wallpaper = self.wallpaper.clone();
-        if let Some(source) = wallpaper.background_image.as_deref() {
-            if !source.starts_with("data:") {
-                if let Ok(bytes) = std::fs::read(source) {
-                    use base64::Engine;
-                    let mime = match std::path::Path::new(source)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref()
-                    {
-                        Some("jpg" | "jpeg") => "image/jpeg",
-                        Some("webp") => "image/webp",
-                        Some("gif") => "image/gif",
-                        Some("svg") => "image/svg+xml",
-                        _ => "image/png",
-                    };
-                    wallpaper.background_image = Some(format!(
-                        "data:{mime};base64,{}",
-                        base64::engine::general_purpose::STANDARD.encode(bytes)
-                    ));
-                }
-            }
-        }
-        serde_json::to_value(PersistedEditorState {
+    fn persisted_editor_state(&self) -> PersistedEditorState {
+        PersistedEditorState {
             annotations: self.history.current().to_vec(),
-            wallpaper,
+            wallpaper: self.wallpaper.clone(),
             layers: self.layers.clone(),
-        })
-        .ok()
+        }
     }
 
     fn force_persist_editor_state(&mut self) {
         self.editor_state_write_task.take();
-        let Some(state) = self.editor_state_value() else {
+        if self.file_path.is_empty() {
+            return;
+        }
+        let Some(state) = encode_editor_state_value(self.persisted_editor_state()) else {
             return;
         };
         let revision = self.editor_state_writer.next_revision();
@@ -2667,10 +2992,11 @@ impl EditorWindow {
     /// Rebuilds the zoom control's `backdrop-blur-md` from the previous frame's
     /// measurements, and asks for one more frame when it changed so the new crop
     /// is actually shown.
-    fn refresh_zoom_backdrop(&mut self, cx: &mut Context<Self>) {
+    fn refresh_zoom_backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::editor::zoom_backdrop;
 
         let previous = self.zoom_backdrop.as_ref().map(|backdrop| backdrop.key());
+        let previous_image = self.zoom_backdrop.as_ref().map(|backdrop| backdrop.image());
         let key = (|| {
             let bar = (*self.zoom_bar_bounds.borrow())?;
             let content = (*self.bounds.borrow())?;
@@ -2688,6 +3014,16 @@ impl EditorWindow {
             (Some(key), Some(base)) => zoom_backdrop::build(self.zoom_backdrop.take(), key, base),
             _ => None,
         };
+
+        if let Some(old_image) = previous_image {
+            let still_live = self
+                .zoom_backdrop
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.image(), &old_image));
+            if !still_live {
+                let _ = window.drop_image(old_image);
+            }
+        }
 
         if self.zoom_backdrop.as_ref().map(|b| b.key()) != previous {
             cx.notify();
@@ -2715,15 +3051,19 @@ impl EditorWindow {
             self.background_previews.request_desktop();
             let daemon = crate::state::state(cx).daemon;
             cx.spawn(async move |entity, cx| {
-                let image = cx
+                let (source, image) = cx
                     .background_executor()
                     .spawn(async move {
-                        let source = crate::editor::background::desktop_wallpaper(&daemon)?;
-                        crate::editor::background::preview_image(&source, size)
+                        let Some(source) = crate::editor::background::desktop_wallpaper(&daemon)
+                        else {
+                            return (None, None);
+                        };
+                        let image = crate::editor::background::preview_image(&source, size);
+                        (Some(source), image)
                     })
                     .await;
                 let _ = entity.update(cx, |editor, cx| {
-                    editor.background_previews.set_desktop(image);
+                    editor.background_previews.set_desktop(source, image);
                     cx.notify();
                 });
             })
@@ -2786,7 +3126,7 @@ impl Render for EditorWindow {
             let _ = window.drop_image(image);
         }
         self.sync_snapshot(cx);
-        self.refresh_zoom_backdrop(cx);
+        self.refresh_zoom_backdrop(window, cx);
 
         let handlers = build_handlers(&weak);
         let shortcuts = crate::state::state(cx)
@@ -3618,7 +3958,13 @@ impl EditorWindow {
             EditorOption::WallpaperEditorClose => {
                 self.background_editor_generation =
                     self.background_editor_generation.wrapping_add(1);
-                self.background_editor = None;
+                if let Some(preview) = self
+                    .background_editor
+                    .take()
+                    .and_then(|draft| draft.preview)
+                {
+                    self.retired_preview_edges.push(preview);
+                }
             }
             EditorOption::WallpaperEditorColor(index, value) => {
                 if let Some(draft) = self.background_editor.as_mut() {
@@ -3800,12 +4146,23 @@ impl EditorWindow {
             cx.notify();
             return;
         }
-        let (Some(path), Some(draft)) = (path, self.background_editor.as_mut()) else {
+        let Some(path) = path else {
             cx.notify();
             return;
         };
-        draft.preview = preview;
-        draft.image_url = Some(path);
+        let previous_preview = {
+            let Some(draft) = self.background_editor.as_mut() else {
+                cx.notify();
+                return;
+            };
+            let previous = draft.preview.take();
+            draft.preview = preview;
+            draft.image_url = Some(path);
+            previous
+        };
+        if let Some(previous) = previous_preview {
+            self.retired_preview_edges.push(previous);
+        }
         self.refresh_balance_crop();
         self.refresh_backdrop(cx);
         self.sync_snapshot(cx);
@@ -4841,6 +5198,215 @@ mod tests {
             assert_eq!(u32::from(size.width), expected);
             assert_eq!(u32::from(size.height), expected);
         });
+    }
+
+    #[herogpui::test]
+    fn backdrop_renders_immediately_without_debounce_timer(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(16, 12, image::Rgba([40, 120, 220, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor
+                    .wallpaper
+                    .set_gradient(crate::editor::wallpaper::preset("crimson-wave"));
+                editor.wallpaper.padding = 24.;
+                editor.refresh_backdrop(cx);
+                editor.sync_snapshot(cx);
+                assert!(matches!(
+                    editor.snapshot.borrow().live_background,
+                    LiveBackground::Image { cover: true, .. }
+                ));
+            });
+        });
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(!editor.backdrop_in_flight);
+            assert!(editor.backdrop.is_some());
+        });
+    }
+
+    #[herogpui::test]
+    fn geometry_and_inset_drag_keeps_live_background_and_inset_color_without_blank_frame(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(24, 18, image::Rgba([24, 180, 96, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor
+                    .wallpaper
+                    .set_gradient(crate::editor::wallpaper::preset("crimson-wave"));
+                editor.wallpaper.padding = 30.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.settle();
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.padding = 60.;
+                editor.wallpaper.inset = 20.;
+                editor.wallpaper.corners = 32.;
+                editor.wallpaper.shadow = 80.;
+                editor.refresh_backdrop(cx);
+                editor.sync_snapshot(cx);
+                let snapshot = editor.snapshot.borrow();
+                assert!(snapshot.backdrop.is_none());
+                assert!(matches!(
+                    snapshot.live_background,
+                    LiveBackground::Image { cover: true, .. }
+                ));
+                assert_eq!(snapshot.inset_color.as_deref(), Some("#18b460"));
+            });
+        });
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(editor.backdrop.is_some());
+            assert!(!editor.backdrop_in_flight);
+        });
+    }
+
+    #[herogpui::test]
+    fn noise_drag_preserves_backdrop_and_converges_without_clock_advance(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([80, 90, 100, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor
+                    .wallpaper
+                    .set_gradient(crate::editor::wallpaper::preset("ocean"));
+                editor.wallpaper.padding = 20.;
+                editor.refresh_backdrop(cx);
+            });
+        });
+        cx.settle();
+        let before = cx.update(|_, cx| editor.read(cx).backdrop.clone().unwrap());
+        cx.update(|_, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.wallpaper.noise = 35.;
+                editor.refresh_backdrop(cx);
+                assert!(editor
+                    .backdrop
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &before)));
+                editor.wallpaper.noise = 70.;
+                editor.refresh_backdrop(cx);
+                assert!(editor
+                    .backdrop
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &before)));
+                assert!(editor.backdrop_pending);
+            });
+        });
+        cx.settle();
+        cx.update(|_, cx| {
+            let editor = editor.read(cx);
+            assert!(!editor.backdrop_in_flight);
+            assert!(!editor.backdrop_pending);
+            let final_backdrop = editor.backdrop.as_ref().unwrap();
+            assert_ne!(final_backdrop.id, before.id);
+            assert_eq!(
+                editor.rendered_backdrop_key.as_ref().map(|key| key.0.noise),
+                Some(70.)
+            );
+        });
+    }
+
+    #[herogpui::test]
+    fn zoom_backdrop_replacement_drops_previous_atlas_image(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(1200, 900, image::Rgba([64, 112, 192, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, cx) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor
+        });
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            editor.update(cx, |editor, cx| {
+                editor.set_zoom(2.0, cx);
+                cx.notify();
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let first_image = cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            let image = editor.read(cx).zoom_backdrop.as_ref().unwrap().image();
+            assert!(window.has_image_atlas_entry(&image));
+            image
+        });
+        let second_image = cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_zoom(2.5, cx);
+                cx.notify();
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+            assert!(!window.has_image_atlas_entry(&first_image));
+            let image = editor.read(cx).zoom_backdrop.as_ref().unwrap().image();
+            assert!(window.has_image_atlas_entry(&image));
+            image
+        });
+        assert!(!Arc::ptr_eq(&first_image, &second_image));
     }
 
     #[cfg(target_os = "macos")]
