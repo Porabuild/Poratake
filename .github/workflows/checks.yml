@@ -559,8 +559,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src/main
-          shared-key: windows-x64-visual
-          save-if: ${{ matrix.shard == 'light-950' }}
+          shared-key: windows-x64-e2e
+          save-if: false
           cache-on-failure: true
 
       - name: Visual regressions
