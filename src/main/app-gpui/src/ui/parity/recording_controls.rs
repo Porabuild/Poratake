@@ -105,13 +105,19 @@ pub(super) fn run(cx: &mut HeadlessAppContext, output: &Path, scratch: &Path, sc
             let bounds = measured("microphone-icon", 0);
             let x = (f32::from(bounds.left()) * scale).round() as u32;
             let y = (f32::from(bounds.top()) * scale).round() as u32;
-            let mut icons = vec![
+            #[cfg(not(target_os = "macos"))]
+            let icons = [
                 ("camera-icon", 2),
                 ("microphone-icon", 3),
                 ("system-audio-icon", 4),
             ];
             #[cfg(target_os = "macos")]
-            icons.push(("ios-device-icon", 5));
+            let icons = [
+                ("camera-icon", 2),
+                ("microphone-icon", 3),
+                ("system-audio-icon", 4),
+                ("ios-device-icon", 5),
+            ];
             for (name, index) in icons {
                 let button = measured("recording-controls", index);
                 let icon = measured(name, 0);

@@ -8847,7 +8847,8 @@ pub(super) fn scaled_wallpaper_preview(cx: &mut HeadlessAppContext, scratch: &Pa
             .backdrop
             .is_some());
     });
-    let before_padding = editor.read(cx).unwrap().snapshot.borrow().backdrop.clone();
+    let before_padding =
+        cx.update(|cx| editor.read(cx).unwrap().snapshot.borrow().backdrop.clone());
     editor
         .update(cx, |editor, _, cx| {
             editor.wallpaper.padding = 40.;
