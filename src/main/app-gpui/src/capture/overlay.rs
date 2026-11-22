@@ -72,6 +72,15 @@ struct TrackedOverlay {
 }
 
 #[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PooledSurfaceState {
+    Clean,
+    Dirty,
+    AwaitingFirstPaint,
+    Live,
+}
+
+#[cfg(windows)]
 struct PooledOverlay {
     handle: gpui::WindowHandle<AreaOverlay>,
     display_id: DisplayId,
@@ -513,17 +522,24 @@ fn dispose_overlays(handles: Vec<TrackedOverlay>, cx: &mut App) {
         if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
             if handle
                 .update(cx, |overlay, window, cx| {
-                    overlay.window_list_generation = overlay.window_list_generation.wrapping_add(1);
-                    overlay.picking_windows = false;
-                    overlay.color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
-                    overlay.picking_color = false;
-                    overlay.color_frame = None;
-                    overlay.rect = None;
-                    overlay.handed_off = false;
-                    overlay.interaction = None;
-                    overlay.pointer = None;
-                    park_overlay(window);
+                    let needs_clear = overlay.surface_state != PooledSurfaceState::Clean;
+                    overlay.reset_for_park(window, cx);
                     cx.notify();
+                    if !needs_clear {
+                        park_overlay(window);
+                        return;
+                    }
+                    overlay.surface_state = PooledSurfaceState::Dirty;
+                    window.refresh();
+                    if cloak_for_park(window) {
+                        schedule_park_hide(
+                            cx.entity().downgrade(),
+                            overlay.park_generation,
+                            window,
+                        );
+                    } else {
+                        park_overlay(window);
+                    }
                 })
                 .is_ok()
             {
@@ -595,6 +611,12 @@ pub fn raise_all(generation: u64, cx: &mut App) {
     let handles = session(cx).handles.clone();
     for tracked in handles {
         if tracked.generation != generation {
+            continue;
+        }
+        if let Some(handle) = tracked.handle.downcast::<AreaOverlay>() {
+            let _ = handle.update(cx, |overlay, window, cx| {
+                overlay.raise_for_session(window, tracked.focus, cx);
+            });
             continue;
         }
         let _ = tracked.handle.update(cx, |_, window, _| {
@@ -1023,15 +1045,109 @@ fn show_noactivate_topmost(hwnd: windows::Win32::Foundation::HWND) {
 }
 
 #[cfg(all(windows, not(test)))]
+fn set_overlay_cloaked(window: &Window, cloaked: bool) -> bool {
+    let Some(hwnd) = crate::windows::window_hwnd(window) else {
+        return false;
+    };
+    crate::system::window_composition::set_cloaked(hwnd, cloaked)
+}
+
+#[cfg(all(windows, test))]
+fn set_overlay_cloaked(_window: &Window, _cloaked: bool) -> bool {
+    true
+}
+
+#[cfg(all(windows, not(test)))]
+fn cloak_for_park(window: &Window) -> bool {
+    use windows::Win32::Graphics::Dwm::DwmFlush;
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsWindowVisible, SetWindowPos, HWND_BOTTOM, HWND_NOTOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE,
+    };
+
+    let Some(hwnd) = crate::windows::window_hwnd(window) else {
+        return false;
+    };
+    if !unsafe { IsWindowVisible(hwnd).as_bool() } {
+        return false;
+    }
+    if !crate::system::window_composition::set_cloaked(hwnd, true) {
+        return false;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let tiny = CreateRectRgn(0, 0, 1, 1);
+        if !tiny.is_invalid() && SetWindowRgn(hwnd, Some(tiny), false) == 0 {
+            let _ = DeleteObject(tiny.into());
+        }
+        if !can_show_before_freeze(windows_build(), true) {
+            let _ = DwmFlush();
+        }
+    }
+    true
+}
+
+#[cfg(all(windows, test))]
+fn cloak_for_park(_window: &Window) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn after_next_present(window: &Window, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+    window.on_next_frame(move |window, _| {
+        window.on_next_frame(callback);
+    });
+}
+
+#[cfg(windows)]
+fn schedule_park_hide(
+    view: gpui::WeakEntity<AreaOverlay>,
+    park_generation: u64,
+    window: &mut Window,
+) {
+    after_next_present(window, move |window, cx| {
+        let Some(view) = view.upgrade() else {
+            return;
+        };
+        view.update(cx, |overlay, _| {
+            if !overlay.parked || overlay.park_generation != park_generation {
+                return;
+            }
+            overlay.surface_state = PooledSurfaceState::Clean;
+            park_overlay(window);
+        });
+    });
+}
+
+#[cfg(all(windows, not(test)))]
 fn park_overlay(window: &Window) {
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
 
-    set_overlay_hole(window, None);
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
+        crate::system::window_composition::set_cloaked(hwnd, false);
     }
+    set_overlay_hole(window, None);
 }
 
 #[cfg(all(windows, test))]
@@ -1208,21 +1324,24 @@ fn open_overlay_window(
         if let Some(handle) = take_pooled_overlay(display_id, cx) {
             let updated = handle.update(cx, |overlay, window, cx| {
                 prepare_overlay_window(window, display_bounds);
+                set_overlay_hole(window, None);
                 let scale = window.scale_factor();
                 let focus_handle = overlay.focus_handle.clone();
                 let window_list_generation = overlay.window_list_generation.wrapping_add(1);
                 let color_frame_generation = overlay.color_frame_generation.wrapping_add(1);
+                let park_generation = overlay.park_generation.wrapping_add(1);
+                let surface_state = overlay.surface_state;
                 let mut replacement = build(scale, focus_handle);
                 replacement.display_id = Some(u64::from(display_id) as u32);
                 replacement.window_list_generation = window_list_generation;
                 replacement.color_frame_generation = color_frame_generation;
+                replacement.park_generation = park_generation;
+                replacement.surface_state = surface_state;
                 *overlay = replacement;
                 after_new(overlay, cx);
                 cx.notify();
-                let shown = reveal_overlay_window(window, launch, active);
-                if launch.focus && shown {
-                    window.activate_window();
-                }
+                window.refresh();
+                overlay.reveal_for_session(window, launch, cx);
                 window.focus(&overlay.focus_handle, cx);
             });
             if let Err(failure) = updated {
@@ -1248,6 +1367,10 @@ fn open_overlay_window(
         let view = cx.new(|_| {
             let mut view = build(scale, focus_handle);
             view.display_id = Some(u64::from(display_id) as u32);
+            #[cfg(windows)]
+            {
+                view.parked = !active;
+            }
             view
         });
         view.update(cx, |overlay, cx| {
@@ -1258,7 +1381,7 @@ fn open_overlay_window(
                     overlay.menu_return_focus = false;
                 }
                 #[cfg(all(windows, not(test)))]
-                if active {
+                if active && !overlay.parked {
                     prepare_overlay_window(window, overlay.display_bounds);
                 }
             })
@@ -1266,6 +1389,12 @@ fn open_overlay_window(
             after_new(overlay, cx);
         });
         let shown = reveal_overlay_window(window, launch, active);
+        #[cfg(windows)]
+        if shown {
+            view.update(cx, |overlay, _| {
+                overlay.surface_state = PooledSurfaceState::Live;
+            });
+        }
         if launch.focus && shown {
             window.activate_window();
         }
@@ -1566,6 +1695,12 @@ pub struct AreaOverlay {
     menu_trigger_focus: Option<gpui::FocusHandle>,
     menu_activation_key: Option<&'static str>,
     menu_return_focus: bool,
+    #[cfg(windows)]
+    parked: bool,
+    #[cfg(windows)]
+    park_generation: u64,
+    #[cfg(windows)]
+    surface_state: PooledSurfaceState,
     service: CaptureService,
 }
 
@@ -1605,8 +1740,138 @@ impl AreaOverlay {
             menu_trigger_focus: None,
             menu_activation_key: None,
             menu_return_focus: false,
+            #[cfg(windows)]
+            parked: false,
+            #[cfg(windows)]
+            park_generation: 0,
+            #[cfg(windows)]
+            surface_state: PooledSurfaceState::Clean,
             service,
         }
+    }
+
+    #[cfg(windows)]
+    fn reset_for_park(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window_list_generation = self.window_list_generation.wrapping_add(1);
+        self.picking_windows = false;
+        self.windows.clear();
+        self.hovered_window = None;
+        self.color_frame_generation = self.color_frame_generation.wrapping_add(1);
+        self.picking_color = false;
+        self.color_frame = None;
+        self.screen_picker = false;
+        self.all_in_one = None;
+        self.menu.close(window, cx);
+        self.menu_trigger_focus = None;
+        self.menu_activation_key = None;
+        self.menu_return_focus = false;
+        self.rect = None;
+        self.handed_off = false;
+        self.interaction = None;
+        self.pointer = None;
+        self.cursor = gpui::CursorStyle::Crosshair;
+        self.parked = true;
+        self.park_generation = self.park_generation.wrapping_add(1);
+    }
+
+    #[cfg(windows)]
+    fn reveal_for_session(
+        &mut self,
+        window: &mut Window,
+        launch: OverlayLaunch,
+        cx: &mut Context<Self>,
+    ) {
+        let clean = self.surface_state == PooledSurfaceState::Clean;
+        let cloaked = !clean && set_overlay_cloaked(window, true);
+        if !cloaked {
+            set_overlay_cloaked(window, false);
+        }
+        let shown = reveal_overlay_window(window, launch, true);
+        if !shown {
+            self.surface_state = if clean {
+                PooledSurfaceState::Clean
+            } else {
+                PooledSurfaceState::Dirty
+            };
+            return;
+        }
+        if clean || !cloaked {
+            self.surface_state = PooledSurfaceState::Live;
+            if launch.focus {
+                window.activate_window();
+            }
+            return;
+        }
+        self.surface_state = PooledSurfaceState::AwaitingFirstPaint;
+        self.schedule_uncloak_after_paint(window, launch.focus, cx);
+    }
+
+    #[cfg(windows)]
+    fn raise_for_session(&mut self, window: &mut Window, focus: bool, cx: &mut Context<Self>) {
+        if self.parked {
+            return;
+        }
+        match self.surface_state {
+            PooledSurfaceState::Clean => {
+                set_overlay_cloaked(window, false);
+                set_overlay_topmost(window);
+                self.surface_state = PooledSurfaceState::Live;
+                if focus {
+                    window.activate_window();
+                }
+            }
+            PooledSurfaceState::Dirty => {
+                let cloaked = set_overlay_cloaked(window, true);
+                set_overlay_topmost(window);
+                if cloaked {
+                    self.surface_state = PooledSurfaceState::AwaitingFirstPaint;
+                    self.schedule_uncloak_after_paint(window, focus, cx);
+                } else {
+                    self.surface_state = PooledSurfaceState::Live;
+                    if focus {
+                        window.activate_window();
+                    }
+                }
+            }
+            PooledSurfaceState::AwaitingFirstPaint => {
+                set_overlay_topmost(window);
+            }
+            PooledSurfaceState::Live => {
+                set_overlay_topmost(window);
+                if focus {
+                    window.activate_window();
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn schedule_uncloak_after_paint(
+        &mut self,
+        window: &mut Window,
+        focus: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let park_generation = self.park_generation;
+        let view = cx.entity().downgrade();
+        after_next_present(window, move |window, cx| {
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            view.update(cx, |overlay, _| {
+                if overlay.parked
+                    || overlay.park_generation != park_generation
+                    || overlay.surface_state != PooledSurfaceState::AwaitingFirstPaint
+                {
+                    return;
+                }
+                overlay.surface_state = PooledSurfaceState::Live;
+                set_overlay_cloaked(window, false);
+                if focus {
+                    window.activate_window();
+                }
+            });
+        });
     }
 
     pub fn with_windows(
@@ -2775,6 +3040,15 @@ fn conceal_recording_selector(window: &mut Window) {
 
 impl Render for AreaOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(windows)]
+        {
+            if self.parked {
+                return div().size_full().into_any_element();
+            }
+            if self.surface_state == PooledSurfaceState::Clean {
+                self.surface_state = PooledSurfaceState::Live;
+            }
+        }
         #[cfg(target_os = "macos")]
         let window_hovered = self.pointer_inside;
         #[cfg(not(target_os = "macos"))]
@@ -2786,6 +3060,7 @@ impl Render for AreaOverlay {
         crate::ui::window_root::focus_root(content, window, cx)
             .key_context("AreaOverlay")
             .on_action(cx.listener(Self::on_cancel))
+            .into_any_element()
     }
 }
 
@@ -4105,6 +4380,235 @@ mod tests {
                 .iter()
                 .any(|overlay| overlay.display_id == display_id));
         });
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn parked_overlay_clears_surface_on_finish_before_reopen(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        cx.update(super::prewarm);
+
+        let opened = cx.update(|cx| {
+            let service = crate::state::state(cx);
+            let opened = super::AreaOverlay::open_all_in_one(
+                service,
+                display_id,
+                display_bounds,
+                crate::capture::all_in_one::Choices::default(),
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open pooled overlay");
+            let any_window: gpui::AnyWindowHandle = opened.into();
+            opened
+                .update(cx, |overlay, _, _| {
+                    overlay.rect = Some(crate::capture::selection::Rect {
+                        x: 40.,
+                        y: 40.,
+                        width: 160.,
+                        height: 90.,
+                    });
+                })
+                .unwrap();
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    assert!(
+                        !window.painted_quads().is_empty(),
+                        "active selection should paint quads"
+                    );
+                })
+                .unwrap();
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Live);
+                    overlay.screen_picker = true;
+                    overlay.hovered_window = Some(0);
+                })
+                .unwrap();
+            super::close_all(cx);
+            opened
+        });
+        cx.run_until_parked();
+
+        let any_window: gpui::AnyWindowHandle = opened.into();
+
+        cx.update(|cx| {
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert!(overlay.parked);
+                    assert!(overlay.rect.is_none());
+                    assert!(overlay.all_in_one.is_none());
+                    assert!(!overlay.screen_picker);
+                    assert!(overlay.windows.is_empty());
+                    assert!(overlay.hovered_window.is_none());
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Dirty);
+                })
+                .unwrap();
+
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    assert!(
+                        window.painted_quads().is_empty(),
+                        "parked finish frame must clear rendered selection"
+                    );
+                })
+                .unwrap();
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Dirty);
+                })
+                .unwrap();
+
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                })
+                .unwrap();
+            opened
+                .update(cx, |overlay, _, _| {
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Clean);
+                })
+                .unwrap();
+
+            let reopened = super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("reopen cleaned overlay");
+            assert_eq!(reopened, opened);
+            reopened
+                .update(cx, |overlay, _, _| {
+                    assert!(!overlay.parked);
+                    assert!(overlay.rect.is_none());
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Live);
+                })
+                .unwrap();
+            super::close_all(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    #[cfg(windows)]
+    #[herogpui::test]
+    fn rapid_reopen_before_park_paint_gates_reveal_until_first_frame(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config =
+            Arc::new(ConfigStore::load_at(dir.path().join("config.json")).expect("load config"));
+        cx.update(|cx| crate::state::set_test_state(cx, config));
+
+        let display_id = cx.read(|cx| cx.primary_display().expect("primary display").id());
+        let display_bounds = cx.read(|cx| cx.primary_display().expect("primary display").bounds());
+        cx.update(super::prewarm);
+
+        cx.update(|cx| {
+            let opened = super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("open pooled overlay");
+            let any_window: gpui::AnyWindowHandle = opened.into();
+            opened
+                .update(cx, |overlay, _, _| {
+                    overlay.rect = Some(crate::capture::selection::Rect {
+                        x: 20.,
+                        y: 20.,
+                        width: 120.,
+                        height: 80.,
+                    });
+                })
+                .unwrap();
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                })
+                .unwrap();
+
+            super::replace_all(cx);
+
+            let reopened = super::AreaOverlay::open(
+                crate::state::state(cx),
+                display_id,
+                display_bounds,
+                crate::capture::intent::CaptureIntent::Screenshot,
+                super::OverlayLaunch {
+                    focus: false,
+                    deferred_show: true,
+                    generation: 0,
+                },
+                cx,
+            )
+            .expect("reopen before park frame");
+            assert_eq!(reopened, opened);
+            reopened
+                .update(cx, |overlay, _, _| {
+                    assert!(!overlay.parked);
+                    assert!(overlay.rect.is_none());
+                    assert_eq!(
+                        overlay.surface_state,
+                        super::PooledSurfaceState::AwaitingFirstPaint
+                    );
+                })
+                .unwrap();
+
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                })
+                .unwrap();
+            reopened
+                .update(cx, |overlay, _, _| {
+                    assert!(!overlay.parked);
+                    assert_eq!(
+                        overlay.surface_state,
+                        super::PooledSurfaceState::AwaitingFirstPaint
+                    );
+                })
+                .unwrap();
+
+            any_window
+                .update(cx, |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                })
+                .unwrap();
+            reopened
+                .update(cx, |overlay, _, _| {
+                    assert!(!overlay.parked);
+                    assert_eq!(overlay.surface_state, super::PooledSurfaceState::Live);
+                })
+                .unwrap();
+            super::close_all(cx);
+        });
+        cx.run_until_parked();
     }
 
     #[herogpui::test]
