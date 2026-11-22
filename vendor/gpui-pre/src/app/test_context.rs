@@ -874,6 +874,25 @@ pub struct VisualTestContext {
 }
 
 impl VisualTestContext {
+    #[allow(missing_docs)]
+    pub fn activate_test_a11y(&mut self) {
+        self.cx.test_window(self.window).activate_test_a11y();
+        self.run_until_parked();
+    }
+
+    #[allow(missing_docs)]
+    pub fn test_a11y_tree(&self) -> Option<accesskit::TreeUpdate> {
+        self.cx.test_window(self.window).test_a11y_tree()
+    }
+
+    #[allow(missing_docs)]
+    pub fn send_test_a11y_action(&mut self, request: accesskit::ActionRequest) {
+        self.cx
+            .test_window(self.window)
+            .send_test_a11y_action(request);
+        self.run_until_parked();
+    }
+
     /// Provides a `Window` and `App` for the duration of the closure.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         self.cx

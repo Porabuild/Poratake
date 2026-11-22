@@ -59,6 +59,8 @@ pub(crate) struct TestWindowState {
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
+    a11y_callbacks: Option<crate::A11yCallbacks>,
+    a11y_tree: Option<accesskit::TreeUpdate>,
 }
 
 #[derive(Clone)]
@@ -83,6 +85,20 @@ impl HasDisplayHandle for TestWindow {
 }
 
 impl TestWindow {
+    pub fn activate_test_a11y(&self) {
+        let state = self.0.lock();
+        (state.a11y_callbacks.as_ref().unwrap().activation)();
+    }
+
+    pub fn test_a11y_tree(&self) -> Option<accesskit::TreeUpdate> {
+        self.0.lock().a11y_tree.clone()
+    }
+
+    pub fn send_test_a11y_action(&self, request: accesskit::ActionRequest) {
+        let state = self.0.lock();
+        (state.a11y_callbacks.as_ref().unwrap().action)(request);
+    }
+
     pub(crate) fn new(
         handle: AnyWindowHandle,
         params: WindowParams,
@@ -135,6 +151,8 @@ impl TestWindow {
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
+            a11y_callbacks: None,
+            a11y_tree: None,
         })))
     }
     pub fn simulate_close(&self) {
@@ -315,6 +333,14 @@ impl TestWindow {
 }
 
 impl PlatformWindow for TestWindow {
+    fn a11y_init(&self, callbacks: crate::A11yCallbacks) {
+        self.0.lock().a11y_callbacks = Some(callbacks);
+    }
+
+    fn a11y_tree_update(&self, update: accesskit::TreeUpdate) {
+        self.0.lock().a11y_tree = Some(update);
+    }
+
     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
         let state = self.0.lock();
         state
