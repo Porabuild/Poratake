@@ -25,6 +25,7 @@ use crate::ui::colors::Tool;
 pub type SnapshotCell = Rc<RefCell<CanvasSnapshot>>;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct RedactPatch {
     pub image: std::sync::Arc<gpui::RenderImage>,
     pub x: f64,
@@ -57,6 +58,7 @@ pub struct CanvasSnapshot {
     pub redact_patches: std::collections::HashMap<String, RedactPatch>,
     pub image_width: f32,
     pub image_height: f32,
+    pub image_opaque: bool,
     pub zoom: f32,
     pub annotations: Vec<Annotation>,
     /// Annotation currently being drawn, in image coordinates.
@@ -83,6 +85,8 @@ pub struct CanvasSnapshot {
     pub inset_color: Option<String>,
     /// The annotation the select tool has picked, outlined on the canvas.
     pub selected: Vec<String>,
+    pub moving: bool,
+    pub resizing: bool,
     /// The text annotation being re-edited, hidden while its draft shows.
     pub editing_text: Option<String>,
     /// The in-progress marquee selection in image coordinates.
@@ -1001,7 +1005,7 @@ fn paint_selection_handles(
 fn paint_annotations(
     window: &mut gpui::Window,
     bounds: gpui::Bounds<Pixels>,
-    stage_bounds: Option<gpui::Bounds<Pixels>>,
+    _stage_bounds: Option<gpui::Bounds<Pixels>>,
     snapshot: &CanvasSnapshot,
     halo: Hsla,
     stage_background: [u8; 3],
@@ -1010,25 +1014,6 @@ fn paint_annotations(
 ) {
     let origin = bounds.origin;
     let zoom = snapshot.zoom;
-    let haloed = match snapshot.selected.as_slice() {
-        [single] => Some(single.as_str()),
-        _ => None,
-    };
-    let draft_visible = snapshot.draft.as_ref().filter(|annotation| {
-        snapshot.editing_text.as_deref() != Some(annotation.id())
-            && !matches!(
-                annotation,
-                Annotation::Redact { width, height, .. }
-                    if width.abs() <= 0.0 || height.abs() <= 0.0
-            )
-    });
-    let visible = crate::render::annotations::screenshot_paints(
-        snapshot
-            .annotations
-            .iter()
-            .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
-            .chain(draft_visible),
-    );
     let align_to_composition_grid = snapshot.backdrop_composite
         && !snapshot.layers.is_empty()
         && crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style).is_some();
@@ -1097,7 +1082,20 @@ fn paint_annotations(
         matte_image: None,
         composite_backdrop: false,
     };
-    let matte_image = if transparent_backdrop && !snapshot.backdrop_composite {
+    let framed_active = snapshot
+        .wallpaper
+        .is_active_with_layers(!snapshot.layers.is_empty());
+    let (stage_clip, matte_image) = if snapshot.backdrop_composite {
+        (
+            (
+                -surface.offset_x,
+                -surface.offset_y,
+                f64::from(surface.width) - surface.offset_x,
+                f64::from(surface.height) - surface.offset_y,
+            ),
+            None,
+        )
+    } else if framed_active {
         let (width, height) = crate::editor::wallpaper::balanced_size(
             f64::from(snapshot.image_width),
             f64::from(snapshot.image_height),
@@ -1125,7 +1123,7 @@ fn paint_annotations(
             layer_inset,
             layer_title_bar,
         );
-        let (_, (x, y, _, _)) = crate::editor::wallpaper::layout(
+        let ((canvas_w, canvas_h), (x, y, _, _)) = crate::editor::wallpaper::layout(
             &snapshot.wallpaper,
             group.width,
             group.height,
@@ -1147,19 +1145,40 @@ fn paint_annotations(
         } else {
             (x, y)
         };
-        snapshot
-            .rounded_matte
-            .as_deref()
-            .or(snapshot.backdrop.as_deref())
-            .map(|image| {
-                (
-                    image,
-                    x + group.primary.x + layer_inset - f64::from(crop_left),
-                    y + group.primary.y + layer_inset + title_bar - f64::from(crop_top),
-                )
-            })
+        let origin_x = x + group.primary.x + layer_inset - f64::from(crop_left);
+        let origin_y = y + group.primary.y + layer_inset + title_bar - f64::from(crop_top);
+        let matte = if transparent_backdrop {
+            snapshot
+                .rounded_matte
+                .as_deref()
+                .or(snapshot.backdrop.as_deref())
+                .map(|image| (image, origin_x, origin_y))
+        } else {
+            None
+        };
+        let (stage_w, stage_h) = if let Some((image, _, _)) = matte {
+            let size = image.size(0);
+            (
+                f64::from(u32::from(size.width)),
+                f64::from(u32::from(size.height)),
+            )
+        } else {
+            (canvas_w.round(), canvas_h.round())
+        };
+        (
+            (-origin_x, -origin_y, stage_w - origin_x, stage_h - origin_y),
+            matte,
+        )
     } else {
-        None
+        (
+            (
+                0.0,
+                0.0,
+                f64::from(snapshot.image_width),
+                f64::from(snapshot.image_height),
+            ),
+            None,
+        )
     };
     let redaction_surface = preview_raster::Surface {
         matte: Some(if matte_image.is_some() {
@@ -1185,321 +1204,598 @@ fn paint_annotations(
         ..surface
     };
     let scale = f64::from(zoom) * f64::from(window.scale_factor());
+    let interactive_transform = snapshot.moving || snapshot.resizing;
+    let editor_id = snapshot.image.as_ref().map(|image| image.id);
+    preview_raster::advance_frame();
 
-    let keys = preview_raster::begin_frame(&visible);
-    for (index, paint) in visible.iter().enumerate() {
-        let annotation = paint.annotation();
-        let blackout_overlay = matches!(
-            paint,
-            crate::render::annotations::ScreenshotPaint::BlackoutOverlay(_)
-        );
-        let selected_overlay = haloed == Some(annotation.id())
-            && matches!(
-                annotation,
-                Annotation::Highlight { .. }
-                    | Annotation::Redact { .. }
-                    | Annotation::Rectangle { .. }
-                    | Annotation::Circle { .. }
-            );
-        if haloed == Some(annotation.id()) && !blackout_overlay && !selected_overlay {
-            draw_selection_halo(window, annotation, zoom, halo);
-        }
-        let is_draft = snapshot
-            .draft
-            .as_ref()
-            .is_some_and(|draft| std::ptr::eq(draft, annotation));
-        let pixelation = matches!(
-            annotation,
-            Annotation::Redact { style, .. }
-                if style == "pixelate"
-        );
-        let blur = matches!(
-            annotation,
-            Annotation::Redact { style, .. }
-                if style == "blur"
-        );
-        let blackout = matches!(
-            annotation,
-            Annotation::Redact { style, .. }
-                if style == "blackout"
-        );
-        let selected_inset = haloed == Some(annotation.id())
-            && !blackout_overlay
-            && snapshot.backdrop_composite
-            && snapshot.wallpaper.layer_inset(!snapshot.layers.is_empty()) > 0.0
-            && preview_raster::is_rasterized(annotation)
+    let committed_paints = crate::render::annotations::screenshot_paints(
+        snapshot
+            .annotations
+            .iter()
+            .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id())),
+    );
+    let draft = snapshot.draft.as_ref().filter(|annotation| {
+        snapshot.editing_text.as_deref() != Some(annotation.id())
             && !matches!(
                 annotation,
-                Annotation::Highlight { .. }
-                    | Annotation::Rectangle { .. }
-                    | Annotation::Circle { .. }
-            );
-        let at_native_scale = (scale - 1.).abs() <= 0.0001;
-        let bounded = preview_raster::needs_bounded_composition(&surface)
-            || preview_raster::needs_bounded_composition(&redaction_surface);
-        let bounded_output = bounded
-            || preview_raster::needs_bounded_output(&surface, scale)
-            || preview_raster::needs_bounded_output(&redaction_surface, scale);
-        let aligned = snapshot.rounded_matte.is_some()
-            || ((!at_native_scale
-                || (bounded
-                    && (blur
-                        || pixelation
-                        || preview_raster::overlaps_redaction(
-                            annotation,
-                            &visible[..index],
-                            &surface,
-                        ))))
-                && !selected_inset
-                && (blur
-                    || pixelation
-                    || blackout
-                    || preview_raster::is_rasterized(annotation)
-                    || preview_raster::overlaps_redaction(
-                        annotation,
-                        &visible[..index],
-                        &surface,
-                    )));
-        if !snapshot.backdrop_composite
-            && !redaction_surface.composite_backdrop
-            && !pixelation
-            && !blur
-            && !aligned
-            && !blackout_overlay
-        {
-            if let Annotation::Redact { id, .. } = annotation {
-                if let Some(patch) = snapshot.redact_patches.get(id) {
-                    paint_patch(
-                        window,
-                        origin,
-                        zoom,
-                        patch.image.clone(),
-                        patch.x,
-                        patch.y,
-                        patch.width,
-                        patch.height,
-                        None,
-                    );
-                    continue;
+                Annotation::Redact { width, height, .. }
+                    if width.abs() <= 0.0 || height.abs() <= 0.0
+            )
+    });
+
+    let needs_backdrop_matte = !snapshot.image_opaque
+        || snapshot.rounded_matte.is_some()
+        || redaction_surface.composite_backdrop
+        || committed_paints
+            .iter()
+            .map(|paint| paint.annotation())
+            .chain(draft)
+            .any(|annotation| match annotation {
+                Annotation::Redact { style, .. } if style != "blackout" => {
+                    let (l, t, r, b) = annotation.bounds();
+                    l < 0.0
+                        || t < 0.0
+                        || r > f64::from(snapshot.image_width)
+                        || b > f64::from(snapshot.image_height)
                 }
-            }
-        }
-        if preview_raster::is_rasterized(annotation)
-            || blackout_overlay
-            || ((snapshot.backdrop_composite || redaction_surface.composite_backdrop)
-                && matches!(annotation, Annotation::Redact { .. }))
-            || pixelation
-            || blur
-            || (is_draft && blackout)
-            || aligned
-        {
-            let clear_plain_pixelation = pixelation
-                && !snapshot
-                    .wallpaper
-                    .is_active_with_layers(!snapshot.layers.is_empty());
-            let surface = if clear_plain_pixelation {
-                &surface
-            } else if !snapshot.backdrop_composite {
-                &redaction_surface
-            } else {
-                &surface
-            };
-            let transparent_selection = preview_raster::Surface {
-                pixels: None,
-                matte: None,
-                matte_image: None,
-                composite_backdrop: false,
-                ..*surface
-            };
-            let surface = if selected_inset {
-                &transparent_selection
-            } else {
-                surface
-            };
-            let patches = if aligned {
-                let (stage_size, offset) = if let Some((image, x, y)) = matte_image {
-                    let size = image.size(0);
-                    (
-                        (
-                            f64::from(u32::from(size.width)),
-                            f64::from(u32::from(size.height)),
-                        ),
-                        (x, y),
-                    )
-                } else {
-                    (
-                        (f64::from(surface.width), f64::from(surface.height)),
-                        (surface.offset_x, surface.offset_y),
-                    )
-                };
-                let transparent_only = !snapshot.wallpaper.has_background()
-                    && snapshot.wallpaper.inset <= 0.
-                    && snapshot.wallpaper.corners <= 0.
-                    && snapshot.wallpaper.shadow <= 0.
-                    && crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style)
-                        .is_none()
-                    && snapshot.layers.is_empty();
-                let aligned_surface = preview_raster::Surface {
-                    matte_image: if transparent_only && !surface.composite_backdrop {
-                        None
-                    } else {
-                        surface.matte_image
-                    },
-                    ..*surface
-                };
-                preview_raster::aligned_images(
-                    &keys,
-                    index,
-                    *paint,
-                    &visible[..index],
-                    &aligned_surface,
-                    preview_raster::SamplingGrid {
-                        origin: (f32::from(origin.x), f32::from(origin.y)),
-                        viewport: bounded_output.then(|| {
-                            let bounds = window.content_mask().bounds;
-                            (
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.size.height),
-                            )
-                        }),
-                        stage_bounds: {
-                            let bounds = if matte_image.is_some() || snapshot.backdrop_composite {
-                                stage_bounds.unwrap_or(bounds)
-                            } else {
-                                bounds
-                            };
-                            (
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.size.height),
-                            )
-                        },
-                        stage_size,
-                        offset,
-                        zoom,
-                        dpi: window.scale_factor(),
-                    },
-                )
-            } else {
-                None
-            }
-            .or_else(|| {
-                preview_raster::image(
-                    &keys,
-                    index,
-                    *paint,
-                    &visible[..index],
-                    surface,
-                    if blur || at_native_scale { 1.0 } else { scale },
-                )
-                .map(|patch| vec![patch])
+                _ => false,
             });
-            if let Some(patches) = patches {
-                for patch in patches {
-                    paint_patch(
-                        window,
-                        origin,
-                        zoom,
-                        patch.image,
-                        patch.x,
-                        patch.y,
-                        patch.width,
-                        patch.height,
-                        clear_plain_pixelation.then_some(stage_surface),
-                    );
+
+    let stable_surface = preview_raster::Surface {
+        matte_image: if needs_backdrop_matte {
+            redaction_surface.matte_image
+        } else {
+            None
+        },
+        rounded_clip: redaction_surface.rounded_clip,
+        composite_backdrop: redaction_surface.composite_backdrop,
+        matte: if snapshot.backdrop_composite {
+            surface.matte
+        } else if needs_backdrop_matte {
+            redaction_surface.matte
+        } else {
+            None
+        },
+        ..surface
+    };
+    let composite_surface = if snapshot.backdrop_composite {
+        &surface
+    } else {
+        &stable_surface
+    };
+
+    let selected_single = match snapshot.selected.as_slice() {
+        [single] => Some(single.as_str()),
+        _ => None,
+    };
+
+    if let Some(selected_id) = selected_single {
+        let mut below_paints = Vec::new();
+        let mut above_paints = Vec::new();
+        let mut selected_ann: Option<&Annotation> = None;
+        for paint in &committed_paints {
+            if paint.annotation().id() == selected_id {
+                if selected_ann.is_none() {
+                    selected_ann = Some(paint.annotation());
                 }
+            } else if selected_ann.is_none() {
+                below_paints.push(*paint);
+            } else {
+                above_paints.push(*paint);
             }
-            continue;
         }
-        draw_annotation(window, annotation, zoom);
-    }
-    if let Some(Annotation::Redact {
-        x,
-        y,
-        width,
-        height,
-        ..
-    }) = draft_visible
-    {
-        let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
-        let region = gpui::Bounds {
-            origin: gpui::point(
-                origin.x + px(left as f32 * zoom - 1.0),
-                origin.y + px(top as f32 * zoom - 1.0),
-            ),
-            size: gpui::size(
-                px(width as f32 * zoom + 2.0),
-                px(height as f32 * zoom + 2.0),
-            ),
-        };
-        window.paint_quad(
-            gpui::outline(region, halo, gpui::BorderStyle::Dashed)
-                .border_widths(px(1.0))
-                .corner_radii(px(2.0 * zoom)),
-        );
-    }
-    if let Some(paint) = visible.iter().find(|paint| {
-        haloed == Some(paint.annotation().id())
-            && matches!(
-                paint.annotation(),
+        let above_has_effect_redact = above_paints.iter().any(|paint| {
+            matches!(
+                paint,
+                crate::render::annotations::ScreenshotPaint::Annotation(Annotation::Redact {
+                    style,
+                    ..
+                }) if style == "blur" || style == "pixelate"
+            )
+        });
+        let selected_overlay = selected_ann.is_some_and(|annotation| {
+            matches!(
+                annotation,
                 Annotation::Highlight { .. }
                     | Annotation::Redact { .. }
                     | Annotation::Rectangle { .. }
                     | Annotation::Circle { .. }
             )
-    }) {
-        if let Annotation::Rectangle {
+        });
+        if !interactive_transform && above_has_effect_redact {
+            if let Some(patch) = preview_raster::composite_layer(
+                editor_id,
+                preview_raster::LayerSlot::Committed,
+                &committed_paints,
+                composite_surface,
+                stage_clip,
+                false,
+            ) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            }
+            if let Some(annotation) = selected_ann {
+                paint_overlay_selection_halo(window, origin, annotation, zoom, scale, halo, false);
+            }
+        } else {
+            let has_below = !below_paints.is_empty();
+            if let Some(patch) = preview_raster::composite_layer(
+                editor_id,
+                preview_raster::LayerSlot::Below,
+                &below_paints,
+                composite_surface,
+                stage_clip,
+                false,
+            ) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            }
+            if let Some(annotation) = selected_ann {
+                if !selected_overlay {
+                    paint_selection_halo(
+                        window,
+                        origin,
+                        annotation,
+                        zoom,
+                        scale,
+                        halo,
+                        snapshot.moving,
+                    );
+                }
+                paint_active_annotation(
+                    window,
+                    origin,
+                    editor_id,
+                    has_below.then_some(preview_raster::LayerSlot::Below),
+                    annotation,
+                    composite_surface,
+                    zoom,
+                    scale,
+                    interactive_transform,
+                );
+            }
+            if let Some(patch) = preview_raster::composite_layer(
+                editor_id,
+                preview_raster::LayerSlot::Above,
+                &above_paints,
+                composite_surface,
+                stage_clip,
+                true,
+            ) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            }
+            if above_has_effect_redact {
+                for paint in &above_paints {
+                    if matches!(
+                        paint,
+                        crate::render::annotations::ScreenshotPaint::Annotation(
+                            Annotation::Redact { style, .. }
+                        ) if style == "blur" || style == "pixelate"
+                    ) {
+                        if let Some(patch) = preview_raster::effect_over_layer(
+                            editor_id,
+                            has_below.then_some(preview_raster::LayerSlot::Below),
+                            *paint,
+                            composite_surface,
+                            scale,
+                            interactive_transform,
+                        ) {
+                            paint_patch(
+                                window,
+                                origin,
+                                zoom,
+                                patch.image,
+                                patch.x,
+                                patch.y,
+                                patch.width,
+                                patch.height,
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+            if selected_overlay {
+                if let Some(annotation) = selected_ann {
+                    paint_overlay_selection_halo(
+                        window,
+                        origin,
+                        annotation,
+                        zoom,
+                        scale,
+                        halo,
+                        snapshot.moving,
+                    );
+                }
+            }
+        }
+    } else if interactive_transform && snapshot.selected.len() >= 2 {
+        let mut stationary_paints = Vec::new();
+        let mut active_annotations: Vec<&Annotation> = Vec::new();
+        for paint in &committed_paints {
+            if snapshot
+                .selected
+                .iter()
+                .any(|id| id == paint.annotation().id())
+            {
+                if matches!(
+                    paint,
+                    crate::render::annotations::ScreenshotPaint::Annotation(_)
+                ) {
+                    active_annotations.push(paint.annotation());
+                }
+            } else {
+                stationary_paints.push(*paint);
+            }
+        }
+        let has_below = !stationary_paints.is_empty();
+        if let Some(patch) = preview_raster::composite_layer(
+            editor_id,
+            preview_raster::LayerSlot::Below,
+            &stationary_paints,
+            composite_surface,
+            stage_clip,
+            false,
+        ) {
+            paint_patch(
+                window,
+                origin,
+                zoom,
+                patch.image,
+                patch.x,
+                patch.y,
+                patch.width,
+                patch.height,
+                None,
+            );
+        }
+        for annotation in active_annotations {
+            paint_active_annotation(
+                window,
+                origin,
+                editor_id,
+                has_below.then_some(preview_raster::LayerSlot::Below),
+                annotation,
+                composite_surface,
+                zoom,
+                scale,
+                true,
+            );
+        }
+    } else if let Some(patch) = preview_raster::composite_layer(
+        editor_id,
+        preview_raster::LayerSlot::Committed,
+        &committed_paints,
+        composite_surface,
+        stage_clip,
+        false,
+    ) {
+        paint_patch(
+            window,
+            origin,
+            zoom,
+            patch.image,
+            patch.x,
+            patch.y,
+            patch.width,
+            patch.height,
+            None,
+        );
+    }
+
+    if let Some(draft) = draft {
+        let base_slot = (!committed_paints.is_empty() && selected_single.is_none())
+            .then_some(preview_raster::LayerSlot::Committed);
+        paint_draft_annotation(
+            window,
+            origin,
+            editor_id,
+            base_slot,
+            draft,
+            composite_surface,
+            zoom,
+            scale,
+            halo,
+        );
+    }
+    preview_raster::end_frame(window);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_active_annotation(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    editor_id: Option<gpui::ImageId>,
+    base_slot: Option<preview_raster::LayerSlot>,
+    annotation: &Annotation,
+    surface: &preview_raster::Surface,
+    zoom: f32,
+    scale: f64,
+    interactive: bool,
+) {
+    if matches!(annotation, Annotation::Redact { style, .. } if style == "blackout") {
+        paint_blackout_quad(window, origin, annotation, zoom);
+        return;
+    }
+    if interactive {
+        if matches!(annotation, Annotation::Rectangle { .. }) {
+            paint_fast_rectangle(window, origin, annotation, zoom);
+            return;
+        }
+        if matches!(
+            annotation,
+            Annotation::Circle { .. } | Annotation::Line { .. } | Annotation::Arrow { .. }
+        ) {
+            draw_annotation(window, annotation, zoom);
+            return;
+        }
+    }
+    let needs_effect_layer = match annotation {
+        Annotation::Redact { style, .. } => style == "blur" || style == "pixelate",
+        Annotation::Highlight { .. } => !interactive,
+        _ => false,
+    };
+    if needs_effect_layer {
+        if let Some(patch) = preview_raster::effect_over_layer(
+            editor_id,
+            base_slot,
+            crate::render::annotations::ScreenshotPaint::Annotation(annotation),
+            surface,
+            scale,
+            interactive,
+        ) {
+            paint_patch(
+                window,
+                origin,
+                zoom,
+                patch.image,
+                patch.x,
+                patch.y,
+                patch.width,
+                patch.height,
+                None,
+            );
+        }
+        return;
+    }
+    if let Some(patch) = preview_raster::sprite_image(annotation, scale) {
+        paint_patch(
+            window,
+            origin,
+            zoom,
+            patch.image,
+            patch.x,
+            patch.y,
+            patch.width,
+            patch.height,
+            None,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_draft_annotation(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    editor_id: Option<gpui::ImageId>,
+    base_slot: Option<preview_raster::LayerSlot>,
+    draft: &Annotation,
+    surface: &preview_raster::Surface,
+    zoom: f32,
+    scale: f64,
+    halo: Hsla,
+) {
+    match draft {
+        Annotation::Pen {
+            points,
+            stroke,
+            stroke_width,
+            ..
+        } => paint_draft_polyline(window, points, stroke, *stroke_width, 1.0, zoom),
+        Annotation::Highlight {
+            points,
+            fill,
+            opacity,
+            stroke_width,
+            ..
+        } => paint_draft_polyline(window, points, fill, *stroke_width, *opacity as f32, zoom),
+        Annotation::Rectangle { .. } => paint_fast_rectangle(window, origin, draft, zoom),
+        Annotation::Circle { .. } | Annotation::Line { .. } | Annotation::Arrow { .. } => {
+            draw_annotation(window, draft, zoom)
+        }
+        Annotation::Redact {
             x,
             y,
             width,
             height,
-            stroke_width,
+            style,
             ..
-        } = paint.annotation()
-        {
-            let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
-            let offset = *stroke_width as f32 / 2. + HALO_STROKE / 2.;
+        } => {
+            if style == "blackout" {
+                paint_blackout_quad(window, origin, draft, zoom);
+            } else if let Some(patch) = preview_raster::effect_over_layer(
+                editor_id,
+                base_slot,
+                crate::render::annotations::ScreenshotPaint::Annotation(draft),
+                surface,
+                scale,
+                true,
+            ) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            } else {
+                draw_annotation(window, draft, zoom);
+            }
+            let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
             let region = gpui::Bounds {
                 origin: gpui::point(
-                    origin.x + px((x as f32 - offset) * zoom),
-                    origin.y + px((y as f32 - offset) * zoom),
+                    origin.x + px(left as f32 * zoom - 1.0),
+                    origin.y + px(top as f32 * zoom - 1.0),
                 ),
                 size: gpui::size(
-                    px((width as f32 + 2. * offset) * zoom),
-                    px((height as f32 + 2. * offset) * zoom),
+                    px(width as f32 * zoom + 2.0),
+                    px(height as f32 * zoom + 2.0),
                 ),
             };
             window.paint_quad(
-                gpui::outline(region, halo, gpui::BorderStyle::Solid)
-                    .border_widths(px(HALO_STROKE / 2. * zoom))
-                    .corner_radii(px((1. + offset) * zoom)),
+                gpui::outline(region, halo, gpui::BorderStyle::Dashed)
+                    .border_widths(px(1.0))
+                    .corner_radii(px(2.0 * zoom)),
             );
-        } else if let Annotation::Circle {
-            x,
-            y,
-            radius,
-            stroke_width,
-            ..
-        } = paint.annotation()
-        {
-            let radius = *radius as f32 + *stroke_width as f32 / 2. + HALO_STROKE / 4.;
-            halo_ellipse(
-                window,
-                *x as f32,
-                *y as f32,
-                radius,
-                HALO_STROKE / 2.,
-                zoom,
-                halo,
-            );
-        } else {
-            draw_selection_halo(window, paint.annotation(), zoom, halo);
+        }
+        Annotation::Text { .. } | Annotation::Number { .. } => {
+            if let Some(patch) = preview_raster::sprite_image(draft, scale) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            }
         }
     }
-    preview_raster::end_frame(window);
+}
+
+fn paint_draft_polyline(
+    window: &mut gpui::Window,
+    points: &[f64],
+    color_hex: &str,
+    stroke_width: f64,
+    opacity: f32,
+    scale: f32,
+) {
+    let pairs = points.as_chunks::<2>().0;
+    let Some(first) = pairs.first() else {
+        return;
+    };
+    let color = Srgba::parse(color_hex).to_hsla().opacity(opacity);
+    if pairs.len() == 1 {
+        let radius = (stroke_width as f32 / 2.0).max(0.5);
+        if let Some(path) = ellipse_path(first[0] as f32, first[1] as f32, radius, radius, scale) {
+            window.paint_path(path, color);
+        }
+        return;
+    }
+    let mut builder = stroked(stroke_width as f32 * scale);
+    builder.move_to(at_point(
+        &Point {
+            x: first[0] as f32,
+            y: first[1] as f32,
+        },
+        scale,
+    ));
+    for pair in &pairs[1..] {
+        builder.line_to(at_point(
+            &Point {
+                x: pair[0] as f32,
+                y: pair[1] as f32,
+            },
+            scale,
+        ));
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+fn paint_overlay_selection_halo(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    annotation: &Annotation,
+    zoom: f32,
+    scale: f64,
+    halo: Hsla,
+    fast_freehand: bool,
+) {
+    if let Annotation::Rectangle {
+        x,
+        y,
+        width,
+        height,
+        stroke_width,
+        ..
+    } = annotation
+    {
+        let (x, y, width, height) = normalize_rect(*x, *y, *width, *height);
+        let offset = *stroke_width as f32 / 2. + HALO_STROKE / 2.;
+        let region = gpui::Bounds {
+            origin: gpui::point(
+                origin.x + px((x as f32 - offset) * zoom),
+                origin.y + px((y as f32 - offset) * zoom),
+            ),
+            size: gpui::size(
+                px((width as f32 + 2. * offset) * zoom),
+                px((height as f32 + 2. * offset) * zoom),
+            ),
+        };
+        window.paint_quad(
+            gpui::outline(region, halo, gpui::BorderStyle::Solid)
+                .border_widths(px(HALO_STROKE / 2. * zoom))
+                .corner_radii(px((1. + offset) * zoom)),
+        );
+    } else if let Annotation::Circle {
+        x,
+        y,
+        radius,
+        stroke_width,
+        ..
+    } = annotation
+    {
+        let radius = *radius as f32 + *stroke_width as f32 / 2. + HALO_STROKE / 4.;
+        halo_ellipse(
+            window,
+            *x as f32,
+            *y as f32,
+            radius,
+            HALO_STROKE / 2.,
+            zoom,
+            halo,
+        );
+    } else {
+        paint_selection_halo(window, origin, annotation, zoom, scale, halo, fast_freehand);
+    }
 }
 
 fn paint_patch(
@@ -1760,6 +2056,140 @@ fn text_halo_rect(text_box: &TextBox) -> (f64, f64, f64, f64) {
         text_box.width + inset * 2.0,
         text_box.height + inset * 2.0,
     )
+}
+
+fn paint_fast_rectangle(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    annotation: &Annotation,
+    zoom: f32,
+) {
+    let Annotation::Rectangle {
+        x,
+        y,
+        width,
+        height,
+        stroke,
+        fill,
+        stroke_width,
+        ..
+    } = annotation
+    else {
+        return;
+    };
+    let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
+    if let Some(fill_color) = fill {
+        if width > 0.0 && height > 0.0 {
+            let fill_bounds = gpui::Bounds {
+                origin: gpui::point(
+                    origin.x + px(left as f32 * zoom),
+                    origin.y + px(top as f32 * zoom),
+                ),
+                size: gpui::size(px(width as f32 * zoom), px(height as f32 * zoom)),
+            };
+            window.paint_quad(
+                gpui::fill(fill_bounds, Srgba::parse(fill_color).to_hsla())
+                    .corner_radii(px(1.0 * zoom)),
+            );
+        }
+    }
+    let stroke_w = *stroke_width as f32;
+    if stroke_w > 0.0 {
+        let half = stroke_w / 2.0;
+        let stroke_bounds = gpui::Bounds {
+            origin: gpui::point(
+                origin.x + px((left as f32 - half) * zoom),
+                origin.y + px((top as f32 - half) * zoom),
+            ),
+            size: gpui::size(
+                px((width as f32 + stroke_w) * zoom),
+                px((height as f32 + stroke_w) * zoom),
+            ),
+        };
+        window.paint_quad(
+            gpui::outline(
+                stroke_bounds,
+                Srgba::parse(stroke).to_hsla(),
+                gpui::BorderStyle::Solid,
+            )
+            .border_widths(px(stroke_w * zoom))
+            .corner_radii(px((1.0 + half) * zoom)),
+        );
+    }
+}
+
+fn paint_blackout_quad(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    annotation: &Annotation,
+    zoom: f32,
+) {
+    let Annotation::Redact {
+        x,
+        y,
+        width,
+        height,
+        ..
+    } = annotation
+    else {
+        return;
+    };
+    let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let region = gpui::Bounds {
+        origin: gpui::point(
+            origin.x + px(left as f32 * zoom),
+            origin.y + px(top as f32 * zoom),
+        ),
+        size: gpui::size(px(width as f32 * zoom), px(height as f32 * zoom)),
+    };
+    window.paint_quad(gpui::fill(region, gpui::black()).corner_radii(px(2.0 * zoom)));
+}
+
+fn paint_selection_halo(
+    window: &mut gpui::Window,
+    origin: gpui::Point<Pixels>,
+    annotation: &Annotation,
+    zoom: f32,
+    scale: f64,
+    color: Hsla,
+    fast_freehand: bool,
+) {
+    if fast_freehand {
+        let halo_width = match annotation {
+            Annotation::Pen { .. } => Some(HALO_PEN_STROKE),
+            Annotation::Highlight { .. } => Some(HALO_HIGHLIGHT_STROKE),
+            _ => None,
+        };
+        if let Some(stroke_width) = halo_width {
+            let rgba = gpui::Rgba::from(color);
+            let bytes = [
+                (rgba.r * 255.0).round() as u8,
+                (rgba.g * 255.0).round() as u8,
+                (rgba.b * 255.0).round() as u8,
+                (rgba.a * 255.0).round() as u8,
+            ];
+            if let Some(patch) =
+                preview_raster::halo_sprite_image(annotation, scale, stroke_width, bytes)
+            {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+                return;
+            }
+        }
+    }
+    draw_selection_halo(window, annotation, zoom, color);
 }
 
 fn draw_selection_halo(

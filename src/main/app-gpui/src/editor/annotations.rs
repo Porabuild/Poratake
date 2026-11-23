@@ -281,19 +281,19 @@ impl Annotation {
     pub fn bounds(&self) -> (f64, f64, f64, f64) {
         match self {
             Self::Pen { points, .. } | Self::Highlight { points, .. } => {
-                let coordinates = points_to_coordinates(points);
-                let Some(first) = coordinates.first().copied() else {
+                let mut pairs = points.as_chunks::<2>().0.iter();
+                let Some(first) = pairs.next() else {
                     return (0.0, 0.0, 0.0, 0.0);
                 };
-                let mut min = first;
-                let mut max = first;
-                for (x, y) in coordinates {
-                    min.0 = min.0.min(x);
-                    min.1 = min.1.min(y);
-                    max.0 = max.0.max(x);
-                    max.1 = max.1.max(y);
+                let (mut min_x, mut min_y) = (first[0], first[1]);
+                let (mut max_x, mut max_y) = (first[0], first[1]);
+                for pair in pairs {
+                    min_x = min_x.min(pair[0]);
+                    min_y = min_y.min(pair[1]);
+                    max_x = max_x.max(pair[0]);
+                    max_y = max_y.max(pair[1]);
                 }
-                (min.0, min.1, max.0, max.1)
+                (min_x, min_y, max_x, max_y)
             }
             Self::Rectangle {
                 x,
@@ -370,6 +370,78 @@ impl Annotation {
                 points[1] += dy;
                 points[2] += dx;
                 points[3] += dy;
+            }
+        }
+    }
+
+    pub fn anchor(&self) -> (f64, f64) {
+        match self {
+            Self::Pen { points, .. } | Self::Highlight { points, .. } => (
+                points.first().copied().unwrap_or(0.0),
+                points.get(1).copied().unwrap_or(0.0),
+            ),
+            Self::Rectangle { x, y, .. }
+            | Self::Circle { x, y, .. }
+            | Self::Redact { x, y, .. }
+            | Self::Number { x, y, .. }
+            | Self::Text { x, y, .. } => (*x, *y),
+            Self::Line { points, .. } | Self::Arrow { points, .. } => (points[0], points[1]),
+        }
+    }
+
+    pub fn set_translated_from(&mut self, source: &Self, dx: f64, dy: f64) {
+        match (self, source) {
+            (Self::Pen { points: dst, .. }, Self::Pen { points: src, .. })
+            | (Self::Highlight { points: dst, .. }, Self::Highlight { points: src, .. })
+                if dst.len() == src.len() =>
+            {
+                for (index, (target, value)) in dst.iter_mut().zip(src.iter()).enumerate() {
+                    *target = *value + if index % 2 == 0 { dx } else { dy };
+                }
+            }
+            (
+                Self::Rectangle {
+                    x: dx_t, y: dy_t, ..
+                },
+                Self::Rectangle { x: sx, y: sy, .. },
+            )
+            | (
+                Self::Circle {
+                    x: dx_t, y: dy_t, ..
+                },
+                Self::Circle { x: sx, y: sy, .. },
+            )
+            | (
+                Self::Redact {
+                    x: dx_t, y: dy_t, ..
+                },
+                Self::Redact { x: sx, y: sy, .. },
+            )
+            | (
+                Self::Number {
+                    x: dx_t, y: dy_t, ..
+                },
+                Self::Number { x: sx, y: sy, .. },
+            )
+            | (
+                Self::Text {
+                    x: dx_t, y: dy_t, ..
+                },
+                Self::Text { x: sx, y: sy, .. },
+            ) => {
+                *dx_t = *sx + dx;
+                *dy_t = *sy + dy;
+            }
+            (Self::Line { points: dst, .. }, Self::Line { points: src, .. })
+            | (Self::Arrow { points: dst, .. }, Self::Arrow { points: src, .. }) => {
+                dst[0] = src[0] + dx;
+                dst[1] = src[1] + dy;
+                dst[2] = src[2] + dx;
+                dst[3] = src[3] + dy;
+            }
+            (target, _) => {
+                *target = source.clone();
+                target.translate(dx, dy);
             }
         }
     }
@@ -719,6 +791,10 @@ impl AnnotationHistory {
 
     pub fn current(&self) -> &[Annotation] {
         &self.stack[self.index]
+    }
+
+    pub fn current_mut(&mut self) -> &mut [Annotation] {
+        &mut self.stack[self.index]
     }
 
     pub fn push(&mut self, next: Vec<Annotation>) {
@@ -1072,5 +1148,23 @@ mod tests {
             panic!("expected pen");
         };
         assert_eq!(points, &vec![0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn set_translated_from_avoids_drift_across_many_steps() {
+        let original = Annotation::Pen {
+            id: "p".into(),
+            points: vec![12.3, 45.6, 78.9, 101.2, 134.5, 167.8],
+            stroke: "#ff3b30".into(),
+            stroke_width: 4.0,
+        };
+        let mut current = original.clone();
+        for step in 1..=200 {
+            let offset = f64::from(step) * 0.37;
+            current.set_translated_from(&original, offset, -offset);
+        }
+        current.set_translated_from(&original, 0.0, 0.0);
+        assert_eq!(current, original);
+        assert_eq!(current.anchor(), (12.3, 45.6));
     }
 }

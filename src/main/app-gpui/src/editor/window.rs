@@ -460,6 +460,7 @@ pub struct EditorWindow {
     copy_task: Option<gpui::Task<()>>,
     pub image_width: f32,
     pub image_height: f32,
+    image_opaque: bool,
     pub file_path: String,
     pub tool: Tool,
     pub color_hex: String,
@@ -634,6 +635,10 @@ impl EditorWindow {
             .filter_map(|id| id.parse::<u32>().ok())
             .max()
             .unwrap_or(0);
+        let image_opaque = image
+            .as_ref()
+            .and_then(|image| image.as_bytes(0))
+            .is_some_and(|bytes| bytes.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255));
         let mut editor = Self {
             image,
             base_image,
@@ -670,6 +675,7 @@ impl EditorWindow {
             copy_task: None,
             image_width: width,
             image_height: height,
+            image_opaque,
             file_path: path.to_string(),
             tool: Tool::from_id(&prefs.last_tool)
                 .filter(|tool| *tool != Tool::Wallpaper)
@@ -726,6 +732,7 @@ impl EditorWindow {
                 redact_patches: std::collections::HashMap::new(),
                 image_width: width,
                 image_height: height,
+                image_opaque,
                 zoom: 1.0,
                 annotations: Vec::new(),
                 draft: None,
@@ -745,6 +752,8 @@ impl EditorWindow {
                 live_background: LiveBackground::None,
                 inset_color: None,
                 selected: Vec::new(),
+                moving: false,
+                resizing: false,
                 editing_text: None,
                 marquee: None,
                 balance_crop: None,
@@ -986,6 +995,9 @@ impl EditorWindow {
     fn replace_image(&mut self, image: Arc<gpui::RenderImage>) {
         self.retired_preview_edges
             .extend(self.image_tiles.drain(..).map(|tile| tile.image));
+        self.image_opaque = image
+            .as_bytes(0)
+            .is_some_and(|bytes| bytes.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255));
         if let Some(previous) = self.image.replace(image.clone()) {
             self.retired_preview_edges.push(previous);
         }
@@ -1493,6 +1505,11 @@ impl EditorWindow {
             snap.live_background = live_background;
             snap.inset_color = self.inset_color.clone();
             snap.selected = self.selected_annotations.clone();
+            snap.moving = self.move_original.is_some();
+            snap.resizing = self
+                .resize_state
+                .as_ref()
+                .is_some_and(|state| state.original.is_some());
             snap.editing_text = self.text_editor.as_ref().map(|(id, _)| id.clone());
             snap.marquee = self.marquee.map(|(start, current)| {
                 let left = f64::from(start.x).min(f64::from(current.x));
@@ -1508,6 +1525,7 @@ impl EditorWindow {
             snap.image_tiles = self.image_tiles.clone();
             snap.image_width = self.image_width;
             snap.image_height = self.image_height;
+            snap.image_opaque = self.image_opaque;
             snap.zoom = self.zoom;
             snap.annotations = self.history.current().to_vec();
             snap.draft = self.draft.clone();
@@ -1516,6 +1534,58 @@ impl EditorWindow {
             snap.stroke_width = self.stroke_width;
         }
         self.persist_editor_state(cx);
+    }
+
+    fn is_interactive_transform(&self) -> bool {
+        self.move_original.is_some()
+            || self
+                .resize_state
+                .as_ref()
+                .is_some_and(|state| state.original.is_some())
+            || self.marquee.is_some()
+            || self.crop_drag.is_some()
+            || (self.drag_start.is_some() && (self.draft.is_some() || self.tool == Tool::Crop))
+    }
+
+    fn sync_interactive_snapshot(&mut self) {
+        let mut snap = self.snapshot.borrow_mut();
+        let current = self.history.current();
+        if snap.annotations.len() == current.len()
+            && snap
+                .annotations
+                .iter()
+                .zip(current.iter())
+                .all(|(a, b)| a.id() == b.id())
+        {
+            if self.move_original.is_some() || self.resize_state.is_some() {
+                for (dst, src) in snap.annotations.iter_mut().zip(current.iter()) {
+                    if self.selected_annotations.iter().any(|id| dst.id() == id) {
+                        if self.move_original.is_some() {
+                            dst.set_translated_from(src, 0.0, 0.0);
+                        } else {
+                            *dst = src.clone();
+                        }
+                    }
+                }
+            }
+        } else {
+            snap.annotations = current.to_vec();
+        }
+        snap.draft = self.draft.clone();
+        snap.crop = self.crop;
+        snap.marquee = self.marquee.map(|(start, current)| {
+            let left = f64::from(start.x).min(f64::from(current.x));
+            let top = f64::from(start.y).min(f64::from(current.y));
+            let right = f64::from(start.x).max(f64::from(current.x));
+            let bottom = f64::from(start.y).max(f64::from(current.y));
+            (left, top, right - left, bottom - top)
+        });
+        snap.selected = self.selected_annotations.clone();
+        snap.moving = self.move_original.is_some();
+        snap.resizing = self
+            .resize_state
+            .as_ref()
+            .is_some_and(|state| state.original.is_some());
     }
 
     fn current_persisted_state(&self) -> PersistedEditorState {
@@ -1527,7 +1597,11 @@ impl EditorWindow {
     }
 
     fn persist_editor_state(&mut self, cx: &mut Context<Self>) {
-        if self.file_path.is_empty() || self.draft.is_some() {
+        if self.file_path.is_empty()
+            || self.draft.is_some()
+            || self.move_origin.is_some()
+            || self.resize_state.is_some()
+        {
             return;
         }
         if self.requested_editor_state.as_ref().is_some_and(|prev| {
@@ -1758,25 +1832,26 @@ impl EditorWindow {
         if self.selected_annotations.is_empty() {
             return;
         }
-        let (dx, dy) = ((point.x - origin.x) as f64, (point.y - origin.y) as f64);
-        if dx == 0.0 && dy == 0.0 {
+        if point == origin {
             return;
         }
-        let mut annotations = self.history.current().to_vec();
-        for annotation in annotations.iter_mut() {
-            if self
-                .selected_annotations
+        if !self.history.current().iter().any(|annotation| {
+            self.selected_annotations
                 .iter()
                 .any(|id| annotation.id() == id)
-            {
-                annotation.translate(dx, dy);
-            }
+        }) {
+            self.move_origin = Some(point);
+            return;
         }
-        if annotations != self.history.current() {
-            if self.move_original.is_none() {
-                self.move_original = Some((origin, self.history.current().to_vec()));
+        let (start, original) = self
+            .move_original
+            .get_or_insert_with(|| (origin, self.history.current().to_vec()));
+        let total_dx = (point.x - start.x) as f64;
+        let total_dy = (point.y - start.y) as f64;
+        for (dst, src) in self.history.current_mut().iter_mut().zip(original.iter()) {
+            if self.selected_annotations.iter().any(|id| dst.id() == id) {
+                dst.set_translated_from(src, total_dx, total_dy);
             }
-            self.history.replace_current(annotations);
         }
         self.move_origin = Some(point);
     }
@@ -1914,18 +1989,30 @@ impl EditorWindow {
             return;
         }
         if let [id] = self.selected_annotations.as_slice() {
-            let mut annotations = self.history.current().to_vec();
-            if let Some(annotation) = annotations
-                .iter_mut()
-                .find(|annotation| annotation.id() == id)
+            if let Some(index) = self
+                .history
+                .current()
+                .iter()
+                .position(|annotation| annotation.id() == id)
             {
-                apply_resize(annotation, &state, dx, dy, total_dx, total_dy, point);
-            }
-            if annotations != self.history.current() {
                 if state.original.is_none() {
-                    state.original = Some(self.history.current().to_vec());
+                    let mut candidate = self.history.current()[index].clone();
+                    apply_resize(&mut candidate, &state, dx, dy, total_dx, total_dy, point);
+                    if candidate != self.history.current()[index] {
+                        state.original = Some(self.history.current().to_vec());
+                        self.history.current_mut()[index] = candidate;
+                    }
+                } else {
+                    apply_resize(
+                        &mut self.history.current_mut()[index],
+                        &state,
+                        dx,
+                        dy,
+                        total_dx,
+                        total_dy,
+                        point,
+                    );
                 }
-                self.history.replace_current(annotations);
             }
         }
         state.last = point;
@@ -2207,7 +2294,7 @@ impl EditorWindow {
         self.sync_snapshot(cx);
     }
 
-    fn extend_stroke(&mut self, point: Point, cx: &mut Context<Self>) {
+    fn extend_stroke(&mut self, point: Point) {
         let Some(start) = self.drag_start else {
             return;
         };
@@ -2223,7 +2310,7 @@ impl EditorWindow {
                 *width = clamped_x - *x;
                 *height = clamped_y - *y;
             }
-            self.sync_snapshot(cx);
+            self.sync_interactive_snapshot();
             return;
         }
 
@@ -2274,7 +2361,7 @@ impl EditorWindow {
             }
             _ => {}
         }
-        self.sync_snapshot(cx);
+        self.sync_interactive_snapshot();
     }
 
     fn queue_pointer_update(
@@ -2306,33 +2393,33 @@ impl EditorWindow {
         });
     }
 
-    fn apply_pending_pointer_update(&mut self, cx: &mut Context<Self>) {
+    fn apply_pending_pointer_update(&mut self, _cx: &mut Context<Self>) {
         self.pointer_update_scheduled = false;
         if let Some(point) = self.pending_pointer_update.take() {
             if self.resize_state.is_some() {
                 self.resize_selected(point);
-                self.sync_snapshot(cx);
+                self.sync_interactive_snapshot();
                 return;
             }
             if self.move_origin.is_some() {
                 self.move_selected(point);
-                self.sync_snapshot(cx);
+                self.sync_interactive_snapshot();
                 return;
             }
             if self.marquee.is_some() {
                 if let Some((_, current)) = self.marquee.as_mut() {
                     *current = point;
                 }
-                self.sync_snapshot(cx);
+                self.sync_interactive_snapshot();
                 return;
             }
             if self.crop_drag.is_some() {
                 self.update_crop_drag(point);
-                self.sync_snapshot(cx);
+                self.sync_interactive_snapshot();
                 return;
             }
             if self.drag_start.is_some() {
-                self.extend_stroke(point, cx);
+                self.extend_stroke(point);
             }
         }
         if self.drag_start.is_none() || self.pending_stroke_points.is_empty() {
@@ -2357,7 +2444,7 @@ impl EditorWindow {
             }
         }
         if changed {
-            self.sync_snapshot(cx);
+            self.sync_interactive_snapshot();
         }
     }
 
@@ -3175,22 +3262,33 @@ impl Render for EditorWindow {
             f64::from(self.image_height),
             f64::from(window.scale_factor()),
         );
+        let mut scale_or_layout_changed = false;
         if self.native_scale != native_scale {
             self.native_scale = native_scale;
             self.refresh_raster_patches();
+            scale_or_layout_changed = true;
         }
         let window_scale = f64::from(window.scale_factor());
         if self.window_scale != window_scale {
             self.window_scale = window_scale;
             self.retire_backdrop();
             self.backdrop_key = None;
+            scale_or_layout_changed = true;
         }
+        let zoom_before = self.zoom;
         self.fit_to_window(window, cx);
-        self.refresh_backdrop(cx);
+        if self.zoom != zoom_before {
+            scale_or_layout_changed = true;
+        }
         for image in self.retired_preview_edges.drain(..) {
             let _ = window.drop_image(image);
         }
-        self.sync_snapshot(cx);
+        if scale_or_layout_changed || !self.is_interactive_transform() {
+            self.refresh_backdrop(cx);
+            self.sync_snapshot(cx);
+        } else {
+            self.sync_interactive_snapshot();
+        }
         self.refresh_zoom_backdrop(window, cx);
 
         let handlers = build_handlers(&weak);
@@ -6267,10 +6365,19 @@ mod tests {
                 editor.history.push(vec![later.clone()]);
                 assert!(editor.history.undo());
                 editor.selected_annotations = vec!["rectangle".into()];
+                editor.editor_state_write_task = None;
                 editor.start_stroke(point(60., 60.), false, window, cx);
+                assert!(!editor.snapshot.borrow().moving);
+                assert!(editor.editor_state_write_task.is_none());
                 editor.move_selected(point(70., 65.));
+                editor.sync_interactive_snapshot();
+                assert!(editor.snapshot.borrow().moving);
+                assert!(editor.editor_state_write_task.is_none());
                 editor.move_selected(point(72., 70.));
+                editor.sync_interactive_snapshot();
+                assert!(editor.snapshot.borrow().moving);
                 editor.finish_stroke(cx);
+                assert!(!editor.snapshot.borrow().moving);
                 let mut moved = original.clone();
                 moved.translate(12., 10.);
                 assert_eq!(editor.history.current(), [moved.clone()]);
