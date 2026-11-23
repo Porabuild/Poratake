@@ -994,21 +994,21 @@ fn paint_annotations(
         [single] => Some(single.as_str()),
         _ => None,
     };
-    let mut visible = crate::render::annotations::screenshot_paints(
+    let draft_visible = snapshot.draft.as_ref().filter(|annotation| {
+        snapshot.editing_text.as_deref() != Some(annotation.id())
+            && !matches!(
+                annotation,
+                Annotation::Redact { width, height, .. }
+                    if width.abs() <= 0.0 || height.abs() <= 0.0
+            )
+    });
+    let visible = crate::render::annotations::screenshot_paints(
         snapshot
             .annotations
             .iter()
-            .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id())),
+            .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
+            .chain(draft_visible),
     );
-    if let Some(draft) = snapshot
-        .draft
-        .as_ref()
-        .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()))
-    {
-        visible.push(crate::render::annotations::ScreenshotPaint::Annotation(
-            draft,
-        ));
-    }
     let align_to_composition_grid = snapshot.backdrop_composite
         && !snapshot.layers.is_empty()
         && crate::render::window_frame::theme(&snapshot.wallpaper.window_frame.style).is_some();
@@ -1188,22 +1188,21 @@ fn paint_annotations(
             .draft
             .as_ref()
             .is_some_and(|draft| std::ptr::eq(draft, annotation));
-        let committed_pixelation = matches!(
+        let pixelation = matches!(
             annotation,
             Annotation::Redact { style, .. }
-                if style == "pixelate" && !is_draft
+                if style == "pixelate"
         );
-        let committed_blur = matches!(
+        let blur = matches!(
             annotation,
             Annotation::Redact { style, .. }
-                if style == "blur" && !is_draft
+                if style == "blur"
         );
-        let committed_blackout = matches!(
+        let blackout = matches!(
             annotation,
             Annotation::Redact { style, .. }
-                if style == "blackout" && !is_draft
+                if style == "blackout"
         );
-        let draft_redaction = matches!(annotation, Annotation::Redact { .. }) && is_draft;
         let selected_inset = haloed == Some(annotation.id())
             && !blackout_overlay
             && snapshot.backdrop_composite
@@ -1224,18 +1223,17 @@ fn paint_annotations(
         let aligned = snapshot.rounded_matte.is_some()
             || ((!at_native_scale
                 || (bounded
-                    && (committed_blur
-                        || committed_pixelation
+                    && (blur
+                        || pixelation
                         || preview_raster::overlaps_redaction(
                             annotation,
                             &visible[..index],
                             &surface,
                         ))))
-                && !draft_redaction
                 && !selected_inset
-                && (committed_blur
-                    || committed_pixelation
-                    || committed_blackout
+                && (blur
+                    || pixelation
+                    || blackout
                     || preview_raster::is_rasterized(annotation)
                     || preview_raster::overlaps_redaction(
                         annotation,
@@ -1244,8 +1242,8 @@ fn paint_annotations(
                     )));
         if !snapshot.backdrop_composite
             && !redaction_surface.composite_backdrop
-            && !committed_pixelation
-            && !committed_blur
+            && !pixelation
+            && !blur
             && !aligned
             && !blackout_overlay
         {
@@ -1269,13 +1267,13 @@ fn paint_annotations(
         if preview_raster::is_rasterized(annotation)
             || blackout_overlay
             || ((snapshot.backdrop_composite || redaction_surface.composite_backdrop)
-                && matches!(annotation, Annotation::Redact { .. })
-                && !draft_redaction)
-            || committed_pixelation
-            || committed_blur
+                && matches!(annotation, Annotation::Redact { .. }))
+            || pixelation
+            || blur
+            || (is_draft && blackout)
             || aligned
         {
-            let clear_plain_pixelation = committed_pixelation
+            let clear_plain_pixelation = pixelation
                 && !snapshot
                     .wallpaper
                     .is_active_with_layers(!snapshot.layers.is_empty());
@@ -1375,11 +1373,7 @@ fn paint_annotations(
                     *paint,
                     &visible[..index],
                     surface,
-                    if committed_blur || at_native_scale {
-                        1.0
-                    } else {
-                        scale
-                    },
+                    if blur || at_native_scale { 1.0 } else { scale },
                 )
                 .map(|patch| vec![patch])
             });
@@ -1401,6 +1395,31 @@ fn paint_annotations(
             continue;
         }
         draw_annotation(window, annotation, zoom);
+    }
+    if let Some(Annotation::Redact {
+        x,
+        y,
+        width,
+        height,
+        ..
+    }) = draft_visible
+    {
+        let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
+        let region = gpui::Bounds {
+            origin: gpui::point(
+                origin.x + px(left as f32 * zoom - 1.0),
+                origin.y + px(top as f32 * zoom - 1.0),
+            ),
+            size: gpui::size(
+                px(width as f32 * zoom + 2.0),
+                px(height as f32 * zoom + 2.0),
+            ),
+        };
+        window.paint_quad(
+            gpui::outline(region, halo, gpui::BorderStyle::Dashed)
+                .border_widths(px(1.0))
+                .corner_radii(px(2.0 * zoom)),
+        );
     }
     if let Some(paint) = visible.iter().find(|paint| {
         haloed == Some(paint.annotation().id())

@@ -222,6 +222,7 @@ pub struct VideoEditorWindow {
     uploaded_url: Option<String>,
     drawing_tools: styles::DrawingToolSettings,
     drawing_stroke: Option<drawing_overlay::Stroke>,
+    draft_redact_preview: Option<drawing_paint::RedactPreview>,
     timeline_id_seed: u64,
     drawing_text_field: Entity<herogpui::components::InputState>,
     preview_bounds: drawing_overlay::BoundsCell,
@@ -486,6 +487,7 @@ impl VideoEditorWindow {
             uploaded_url: None,
             drawing_tools: styles::DrawingToolSettings::default(),
             drawing_stroke: None,
+            draft_redact_preview: None,
             timeline_id_seed: 0,
             drawing_text_field: cx.new(|cx| herogpui::components::InputState::new(cx)),
             preview_bounds: Rc::new(RefCell::new(None)),
@@ -1130,6 +1132,7 @@ impl VideoEditorWindow {
                         if let Some(previous) = this.preview_image.replace(image) {
                             cx.drop_image(previous, None);
                         }
+                        this.refresh_draft_redact_preview(cx);
                     }
                     cx.notify();
                 }
@@ -1430,6 +1433,9 @@ impl VideoEditorWindow {
                     if saved {
                         if let Some(image) = editor.preview_image.take() {
                             let _ = window.drop_image(image);
+                        }
+                        if let Some(preview) = editor.draft_redact_preview.take() {
+                            let _ = window.drop_image(preview.image);
                         }
                         editor.source = None;
                         editor.preview_audio = crate::video::preview_audio::PreviewAudio::new();
@@ -3314,6 +3320,7 @@ impl VideoEditorWindow {
             return;
         }
         self.drawing_stroke = drawing_overlay::Stroke::begin(&tools, point, id);
+        self.refresh_draft_redact_preview(cx);
         cx.notify();
     }
 
@@ -3333,6 +3340,7 @@ impl VideoEditorWindow {
         if let Some(stroke) = self.drawing_stroke.as_mut() {
             stroke.update(&tools, point, shift);
         }
+        self.refresh_draft_redact_preview(cx);
         cx.notify();
     }
 
@@ -3340,11 +3348,36 @@ impl VideoEditorWindow {
         let Some(stroke) = self.drawing_stroke.take() else {
             return;
         };
+        self.refresh_draft_redact_preview(cx);
         let Some(annotation) = stroke.finish() else {
             cx.notify();
             return;
         };
         self.add_drawing_annotation(annotation, cx);
+    }
+
+    fn refresh_draft_redact_preview(&mut self, cx: &mut Context<Self>) {
+        let next = match (
+            self.preview_image.as_deref(),
+            self.composition_size,
+            self.drawing_stroke
+                .as_ref()
+                .and_then(drawing_overlay::Stroke::draft),
+        ) {
+            (Some(preview), Some(composition), Some(draft)) => {
+                let key = drawing_paint::redact_preview_key(preview, composition, draft);
+                if key.is_some()
+                    && self.draft_redact_preview.as_ref().map(|cached| &cached.key) == key.as_ref()
+                {
+                    return;
+                }
+                drawing_paint::build_redact_preview(preview, composition, draft)
+            }
+            _ => None,
+        };
+        if let Some(previous) = std::mem::replace(&mut self.draft_redact_preview, next) {
+            cx.drop_image(previous.image, None);
+        }
     }
 
     fn add_drawing_annotation(&mut self, annotation: Annotation, cx: &mut Context<Self>) {
@@ -3935,6 +3968,7 @@ impl Drop for VideoEditorWindow {
         let saved = self.flush_pending_state();
         self.source = None;
         self.preview_image = None;
+        self.draft_redact_preview = None;
         if let Some(session) = self.music_session.take() {
             if saved {
                 let _ = session.close();
