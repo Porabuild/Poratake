@@ -6439,6 +6439,7 @@ mod tests {
             crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
         );
         config.update(|settings| {
+            settings.preview.corner = "top-right".into();
             settings.preview.auto_dismiss = false;
         });
         cx.update(|cx| {
@@ -6453,7 +6454,7 @@ mod tests {
         let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
         let check = preview.clone();
         let (_, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
-        visual.simulate_resize(size(px(208.), px(148.)));
+        visual.simulate_resize(preview_stack_size(PREVIEW_MAX_STACK));
         visual.executor().advance_clock(Duration::from_millis(500));
         visual.settle();
         visual.simulate_mouse_move(
