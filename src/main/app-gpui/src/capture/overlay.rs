@@ -4496,7 +4496,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 2,
+                    generation: 0,
                 },
                 cx,
             )
@@ -4509,7 +4509,7 @@ mod tests {
                     assert_eq!(overlay.surface_state, super::PooledSurfaceState::Clean);
                 })
                 .unwrap();
-            super::raise_all(2, cx);
+            super::raise_all(0, cx);
             reopened
                 .update(cx, |overlay, _, _| {
                     assert_eq!(overlay.surface_state, super::PooledSurfaceState::Live);
@@ -4541,7 +4541,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 1,
+                    generation: 0,
                 },
                 cx,
             )
@@ -4573,7 +4573,7 @@ mod tests {
                 super::OverlayLaunch {
                     focus: false,
                     deferred_show: true,
-                    generation: 2,
+                    generation: 0,
                 },
                 cx,
             )
@@ -4586,7 +4586,7 @@ mod tests {
                     assert_eq!(overlay.surface_state, super::PooledSurfaceState::Dirty);
                 })
                 .unwrap();
-            super::raise_all(2, cx);
+            super::raise_all(0, cx);
             reopened
                 .update(cx, |overlay, _, _| {
                     assert_eq!(
