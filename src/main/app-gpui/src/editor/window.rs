@@ -3334,16 +3334,6 @@ impl Render for EditorWindow {
             .font_family(crate::ui::font::UI_FONT)
             .text_color(theme.foreground)
             .track_focus(&self.focus_handle)
-            .on_key_down(|event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key.eq_ignore_ascii_case("s") {
-                    eprintln!(
-                        "[diag-key] key={} mods={:?} focused={}",
-                        event.keystroke.key,
-                        event.keystroke.modifiers,
-                        window.focused(cx).is_some()
-                    );
-                }
-            })
             .on_modifiers_changed(cx.listener(
                 |this, event: &ModifiersChangedEvent, _window, cx| {
                     let held = actions::is_meta_held(&event.modifiers, cx);
@@ -5082,10 +5072,6 @@ impl EditorWindow {
     }
 
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        eprintln!(
-            "[diag-save] save_as entered save_dialog_open={}",
-            self.save_dialog_open
-        );
         self.commit_text(cx);
         if self.save_dialog_open {
             return;
