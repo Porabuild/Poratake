@@ -2497,30 +2497,6 @@ impl CapturePreviewWindow {
             .bg(theme.muted_background)
             .border_1()
             .border_color(theme.border)
-            .on_hover({
-                let preview_entity = preview_entity.clone();
-                move |hovered: &bool, window, cx| {
-                    let handle = window.window_handle();
-                    let _ = preview_entity.update(cx, |view, cx| {
-                        let Some(preview) =
-                            view.previews.iter_mut().find(|preview| preview.id == id)
-                        else {
-                            return;
-                        };
-                        preview.hovered = *hovered;
-                        #[cfg(target_os = "macos")]
-                        if !*hovered
-                            && !Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
-                                .contains(&window.mouse_position())
-                        {
-                            view.pointer_inside = false;
-                            view.clear_native_tooltip(window);
-                        }
-                        cx.notify();
-                    });
-                    schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
-                }
-            })
             .on_mouse_down(MouseButton::Left, {
                 let preview_entity = preview_entity.clone();
                 move |event: &gpui::MouseDownEvent, window, cx| {
@@ -3115,6 +3091,7 @@ impl CapturePreviewWindow {
         }
 
         div()
+            .id(("capture-preview-hover", id))
             .absolute()
             .top(px(layout_y))
             .left(px(PREVIEW_SHADOW_PADDING))
@@ -3123,6 +3100,30 @@ impl CapturePreviewWindow {
             .opacity(opacity)
             .rounded(px(PREVIEW_RADIUS))
             .shadow_sm()
+            .on_hover({
+                let preview_entity = preview_entity.clone();
+                move |hovered: &bool, window, cx| {
+                    let handle = window.window_handle();
+                    let _ = preview_entity.update(cx, |view, cx| {
+                        let Some(preview) =
+                            view.previews.iter_mut().find(|preview| preview.id == id)
+                        else {
+                            return;
+                        };
+                        preview.hovered = *hovered;
+                        #[cfg(target_os = "macos")]
+                        if !*hovered
+                            && !Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                                .contains(&window.mouse_position())
+                        {
+                            view.pointer_inside = false;
+                            view.clear_native_tooltip(window);
+                        }
+                        cx.notify();
+                    });
+                    schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
+                }
+            })
             .child(root)
             .into_any_element()
     }
@@ -6417,5 +6418,136 @@ mod tests {
             .expect("pill helper body")
             .0;
         assert!(pill.contains("theme.primary,"));
+    }
+
+    fn open_hovered_screenshot_preview<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &tempfile::TempDir,
+    ) -> (
+        gpui::Entity<CapturePreviewWindow>,
+        &'a mut gpui::VisualTestContext,
+        &'static str,
+        gpui::Point<Pixels>,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(60, 40, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        let stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let check = preview.clone();
+        let (_, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        visual.simulate_resize(size(px(208.), px(148.)));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(70.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+        let id = visual.update(|_, cx| check.read(cx).previews[0].id);
+        let close_selector: &'static str =
+            Box::leak(format!("preview-close-{id}-tooltip-trigger").into_boxed_str());
+        let close_point = visual
+            .debug_bounds(close_selector)
+            .expect("Close control must render while hovered")
+            .center();
+        (check, visual, close_selector, close_point)
+    }
+
+    #[herogpui::test]
+    fn mouse_down_on_preview_icon_keeps_controls_until_drag_starts(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (preview, visual, close_selector, close_point) =
+            open_hovered_screenshot_preview(cx, &dir);
+
+        visual.simulate_mouse_move(close_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_down(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(
+            close_point,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(close_point.x + px(1.), close_point.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+
+        assert!(!visual.update(|_, cx| cx.has_active_drag()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_some());
+
+        visual.simulate_mouse_move(
+            gpui::point(close_point.x + px(12.), close_point.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+
+        assert!(visual.update(|_, cx| cx.has_active_drag()));
+        assert!(!visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_none());
+
+        visual.simulate_mouse_up(
+            gpui::point(close_point.x + px(12.), close_point.y),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+
+        assert!(!visual.update(|_, cx| cx.has_active_drag()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].dismiss_animation.is_none()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_some());
+    }
+
+    #[herogpui::test]
+    fn mouse_down_with_stationary_move_still_clicks_preview_icon(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (preview, visual, _, close_point) = open_hovered_screenshot_preview(cx, &dir);
+
+        visual.simulate_mouse_move(close_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_down(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(
+            close_point,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.simulate_mouse_up(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].dismiss_animation.is_some()));
     }
 }
