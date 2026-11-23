@@ -1139,15 +1139,27 @@ fn schedule_park_hide(
 
 #[cfg(all(windows, not(test)))]
 fn park_overlay(window: &Window) {
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    use windows::Win32::Graphics::Gdi::SetWindowRgn;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOZORDER, SW_HIDE,
+    };
 
     if let Some(hwnd) = crate::windows::window_hwnd(window) {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = SetWindowRgn(hwnd, None, false);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                1,
+                1,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+            );
         }
         crate::system::window_composition::set_cloaked(hwnd, false);
     }
-    set_overlay_hole(window, None);
 }
 
 #[cfg(all(windows, test))]

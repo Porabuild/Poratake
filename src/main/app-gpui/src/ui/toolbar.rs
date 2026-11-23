@@ -129,23 +129,22 @@ pub fn filled_glyph(color: gpui::Hsla, round: bool) -> AnyElement {
 
 #[cfg(any(target_os = "macos", test, all(windows, feature = "parity")))]
 pub fn filled_play(color: gpui::Hsla) -> AnyElement {
+    const PLAY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M6 3 L20 12 L6 21 Z"/></svg>"#;
+
     gpui::canvas(
         |_, _, _| {},
-        move |bounds: gpui::Bounds<gpui::Pixels>, _: (), window: &mut Window, _cx: &mut App| {
-            let at = |x: f32, y: f32| {
-                gpui::point(
-                    bounds.origin.x + px(x * FILLED_GLYPH_SIZE),
-                    bounds.origin.y + px(y * FILLED_GLYPH_SIZE),
-                )
-            };
-            let mut builder = gpui::PathBuilder::fill();
-            builder.move_to(at(0.25, 0.125));
-            builder.line_to(at(0.8333, 0.5));
-            builder.line_to(at(0.25, 0.875));
-            builder.close();
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, color);
+        move |bounds: gpui::Bounds<gpui::Pixels>, _: (), window: &mut Window, cx: &mut App| {
+            if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+                return;
             }
+            let _ = window.paint_svg(
+                bounds,
+                "poratake-glyph:filled-play".into(),
+                Some(PLAY_SVG),
+                gpui::TransformationMatrix::unit(),
+                color,
+                cx,
+            );
         },
     )
     .w(px(FILLED_GLYPH_SIZE))
