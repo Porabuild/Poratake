@@ -880,6 +880,8 @@ impl VideoEditorWindow {
                         }
                         this.has_system_audio = has_system_audio;
                         this.composition_size = Some(source.composition_size());
+                        this.preview_quality = INITIAL_PREVIEW_QUALITY;
+                        this.preview_fast_frames = 0;
                         this.source = Some(Arc::new(parking_lot::Mutex::new(source)));
                         this.adopt_source_duration(duration, cx);
                         this.preview_status = PreviewStatus::Ready;
@@ -8080,23 +8082,23 @@ mod keyboard_demo_tests {
         let budget = active_preview_budget(60.0);
         assert_eq!(
             adjust_preview_quality(
-                3,
+                INITIAL_PREVIEW_QUALITY,
                 0,
                 budget + Duration::from_millis(1),
                 Duration::ZERO,
                 budget
             ),
-            (2, 0)
+            (INITIAL_PREVIEW_QUALITY - 1, 0)
         );
         assert_eq!(
             adjust_preview_quality(
-                2,
+                INITIAL_PREVIEW_QUALITY - 1,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
                 Duration::from_millis(1),
                 Duration::ZERO,
                 budget
             ),
-            (3, 0)
+            (INITIAL_PREVIEW_QUALITY, 0)
         );
         assert_eq!(
             adjust_preview_quality(
@@ -8109,7 +8111,7 @@ mod keyboard_demo_tests {
             (0, 0)
         );
         assert!(
-            active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(1.0 / 60.0))
+            active_preview_budget(30.0).abs_diff(Duration::from_secs_f64(0.75 / 30.0))
                 <= Duration::from_nanos(1)
         );
     }
@@ -8117,25 +8119,48 @@ mod keyboard_demo_tests {
     #[test]
     fn a_slow_decode_does_not_lower_quality_when_composition_fits() {
         let budget = active_preview_budget(60.0);
-        let decode = Duration::from_millis(1500);
+        let slow_decode = Duration::from_millis(1500);
+        let sub_budget_decode = budget.mul_f32(0.7);
         let render = Duration::from_millis(4);
         assert_eq!(
             adjust_preview_quality(
-                3,
+                INITIAL_PREVIEW_QUALITY - 1,
                 PREVIEW_QUALITY_RAISE_FRAMES - 1,
-                decode + render,
-                decode,
+                slow_decode + render,
+                slow_decode,
                 budget
             ),
-            (3, 0)
+            (INITIAL_PREVIEW_QUALITY, 0)
         );
         assert_eq!(
-            adjust_preview_quality(3, 0, decode + budget + render, decode, budget),
-            (2, 0)
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY,
+                0,
+                sub_budget_decode + render,
+                sub_budget_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY, 1)
         );
         assert_eq!(
-            adjust_preview_quality(3, 0, budget + render, render, budget),
-            (2, 0)
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY - 1,
+                PREVIEW_QUALITY_RAISE_FRAMES - 1,
+                sub_budget_decode + render,
+                sub_budget_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY, 0)
+        );
+        assert_eq!(
+            adjust_preview_quality(
+                INITIAL_PREVIEW_QUALITY,
+                0,
+                slow_decode + budget + render,
+                slow_decode,
+                budget
+            ),
+            (INITIAL_PREVIEW_QUALITY - 1, 0)
         );
     }
 

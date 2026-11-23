@@ -15,7 +15,7 @@ pub mod subtitle;
 pub mod wallpaper;
 pub mod zoom;
 
-use tiny_skia::{Color, FillRule, Pixmap, PixmapRef};
+use tiny_skia::{BlendMode, Color, FillRule, Pixmap, PixmapRef};
 
 use crate::render::canvas::{rounded_rect_path, Canvas, PathShadowCache};
 use crate::video::sidecars::{CursorData, KeyboardData, SubtitleData};
@@ -89,6 +89,7 @@ pub struct Frames<'a> {
 pub struct Engine {
     config: Config,
     zoom_cache: ZoomCache,
+    video_shadows: PathShadowCache,
     camera_shadows: PathShadowCache,
     video_segments: Vec<VideoSegment>,
     cached_dimensions: (u32, u32),
@@ -101,6 +102,7 @@ impl Engine {
         Self {
             config,
             zoom_cache: ZoomCache::default(),
+            video_shadows: PathShadowCache::default(),
             camera_shadows: PathShadowCache::default(),
             video_segments,
             cached_dimensions,
@@ -337,7 +339,7 @@ impl Engine {
 
     /// `renderVideoWithZoom`.
     fn render_video_with_zoom(
-        &self,
+        &mut self,
         canvas: &mut Canvas,
         video: PixmapRef<'_>,
         layout: &wallpaper::Layout,
@@ -361,28 +363,41 @@ impl Engine {
     /// The clipped, optionally shadowed video rect. A shadow needs an opaque
     /// shape behind the frame, which is what the renderer's offscreen copy is.
     fn draw_video_rect(
-        &self,
+        &mut self,
         canvas: &mut Canvas,
         video: PixmapRef<'_>,
         x: f64,
         y: f64,
         layout: &wallpaper::Layout,
     ) {
-        let clip = rounded_rect_path(
-            x as f32,
-            y as f32,
-            self.config.video_width as f32,
-            self.config.video_height as f32,
-            layout.video_clip_radius as f32,
-        );
+        let needs_clip = layout.video_clip_radius > 0.0;
+        let clip = (needs_clip || layout.shadow.is_some())
+            .then(|| {
+                rounded_rect_path(
+                    x as f32,
+                    y as f32,
+                    self.config.video_width as f32,
+                    self.config.video_height as f32,
+                    layout.video_clip_radius as f32,
+                )
+            })
+            .flatten();
         canvas.save();
         if let (Some(shadow), Some(path)) = (layout.shadow, clip.as_ref()) {
             canvas.set_shadow(Some(shadow));
-            canvas.fill_path(path, Color::TRANSPARENT, FillRule::Winding);
+            canvas.fill_path_with_shadow_cache(
+                path,
+                Color::TRANSPARENT,
+                FillRule::Winding,
+                BlendMode::SourceOver,
+                Some(&mut self.video_shadows),
+            );
             canvas.set_shadow(None);
         }
-        if let Some(path) = clip.as_ref() {
-            canvas.clip_path(path, FillRule::Winding);
+        if needs_clip {
+            if let Some(path) = clip.as_ref() {
+                canvas.clip_path(path, FillRule::Winding);
+            }
         }
         canvas.draw_pixmap(
             video,
