@@ -567,8 +567,11 @@ public static class PoratakeTooltipProbe {
 
     public static void PressControlS() {
         keybd_event(0x11, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(30);
         keybd_event(0x53, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(30);
         keybd_event(0x53, 0, 2, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(30);
         keybd_event(0x11, 0, 2, UIntPtr.Zero);
     }
 
@@ -3340,18 +3343,28 @@ try {
     [PoratakeTooltipProbe]::Drag($annotationStartX, $annotationStartY, $annotationEndX, $annotationEndY)
     $annotatedEditorCapturePath = Join-Path $captureRoot 'real-editor-after-annotation.png'
     Capture-TooltipArea 'real-editor-after-annotation' $editorScreenBounds $annotatedEditorCapturePath
-    [PoratakeTooltipProbe]::PressControlS()
-    $saveDialog = Wait-Until {
-        $handles = [PoratakeTooltipProbe]::WindowsWithText('Save Screenshot')
-        foreach ($handle in $handles) {
-            if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
-            $dialogProcess = [uint32]0
-            [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handle, [ref]$dialogProcess)
-            if ($dialogProcess -ne [uint32]$workflowApplication.Id) { continue }
-            return $handle
-        }
-        return $null
-    } 10000 'Ctrl+S did not open the native Save Screenshot dialog.'
+    $saveDialog = [IntPtr]::Zero
+    for ($saveAttempt = 0; $saveAttempt -lt 3 -and $saveDialog -eq [IntPtr]::Zero; $saveAttempt++) {
+        [void][PoratakeTooltipProbe]::SetForegroundWindow($editorHandle)
+        Wait-Until {
+            $foreground = [PoratakeTooltipProbe]::GetForegroundWindow()
+            return $foreground -eq $editorHandle
+        } 3000 'The screenshot editor did not remain foreground before Ctrl+S.' | Out-Null
+        [PoratakeTooltipProbe]::PressControlS()
+        $saveDialog = Wait-Until {
+            $handles = [PoratakeTooltipProbe]::WindowsWithText('Save Screenshot')
+            foreach ($handle in $handles) {
+                if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
+                $dialogProcess = [uint32]0
+                [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($handle, [ref]$dialogProcess)
+                if ($dialogProcess -ne [uint32]$workflowApplication.Id) { continue }
+                return $handle
+            }
+            return $null
+        } 4000 ''
+        if ($null -eq $saveDialog) { $saveDialog = [IntPtr]::Zero }
+    }
+    if ($saveDialog -eq [IntPtr]::Zero) { throw 'Ctrl+S did not open the native Save Screenshot dialog.' }
     if ([PoratakeTooltipProbe]::GetWindow($saveDialog, 4) -ne $editorHandle) { throw 'The Save Screenshot dialog is not owned by the screenshot editor.' }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
     Wait-Until {
