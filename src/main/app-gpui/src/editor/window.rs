@@ -5092,7 +5092,6 @@ impl EditorWindow {
             .set_title("Save Screenshot")
             .set_parent(window)
             .set_file_name(&default_name)
-            .add_filter(if jpeg { "JPEG Image" } else { "PNG Image" }, &[extension])
             .set_directory(&directory);
         self.save_dialog_open = true;
         let window_handle = window.window_handle();
