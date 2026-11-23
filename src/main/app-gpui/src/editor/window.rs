@@ -5088,23 +5088,23 @@ impl EditorWindow {
         } else {
             dirs::picture_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
         };
-        let dialog = rfd::AsyncFileDialog::new()
+        let dialog = rfd::FileDialog::new()
             .set_title("Save Screenshot")
             .set_parent(window)
             .set_file_name(&default_name)
             .add_filter(if jpeg { "JPEG Image" } else { "PNG Image" }, &[extension])
             .set_directory(&directory);
         self.save_dialog_open = true;
+        let picked = dialog.save_file();
+        self.save_dialog_open = false;
+        let Some(path) = picked else {
+            return;
+        };
         let window_handle = window.window_handle();
         let config = crate::state::state(cx).config.clone();
         let close_on_save = settings.screenshot.close_on_save;
 
         cx.spawn(async move |editor, cx| {
-            let Some(file) = dialog.save_file().await else {
-                let _ = editor.update(cx, |editor, _| editor.save_dialog_open = false);
-                return;
-            };
-            let path = file.path().to_path_buf();
             let failure_path = path.clone();
             let result = cx
                 .background_executor()
