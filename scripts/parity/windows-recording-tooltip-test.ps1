@@ -388,6 +388,7 @@ $testFailure = $false
 $previousDpiAwarenessContext = [IntPtr]::Zero
 $evidenceRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($runnerTempRoot, 'poratake-visual-tooltip-' + [guid]::NewGuid().ToString('N')))
 $captureRoot = Join-Path $evidenceRoot 'captures'
+$null = New-Item -ItemType Directory -Path (Join-Path $captureRoot 'real-exports') -Force
 $workflowTracePath = Join-Path $evidenceRoot 'workflow-daemon-trace.log'
 $handoffTracePath = Join-Path $evidenceRoot 'recording-handoff-daemon-trace.log'
 $handoffFreezeControlTracePath = Join-Path $evidenceRoot 'recording-handoff-freeze-control-trace.log'
