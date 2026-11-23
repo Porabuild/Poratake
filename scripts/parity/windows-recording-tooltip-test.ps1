@@ -735,7 +735,7 @@ public static class PoratakeTooltipProbe {
 
     static string StackSymbol(IntPtr process, ulong address, IntPtr symbol) {
         for (var offset = 0; offset < 84; offset += 4) Marshal.WriteInt32(symbol, offset, 0);
-        Marshal.WriteInt32(symbol, 0, 84);
+        Marshal.WriteInt32(symbol, 0, 88);
         Marshal.WriteInt32(symbol, 80, 2048);
         ulong displacement;
         if (!SymFromAddrW(process, address, out displacement, symbol)) return null;
@@ -757,7 +757,24 @@ public static class PoratakeTooltipProbe {
         return text;
     }
 
-    public static List<string> DescribeThreadStacks(uint processId, int[] threadIds, string[] moduleNames, ulong[] moduleBases, ulong[] moduleSizes, string symbolSearchPath, int maxLines) {
+    public static List<string> DescribeDesktopWindows() {
+        var lines = new List<string>();
+        EnumWindows((hwnd, _) => {
+            uint processId;
+            var threadId = GetWindowThreadProcessId(hwnd, out processId);
+            var text = new StringBuilder(256);
+            GetWindowText(hwnd, text, text.Capacity);
+            var name = new StringBuilder(256);
+            GetClassName(hwnd, name, name.Capacity);
+            var processName = "?";
+            try { processName = System.Diagnostics.Process.GetProcessById((int)processId).ProcessName; } catch { }
+            lines.Add("window hwnd=" + hwnd.ToInt64() + " class=" + name + " title='" + text + "' visible=" + IsWindowVisible(hwnd) + " pid=" + processId + " process=" + processName + " tid=" + threadId + " hung=" + IsHungAppWindow(hwnd));
+            return true;
+        }, IntPtr.Zero);
+        return lines;
+    }
+
+    public static List<string> DescribeThreadStacks(uint processId, int[] threadIds, string[] moduleNames, ulong[] moduleBases, ulong[] moduleSizes, string symbolSearchPath, int maxLinesPerThread) {
         var lines = new List<string>();
         var process = OpenProcess(0x0410, false, processId);
         if (process == IntPtr.Zero) {
@@ -778,7 +795,7 @@ public static class PoratakeTooltipProbe {
             symbolsReady = SymInitializeW(process, symbolSearchPath, true);
             lines.Add("stack: symbols " + (symbolsReady ? "ready" : "unavailable, error " + Marshal.GetLastWin32Error()));
             foreach (var threadId in threadIds) {
-                if (lines.Count >= maxLines) break;
+                var threadStart = lines.Count;
                 var thread = OpenThread(0x004A, false, (uint)threadId);
                 if (thread == IntPtr.Zero) {
                     lines.Add("stack: thread " + threadId + " OpenThread failed with " + Marshal.GetLastWin32Error());
@@ -810,12 +827,12 @@ public static class PoratakeTooltipProbe {
                         var remaining = stackBase > stackPointer ? stackBase - stackPointer : 0UL;
                         if (remaining > 49152UL) remaining = 49152UL;
                         lines.Add("stack: thread " + threadId + " instruction " + StackDescribeAddress(process, symbolsReady, symbol, instruction, moduleNames, moduleBases, moduleSizes) + " stack 0x" + stackPointer.ToString("x") + "-0x" + stackBase.ToString("x"));
-                        for (var offset = 0UL; offset < remaining && lines.Count < maxLines; offset += 8192UL) {
+                        for (var offset = 0UL; offset < remaining && lines.Count - threadStart < maxLinesPerThread; offset += 8192UL) {
                             var requested = remaining - offset;
                             if (requested > 8192UL) requested = 8192UL;
                             if (!ReadProcessMemory(process, new IntPtr((long)(stackPointer + offset)), chunkPointer, new UIntPtr(requested), out transferred)) break;
                             var count = (int)(transferred.ToUInt64() & ~7UL);
-                            for (var index = 0; index + 8 <= count; index += 8) {
+                            for (var index = 0; index + 8 <= count && lines.Count - threadStart < maxLinesPerThread; index += 8) {
                                 var value = (ulong)BitConverter.ToInt64(chunk, index);
                                 if (StackModuleIndex(value, moduleBases, moduleSizes) < 0) continue;
                                 lines.Add("stack: thread " + threadId + " rsp+0x" + (offset + (ulong)index).ToString("x") + " " + StackDescribeAddress(process, symbolsReady, symbol, value, moduleNames, moduleBases, moduleSizes));
@@ -913,8 +930,8 @@ function Save-DialogFailureDiagnostics([System.Diagnostics.Process]$application,
     Write-Host "DIAG editor hung: $([PoratakeTooltipProbe]::IsHungAppWindow($editorHandle))"
     $windows = @([PoratakeTooltipProbe]::Windows([uint32]$application.Id) | ForEach-Object { Get-WindowIdentity $_ })
     Write-Host "DIAG workflow windows: $($windows | ConvertTo-Json -Compress)"
-    $editorThread = [uint32]0
-    [void][PoratakeTooltipProbe]::GetWindowThreadProcessId($editorHandle, [ref]$editorThread)
+    $editorProcess = [uint32]0
+    $editorThread = [PoratakeTooltipProbe]::GetWindowThreadProcessId($editorHandle, [ref]$editorProcess)
     $dialogThreads = @($windows | Where-Object { $_.className -eq '#32770' } | ForEach-Object { [int]$_.threadId })
     $application.Refresh()
     $first = @{}
@@ -923,7 +940,6 @@ function Save-DialogFailureDiagnostics([System.Diagnostics.Process]$application,
     }
     Start-Sleep -Milliseconds 1000
     $application.Refresh()
-    $busy = @()
     foreach ($thread in $application.Threads) {
         try {
             $id = [int]$thread.Id
@@ -932,18 +948,67 @@ function Save-DialogFailureDiagnostics([System.Diagnostics.Process]$application,
             $reason = ''
             try { $reason = [string]$thread.WaitReason } catch { }
             Write-Host ("DIAG thread {0} state={1} wait={2} cpuDeltaMs={3:F0}" -f $id, $thread.ThreadState, $reason, $delta)
-            if ($delta -ge 15.0) { $busy += $id }
         } catch { }
     }
-    $targets = @(@([int]$editorThread) + $dialogThreads + $busy | Select-Object -Unique)
+    $targets = [int[]]@($dialogThreads + @([int]$editorThread) + @($application.Threads | ForEach-Object { [int]$_.Id }) | Select-Object -Unique)
+    foreach ($line in [PoratakeTooltipProbe]::DescribeDesktopWindows()) { Write-Host "DIAG $line" }
     $modules = @($application.Modules)
     $moduleNames = [string[]]@($modules | ForEach-Object { $_.ModuleName })
     $moduleBases = [uint64[]]@($modules | ForEach-Object { [uint64]$_.BaseAddress.ToInt64() })
     $moduleSizes = [uint64[]]@($modules | ForEach-Object { [uint64]$_.ModuleMemorySize })
     $executableDirectory = [System.IO.Path]::GetDirectoryName($application.MainModule.FileName)
     $searchPath = $executableDirectory + ';' + [System.IO.Path]::GetDirectoryName($executableDirectory)
-    $stacks = [PoratakeTooltipProbe]::DescribeThreadStacks([uint32]$application.Id, [int[]]$targets, $moduleNames, $moduleBases, $moduleSizes, $searchPath, 2500)
+    $identities = foreach ($module in $modules) {
+        try {
+            $identity = Get-PeDebugIdentity $module.FileName
+            if ($identity) { '{0}|{1}|{2}|{3}|0x{4:x}|{5}' -f $module.ModuleName, [System.IO.Path]::GetFileName($identity.PdbPath), $identity.Guid, $identity.Age, [uint64]$module.BaseAddress.ToInt64(), $module.FileVersionInfo.FileVersion }
+        } catch { }
+    }
+    $identities | Set-Content -LiteralPath (Join-Path $evidenceRoot 'module-identities.log') -Encoding utf8
+    foreach ($line in $identities) { Write-Host "DIAG module $line" }
+    $stacks = [PoratakeTooltipProbe]::DescribeThreadStacks([uint32]$application.Id, [int[]]$targets, $moduleNames, $moduleBases, $moduleSizes, $searchPath, 90)
     foreach ($line in $stacks) { Write-Host "DIAG $line" }
+}
+
+function Get-PeDebugIdentity([string]$path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+    $optional = $pe + 24
+    $magic = [BitConverter]::ToUInt16($bytes, $optional)
+    $directory = if ($magic -eq 0x20B) { $optional + 112 } else { $optional + 96 }
+    $debugRva = [BitConverter]::ToUInt32($bytes, $directory + 6 * 8)
+    $debugSize = [BitConverter]::ToUInt32($bytes, $directory + 6 * 8 + 4)
+    if ($debugRva -eq 0 -or $debugSize -eq 0) { return $null }
+    $sectionCount = [BitConverter]::ToUInt16($bytes, $pe + 6)
+    $sections = $optional + [BitConverter]::ToUInt16($bytes, $pe + 20)
+    $rvaToOffset = {
+        param([uint32]$rva)
+        for ($index = 0; $index -lt $sectionCount; $index++) {
+            $section = $sections + $index * 40
+            $address = [BitConverter]::ToUInt32($bytes, $section + 12)
+            $rawSize = [BitConverter]::ToUInt32($bytes, $section + 16)
+            $rawPointer = [BitConverter]::ToUInt32($bytes, $section + 20)
+            if ($rva -ge $address -and $rva -lt ($address + $rawSize)) { return [int]($rva - $address + $rawPointer) }
+        }
+        return -1
+    }
+    $debugOffset = & $rvaToOffset $debugRva
+    if ($debugOffset -lt 0) { return $null }
+    for ($entry = 0; $entry -lt [int]($debugSize / 28); $entry++) {
+        $at = $debugOffset + $entry * 28
+        if ([BitConverter]::ToUInt32($bytes, $at + 12) -ne 2 -or [BitConverter]::ToUInt32($bytes, $at + 16) -lt 24) { continue }
+        $pointerToRawData = [BitConverter]::ToUInt32($bytes, $at + 24)
+        $pointer = if ($pointerToRawData -ne 0) { [int]$pointerToRawData } else { & $rvaToOffset ([BitConverter]::ToUInt32($bytes, $at + 20)) }
+        if ($pointer -lt 0 -or $pointer + 24 -gt $bytes.Length) { continue }
+        if ([BitConverter]::ToUInt32($bytes, $pointer) -ne 0x53445352) { continue }
+        $guidBytes = [byte[]]::new(16)
+        [Array]::Copy($bytes, $pointer + 4, $guidBytes, 0, 16)
+        $nameStart = $pointer + 24
+        $nameEnd = $nameStart
+        while ($nameEnd -lt $bytes.Length -and $bytes[$nameEnd] -ne 0) { $nameEnd++ }
+        return @{ PdbPath = [System.Text.Encoding]::UTF8.GetString($bytes, $nameStart, $nameEnd - $nameStart); Guid = [Guid]::new($guidBytes).ToString('N').ToUpperInvariant(); Age = [BitConverter]::ToUInt32($bytes, $pointer + 20) }
+    }
+    return $null
 }
 
 function Open-EditorOwnedDialog([IntPtr]$editorHandle, $buttonBounds, [string]$title) {
