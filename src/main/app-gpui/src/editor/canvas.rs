@@ -104,6 +104,7 @@ pub struct EditorCanvas {
     /// The stage scrolls when the zoomed image is larger than the window, the
     /// way `overflow-auto` does in the renderer.
     pub scroll: ScrollHandle,
+    pub text_overlay: Option<gpui::AnyElement>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -184,11 +185,13 @@ impl EditorCanvas {
         snapshot: SnapshotCell,
         bounds_cell: Rc<RefCell<Option<gpui::Bounds<Pixels>>>>,
         scroll: ScrollHandle,
+        text_overlay: Option<gpui::AnyElement>,
     ) -> Self {
         Self {
             snapshot,
             bounds_cell,
             scroll,
+            text_overlay,
         }
     }
 }
@@ -752,9 +755,26 @@ impl RenderOnce for EditorCanvas {
                         ),
                 );
             }
+            if let Some(text_overlay) = self.text_overlay {
+                stage = stage.child(
+                    div()
+                        .absolute()
+                        .left(px((offset_x as f32 - crop_left) * zoom))
+                        .top(px((offset_y as f32 + title_bar as f32 - crop_top) * zoom))
+                        .w(content_width)
+                        .h(content_height)
+                        .child(text_overlay),
+                );
+            }
             stage.into_any_element()
         } else {
-            frame.into_any_element()
+            div()
+                .relative()
+                .w(content_width)
+                .h(content_height)
+                .child(frame)
+                .children(self.text_overlay)
+                .into_any_element()
         };
 
         // The scroll container is the window-sized viewport; the content box

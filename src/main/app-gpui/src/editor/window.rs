@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent, Focusable,
+    div, prelude::*, px, App, Context, DragMoveEvent, ExternalPaths, FileDropEvent,
     ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render,
     ScrollEvent, Styled, Subscription, Window,
 };
@@ -20,13 +20,14 @@ use crate::editor::canvas::{CanvasSnapshot, EditorCanvas, LiveBackground};
 use crate::editor::options::{
     EditorAction, EditorHandlers, EditorOption, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP,
 };
+use crate::editor::text_input::{InlineTextInput, InlineTextState};
 use crate::editor::title_bar::TitleBar;
 use crate::editor::tool_options::ToolOptionsState;
 use crate::theme::vars::active_theme;
 use crate::ui::chrome;
 use crate::ui::colors::Tool;
 use crate::ui::icon_button;
-use herogpui::components::{Button, InputState, TextField, Variant};
+use herogpui::components::{Button, InputState, Variant};
 
 fn report_screenshot_save_failure(cx: &mut App, path: &Path, error: &dyn std::fmt::Display) {
     let message = format!("{}: {error}", path.display());
@@ -281,41 +282,6 @@ fn is_image_path(path: &std::path::Path) -> bool {
     )
 }
 
-/// The inline text editor tracks its content like Electron's measured input
-/// (`measureText` in `text-utils.ts`): the draft is shaped in the annotation's
-/// font and the box hugs it.
-///
-/// Two deliberate differences: the field keeps the fixed 14px input text —
-/// HeroGPUI's `TextField` pins its text size, so annotation-sized edit text
-/// would need a custom editor — and the full-size draft still renders live on
-/// the canvas behind it, so the committed result is always visible.
-fn text_field_width(text: &str, font_family: &str, cx: &gpui::App) -> f32 {
-    const FIELD_TEXT_SIZE: f32 = 14.0;
-    const FIELD_PADDING: f32 = 32.0;
-    const MIN_WIDTH: f32 = 160.0;
-
-    let measurable: String = text.chars().filter(|ch| *ch != '\n').collect();
-    let font = match font_family {
-        "serif" => gpui::font("Georgia"),
-        "mono" => gpui::font("Consolas"),
-        "comic" => gpui::font("Comic Sans MS"),
-        _ => gpui::Font::default(),
-    };
-    let system = cx.text_system();
-    let font_id = system.resolve_font(&font);
-    let size = gpui::px(FIELD_TEXT_SIZE);
-    let measured: f32 = measurable
-        .chars()
-        .map(|ch| {
-            system
-                .advance(font_id, size, ch)
-                .map(|advance| f32::from(advance.width))
-                .unwrap_or(0.0)
-        })
-        .sum();
-    (measured + FIELD_PADDING).max(MIN_WIDTH)
-}
-
 fn resize_crop_rect(
     rect: (f64, f64, f64, f64),
     corner: CropCorner,
@@ -519,7 +485,7 @@ pub struct EditorWindow {
     pending_stroke_shift: bool,
     pointer_update_scheduled: bool,
     /// The inline field shown while a text annotation is being typed.
-    text_editor: Option<(String, gpui::Entity<InputState>)>,
+    text_editor: Option<(String, gpui::Entity<InlineTextState>)>,
     /// The pending crop rectangle in image coordinates.
     crop: Option<(f64, f64, f64, f64)>,
     /// An in-progress crop move or corner resize, mirroring `DragState` in
@@ -2132,6 +2098,10 @@ impl EditorWindow {
             }
             Tool::Text => {
                 self.drag_start = None;
+                if let Some(id) = self.text_annotation_at(point) {
+                    self.begin_text_reedit(&id, window, cx);
+                    return;
+                }
                 self.begin_text(point, color, cx);
                 self.focus_text_editor(window, cx);
             }
@@ -2394,6 +2364,7 @@ impl EditorWindow {
     /// Port of `applyCrop`: crops the base image and shifts every annotation
     /// into the new coordinate space.
     pub fn apply_crop(&mut self, cx: &mut Context<Self>) {
+        self.commit_text(cx);
         self.finish_active_transform(cx);
         let Some((x, y, width, height)) = self.crop.take() else {
             return;
@@ -2462,6 +2433,7 @@ impl EditorWindow {
 
     fn begin_text(&mut self, point: Point, color: String, cx: &mut Context<Self>) {
         self.commit_text(cx);
+        self.selected_annotations.clear();
         let id = self.annotation_id();
         self.draft = Some(Annotation::Text {
             id: id.clone(),
@@ -2483,8 +2455,29 @@ impl EditorWindow {
             rotation: None,
         });
 
-        let field = cx.new(|cx| InputState::new(cx));
+        let field = cx.new(|cx| InlineTextState::new(cx));
         self.text_editor = Some((id, field));
+        self.sync_snapshot(cx);
+        cx.notify();
+    }
+
+    fn text_annotation_at(&self, point: Point) -> Option<String> {
+        let id = self.annotation_at(point)?;
+        matches!(
+            self.history
+                .current()
+                .iter()
+                .find(|annotation| annotation.id() == id),
+            Some(Annotation::Text { .. })
+        )
+        .then_some(id)
+    }
+
+    pub fn cancel_text(&mut self, cx: &mut Context<Self>) {
+        if self.text_editor.take().is_none() {
+            return;
+        }
+        self.draft = None;
         self.sync_snapshot(cx);
         cx.notify();
     }
@@ -2514,8 +2507,10 @@ impl EditorWindow {
                 {
                     *existing = draft;
                 }
-                self.push_annotations(annotations, cx);
-                self.refresh_raster_patches();
+                if annotations != self.history.current() {
+                    self.push_annotations(annotations, cx);
+                    self.refresh_raster_patches();
+                }
             } else if !text.trim().is_empty() {
                 annotations.push(draft);
                 self.push_annotations(annotations, cx);
@@ -2541,7 +2536,7 @@ impl EditorWindow {
         };
         let text = text.clone();
         self.draft = Some(existing);
-        let field = cx.new(|cx| InputState::with_value(cx, text));
+        let field = cx.new(|cx| InlineTextState::with_value(cx, text));
         self.text_editor = Some((id.to_string(), field));
         self.sync_snapshot(cx);
         cx.notify();
@@ -2553,67 +2548,87 @@ impl EditorWindow {
         let Some(Annotation::Text {
             x,
             y,
-            text,
+            font_size,
+            fill,
             font_family,
+            background_color,
+            background_padding,
+            background_radius,
             ..
         }) = &self.draft
         else {
             return None;
         };
-        let bounds = (*self.bounds.borrow())?;
         let owner = cx.entity().downgrade();
-        let submit_owner = owner.clone();
+        let commit_owner = owner.clone();
         let cancel_owner = owner.clone();
-        let family = font_family.as_deref().unwrap_or("sans");
-        let width = text_field_width(text, family, cx);
+        let family = font_family
+            .as_deref()
+            .unwrap_or(annotations::DEFAULT_TEXT_FONT);
+        let text_color = crate::theme::color::Srgba::parse(fill).to_hsla();
+        let bg_color = background_color
+            .as_deref()
+            .map(|bg| crate::theme::color::Srgba::parse(bg).to_hsla());
+        let (padding_x, padding_y) = if bg_color.is_some() {
+            let padding = background_padding.unwrap_or(annotations::Offset {
+                x: annotations::TEXT_BG_PADDING_X,
+                y: annotations::TEXT_BG_PADDING_Y,
+            });
+            (padding.x as f32 * self.zoom, padding.y as f32 * self.zoom)
+        } else {
+            (3.0, 1.0)
+        };
+        let radius = if bg_color.is_some() {
+            background_radius.unwrap_or(annotations::TEXT_BG_RADIUS) as f32 * self.zoom
+        } else {
+            2.0
+        };
+        let theme = active_theme(cx);
         Some(
-            div()
-                .absolute()
-                .left(bounds.left() + px(*x as f32 * self.zoom))
-                .top(bounds.top() + px(*y as f32 * self.zoom))
-                .w(px(width))
-                .on_key_down(move |event, _window, cx| {
-                    if event.keystroke.key != "escape" {
-                        return;
-                    }
-                    cx.stop_propagation();
-                    if let Some(owner) = cancel_owner.upgrade() {
-                        owner.update(cx, |editor, cx| {
-                            editor.text_editor = None;
-                            editor.draft = None;
+            InlineTextInput {
+                state: field.clone(),
+                x: *x,
+                y: *y,
+                zoom: self.zoom,
+                font_size: *font_size,
+                font_family: crate::editor::text_render::ui_family(family),
+                text_color,
+                background_color: bg_color,
+                padding_x,
+                padding_y,
+                radius,
+                border_color: theme.primary.opacity(0.8),
+                selection_color: theme.primary.opacity(0.28),
+                on_change: Rc::new(move |value, _window, app| {
+                    let value = value.to_string();
+                    if let Some(owner) = owner.upgrade() {
+                        owner.update(app, |editor, cx| {
+                            if let Some(Annotation::Text { text, .. }) = &mut editor.draft {
+                                *text = value.clone();
+                            }
                             editor.sync_snapshot(cx);
                             cx.notify();
                         });
                     }
-                })
-                .child(
-                    TextField::new(field.clone())
-                        .placeholder("Type\u{2026}")
-                        .font_family(crate::editor::text_render::ui_family(family))
-                        .on_change({
-                            let owner = owner.clone();
-                            move |value, _window, app| {
-                                let value = value.to_string();
-                                if let Some(owner) = owner.upgrade() {
-                                    owner.update(app, |editor, cx| {
-                                        if let Some(Annotation::Text { text, .. }) =
-                                            &mut editor.draft
-                                        {
-                                            *text = value.clone();
-                                        }
-                                        editor.sync_snapshot(cx);
-                                        cx.notify();
-                                    });
-                                }
-                            }
-                        })
-                        .on_submit(move |_value, _window, app| {
-                            if let Some(owner) = submit_owner.upgrade() {
-                                owner.update(app, |editor, cx| editor.commit_text(cx));
-                            }
-                        }),
-                )
-                .into_any_element(),
+                }),
+                on_commit: Rc::new(move |window, app| {
+                    if let Some(owner) = commit_owner.upgrade() {
+                        owner.update(app, |editor, cx| {
+                            editor.commit_text(cx);
+                            window.focus(&editor.focus_handle, cx);
+                        });
+                    }
+                }),
+                on_cancel: Rc::new(move |window, app| {
+                    if let Some(owner) = cancel_owner.upgrade() {
+                        owner.update(app, |editor, cx| {
+                            editor.cancel_text(cx);
+                            window.focus(&editor.focus_handle, cx);
+                        });
+                    }
+                }),
+            }
+            .into_any_element(),
         )
     }
 
@@ -2690,6 +2705,10 @@ impl EditorWindow {
                 self.selected_annotations.clear();
             }
             self.sync_snapshot(cx);
+            return;
+        }
+        if self.text_editor.is_some() {
+            self.drag_start = None;
             return;
         }
         if let Some(draft) = self.draft.take() {
@@ -3288,8 +3307,9 @@ impl Render for EditorWindow {
             .on_action(cx.listener(|this, _: &actions::CancelCrop, _, cx| {
                 if this.crop.is_some() {
                     this.cancel_crop(cx);
-                } else if this.text_editor.is_some() || this.draft.is_some() {
-                    this.text_editor = None;
+                } else if this.text_editor.is_some() {
+                    this.cancel_text(cx);
+                } else if this.draft.is_some() {
                     this.draft = None;
                     this.sync_snapshot(cx);
                     cx.notify();
@@ -3402,6 +3422,7 @@ impl Render for EditorWindow {
                                 snapshot_cell,
                                 bounds_cell,
                                 self.stage_scroll.clone(),
+                                self.text_editor_overlay(cx),
                             ))
                             .when(capture_overlay, |el| {
                                 let entity = cx.entity().downgrade();
@@ -3463,6 +3484,12 @@ impl Render for EditorWindow {
                                                 ));
                                                 return;
                                             }
+                                            if editor.text_editor.is_some() {
+                                                editor.commit_text(cx);
+                                                window.focus(&editor.focus_handle, cx);
+                                                window.prevent_default();
+                                                return;
+                                            }
                                             let bounds = *editor.bounds.borrow();
                                             let point = to_canvas_point(
                                                 event.position,
@@ -3470,18 +3497,10 @@ impl Render for EditorWindow {
                                                 editor.zoom,
                                             );
                                             if event.click_count >= 2 {
-                                                if let Some(id) = editor.annotation_at(point) {
-                                                    let is_text = matches!(
-                                                        editor.history.current().iter().find(
-                                                            |annotation| annotation.id() == id
-                                                        ),
-                                                        Some(Annotation::Text { .. })
-                                                    );
-                                                    if is_text {
-                                                        editor.begin_text_reedit(&id, window, cx);
-                                                        cx.notify();
-                                                        return;
-                                                    }
+                                                if let Some(id) = editor.text_annotation_at(point) {
+                                                    editor.begin_text_reedit(&id, window, cx);
+                                                    cx.notify();
+                                                    return;
                                                 }
                                             }
                                             editor.start_stroke(
@@ -3508,6 +3527,16 @@ impl Render for EditorWindow {
                                                 ));
                                                 cx.notify();
                                                 return;
+                                            }
+                                            if let Some((_, field)) = editor.text_editor.clone() {
+                                                if field.read(cx).is_selecting() {
+                                                    field.update(cx, |state, cx| {
+                                                        if state.update_drag_selection(position) {
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                    return;
+                                                }
                                             }
                                             if editor.move_origin.is_some()
                                                 || editor.drag_start.is_some()
@@ -3557,6 +3586,10 @@ impl Render for EditorWindow {
                                                     cx,
                                                 );
                                             }
+                                            if let Some((_, field)) = editor.text_editor.clone() {
+                                                field.update(cx, |state, _| state.end_selection());
+                                                return;
+                                            }
                                             editor.apply_pending_pointer_update(cx);
                                             editor.finish_stroke(cx);
                                             cx.notify();
@@ -3595,8 +3628,7 @@ impl Render for EditorWindow {
                                 &theme,
                             )),
                     ),
-            )
-            .children(self.text_editor_overlay(cx));
+            );
         crate::ui::window_root::focus_root(content, window, cx)
     }
 }
@@ -3778,6 +3810,19 @@ impl EditorWindow {
     }
 
     fn apply_option(&mut self, option: EditorOption, cx: &mut Context<Self>) {
+        if self.text_editor.is_some()
+            && matches!(
+                option,
+                EditorOption::Color(_)
+                    | EditorOption::TextBackground(_)
+                    | EditorOption::TextFontSize(_)
+                    | EditorOption::TextFontFamily(_)
+            )
+        {
+            if let Some(draft) = self.draft.as_mut() {
+                draft.apply_option(&option);
+            }
+        }
         self.apply_option_to_selection(&option, cx);
         let persist = matches!(
             option,
@@ -4386,6 +4431,7 @@ impl EditorWindow {
         if self.tool == tool {
             return;
         }
+        self.commit_text(cx);
         if self.tool == Tool::Wallpaper {
             self.begin_sheet_close();
         }
@@ -4422,9 +4468,11 @@ impl EditorWindow {
         };
         let focus = field.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
+        window.prevent_default();
     }
 
     fn undo(&mut self, cx: &mut Context<Self>) {
+        self.commit_text(cx);
         self.finish_active_transform(cx);
         if let Some(pre) = self.pre_crop.take() {
             self.image_width = pre.width;
@@ -4445,6 +4493,7 @@ impl EditorWindow {
     }
 
     fn redo(&mut self, cx: &mut Context<Self>) {
+        self.commit_text(cx);
         self.finish_active_transform(cx);
         self.history.redo();
         self.refresh_raster_patches();
@@ -4619,6 +4668,7 @@ impl EditorWindow {
     fn pin_screenshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::windows::pin::PinWindow;
 
+        self.commit_text(cx);
         if self.pin_pending {
             return;
         }
@@ -4661,6 +4711,7 @@ impl EditorWindow {
     }
 
     pub fn copy_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_text(cx);
         if self.copy_pending {
             return;
         }
@@ -4726,6 +4777,7 @@ impl EditorWindow {
     pub fn upload_to_cloud(&mut self, cx: &mut Context<Self>) {
         use crate::cloud::UploadState;
 
+        self.commit_text(cx);
         if self.cloud_upload == UploadState::Uploading {
             return;
         }
@@ -4790,6 +4842,7 @@ impl EditorWindow {
     pub fn print(&mut self, cx: &mut Context<Self>) {
         use base64::Engine as _;
 
+        self.commit_text(cx);
         if !crate::system::capabilities::is_supported(crate::system::capabilities::Feature::Print) {
             crate::windows::toast::Toast::show(
                 cx,
@@ -4908,6 +4961,7 @@ impl EditorWindow {
     }
 
     pub fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_text(cx);
         if self.save_dialog_open {
             return;
         }
@@ -6806,5 +6860,287 @@ mod tests {
         assert!(!is_image_path(std::path::Path::new("shot.webp")));
         assert!(!is_image_path(std::path::Path::new("notes.txt")));
         assert!(!is_image_path(std::path::Path::new("no-extension")));
+    }
+
+    fn open_text_test_editor(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<EditorWindow>,
+        &mut gpui::VisualTestContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("capture.png");
+        image::RgbaImage::from_pixel(400, 300, image::Rgba([40, 80, 140, 255]))
+            .save(&source)
+            .unwrap();
+        let store = Arc::new(
+            crate::config::store::ConfigStore::load_at(directory.path().join("config.json"))
+                .unwrap(),
+        );
+        cx.update(|cx| crate::state::set_test_state(cx, store));
+        let source_path = source.to_string_lossy().into_owned();
+        let (editor, visual) = herogpui::test::open_window(cx, |window, cx| {
+            let mut editor = EditorWindow::from_file(&source_path, window, cx);
+            editor.file_path.clear();
+            editor.tool = Tool::Text;
+            editor.text_background = false;
+            editor.text_font_size = 24.0;
+            editor.color_hex = "#ff3300".into();
+            editor.sync_snapshot(cx);
+            editor
+        });
+        visual.settle();
+        (directory, editor, visual)
+    }
+
+    fn canvas_screen_point(
+        editor: &gpui::Entity<EditorWindow>,
+        visual: &mut gpui::VisualTestContext,
+        x: f32,
+        y: f32,
+    ) -> gpui::Point<Pixels> {
+        visual.update(|_, app| {
+            let editor = editor.read(app);
+            let bounds = editor.bounds.borrow().expect("canvas bounds");
+            gpui::point(
+                bounds.left() + px(x * editor.zoom),
+                bounds.top() + px(y * editor.zoom),
+            )
+        })
+    }
+
+    #[herogpui::test]
+    fn text_tool_click_stays_open_after_mouse_up_grows_on_typing_and_commits_on_enter(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, editor, visual) = open_text_test_editor(cx);
+
+        let click = canvas_screen_point(&editor, visual, 60.0, 50.0);
+        visual.simulate_mouse_move(click, None, gpui::Modifiers::none());
+        visual.simulate_click(click, gpui::Modifiers::none());
+        visual.settle();
+
+        let empty_bounds = visual
+            .debug_bounds("inline-text-editor")
+            .expect("inline text editor must remain open after mouse up");
+        assert!(visual.update(|_, app| {
+            let ed = editor.read(app);
+            ed.text_editor.is_some() && ed.draft.is_some()
+        }));
+
+        visual.simulate_keystrokes("h e l l o space w o r l d");
+        visual.settle();
+
+        let typed_bounds = visual
+            .debug_bounds("inline-text-editor")
+            .expect("inline text editor stays mounted while typing");
+        assert!(typed_bounds.size.width > empty_bounds.size.width);
+
+        visual.simulate_keystrokes("enter");
+        visual.settle();
+
+        assert!(visual.debug_bounds("inline-text-editor").is_none());
+        visual.update(|_, app| {
+            let ed = editor.read(app);
+            assert!(ed.text_editor.is_none());
+            assert!(ed.draft.is_none());
+            let annotations = ed.history.current();
+            assert_eq!(annotations.len(), 1);
+            match &annotations[0] {
+                Annotation::Text {
+                    text,
+                    font_size,
+                    fill,
+                    background_color,
+                    ..
+                } => {
+                    assert_eq!(text, "hello world");
+                    assert_eq!(*font_size, 24.0);
+                    assert_eq!(fill, "#ff3300");
+                    assert!(background_color.is_none());
+                }
+                other => panic!("expected text annotation, got {other:?}"),
+            }
+        });
+    }
+
+    #[herogpui::test]
+    fn clicking_inside_keeps_editing_and_clicking_outside_commits_without_spawning_new_box(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, editor, visual) = open_text_test_editor(cx);
+
+        let start = canvas_screen_point(&editor, visual, 60.0, 50.0);
+        visual.simulate_click(start, gpui::Modifiers::none());
+        visual.settle();
+
+        visual.simulate_keystrokes("a b c");
+        visual.settle();
+
+        let box_bounds = visual
+            .debug_bounds("inline-text-editor")
+            .expect("inline text editor bounds");
+        let inside = box_bounds.center();
+        visual.simulate_click(inside, gpui::Modifiers::none());
+        visual.settle();
+        assert!(visual.debug_bounds("inline-text-editor").is_some());
+        assert!(visual.update(|_, app| editor.read(app).text_editor.is_some()));
+
+        let outside = canvas_screen_point(&editor, visual, 300.0, 220.0);
+        visual.simulate_click(outside, gpui::Modifiers::none());
+        visual.settle();
+
+        assert!(visual.debug_bounds("inline-text-editor").is_none());
+        visual.update(|_, app| {
+            let ed = editor.read(app);
+            assert!(ed.text_editor.is_none());
+            assert_eq!(ed.history.current().len(), 1);
+            assert!(matches!(
+                &ed.history.current()[0],
+                Annotation::Text { text, .. } if text == "abc"
+            ));
+        });
+    }
+
+    #[herogpui::test]
+    fn live_text_options_update_active_draft_and_scale_box_height(cx: &mut gpui::TestAppContext) {
+        let (_dir, editor, visual) = open_text_test_editor(cx);
+
+        let click = canvas_screen_point(&editor, visual, 40.0, 40.0);
+        visual.simulate_click(click, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_keystrokes("b i g");
+        visual.settle();
+
+        let small_bounds = visual
+            .debug_bounds("inline-text-editor")
+            .expect("initial inline text bounds");
+
+        visual.update(|_, app| {
+            editor.update(app, |ed, cx| {
+                ed.apply_option(EditorOption::TextFontSize(72.0), cx);
+                ed.apply_option(EditorOption::Color("#00ff88".into()), cx);
+                ed.apply_option(EditorOption::TextFontFamily("mono".into()), cx);
+                ed.apply_option(EditorOption::TextBackground(true), cx);
+                ed.sync_snapshot(cx);
+                cx.notify();
+            });
+        });
+        visual.settle();
+
+        let big_bounds = visual
+            .debug_bounds("inline-text-editor")
+            .expect("scaled inline text bounds");
+        assert!(big_bounds.size.height > small_bounds.size.height * 2.0);
+        assert!(big_bounds.size.width > small_bounds.size.width * 2.0);
+
+        visual.update(|_, app| {
+            editor.update(app, |ed, cx| ed.commit_text(cx));
+        });
+        visual.settle();
+
+        visual.update(|_, app| {
+            let ed = editor.read(app);
+            assert_eq!(ed.history.current().len(), 1);
+            match &ed.history.current()[0] {
+                Annotation::Text {
+                    text,
+                    font_size,
+                    fill,
+                    font_family,
+                    background_color,
+                    ..
+                } => {
+                    assert_eq!(text, "big");
+                    assert_eq!(*font_size, 72.0);
+                    assert_eq!(fill, "#00ff88");
+                    assert_eq!(font_family.as_deref(), Some("mono"));
+                    assert!(background_color.is_some());
+                }
+                other => panic!("expected text annotation, got {other:?}"),
+            }
+        });
+    }
+
+    #[herogpui::test]
+    fn reediting_existing_text_does_not_duplicate_and_escape_restores_original(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, editor, visual) = open_text_test_editor(cx);
+
+        let click = canvas_screen_point(&editor, visual, 80.0, 80.0);
+        visual.simulate_click(click, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_keystrokes("o n e");
+        visual.settle();
+        visual.simulate_keystrokes("enter");
+        visual.settle();
+
+        let hit = canvas_screen_point(&editor, visual, 90.0, 90.0);
+        visual.simulate_click(hit, gpui::Modifiers::none());
+        visual.settle();
+        assert!(visual.debug_bounds("inline-text-editor").is_some());
+        assert_eq!(
+            visual.update(|_, app| editor.read(app).history.current().len()),
+            1
+        );
+
+        visual.simulate_keystrokes("t w o");
+        visual.settle();
+        visual.simulate_keystrokes("escape");
+        visual.settle();
+
+        assert!(visual.debug_bounds("inline-text-editor").is_none());
+        visual.update(|_, app| {
+            let ed = editor.read(app);
+            assert_eq!(ed.history.current().len(), 1);
+            assert!(matches!(
+                &ed.history.current()[0],
+                Annotation::Text { text, .. } if text == "one"
+            ));
+        });
+
+        visual.simulate_click(hit, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_keystrokes("enter");
+        visual.settle();
+        visual.update(|window, app| {
+            let ed = editor.read(app);
+            assert!(ed.focus_handle.is_focused(window));
+            assert_eq!(ed.history.current().len(), 1);
+            assert!(ed.history.can_undo());
+        });
+        visual.update(|_, app| {
+            editor.update(app, |ed, cx| ed.undo(cx));
+        });
+        visual.settle();
+        assert_eq!(
+            visual.update(|_, app| editor.read(app).history.current().len()),
+            0
+        );
+        visual.update(|_, app| {
+            editor.update(app, |ed, cx| ed.redo(cx));
+        });
+        visual.settle();
+
+        visual.simulate_click(hit, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_keystrokes("space t w o");
+        visual.settle();
+        visual.update(|_, app| {
+            editor.update(app, |ed, cx| ed.set_tool(Tool::Select, cx));
+        });
+        visual.settle();
+
+        visual.update(|_, app| {
+            let ed = editor.read(app);
+            assert!(ed.text_editor.is_none());
+            assert_eq!(ed.history.current().len(), 1);
+            assert!(matches!(
+                &ed.history.current()[0],
+                Annotation::Text { text, .. } if text == "one two"
+            ));
+        });
     }
 }
