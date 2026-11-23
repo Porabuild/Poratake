@@ -453,6 +453,8 @@ pub fn render(view: &VideoEditorWindow, cx: &mut Context<VideoEditorWindow>) -> 
         .as_ref()
         .and_then(Stroke::draft)
         .cloned();
+    let redact_preview = view.draft_redact_preview.clone();
+    let outline_color = crate::theme::vars::active_theme(cx).primary.opacity(0.65);
     let interactive = view.drawing_tools.active_tool != "select";
 
     let surface = canvas(
@@ -466,7 +468,14 @@ pub fn render(view: &VideoEditorWindow, cx: &mut Context<VideoEditorWindow>) -> 
             let Some(content) = contain_rect(Rect::from_bounds(bounds_taken), composition) else {
                 return;
             };
-            drawing_paint::draw(window, draft, content, content.width / composition.0 as f32);
+            drawing_paint::draw(
+                window,
+                draft,
+                content,
+                content.width / composition.0 as f32,
+                redact_preview.as_ref(),
+                outline_color,
+            );
         },
     )
     .absolute()

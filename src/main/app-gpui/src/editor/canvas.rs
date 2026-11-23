@@ -1194,19 +1194,25 @@ fn paint_annotations(
             .iter()
             .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id())),
     );
-    let draft = snapshot
-        .draft
-        .as_ref()
-        .filter(|annotation| snapshot.editing_text.as_deref() != Some(annotation.id()));
+    let draft = snapshot.draft.as_ref().filter(|annotation| {
+        snapshot.editing_text.as_deref() != Some(annotation.id())
+            && !matches!(
+                annotation,
+                Annotation::Redact { width, height, .. }
+                    if width.abs() <= 0.0 || height.abs() <= 0.0
+            )
+    });
 
     let needs_backdrop_matte = !snapshot.image_opaque
         || snapshot.rounded_matte.is_some()
         || redaction_surface.composite_backdrop
         || committed_paints
             .iter()
-            .any(|paint| match paint.annotation() {
+            .map(|paint| paint.annotation())
+            .chain(draft)
+            .any(|annotation| match annotation {
                 Annotation::Redact { style, .. } if style != "blackout" => {
-                    let (l, t, r, b) = paint.annotation().bounds();
+                    let (l, t, r, b) = annotation.bounds();
                     l < 0.0
                         || t < 0.0
                         || r > f64::from(snapshot.image_width)
@@ -1486,7 +1492,19 @@ fn paint_annotations(
     }
 
     if let Some(draft) = draft {
-        paint_draft_annotation(window, origin, draft, zoom, scale);
+        let base_slot = (!committed_paints.is_empty() && selected_single.is_none())
+            .then_some(preview_raster::LayerSlot::Committed);
+        paint_draft_annotation(
+            window,
+            origin,
+            editor_id,
+            base_slot,
+            draft,
+            composite_surface,
+            zoom,
+            scale,
+            halo,
+        );
     }
     preview_raster::end_frame(window);
 }
@@ -1563,12 +1581,17 @@ fn paint_active_annotation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_draft_annotation(
     window: &mut gpui::Window,
     origin: gpui::Point<Pixels>,
+    editor_id: Option<gpui::ImageId>,
+    base_slot: Option<preview_raster::LayerSlot>,
     draft: &Annotation,
+    surface: &preview_raster::Surface,
     zoom: f32,
     scale: f64,
+    halo: Hsla,
 ) {
     match draft {
         Annotation::Pen {
@@ -1585,10 +1608,58 @@ fn paint_draft_annotation(
             ..
         } => paint_draft_polyline(window, points, fill, *stroke_width, *opacity as f32, zoom),
         Annotation::Rectangle { .. } => paint_fast_rectangle(window, origin, draft, zoom),
-        Annotation::Circle { .. }
-        | Annotation::Line { .. }
-        | Annotation::Arrow { .. }
-        | Annotation::Redact { .. } => draw_annotation(window, draft, zoom),
+        Annotation::Circle { .. } | Annotation::Line { .. } | Annotation::Arrow { .. } => {
+            draw_annotation(window, draft, zoom)
+        }
+        Annotation::Redact {
+            x,
+            y,
+            width,
+            height,
+            style,
+            ..
+        } => {
+            if style == "blackout" {
+                paint_blackout_quad(window, origin, draft, zoom);
+            } else if let Some(patch) = preview_raster::effect_over_layer(
+                editor_id,
+                base_slot,
+                crate::render::annotations::ScreenshotPaint::Annotation(draft),
+                surface,
+                scale,
+                true,
+            ) {
+                paint_patch(
+                    window,
+                    origin,
+                    zoom,
+                    patch.image,
+                    patch.x,
+                    patch.y,
+                    patch.width,
+                    patch.height,
+                    None,
+                );
+            } else {
+                draw_annotation(window, draft, zoom);
+            }
+            let (left, top, width, height) = normalize_rect(*x, *y, *width, *height);
+            let region = gpui::Bounds {
+                origin: gpui::point(
+                    origin.x + px(left as f32 * zoom - 1.0),
+                    origin.y + px(top as f32 * zoom - 1.0),
+                ),
+                size: gpui::size(
+                    px(width as f32 * zoom + 2.0),
+                    px(height as f32 * zoom + 2.0),
+                ),
+            };
+            window.paint_quad(
+                gpui::outline(region, halo, gpui::BorderStyle::Dashed)
+                    .border_widths(px(1.0))
+                    .corner_radii(px(2.0 * zoom)),
+            );
+        }
         Annotation::Text { .. } | Annotation::Number { .. } => {
             if let Some(patch) = preview_raster::sprite_image(draft, scale) {
                 paint_patch(

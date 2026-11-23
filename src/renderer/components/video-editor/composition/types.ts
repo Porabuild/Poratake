@@ -7,6 +7,7 @@ import type { KeyboardData, KeyboardStyle } from '@/types/keyboard';
 import type { SubtitleData, SubtitleStyle } from '@/types/subtitle';
 import type { VideoWallpaperSettings } from '@/types/video-wallpaper';
 import type { FirstFrameSettings } from '@/types/first-frame';
+import type { Annotation } from '@/types/editor';
 import type { DrawingSegment } from '@/types/drawing';
 
 export interface CompositionConfig {
@@ -17,6 +18,7 @@ export interface CompositionConfig {
   zoomSegments?: ZoomSegment[] | null;
   zoomSettings?: ZoomSettings | null;
   drawingSegments?: DrawingSegment[] | null;
+  draftAnnotation?: Annotation | null;
   redactOnlyDrawings?: boolean;
   cursorData?: CursorData | null;
   cursorStyle?: CursorStyle | null;

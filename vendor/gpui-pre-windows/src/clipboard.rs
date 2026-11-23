@@ -3,6 +3,7 @@ use std::{borrow::Cow, sync::LazyLock};
 use anyhow::Result;
 use collections::FxHashMap;
 use itertools::Itertools;
+use windows::core::{Owned, PCWSTR};
 use windows::Win32::{
     Foundation::{HANDLE, HGLOBAL},
     System::{
@@ -11,15 +12,14 @@ use windows::Win32::{
             GetClipboardData, GetClipboardFormatNameW, OpenClipboard, RegisterClipboardFormatW,
             SetClipboardData,
         },
-        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+        Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
         Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT},
     },
     UI::Shell::{DragQueryFileW, HDROP},
 };
-use windows::core::{Owned, PCWSTR};
 
 use gpui::{
-    ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat, hash,
+    hash, ClipboardEntry, ClipboardItem, ClipboardString, ExternalPaths, Image, ImageFormat,
 };
 
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
@@ -216,10 +216,8 @@ fn write_image(item: &Image) -> Result<()> {
             set_clipboard_bytes(&png_bytes, *CLIPBOARD_PNG_FORMAT)?;
         }
     }
-    if item.format != ImageFormat::Svg
-        && let Some(dib_bytes) = convert_to_dib(item.bytes(), item.format)
-    {
-        set_clipboard_bytes(&dib_bytes, CF_DIB.0 as u32)?;
+    if item.format != ImageFormat::Svg {
+        write_dib_to_clipboard(item.bytes(), item.format);
     }
     Ok(())
 }
@@ -237,19 +235,95 @@ fn convert_to_png(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+const DIB_V4_HEADER_SIZE: usize = 108;
+
+fn write_dib_v4(rgba: &image::RgbaImage, dst: &mut [u8]) {
+    let width = rgba.width();
+    let height = rgba.height();
+    let row_bytes = width as usize * 4;
+    let pixel_bytes = row_bytes * height as usize;
+
+    let header = &mut dst[..DIB_V4_HEADER_SIZE];
+    header.fill(0);
+    header[0..4].copy_from_slice(&(DIB_V4_HEADER_SIZE as u32).to_le_bytes());
+    header[4..8].copy_from_slice(&(width as i32).to_le_bytes());
+    header[8..12].copy_from_slice(&(height as i32).to_le_bytes());
+    header[12..14].copy_from_slice(&1u16.to_le_bytes());
+    header[14..16].copy_from_slice(&32u16.to_le_bytes());
+    header[16..20].copy_from_slice(&3u32.to_le_bytes());
+    header[20..24].copy_from_slice(&(pixel_bytes as u32).to_le_bytes());
+    header[40..44].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
+    header[44..48].copy_from_slice(&0x0000_ff00u32.to_le_bytes());
+    header[48..52].copy_from_slice(&0x0000_00ffu32.to_le_bytes());
+    header[52..56].copy_from_slice(&0xff00_0000u32.to_le_bytes());
+    header[56..60].copy_from_slice(&0x7352_4742u32.to_le_bytes());
+
+    let raw = rgba.as_raw();
+    let dst_pixels = &mut dst[DIB_V4_HEADER_SIZE..DIB_V4_HEADER_SIZE + pixel_bytes];
+    for y in 0..height as usize {
+        let src_row = &raw[(height as usize - 1 - y) * row_bytes..][..row_bytes];
+        let dst_row = &mut dst_pixels[y * row_bytes..][..row_bytes];
+        for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = src[3];
+        }
+    }
+}
+
+fn dib_v4_total_bytes(rgba: &image::RgbaImage) -> Option<usize> {
+    let width = rgba.width();
+    let height = rgba.height();
+    let _ = (i32::try_from(width).ok()?, i32::try_from(height).ok()?);
+    let pixel_bytes = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let _ = u32::try_from(pixel_bytes).ok()?;
+    DIB_V4_HEADER_SIZE.checked_add(pixel_bytes)
+}
+
+#[cfg(test)]
 fn convert_to_dib(bytes: &[u8], format: ImageFormat) -> Option<Vec<u8>> {
     let img_format = gpui_to_image_format(format)?;
-    let image = image::load_from_memory_with_format(bytes, img_format)
+    let rgba = image::load_from_memory_with_format(bytes, img_format)
         .map_err(|e| log::warn!("Failed to decode image for bitmap conversion: {e}"))
         .ok()?
         .into_rgba8();
-    let mut bmp = Vec::new();
-    image::DynamicImage::ImageRgba8(image)
-        .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
-        .map_err(|e| log::warn!("Failed to encode clipboard bitmap: {e}"))
-        .ok()?;
-    bmp.drain(..14);
-    Some(bmp)
+    let total_bytes = dib_v4_total_bytes(&rgba)?;
+    let mut dib = vec![0u8; total_bytes];
+    write_dib_v4(&rgba, &mut dib);
+    Some(dib)
+}
+
+fn write_dib_to_clipboard(bytes: &[u8], format: ImageFormat) {
+    let Some(img_format) = gpui_to_image_format(format) else {
+        return;
+    };
+    let Ok(image) = image::load_from_memory_with_format(bytes, img_format)
+        .map_err(|e| log::warn!("Failed to decode image for bitmap conversion: {e}"))
+    else {
+        return;
+    };
+    let rgba = image.into_rgba8();
+    let Some(total_bytes) = dib_v4_total_bytes(&rgba) else {
+        return;
+    };
+
+    let result: Result<()> = (|| unsafe {
+        let global = Owned::new(GlobalAlloc(GMEM_MOVEABLE, total_bytes)?);
+        let ptr = GlobalLock(*global) as *mut u8;
+        anyhow::ensure!(!ptr.is_null(), "GlobalLock returned null");
+        let dst = std::slice::from_raw_parts_mut(ptr, total_bytes);
+        write_dib_v4(&rgba, dst);
+        GlobalUnlock(*global).ok();
+        SetClipboardData(CF_DIB.0 as u32, Some(HANDLE(global.0)))?;
+        std::mem::forget(global);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        log::warn!("Failed to write clipboard bitmap: {e}");
+    }
 }
 
 fn read_string() -> Option<ClipboardEntry> {

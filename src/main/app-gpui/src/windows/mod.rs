@@ -211,6 +211,33 @@ pub(crate) fn desktop_window_bounds(window: &gpui::Window) -> Bounds<Pixels> {
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+pub(crate) fn set_macos_window_aspect_ratio(window: &gpui::Window, width: f32, height: f32) {
+    use cocoa::base::nil;
+    use cocoa::foundation::NSSize;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        let view = appkit.ns_view.as_ptr() as cocoa::base::id;
+        let native_window: cocoa::base::id = msg_send![view, window];
+        if native_window == nil {
+            return;
+        }
+        let ratio = NSSize::new(f64::from(width), f64::from(height));
+        let _: () = msg_send![native_window, setContentAspectRatio: ratio];
+    }
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn set_macos_window_bounds(window: &gpui::Window, bounds: Bounds<Pixels>) -> bool {
     use cocoa::foundation::{NSPoint, NSRect, NSSize};
     use objc::{msg_send, sel, sel_impl};

@@ -1036,6 +1036,10 @@ impl MacWindow {
                 }
             } else {
                 style_mask = NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView;
+
+                if is_resizable {
+                    style_mask |= NSWindowStyleMask::Resizable;
+                }
             }
 
             let native_window: *mut AnyObject = match kind {
@@ -1202,10 +1206,27 @@ impl MacWindow {
                 }];
             }
 
-            if titlebar.is_none_or(|titlebar| titlebar.appears_transparent) {
+            if titlebar
+                .as_ref()
+                .is_none_or(|titlebar| titlebar.appears_transparent)
+            {
                 let _: () = msg_send![native_window, setTitlebarAppearsTransparent: Bool::YES];
                 let _: () =
                     msg_send![native_window, setTitleVisibility: NSWindowTitleVisibility::Hidden];
+            }
+
+            if titlebar.is_none() {
+                for button in [
+                    NSWindowButton::CloseButton,
+                    NSWindowButton::MiniaturizeButton,
+                    NSWindowButton::ZoomButton,
+                ] {
+                    if let Some(button) =
+                        (&*native_window.cast::<NSWindow>()).standardWindowButton(button)
+                    {
+                        button.setHidden(true);
+                    }
+                }
             }
 
             let _: () = msg_send![native_view, setAutoresizingMask: NSAutoresizingMaskOptions::ViewWidthSizable

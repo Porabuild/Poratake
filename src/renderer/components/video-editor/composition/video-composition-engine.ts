@@ -229,12 +229,19 @@ export class VideoCompositionEngine {
   }
 
   private renderDrawingOverlay(ctx: Context2D, timelineTime: number): void {
-    const { drawingSegments, redactOnlyDrawings } = this.config;
-    if (!drawingSegments || drawingSegments.length === 0) return;
+    const { drawingSegments, draftAnnotation, redactOnlyDrawings } =
+      this.config;
+    if (
+      (!drawingSegments || drawingSegments.length === 0) &&
+      !draftAnnotation
+    ) {
+      return;
+    }
 
     const { width, height } = this.getCompositionDimensions();
     renderDrawings(ctx, {
       drawingSegments,
+      draftAnnotation,
       timelineTime,
       width,
       height,

@@ -21,7 +21,7 @@ unsafe extern "C" {
     fn _heapmin() -> core::ffi::c_int;
 }
 
-pub fn reclaim_idle_memory() {
+pub fn compact_heap() {
     #[cfg(target_os = "macos")]
     unsafe {
         let _ = malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
@@ -32,16 +32,24 @@ pub fn reclaim_idle_memory() {
     }
     #[cfg(windows)]
     unsafe {
-        use windows::Win32::System::Memory::{
-            GetProcessHeap, HeapCompact, SetProcessWorkingSetSizeEx, HEAP_FLAGS,
-            SETPROCESSWORKINGSETSIZEEX_FLAGS,
-        };
-        use windows::Win32::System::Threading::GetCurrentProcess;
+        use windows::Win32::System::Memory::{GetProcessHeap, HeapCompact, HEAP_FLAGS};
 
         if let Ok(heap) = GetProcessHeap() {
             let _ = HeapCompact(heap, HEAP_FLAGS(0));
         }
         let _ = _heapmin();
+    }
+}
+
+pub fn reclaim_idle_memory() {
+    compact_heap();
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Memory::{
+            SetProcessWorkingSetSizeEx, SETPROCESSWORKINGSETSIZEEX_FLAGS,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcess;
+
         let _ = SetProcessWorkingSetSizeEx(
             GetCurrentProcess(),
             usize::MAX,

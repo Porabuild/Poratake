@@ -29,6 +29,7 @@ import {
 
 interface RenderDrawingsOptions {
   drawingSegments?: DrawingSegment[] | null;
+  draftAnnotation?: Annotation | null;
   timelineTime: number;
   width: number;
   height: number;
@@ -591,15 +592,18 @@ export function renderDrawings(
   ctx: Context2D,
   {
     drawingSegments,
+    draftAnnotation,
     timelineTime,
     width,
     height,
     onlyRedact = false,
   }: RenderDrawingsOptions
 ): void {
-  if (!drawingSegments || drawingSegments.length === 0) return;
+  if ((!drawingSegments || drawingSegments.length === 0) && !draftAnnotation) {
+    return;
+  }
 
-  for (const segment of drawingSegments) {
+  for (const segment of drawingSegments ?? []) {
     if (segment.canvasWidth <= 0 || segment.canvasHeight <= 0) continue;
 
     const annotations = getRenderableAnnotations(
@@ -618,6 +622,10 @@ export function renderDrawings(
         scaleAnnotationToComposition(annotation, scaleX, scaleY)
       );
     }
+  }
+
+  if (draftAnnotation && (!onlyRedact || draftAnnotation.type === 'redact')) {
+    renderAnnotation(ctx, draftAnnotation);
   }
 }
 

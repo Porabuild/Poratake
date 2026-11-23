@@ -144,6 +144,7 @@ fn spawn_capture(
             return;
         }
         let (width, height) = capture.dimensions();
+        drop(capture);
 
         respond_success(
             &request_id,
@@ -153,6 +154,7 @@ fn spawn_capture(
                 "height": height,
             }),
         );
+        crate::desktop_frame::reclaim_idle_memory();
     });
 
     match spawned {

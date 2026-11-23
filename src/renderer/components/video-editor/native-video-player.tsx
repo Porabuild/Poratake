@@ -152,6 +152,7 @@ const NativeVideoPlayer = forwardRef<
     const backgroundImageRef = useRef<HTMLImageElement | null>(null);
     const firstFrameImageRef = useRef<HTMLImageElement | null>(null);
     const drawingSegmentsRef = useRef<DrawingSegment[] | null>(null);
+    const draftAnnotationRef = useRef<Annotation | null>(null);
     const isDrawingSelectModeRef = useRef(false);
     const lastCameraFrameRef = useRef<HTMLCanvasElement | null>(null);
     const lastVideoFrameRef = useRef<HTMLCanvasElement | null>(null);
@@ -269,6 +270,7 @@ const NativeVideoPlayer = forwardRef<
         zoomSegments,
         zoomSettings,
         drawingSegments: drawingSegmentsRef.current,
+        draftAnnotation: draftAnnotationRef.current,
         redactOnlyDrawings: isDrawingSelectModeRef.current,
         cursorData,
         cursorStyle,
@@ -552,6 +554,18 @@ const NativeVideoPlayer = forwardRef<
         }
       };
     }, [renderCanvas]);
+
+    const handleDraftAnnotationChange = useCallback(
+      (annotation: Annotation | null) => {
+        const draft = annotation?.type === 'redact' ? annotation : null;
+        draftAnnotationRef.current = draft;
+        engineRef.current?.updateConfig({
+          draftAnnotation: draft,
+        });
+        renderCanvas();
+      },
+      [renderCanvas]
+    );
 
     const getTimelinePositionFromVideo = useCallback(
       (videoTime: number, segIdx: number): number => {
@@ -1375,6 +1389,7 @@ const NativeVideoPlayer = forwardRef<
               }
               onCommitDrawingGesture={onCommitDrawingGesture ?? (() => {})}
               onAnnotationAdded={onAnnotationAdded}
+              onDraftAnnotationChange={handleDraftAnnotationChange}
             />
           )}
 

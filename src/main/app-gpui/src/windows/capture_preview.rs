@@ -1916,24 +1916,42 @@ const BLUR_SIGMA: f32 = 12.0;
 /// Scaling first matters: `backdrop-blur-md` blurs the *rendered* pixels, so
 /// blurring a 3440x1440 capture and then shrinking it to 200x140 would come out
 /// almost sharp.
+fn decode_preview_fallback(path: &Path) -> Option<image::RgbaImage> {
+    let target_w = PREVIEW_WIDTH as u32;
+    let target_h = PREVIEW_HEIGHT as u32;
+    let decoded = crate::render::images::open(path).ok()?;
+    let scaled = decoded
+        .resize_to_fill(target_w, target_h, image::imageops::FilterType::Triangle)
+        .into_rgba8();
+    drop(decoded);
+    crate::system::memory::compact_heap();
+    Some(scaled)
+}
+
+fn build_preview_thumbnails(
+    scaled: image::RgbaImage,
+) -> (
+    Option<Arc<gpui::RenderImage>>,
+    Option<Arc<gpui::RenderImage>>,
+) {
+    let blurred = blur_thumbnail(&scaled);
+    (Some(render_thumbnail(scaled)), blurred)
+}
+
 fn load_preview_thumbnails(
     path: &Path,
 ) -> (
     Option<Arc<gpui::RenderImage>>,
     Option<Arc<gpui::RenderImage>>,
 ) {
-    let Ok(decoded) = crate::render::images::open(path) else {
+    let target_w = PREVIEW_WIDTH as u32;
+    let target_h = PREVIEW_HEIGHT as u32;
+    let Some(scaled) = crate::thumbnails::decode_cover_rgba(path, target_w, target_h)
+        .or_else(|| decode_preview_fallback(path))
+    else {
         return (None, None);
     };
-    let scaled = decoded
-        .resize_to_fill(
-            PREVIEW_WIDTH as u32,
-            PREVIEW_HEIGHT as u32,
-            image::imageops::FilterType::Triangle,
-        )
-        .into_rgba8();
-    let blurred = blur_thumbnail(&scaled);
-    (Some(render_thumbnail(scaled)), blurred)
+    build_preview_thumbnails(scaled)
 }
 
 fn blur_thumbnail(scaled: &image::RgbaImage) -> Option<Arc<gpui::RenderImage>> {
@@ -2056,6 +2074,7 @@ fn copy_screenshot(
                     match result {
                         Ok(bytes) => {
                             crate::system::clipboard::ClipboardService::write_png(cx, bytes);
+                            crate::system::memory::compact_heap();
                             begin_remove_preview(
                                 view,
                                 id,
@@ -2497,30 +2516,6 @@ impl CapturePreviewWindow {
             .bg(theme.muted_background)
             .border_1()
             .border_color(theme.border)
-            .on_hover({
-                let preview_entity = preview_entity.clone();
-                move |hovered: &bool, window, cx| {
-                    let handle = window.window_handle();
-                    let _ = preview_entity.update(cx, |view, cx| {
-                        let Some(preview) =
-                            view.previews.iter_mut().find(|preview| preview.id == id)
-                        else {
-                            return;
-                        };
-                        preview.hovered = *hovered;
-                        #[cfg(target_os = "macos")]
-                        if !*hovered
-                            && !Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
-                                .contains(&window.mouse_position())
-                        {
-                            view.pointer_inside = false;
-                            view.clear_native_tooltip(window);
-                        }
-                        cx.notify();
-                    });
-                    schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
-                }
-            })
             .on_mouse_down(MouseButton::Left, {
                 let preview_entity = preview_entity.clone();
                 move |event: &gpui::MouseDownEvent, window, cx| {
@@ -3115,6 +3110,7 @@ impl CapturePreviewWindow {
         }
 
         div()
+            .id(("capture-preview-hover", id))
             .absolute()
             .top(px(layout_y))
             .left(px(PREVIEW_SHADOW_PADDING))
@@ -3123,6 +3119,30 @@ impl CapturePreviewWindow {
             .opacity(opacity)
             .rounded(px(PREVIEW_RADIUS))
             .shadow_sm()
+            .on_hover({
+                let preview_entity = preview_entity.clone();
+                move |hovered: &bool, window, cx| {
+                    let handle = window.window_handle();
+                    let _ = preview_entity.update(cx, |view, cx| {
+                        let Some(preview) =
+                            view.previews.iter_mut().find(|preview| preview.id == id)
+                        else {
+                            return;
+                        };
+                        preview.hovered = *hovered;
+                        #[cfg(target_os = "macos")]
+                        if !*hovered
+                            && !Bounds::new(gpui::point(px(0.), px(0.)), window.viewport_size())
+                                .contains(&window.mouse_position())
+                        {
+                            view.pointer_inside = false;
+                            view.clear_native_tooltip(window);
+                        }
+                        cx.notify();
+                    });
+                    schedule_auto_dismiss(handle, id, cx, dismiss_token.clone());
+                }
+            })
             .child(root)
             .into_any_element()
     }
@@ -5558,11 +5578,18 @@ mod tests {
                 bgra: bgra.into(),
             };
             let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
-            let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
+            let (screenshot, screenshot_blurred) =
+                super::build_preview_thumbnails(super::decode_preview_fallback(&path).unwrap());
             let blurred = blurred.unwrap();
             assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
             assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
             assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
+            let (native_thumb, native_blur) = load_preview_thumbnails(&path);
+            let native_thumb = native_thumb.unwrap();
+            let native_blur = native_blur.unwrap();
+            assert_eq!(native_thumb.size(0), thumbnail.size(0));
+            assert_eq!(native_blur.size(0), blurred.size(0));
+            assert_ne!(native_thumb.as_bytes(0), native_blur.as_bytes(0));
             assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
         }
     }
@@ -5614,16 +5641,37 @@ mod tests {
             expected_blur = crate::editor::export::to_rgba(&pixmap);
             let expected_blur = render_thumbnail(expected_blur);
 
-            let (thumbnail, blurred) = load_preview_thumbnails(&path);
+            let (fallback_thumb, fallback_blur) =
+                super::build_preview_thumbnails(super::decode_preview_fallback(&path).unwrap());
             assert_eq!(
-                thumbnail.unwrap().as_bytes(0),
+                fallback_thumb.unwrap().as_bytes(0),
                 expected_thumbnail.as_bytes(0),
                 "thumbnail pixels differ for {width}x{height}, translucent={translucent}"
             );
             assert_eq!(
-                blurred.unwrap().as_bytes(0),
+                fallback_blur.unwrap().as_bytes(0),
                 expected_blur.as_bytes(0),
                 "blurred pixels differ for {width}x{height}, translucent={translucent}"
+            );
+
+            let (thumbnail, blurred) = load_preview_thumbnails(&path);
+            let thumbnail = thumbnail.unwrap();
+            let blurred = blurred.unwrap();
+            assert_eq!(thumbnail.size(0), expected_thumbnail.size(0));
+            assert_eq!(blurred.size(0), expected_blur.size(0));
+            let mut rgba = thumbnail.as_bytes(0).unwrap().to_vec();
+            for pixel in rgba.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let reblurred = super::blur_thumbnail(
+                &image::RgbaImage::from_raw(PREVIEW_WIDTH as u32, PREVIEW_HEIGHT as u32, rgba)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                blurred.as_bytes(0),
+                reblurred.as_bytes(0),
+                "single-decode blur differs for {width}x{height}, translucent={translucent}"
             );
         }
     }
@@ -6417,5 +6465,137 @@ mod tests {
             .expect("pill helper body")
             .0;
         assert!(pill.contains("theme.primary,"));
+    }
+
+    fn open_hovered_screenshot_preview<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        dir: &tempfile::TempDir,
+    ) -> (
+        gpui::Entity<CapturePreviewWindow>,
+        &'a mut gpui::VisualTestContext,
+        &'static str,
+        gpui::Point<Pixels>,
+    ) {
+        use herogpui::test::TestWindowExt;
+
+        let path = dir.path().join("capture.png");
+        image::RgbaImage::from_pixel(60, 40, image::Rgba([10, 20, 30, 255]))
+            .save(&path)
+            .unwrap();
+        let config = Arc::new(
+            crate::config::store::ConfigStore::load_at(dir.path().join("config.json")).unwrap(),
+        );
+        config.update(|settings| {
+            settings.preview.corner = "top-right".into();
+            settings.preview.auto_dismiss = false;
+        });
+        cx.update(|cx| {
+            herogpui::init(cx);
+            crate::state::set_test_state(cx, config);
+            CapturePreviewWindow::open(cx, path);
+        });
+        let stack = stack_handle(cx)
+            .unwrap()
+            .downcast::<CapturePreviewWindow>()
+            .unwrap();
+        let preview = stack.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let check = preview.clone();
+        let (_, visual) = herogpui::test::open_window(cx, |_, _| HoveredPreview { preview });
+        visual.simulate_resize(preview_stack_size(PREVIEW_MAX_STACK));
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(px(100.), px(70.)),
+            None,
+            gpui::Modifiers::none(),
+        );
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+        let id = visual.update(|_, cx| check.read(cx).previews[0].id);
+        let close_selector: &'static str =
+            Box::leak(format!("preview-close-{id}-tooltip-trigger").into_boxed_str());
+        let close_point = visual
+            .debug_bounds(close_selector)
+            .expect("Close control must render while hovered")
+            .center();
+        (check, visual, close_selector, close_point)
+    }
+
+    #[herogpui::test]
+    fn mouse_down_on_preview_icon_keeps_controls_until_drag_starts(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (preview, visual, close_selector, close_point) =
+            open_hovered_screenshot_preview(cx, &dir);
+
+        visual.simulate_mouse_move(close_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_down(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(
+            close_point,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.simulate_mouse_move(
+            gpui::point(close_point.x + px(1.), close_point.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+
+        assert!(!visual.update(|_, cx| cx.has_active_drag()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_some());
+
+        visual.simulate_mouse_move(
+            gpui::point(close_point.x + px(12.), close_point.y),
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+
+        assert!(visual.update(|_, cx| cx.has_active_drag()));
+        assert!(!visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_none());
+
+        visual.simulate_mouse_up(
+            gpui::point(close_point.x + px(12.), close_point.y),
+            MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.settle();
+
+        assert!(!visual.update(|_, cx| cx.has_active_drag()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].dismiss_animation.is_none()));
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].hovered));
+        assert!(visual.debug_bounds(close_selector).is_some());
+    }
+
+    #[herogpui::test]
+    fn mouse_down_with_stationary_move_still_clicks_preview_icon(cx: &mut gpui::TestAppContext) {
+        use herogpui::test::TestWindowExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (preview, visual, _, close_point) = open_hovered_screenshot_preview(cx, &dir);
+
+        visual.simulate_mouse_move(close_point, None, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_down(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+        visual.simulate_mouse_move(
+            close_point,
+            Some(MouseButton::Left),
+            gpui::Modifiers::none(),
+        );
+        visual.settle();
+        visual.simulate_mouse_up(close_point, MouseButton::Left, gpui::Modifiers::none());
+        visual.settle();
+
+        assert!(visual.update(|_, cx| preview.read(cx).previews[0].dismiss_animation.is_some()));
     }
 }
