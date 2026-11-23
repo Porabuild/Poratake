@@ -20,7 +20,8 @@ pub fn single_return_future<F: FnOnce() -> Result<IDialog, i32> + Send + 'static
             })?
         })();
 
-        if ret.is_err() {
+        if let Err(hr) = ret {
+            eprintln!("[diag-rfd] dialog failed hr=0x{:08x}", hr as u32);
             *data = Some(None);
         }
     })
@@ -45,7 +46,8 @@ pub fn multiple_return_future<F: FnOnce() -> Result<IDialog, i32> + Send + 'stat
             })?
         })();
 
-        if ret.is_err() {
+        if let Err(hr) = ret {
+            eprintln!("[diag-rfd] dialog failed hr=0x{:08x}", hr as u32);
             *data = Some(None);
         }
     })
