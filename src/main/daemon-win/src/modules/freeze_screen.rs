@@ -1,8 +1,9 @@
 use crate::desktop_frame::{
-    clear_frozen, prewarm_capture, store_frozen, stream_capture_monitors, to_hbitmap,
+    DesktopFrame, clear_frozen, prewarm_capture, reclaim_idle_memory, store_frozen,
+    stream_capture_monitors,
 };
 use crate::overlay::{
-    add_key_handler, create_popup_window, default_wndproc, disable_window_transitions,
+    add_key_handler, bitmap_info, create_popup_window, default_wndproc, disable_window_transitions,
     ensure_window_class, remove_key_handler, show_window_topmost,
 };
 use crate::protocol::{Request, param_bool, respond_error, respond_success};
@@ -15,8 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, HBITMAP,
-    MONITOR_DEFAULTTONEAREST, MonitorFromPoint, PAINTSTRUCT, SRCCOPY, SelectObject,
+    BeginPaint, DIB_RGB_COLORS, EndPaint, MONITOR_DEFAULTTONEAREST, MonitorFromPoint, PAINTSTRUCT,
+    SetDIBitsToDevice,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -29,9 +30,7 @@ const FREEZE_RECEIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 struct FrozenWindow {
     window: HWND,
-    bitmap: HBITMAP,
-    width: i32,
-    height: i32,
+    frame: Arc<DesktopFrame>,
 }
 
 struct FreezeUiState {
@@ -63,25 +62,39 @@ unsafe extern "system" fn wndproc(
 }
 
 fn paint(window: HWND) {
-    let entry = STATE.with(|state| {
+    let frame = STATE.with(|state| {
         state
             .borrow()
             .windows
             .iter()
             .find(|item| item.window == window)
-            .map(|item| (item.bitmap, item.width, item.height))
+            .map(|item| Arc::clone(&item.frame))
     });
 
     unsafe {
         let mut paint_struct = PAINTSTRUCT::default();
         let dc = BeginPaint(window, &mut paint_struct);
 
-        if let Some((bitmap, width, height)) = entry {
-            let memory_dc = CreateCompatibleDC(Some(dc));
-            let previous = SelectObject(memory_dc, bitmap.into());
-            let _ = BitBlt(dc, 0, 0, width, height, Some(memory_dc), 0, 0, SRCCOPY);
-            SelectObject(memory_dc, previous);
-            let _ = DeleteDC(memory_dc);
+        if let Some(frame) = frame {
+            let info = bitmap_info(
+                frame.width as i32,
+                frame.height as i32,
+                frame.pixels.len() as u32,
+            );
+            let _ = SetDIBitsToDevice(
+                dc,
+                0,
+                0,
+                frame.width,
+                frame.height,
+                0,
+                0,
+                0,
+                frame.height,
+                frame.pixels.as_ptr().cast(),
+                &info,
+                DIB_RGB_COLORS,
+            );
         }
 
         let _ = EndPaint(window, &paint_struct);
@@ -116,17 +129,11 @@ fn create_overlays() -> bool {
             break;
         };
 
-        let Some(bitmap) = to_hbitmap(&frame) else {
-            continue;
-        };
-
+        let frame = Arc::new(frame);
         let ex_style =
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT;
 
         let Some(window) = create_popup_window(CLASS_NAME, ex_style, &frame.bounds) else {
-            unsafe {
-                let _ = DeleteObject(bitmap.into());
-            }
             continue;
         };
 
@@ -135,16 +142,15 @@ fn create_overlays() -> bool {
         unsafe {
             let _ = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA);
         }
-        show_window_topmost(window);
 
         STATE.with(|state| {
             state.borrow_mut().windows.push(FrozenWindow {
                 window,
-                bitmap,
-                width: frame.width as i32,
-                height: frame.height as i32,
+                frame: Arc::clone(&frame),
             });
         });
+
+        show_window_topmost(window);
 
         stored.push(frame);
         captured_at = started.elapsed();
@@ -167,22 +173,26 @@ fn create_overlays() -> bool {
 }
 
 fn teardown() {
-    clear_frozen();
-
     let (windows, key_token) = STATE.with(|state| {
         let mut state = state.borrow_mut();
         (std::mem::take(&mut state.windows), state.key_token.take())
     });
 
+    let had_windows = !windows.is_empty();
     for entry in windows {
         unsafe {
             let _ = DestroyWindow(entry.window);
-            let _ = DeleteObject(entry.bitmap.into());
         }
     }
 
+    clear_frozen();
+
     if let Some(token) = key_token {
         remove_key_handler(token);
+    }
+
+    if had_windows {
+        reclaim_idle_memory();
     }
 }
 
