@@ -21,9 +21,9 @@ export default function PinWindow({ params }: PinWindowProps) {
       const containerWidth = containerRef.current.clientWidth;
       const containerHeight = containerRef.current.clientHeight;
 
-      const scaleX = containerWidth / originalWidth;
-      const scaleY = containerHeight / originalHeight;
-      const newScale = Math.min(scaleX, scaleY, 1);
+      const scaleX = containerWidth / Math.max(originalWidth, 1);
+      const scaleY = containerHeight / Math.max(originalHeight, 1);
+      const newScale = Math.min(scaleX, scaleY);
 
       setScale(newScale);
     };
