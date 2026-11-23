@@ -79,6 +79,7 @@ interface VideoDrawingOverlayProps {
   ) => void;
   onCommitDrawingGesture: () => void;
   onAnnotationAdded?: (tool: VideoDrawingTool) => void;
+  onDraftAnnotationChange?: (annotation: Annotation | null) => void;
 }
 
 function renderPreview(
@@ -116,17 +117,17 @@ function renderPreview(
         annotation.width < 0 ? annotation.x + annotation.width : annotation.x;
       const rectY =
         annotation.height < 0 ? annotation.y + annotation.height : annotation.y;
-      const strokeWidth = displayScale > 0 ? 2 / displayScale : 2;
+      const strokeWidth = displayScale > 0 ? 1 / displayScale : 1;
       return (
         <rect
           x={rectX}
           y={rectY}
           width={Math.abs(annotation.width)}
           height={Math.abs(annotation.height)}
-          fill="color-mix(in srgb, var(--primary) 15%, transparent)"
+          fill="none"
           stroke="var(--primary)"
           strokeWidth={strokeWidth}
-          strokeDasharray={`${strokeWidth * 3} ${strokeWidth * 1.5}`}
+          strokeDasharray={`${strokeWidth * 4} ${strokeWidth * 2}`}
           rx={2}
         />
       );
@@ -166,6 +167,7 @@ export default function VideoDrawingOverlay({
   onUpdateDrawingAnnotationsMultiple,
   onCommitDrawingGesture,
   onAnnotationAdded,
+  onDraftAnnotationChange,
 }: VideoDrawingOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const timelinePositionRef = useRef(timelinePosition);
@@ -215,6 +217,16 @@ export default function VideoDrawingOverlay({
     shapeFillMode,
     onAnnotationAdd: handleAnnotationAdd,
   });
+
+  useEffect(() => {
+    onDraftAnnotationChange?.(currentAnnotation);
+  }, [currentAnnotation, onDraftAnnotationChange]);
+
+  useEffect(() => {
+    return () => {
+      onDraftAnnotationChange?.(null);
+    };
+  }, [onDraftAnnotationChange]);
 
   const brushCursor = useBrushCursor({
     activeTool,

@@ -790,8 +790,8 @@ const SvgAnnotationsOverlay = forwardRef<
             )
             .map(ann => renderAnnotation(ann, false, true))}
         {hidePaint &&
-          showDraft &&
           currentAnnotation &&
+          (showDraft || currentAnnotation.type === 'redact') &&
           renderAnnotation(
             currentAnnotation,
             true,

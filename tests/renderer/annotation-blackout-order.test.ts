@@ -225,4 +225,34 @@ describe('screenshot blackout annotation order', () => {
     ).find(rect => !rect.closest('g[visibility="hidden"]'));
     expect(guide).toBeDefined();
   });
+
+  it('keeps the transparent draft redact guide visible once live preview is ready', async () => {
+    await act(() =>
+      root.render(
+        createElement(SvgAnnotationsOverlay, {
+          annotations: [],
+          currentAnnotation: blackout,
+          width: 100,
+          height: 100,
+          selectedAnnotationIds: [],
+          onSelect: () => {},
+          editingTextId: null,
+          activeTool: 'redact',
+          showBlackoutFill: true,
+          hidePaint: true,
+          showDraft: false,
+        })
+      )
+    );
+    const blackRects = Array.from(
+      container.querySelectorAll('rect[fill="#000000"]')
+    );
+    expect(
+      blackRects.every(rect => rect.closest('g[visibility="hidden"]'))
+    ).toBe(true);
+    const guide = Array.from(
+      container.querySelectorAll('rect[fill="transparent"]')
+    ).find(rect => !rect.closest('g[visibility="hidden"]'));
+    expect(guide).toBeDefined();
+  });
 });

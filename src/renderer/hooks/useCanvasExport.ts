@@ -610,32 +610,24 @@ export const useCanvasExport = ({
 
         return baseCanvas;
       };
-      let exportCanvas: HTMLCanvasElement;
-      if (noise > 0 && (gradient || backgroundImage)) {
-        let cached = baseCache.current;
-        if (!cached || cached.version !== baseVersion) {
-          cached = { version: baseVersion, canvas: renderBase() };
-          baseCache.current = cached;
-        }
-        let base: HTMLCanvasElement;
-        try {
-          base = await cached.canvas;
-        } catch (error) {
-          if (baseCache.current === cached) baseCache.current = null;
-          throw error;
-        }
-        exportCanvas = document.createElement('canvas');
-        exportCanvas.width = canvasWidth;
-        exportCanvas.height = canvasHeight;
-        const context = exportCanvas.getContext('2d');
-        if (!context) throw new Error('Failed to get canvas context');
-        context.drawImage(base, 0, 0);
-      } else {
-        baseCache.current = null;
-        exportCanvas = await renderBase();
+      let cached = baseCache.current;
+      if (!cached || cached.version !== baseVersion) {
+        cached = { version: baseVersion, canvas: renderBase() };
+        baseCache.current = cached;
       }
+      let base: HTMLCanvasElement;
+      try {
+        base = await cached.canvas;
+      } catch (error) {
+        if (baseCache.current === cached) baseCache.current = null;
+        throw error;
+      }
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = canvasWidth;
+      exportCanvas.height = canvasHeight;
       const ctx = exportCanvas.getContext('2d');
       if (!ctx) throw new Error('Failed to get canvas context');
+      ctx.drawImage(base, 0, 0);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
 
