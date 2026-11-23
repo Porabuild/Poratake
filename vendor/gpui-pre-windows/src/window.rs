@@ -499,7 +499,12 @@ impl WindowsWindow {
         );
 
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
-            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
+            let dwstyle = if params.is_resizable {
+                WS_THICKFRAME
+            } else {
+                WINDOW_STYLE(0x0)
+            };
+            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, dwstyle)
         } else {
             let mut dwstyle = WS_SYSMENU;
 

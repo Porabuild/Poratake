@@ -1066,26 +1066,34 @@ impl WindowsWindowInner {
         };
 
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-        if self.is_resizable
-            && !self.state.is_maximized()
-            && 0 <= cursor_point.y
-            && cursor_point.y <= frame_y
-        {
-            // x-axis actually goes from -frame_x to 0
-            return Some(if cursor_point.x <= 0 {
-                HTTOPLEFT
-            } else {
-                let mut rect = Default::default();
-                unsafe { GetWindowRect(handle, &mut rect) }.log_err();
-                // right and bottom bounds of RECT are exclusive, thus `-1`
-                let right = rect.right - rect.left - 1;
-                // the bounds include the padding frames, so accommodate for both of them
-                if right - 2 * frame_x <= cursor_point.x {
-                    HTTOPRIGHT
+        if self.is_resizable && !self.state.is_maximized() {
+            if 0 <= cursor_point.y && cursor_point.y <= frame_y {
+                // x-axis actually goes from -frame_x to 0
+                return Some(if cursor_point.x <= 0 {
+                    HTTOPLEFT
                 } else {
-                    HTTOP
-                }
-            } as _);
+                    let mut rect = Default::default();
+                    unsafe { GetWindowRect(handle, &mut rect) }.log_err();
+                    // right and bottom bounds of RECT are exclusive, thus `-1`
+                    let right = rect.right - rect.left - 1;
+                    // the bounds include the padding frames, so accommodate for both of them
+                    if right - 2 * frame_x <= cursor_point.x {
+                        HTTOPRIGHT
+                    } else {
+                        HTTOP
+                    }
+                } as _);
+            }
+
+            let mut client_rect = Default::default();
+            if unsafe { GetClientRect(handle, &mut client_rect) }.is_ok()
+                && (cursor_point.x < 0
+                    || cursor_point.y < 0
+                    || cursor_point.x >= client_rect.right
+                    || cursor_point.y >= client_rect.bottom)
+            {
+                return None;
+            }
         }
 
         drag_area
@@ -1121,6 +1129,22 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
+        if button == MouseButton::Left
+            && matches!(
+                wparam.0 as u32,
+                HTLEFT
+                    | HTRIGHT
+                    | HTTOP
+                    | HTTOPLEFT
+                    | HTTOPRIGHT
+                    | HTBOTTOM
+                    | HTBOTTOMLEFT
+                    | HTBOTTOMRIGHT
+            )
+        {
+            return None;
+        }
+
         if let Some(mut func) = self.state.callbacks.input.take() {
             let scale_factor = self.state.scale_factor.get();
             let mut cursor_point = POINT {
