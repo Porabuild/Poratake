@@ -3180,7 +3180,7 @@ impl Render for RecordingControl {
                 - chrome::OVERLAY_SURFACE_PADDING
                 - chrome::RECORDING_TARGET_CHIP_MAX_W
                 - 8.0
-                - 3.0
+                - 12.0
                 - 22.0)
                 .max(1.0);
             let target_label = div()

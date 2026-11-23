@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/Porabuild/HeroGPUI",
-  "revision": "b7b28efc12839c5d805c5a628fdea98ae79ac9a2",
-  "tag": "v0.15.2",
-  "heroGpuiVersion": "0.15.2",
+  "revision": "ac605fc1e010fc21e6ba54575308ab4f2581a91c",
+  "tag": "v0.15.4",
+  "heroGpuiVersion": "0.15.4",
   "gpuiPreVersion": "0.3.11",
   "adaptations": [
     "The active skill resolves bundled references and Poratake Cargo commands.",
@@ -12,8 +12,8 @@
     {
       "source": "skills/herogpui/SKILL.md",
       "local": "SKILL.md",
-      "sourceSha256": "4903d184fa24359224989561c3087065d66f0c10b8329d10a02b79a09cde2ee6",
-      "vendoredSha256": "d8cd10c6238066f035e65ca6f75f0234afae0d97f6c7b4efd5da904f23045c38"
+      "sourceSha256": "6ff3f06dbb4d243248031643bd7e9c3a047765db40a5bdc5a3b666031f55cd92",
+      "vendoredSha256": "2a763938bf83ec52bd8d9154f3f3b242fbe9954156ba74d6e56a45a2ff6eeb0d"
     },
     {
       "source": "skills/herogpui/LICENSE.txt",
@@ -30,13 +30,13 @@
     {
       "source": "llms.txt",
       "local": "references/llms.txt",
-      "sourceSha256": "bfab357a39665bde10beab23d9dfb07394c693e4617aba326ba67936c1817f32",
-      "vendoredSha256": "bfab357a39665bde10beab23d9dfb07394c693e4617aba326ba67936c1817f32"
+      "sourceSha256": "cc38ec83e8357b937347ace1877fc404e44eb5b3ab36d28d0d3801b4fde5a9fd",
+      "vendoredSha256": "cc38ec83e8357b937347ace1877fc404e44eb5b3ab36d28d0d3801b4fde5a9fd"
     },
     {
       "source": "docs/agents/workflow.md",
       "local": "references/agents/workflow.md",
-      "sourceSha256": "5864c0e237280e0453f86f1e1d14116dba634d52387b6d247a11f6e991e98e77",
+      "sourceSha256": "a7f4764bd55178eb5e2e152d607f521b52566f61f740f2ecd63ffeac31c95451",
       "vendoredSha256": "886a251ea92eb7e80963ca1ae4604e7f5ccd2304deb070f44e99da3f8841983c"
     },
     {
@@ -54,7 +54,7 @@
     {
       "source": "docs/agents/gallery.md",
       "local": "references/agents/gallery.md",
-      "sourceSha256": "c8c9a3daeda3d37f8ba0b48fa3b50de885876a3e94d33caa76cfca39818c21f9",
+      "sourceSha256": "038997daf96f34e7487867ca14dd07f42706a8a5a388b95027d7ce445d201f53",
       "vendoredSha256": "c8c9a3daeda3d37f8ba0b48fa3b50de885876a3e94d33caa76cfca39818c21f9"
     }
   ]

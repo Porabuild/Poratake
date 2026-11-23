@@ -147,3 +147,87 @@ pub fn icon_text_button(
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, Modifiers, MouseButton, Render, Window};
+    use herogpui::components::SliderSize;
+    use herogpui::test::TestWindowExt;
+
+    struct CompactSliderHost {
+        value: f64,
+    }
+
+    impl Render for CompactSliderHost {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            crate::ui::window_root::focus_root(
+                div().w(px(200.0)).child(
+                    slider_control(
+                        "compact-slider",
+                        self.value,
+                        0.0,
+                        100.0,
+                        1.0,
+                        cx,
+                        |this, next, cx| {
+                            this.value = next;
+                            cx.notify();
+                        },
+                    )
+                    .size(SliderSize::Sm),
+                ),
+                window,
+                cx,
+            )
+        }
+    }
+
+    #[herogpui::test]
+    fn compact_slider_handle_drags_outside_track_height(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = herogpui::test::open_window(cx, |_, _| CompactSliderHost { value: 50.0 });
+        cx.update(|_, cx| {
+            herogpui::theme::set_theme(
+                crate::theme::bridge::to_herogpui(&crate::theme::vars::ThemeVars::default(), true),
+                cx,
+            );
+        });
+        cx.settle();
+
+        cx.simulate_mouse_down(
+            point(px(100.0), px(3.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(150.0), px(3.0)),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(150.0), px(3.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.settle();
+        assert_eq!(view.read_with(cx, |this, _| this.value), 75.0);
+
+        cx.simulate_mouse_down(
+            point(px(150.0), px(15.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(50.0), px(15.0)),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(50.0), px(15.0)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.settle();
+        assert_eq!(view.read_with(cx, |this, _| this.value), 25.0);
+    }
+}

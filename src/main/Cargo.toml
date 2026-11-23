@@ -6,7 +6,7 @@ members = ["daemon-common", "daemon-linux", "daemon-win", "app-gpui"]
 rust-version = "1.99"
 
 [workspace.dependencies]
-herogpui = "=0.15.2"
+herogpui = "=0.15.4"
 
 [patch.crates-io]
 gpui-pre = { path = "../../vendor/gpui-pre" }

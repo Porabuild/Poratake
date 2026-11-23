@@ -190,7 +190,7 @@ The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) an
 | `glib`                     |          0.18.5 | MIT                       |
 | `global-hotkey`            |           0.8.0 | Apache-2.0 OR MIT         |
 | `gpui-pre`                 |          0.3.11 | Apache-2.0                |
-| `herogpui`                 |          0.15.2 | Apache-2.0                |
+| `herogpui`                 |          0.15.4 | Apache-2.0                |
 | `gtk`                      |          0.18.2 | MIT                       |
 | `hmac`                     |          0.13.0 | MIT OR Apache-2.0         |
 | `image`                    |         0.25.10 | MIT OR Apache-2.0         |
@@ -221,7 +221,7 @@ The GPUI image pipeline also uses `moxcms` 0.8.1 (BSD-3-Clause OR Apache-2.0) an
 | `serde`                    |         1.0.229 | MIT OR Apache-2.0         |
 | `serde_json`               |         1.0.151 | MIT OR Apache-2.0         |
 
-[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` use the published 0.15.2 crates.io release ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.2), revision `b7b28efc12839c5d805c5a628fdea98ae79ac9a2`); their registry checksums are locked in `src/main/Cargo.lock`. This revision replaces Poratake's former component patches for focus-ring gutters, accessibility actions, and keyboard press ownership. Poratake no longer vendors or modifies the HeroGPUI crates. The separate GPUI 0.3.11 Windows backend patch remains necessary. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
+[HeroGPUI](https://github.com/Porabuild/HeroGPUI) supplies the native shell's shared controls, theme provider, and embedded control icons. `herogpui`, `herogpui-components`, `herogpui-core`, and `herogpui-theme` use the published 0.15.4 crates.io release ([release source](https://github.com/Porabuild/HeroGPUI/tree/v0.15.4), revision `ac605fc1e010fc21e6ba54575308ab4f2581a91c`); their registry checksums are locked in `src/main/Cargo.lock`. This revision replaces Poratake's former component patches for focus-ring gutters, accessibility actions, and keyboard press ownership. Poratake no longer vendors or modifies the HeroGPUI crates. The separate GPUI 0.3.11 Windows backend patch remains necessary. `herogpui`, `herogpui-core`, and `herogpui-theme` are licensed Apache-2.0, and `herogpui-components` is licensed Apache-2.0 AND ISC AND MIT because it embeds Lucide icons. The unmodified Apache-2.0 license is bundled as `licenses/HeroGPUI-Apache-2.0.txt`. All four crates ship the same NOTICE file, reproduced here:
 
 ```text
 HeroGPUI
