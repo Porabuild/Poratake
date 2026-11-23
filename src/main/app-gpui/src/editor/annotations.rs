@@ -317,24 +317,28 @@ impl Annotation {
                 let (radius, _) = number_size_config(size);
                 (x - radius, y - radius, x + radius, y + radius)
             }
-            Self::Text {
-                x,
-                y,
-                text,
-                font_size,
-                font_family,
-                ..
-            } => {
-                let family = font_family.as_deref().unwrap_or(DEFAULT_TEXT_FONT);
-                let width = crate::editor::text_render::measure(
-                    text,
-                    family,
-                    *font_size as f32,
-                    crate::editor::text_render::Weight::Regular,
+            Self::Text { .. } => {
+                let Some(text_box) = self.text_box() else {
+                    return (0.0, 0.0, 0.0, 0.0);
+                };
+                if text_box.rotation == 0.0 {
+                    return (
+                        text_box.x,
+                        text_box.y,
+                        text_box.x + text_box.width,
+                        text_box.y + text_box.height,
+                    );
+                }
+                let radians = text_box.rotation.to_radians();
+                let (sin, cos) = (radians.sin().abs(), radians.cos().abs());
+                let half_w = (text_box.width * cos + text_box.height * sin) / 2.0;
+                let half_h = (text_box.width * sin + text_box.height * cos) / 2.0;
+                (
+                    text_box.center_x - half_w,
+                    text_box.center_y - half_h,
+                    text_box.center_x + half_w,
+                    text_box.center_y + half_h,
                 )
-                .map(|metrics| metrics.width as f64)
-                .unwrap_or(text.chars().count() as f64 * font_size * 0.55);
-                (*x, *y, x + width, y + font_size)
             }
             Self::Line { points, .. } | Self::Arrow { points, .. } => (
                 points[0].min(points[2]),
