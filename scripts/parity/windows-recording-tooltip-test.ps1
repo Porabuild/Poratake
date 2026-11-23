@@ -521,6 +521,20 @@ public static class PoratakeTooltipProbe {
     [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true)] public static extern uint SymGetOptions();
     [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool SymFromAddrW(IntPtr process, ulong address, out ulong displacement, IntPtr symbol);
     [DllImport("dbghelp.dll", ExactSpelling = true, SetLastError = true)] public static extern bool SymCleanup(IntPtr process);
+    [DllImport("dwmapi.dll", ExactSpelling = true)] public static extern int DwmGetCompositionTimingInfo(IntPtr hwnd, IntPtr timing);
+
+    public static string CompositionFrame() {
+        var buffer = Marshal.AllocHGlobal(336);
+        try {
+            for (var offset = 0; offset < 336; offset += 8) Marshal.WriteInt64(buffer, offset, 0);
+            Marshal.WriteInt32(buffer, 0, 320);
+            var result = DwmGetCompositionTimingInfo(IntPtr.Zero, buffer);
+            if (result != 0) return "error 0x" + result.ToString("x8");
+            return Marshal.ReadInt64(buffer, 8).ToString();
+        } finally {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
 
     public static uint MonitorInfoSize() { return (uint)Marshal.SizeOf(typeof(MonitorInfo)); }
 
@@ -832,6 +846,11 @@ public static class PoratakeTooltipProbe {
                             if (requested > 8192UL) requested = 8192UL;
                             if (!ReadProcessMemory(process, new IntPtr((long)(stackPointer + offset)), chunkPointer, new UIntPtr(requested), out transferred)) break;
                             var count = (int)(transferred.ToUInt64() & ~7UL);
+                            if (offset == 0UL) {
+                                var raw = "stack: thread " + threadId + " raw";
+                                for (var index = 0; index + 8 <= count && index < 64; index += 8) raw += " " + BitConverter.ToUInt64(chunk, index).ToString("x");
+                                lines.Add(raw);
+                            }
                             for (var index = 0; index + 8 <= count && lines.Count - threadStart < maxLinesPerThread; index += 8) {
                                 var value = (ulong)BitConverter.ToInt64(chunk, index);
                                 if (StackModuleIndex(value, moduleBases, moduleSizes) < 0) continue;
@@ -966,8 +985,18 @@ function Save-DialogFailureDiagnostics([System.Diagnostics.Process]$application,
     }
     $identities | Set-Content -LiteralPath (Join-Path $evidenceRoot 'module-identities.log') -Encoding utf8
     foreach ($line in $identities) { Write-Host "DIAG module $line" }
-    $stacks = [PoratakeTooltipProbe]::DescribeThreadStacks([uint32]$application.Id, [int[]]$targets, $moduleNames, $moduleBases, $moduleSizes, $searchPath, 90)
-    foreach ($line in $stacks) { Write-Host "DIAG $line" }
+    Save-ThreadStacks $application $targets '' 90
+}
+
+function Save-ThreadStacks([System.Diagnostics.Process]$application, [int[]]$targets, [string]$prefix, [int]$maxLines) {
+    $modules = @($application.Modules)
+    $moduleNames = [string[]]@($modules | ForEach-Object { $_.ModuleName })
+    $moduleBases = [uint64[]]@($modules | ForEach-Object { [uint64]$_.BaseAddress.ToInt64() })
+    $moduleSizes = [uint64[]]@($modules | ForEach-Object { [uint64]$_.ModuleMemorySize })
+    $executableDirectory = [System.IO.Path]::GetDirectoryName($application.MainModule.FileName)
+    $searchPath = $executableDirectory + ';' + [System.IO.Path]::GetDirectoryName($executableDirectory)
+    $stacks = [PoratakeTooltipProbe]::DescribeThreadStacks([uint32]$application.Id, [int[]]$targets, $moduleNames, $moduleBases, $moduleSizes, $searchPath, $maxLines)
+    foreach ($line in $stacks) { Write-Host "DIAG $prefix$line" }
 }
 
 function Get-PeDebugIdentity([string]$path) {
@@ -3570,7 +3599,7 @@ try {
     $annotatedEditorCapturePath = Join-Path $captureRoot 'real-editor-after-annotation.png'
     Capture-TooltipArea 'real-editor-after-annotation' $editorScreenBounds $annotatedEditorCapturePath
     [PoratakeTooltipProbe]::PressControlS()
-    $saveDialog = Wait-Until {
+    $waitForSaveDialog = {
         $handles = [PoratakeTooltipProbe]::WindowsWithText('Save Screenshot')
         foreach ($handle in $handles) {
             if (-not [PoratakeTooltipProbe]::IsWindowVisible($handle)) { continue }
@@ -3580,12 +3609,24 @@ try {
             return $handle
         }
         return $null
-    } 30000 ''
+    }
+    $saveDialog = Wait-Until $waitForSaveDialog 30000 ''
     if (-not $saveDialog) {
         try { Save-DialogFailureDiagnostics $workflowApplication $editorHandle } catch { Write-Host "DIAG thread diagnostics failed: $_" }
         if (Test-Path -LiteralPath $workflowStderrPath) { Write-Host 'DIAG workflow stderr:'; Get-Content -LiteralPath $workflowStderrPath | Write-Host }
         try { Capture-TooltipArea 'save-dialog-failure-screen' $monitor.Monitor (Join-Path $captureRoot 'save-dialog-failure-screen.png') 10 } catch { Write-Host "DIAG screen capture failed: $_" }
-        throw 'Ctrl+S did not open the native Save Screenshot dialog.'
+        foreach ($name in 'Windows.Storage.dll', 'shell32.dll', 'comdlg32.dll') {
+            try { Copy-Item -LiteralPath (Join-Path $env:SystemRoot "System32\$name") -Destination (Join-Path $evidenceRoot "$name.log") -Force } catch { Write-Host "DIAG binary copy failed: $_" }
+        }
+        $lateTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $saveDialog -and $lateTimer.Elapsed.TotalSeconds -lt 240) {
+            $saveDialog = Wait-Until $waitForSaveDialog 10000 ''
+            Write-Host ("DIAG late wait: t={0:F0}s dialog={1} dwmFrame={2}" -f $lateTimer.Elapsed.TotalSeconds, [bool]$saveDialog, [PoratakeTooltipProbe]::CompositionFrame())
+        }
+        if (-not $saveDialog) {
+            try { Save-ThreadStacks $workflowApplication ([int[]]@($workflowApplication.Threads | ForEach-Object { [int]$_.Id })) 'late ' 2 } catch { Write-Host "DIAG late stacks failed: $_" }
+            throw 'Ctrl+S did not open the native Save Screenshot dialog.'
+        }
     }
     if ([PoratakeTooltipProbe]::GetWindow($saveDialog, 4) -ne $editorHandle) { throw 'The Save Screenshot dialog is not owned by the screenshot editor.' }
     if (-not [PoratakeTooltipProbe]::SetForegroundWindow($saveDialog)) { throw 'Could not foreground the owned Save Screenshot dialog.' }
