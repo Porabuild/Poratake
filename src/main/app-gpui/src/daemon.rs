@@ -134,40 +134,12 @@ fn find_daemon_binary() -> PathBuf {
         "poratake-daemon"
     };
 
-    // Packaged layout: <root>/daemon/poratake-daemon(.exe) next to the app.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(BINARY);
-            if sibling.exists() {
-                return sibling;
-            }
-            let packaged = dir.join("daemon").join(BINARY);
-            if packaged.exists() {
-                return packaged;
-            }
-            for ancestors in dir.ancestors().skip(1) {
-                let candidate = ancestors
-                    .join("src")
-                    .join("main")
-                    .join("daemon")
-                    .join(BINARY);
-                if candidate.exists() {
-                    return candidate;
-                }
-            }
-        }
-    }
-
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("app-gpui manifest dir has a parent (src/main)")
-        .join("daemon")
-        .join(BINARY);
-    if dev.exists() {
-        return dev;
-    }
-
-    PathBuf::from(format!("src/main/daemon/{BINARY}"))
+    std::env::current_exe()
+        .map(|exe| exe.with_file_name(BINARY))
+        .ok()
+        .filter(|path| path.exists())
+        .or_else(|| crate::util::resources::native_binary_path("daemon", BINARY))
+        .unwrap_or_else(|| PathBuf::from(format!("src/main/daemon/{BINARY}")))
 }
 
 #[cfg(target_os = "macos")]
@@ -1880,6 +1852,69 @@ done
         daemon.stop();
         assert!(!daemon.is_running());
         assert!(!wait_for_child_exit(restarted).unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundled_app_starts_the_daemon_shipped_in_its_resources() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const CHILD: &str = "PORATAKE_TEST_BUNDLED_DAEMON_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let contents = directory.path().join("Poratake.app/Contents");
+            let executable = contents.join("MacOS/poratake-gpui");
+            let bundled = contents.join("Resources/daemon/poratake-daemon");
+            let launched = directory.path().join("launched");
+            std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+            std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+            std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+            std::fs::write(
+                &bundled,
+                format!(
+                    "#!/bin/sh\nprintf '%s' \"$0\" > \"{}\"\n{}",
+                    launched.display(),
+                    r#"printf '%s\n' '{"event":"system:ready"}'
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"quit"'*) exit 0 ;;
+    esac
+    id=${request#*'"id":"'}
+    id=${id%%'"'*}
+    printf '{"id":"%s","success":true,"result":{"hidden":true}}\n' "$id"
+done
+"#
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&bundled, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = std::process::Command::new(&executable)
+                .args([
+                    "--exact",
+                    "daemon::tests::a_bundled_app_starts_the_daemon_shipped_in_its_resources",
+                    "--nocapture",
+                ])
+                .env_remove("PORATAKE_DAEMON_PATH")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let started = std::fs::read_to_string(&launched).unwrap();
+            assert_eq!(
+                std::fs::canonicalize(started.trim()).unwrap(),
+                bundled.canonicalize().unwrap()
+            );
+            return;
+        }
+        let daemon = DaemonHandle::new();
+        daemon.desktop_helper().hide().unwrap();
+        daemon.desktop_helper().show().unwrap();
+        daemon.stop();
     }
 
     #[cfg(target_os = "macos")]

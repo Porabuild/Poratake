@@ -233,38 +233,16 @@ pub fn ffmpeg_path() -> std::path::PathBuf {
             return path;
         }
     }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(directory) = executable.parent() {
-            #[cfg(target_os = "macos")]
-            let packaged = directory
-                .parent()
-                .map(|contents| contents.join("Resources/binaries/ffmpeg/ffmpeg"));
-            #[cfg(target_os = "macos")]
-            if let Some(packaged) = packaged.filter(|path| path.is_file()) {
-                return packaged;
-            }
-            #[cfg(target_os = "linux")]
-            let packaged = directory.join("binaries/ffmpeg/ffmpeg");
-            #[cfg(target_os = "linux")]
-            if packaged.is_file() {
-                return packaged;
-            }
-            for ancestor in directory.ancestors() {
-                let candidate = ancestor.join("src/main/binaries/ffmpeg/ffmpeg");
-                if candidate.is_file() {
-                    return candidate;
-                }
-            }
-        }
-    }
-    #[cfg(target_os = "macos")]
-    let fallback = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("app-gpui manifest directory")
-        .join("binaries/ffmpeg/ffmpeg");
-    #[cfg(target_os = "linux")]
-    let fallback = std::path::PathBuf::from("ffmpeg");
-    fallback
+    crate::util::resources::native_binary_path("binaries/ffmpeg", "ffmpeg").unwrap_or_else(|| {
+        #[cfg(target_os = "macos")]
+        let fallback = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("app-gpui manifest directory")
+            .join("binaries/ffmpeg/ffmpeg");
+        #[cfg(target_os = "linux")]
+        let fallback = std::path::PathBuf::from("ffmpeg");
+        fallback
+    })
 }
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
