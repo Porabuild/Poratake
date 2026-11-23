@@ -19,30 +19,9 @@ pub fn sample_index(timestamp: f64, count: u32) -> u32 {
 }
 
 pub fn sample_path(sound_type: &str, index: u32) -> Option<PathBuf> {
-    let relative = PathBuf::from("public")
-        .join("sounds")
-        .join("keyboard")
-        .join(sound_type)
-        .join(format!("press-{index}.mp3"));
-    if relative.is_file() {
-        return Some(relative);
-    }
-    let mut roots = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        roots.push(exe);
-    }
-    for root in roots {
-        for ancestor in root.ancestors() {
-            let candidate = ancestor.join(&relative);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    crate::util::resources::public_asset_path(&format!(
+        "sounds/keyboard/{sound_type}/press-{index}.mp3"
+    ))
 }
 
 pub fn press_times(data: &KeyboardData, timeline: &[Segment], duration: f64) -> Vec<f64> {

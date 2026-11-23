@@ -312,8 +312,7 @@ pub fn decode_cover_rgba(
     if target_width == 0 || target_height == 0 {
         return None;
     }
-    let factory = wic_factory()?;
-    unsafe {
+    with_wic_factory(|factory| unsafe {
         let wide_path = HSTRING::from(path.as_os_str());
         let decoder = factory
             .CreateDecoderFromFilename(
@@ -368,7 +367,7 @@ pub fn decode_cover_rgba(
             .CopyPixels(std::ptr::null(), stride, &mut pixels)
             .ok()?;
         image::RgbaImage::from_raw(target_width, target_height, pixels)
-    }
+    })
 }
 
 #[cfg(not(windows))]
@@ -381,30 +380,29 @@ pub fn decode_cover_rgba(
 }
 
 #[cfg(windows)]
-fn wic_factory() -> Option<IWICImagingFactory> {
-    use std::cell::RefCell;
+fn with_wic_factory<T>(f: impl FnOnce(&IWICImagingFactory) -> Option<T>) -> Option<T> {
     use windows::Win32::Graphics::Imaging::CLSID_WICImagingFactory;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
     };
 
-    thread_local! {
-        static FACTORY: RefCell<Option<IWICImagingFactory>> = const { RefCell::new(None) };
+    struct ComGuard(bool);
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
     }
 
-    FACTORY.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(factory) = slot.as_ref() {
-            return Some(factory.clone());
-        }
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let factory: IWICImagingFactory =
-                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
-            *slot = Some(factory.clone());
-            Some(factory)
-        }
-    })
+    let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let _guard = ComGuard(initialized);
+    let factory: IWICImagingFactory =
+        unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    f(&factory)
 }
 
 #[cfg(windows)]
@@ -421,8 +419,7 @@ fn generate_native_thumbnail(original: &Path, _target: &Path) -> Option<Vec<u8>>
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Variant::VARIANT;
 
-    let factory = wic_factory()?;
-    unsafe {
+    with_wic_factory(|factory| unsafe {
         let wide_path = HSTRING::from(original.as_os_str());
         let decoder = factory
             .CreateDecoderFromFilename(
@@ -502,7 +499,7 @@ fn generate_native_thumbnail(original: &Path, _target: &Path) -> Option<Vec<u8>>
         let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec();
         let _ = GlobalUnlock(hglobal);
         Some(bytes)
-    }
+    })
 }
 
 fn generate(original: &Path, target: &Path) -> bool {

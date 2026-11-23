@@ -4016,15 +4016,18 @@ try {
     if ($handoffStopHit -eq [IntPtr]::Zero -or [PoratakeTooltipProbe]::GetAncestor($handoffStopHit, 2) -ne $handoffControl) { throw 'Native hit testing at Stop recording did not reach its control window.' }
     [PoratakeTooltipProbe]::Click($handoffStopX, $handoffStopY)
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffControl) } 15000 'The area recording control did not close after stopping.' | Out-Null
+    $handoffMonitorWidth = $monitor.Monitor.Right - $monitor.Monitor.Left
+    $handoffMonitorHeight = $monitor.Monitor.Bottom - $monitor.Monitor.Top
     $parkedRegionReady = Wait-Until {
         try {
-            $inside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y)
-            $outside = [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
-            if ($inside -and $outside -and -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $true }
+            if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
+            if (($rect.Right - $rect.Left) -lt $handoffMonitorWidth -and ($rect.Bottom - $rect.Top) -lt $handoffMonitorHeight) { return $true }
         } catch { }
         return $null
-    } 15000 'Stopping the recording did not restore and park the pooled selector region.'
-    if (-not $parkedRegionReady) { throw 'The parked selector did not restore the full window region.' }
+    } 15000 'Stopping the recording did not hide and shrink the pooled selector.'
+    if (-not $parkedRegionReady) { throw 'The parked selector did not hide and shrink.' }
     [PoratakeTooltipProbe]::PressRecordingAreaHotkey()
     $reopenedHandoffOverlay = Wait-Until {
         if (-not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
@@ -4045,10 +4048,14 @@ try {
     Wait-Until { -not [PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay) } 10000 'Escape did not cancel the reopened record-area selector.' | Out-Null
     $cancelledRegionReady = Wait-Until {
         try {
-            return [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffInsidePoint.X, $handoffInsidePoint.Y) -and [PoratakeTooltipProbe]::WindowRegionContainsScreenPoint($handoffOverlay, $handoffOutsidePoint.X, $handoffOutsidePoint.Y)
+            if ([PoratakeTooltipProbe]::IsWindowVisible($handoffOverlay)) { return $null }
+            $rect = New-Object PoratakeTooltipProbe+Rect
+            if (-not [PoratakeTooltipProbe]::GetWindowRect($handoffOverlay, [ref]$rect)) { return $null }
+            if (($rect.Right - $rect.Left) -lt $handoffMonitorWidth -and ($rect.Bottom - $rect.Top) -lt $handoffMonitorHeight) { return $true }
         } catch { return $null }
-    } 5000 'Cancelling the reopened selector changed its restored full region.'
-    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not retain its full native window region.' }
+        return $null
+    } 5000 'Cancelling the reopened selector did not hide and shrink the pooled selector.'
+    if (-not $cancelledRegionReady) { throw 'The cancelled selector did not hide and shrink.' }
     Write-Host 'Record-area native handoff, park, pooled-window reuse and Escape cancellation passed.'
     Capture-OwnedDaemonChildren $handoffApplication
     $handoffProcessId = $handoffApplication.Id

@@ -44,26 +44,8 @@ pub fn cli_path() -> PathBuf {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let packaged = dir.join("binaries").join("whisper").join(BINARY);
-            if packaged.exists() {
-                return packaged;
-            }
-            for ancestor in dir.ancestors().skip(1) {
-                let candidate = ancestor
-                    .join("src")
-                    .join("main")
-                    .join("binaries")
-                    .join("whisper")
-                    .join(BINARY);
-                if candidate.exists() {
-                    return candidate;
-                }
-            }
-        }
-    }
-    PathBuf::from(BINARY)
+    crate::util::resources::native_binary_path("binaries/whisper", BINARY)
+        .unwrap_or_else(|| PathBuf::from(BINARY))
 }
 
 pub fn is_binary_available() -> bool {
