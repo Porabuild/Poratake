@@ -1916,6 +1916,28 @@ const BLUR_SIGMA: f32 = 12.0;
 /// Scaling first matters: `backdrop-blur-md` blurs the *rendered* pixels, so
 /// blurring a 3440x1440 capture and then shrinking it to 200x140 would come out
 /// almost sharp.
+fn decode_preview_fallback(path: &Path) -> Option<image::RgbaImage> {
+    let target_w = PREVIEW_WIDTH as u32;
+    let target_h = PREVIEW_HEIGHT as u32;
+    let decoded = crate::render::images::open(path).ok()?;
+    let scaled = decoded
+        .resize_to_fill(target_w, target_h, image::imageops::FilterType::Triangle)
+        .into_rgba8();
+    drop(decoded);
+    crate::system::memory::compact_heap();
+    Some(scaled)
+}
+
+fn build_preview_thumbnails(
+    scaled: image::RgbaImage,
+) -> (
+    Option<Arc<gpui::RenderImage>>,
+    Option<Arc<gpui::RenderImage>>,
+) {
+    let blurred = blur_thumbnail(&scaled);
+    (Some(render_thumbnail(scaled)), blurred)
+}
+
 fn load_preview_thumbnails(
     path: &Path,
 ) -> (
@@ -1924,22 +1946,12 @@ fn load_preview_thumbnails(
 ) {
     let target_w = PREVIEW_WIDTH as u32;
     let target_h = PREVIEW_HEIGHT as u32;
-    let scaled = match crate::thumbnails::decode_cover_rgba(path, target_w, target_h) {
-        Some(scaled) => scaled,
-        None => {
-            let Ok(decoded) = crate::render::images::open(path) else {
-                return (None, None);
-            };
-            let scaled = decoded
-                .resize_to_fill(target_w, target_h, image::imageops::FilterType::Triangle)
-                .into_rgba8();
-            drop(decoded);
-            crate::system::memory::compact_heap();
-            scaled
-        }
+    let Some(scaled) = crate::thumbnails::decode_cover_rgba(path, target_w, target_h)
+        .or_else(|| decode_preview_fallback(path))
+    else {
+        return (None, None);
     };
-    let blurred = blur_thumbnail(&scaled);
-    (Some(render_thumbnail(scaled)), blurred)
+    build_preview_thumbnails(scaled)
 }
 
 fn blur_thumbnail(scaled: &image::RgbaImage) -> Option<Arc<gpui::RenderImage>> {
@@ -5565,11 +5577,18 @@ mod tests {
                 bgra: bgra.into(),
             };
             let (thumbnail, blurred) = super::video_thumbnails(&frame, true).unwrap();
-            let (screenshot, screenshot_blurred) = load_preview_thumbnails(&path);
+            let (screenshot, screenshot_blurred) =
+                super::build_preview_thumbnails(super::decode_preview_fallback(&path).unwrap());
             let blurred = blurred.unwrap();
             assert_eq!(thumbnail.as_bytes(0), screenshot.unwrap().as_bytes(0));
             assert_eq!(blurred.as_bytes(0), screenshot_blurred.unwrap().as_bytes(0));
             assert_ne!(thumbnail.as_bytes(0), blurred.as_bytes(0));
+            let (native_thumb, native_blur) = load_preview_thumbnails(&path);
+            let native_thumb = native_thumb.unwrap();
+            let native_blur = native_blur.unwrap();
+            assert_eq!(native_thumb.size(0), thumbnail.size(0));
+            assert_eq!(native_blur.size(0), blurred.size(0));
+            assert_ne!(native_thumb.as_bytes(0), native_blur.as_bytes(0));
             assert!(super::video_thumbnails(&frame, false).unwrap().1.is_none());
         }
     }
@@ -5621,16 +5640,37 @@ mod tests {
             expected_blur = crate::editor::export::to_rgba(&pixmap);
             let expected_blur = render_thumbnail(expected_blur);
 
-            let (thumbnail, blurred) = load_preview_thumbnails(&path);
+            let (fallback_thumb, fallback_blur) =
+                super::build_preview_thumbnails(super::decode_preview_fallback(&path).unwrap());
             assert_eq!(
-                thumbnail.unwrap().as_bytes(0),
+                fallback_thumb.unwrap().as_bytes(0),
                 expected_thumbnail.as_bytes(0),
                 "thumbnail pixels differ for {width}x{height}, translucent={translucent}"
             );
             assert_eq!(
-                blurred.unwrap().as_bytes(0),
+                fallback_blur.unwrap().as_bytes(0),
                 expected_blur.as_bytes(0),
                 "blurred pixels differ for {width}x{height}, translucent={translucent}"
+            );
+
+            let (thumbnail, blurred) = load_preview_thumbnails(&path);
+            let thumbnail = thumbnail.unwrap();
+            let blurred = blurred.unwrap();
+            assert_eq!(thumbnail.size(0), expected_thumbnail.size(0));
+            assert_eq!(blurred.size(0), expected_blur.size(0));
+            let mut rgba = thumbnail.as_bytes(0).unwrap().to_vec();
+            for pixel in rgba.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+            let reblurred = super::blur_thumbnail(
+                &image::RgbaImage::from_raw(PREVIEW_WIDTH as u32, PREVIEW_HEIGHT as u32, rgba)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                blurred.as_bytes(0),
+                reblurred.as_bytes(0),
+                "single-decode blur differs for {width}x{height}, translucent={translucent}"
             );
         }
     }

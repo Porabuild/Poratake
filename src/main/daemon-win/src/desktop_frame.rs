@@ -2118,7 +2118,7 @@ mod tests {
 
     #[test]
     fn converts_cropped_subregion_without_full_frame_copy() {
-        let mut source = vec![
+        let mut source: Vec<u8> = vec![
             1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255, 13, 14, 15, 255, 16, 17, 18,
             255,
         ];
